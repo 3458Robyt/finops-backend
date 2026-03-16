@@ -1,0 +1,39 @@
+{
+  "compilerOptions": {
+    /* ── Strict Mode ── */
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "exactOptionalPropertyTypes": true,
+
+    /* ── Module & Target ── */
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+
+    /* ── Output ── */
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+
+    /* ── Path Aliases ── */
+    "baseUrl": ".",
+    "paths": {
+      "@domain/*": ["src/domain/*"],
+      "@application/*": ["src/application/*"],
+      "@infrastructure/*": ["src/infrastructure/*"],
+      "@presentation/*": ["src/presentation/*"]
+    },
+
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

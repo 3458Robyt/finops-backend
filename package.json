@@ -1,0 +1,30 @@
+{
+  "name": "finops-backend",
+  "version": "1.0.0",
+  "description": "FinOps Inteligente - Backend Core para optimización de costos multicloud (FinOps Demo)",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["finops", "cloud-cost", "multicloud", "aws", "oci", "timescaledb"],
+  "author": "FinOps Demo",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@aws-sdk/client-cost-explorer": "^3.750.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "oci-sdk": "^2.100.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  }
+}

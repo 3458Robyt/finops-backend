@@ -1,5 +1,8 @@
 export {
   FinOpsBaseError,
+  AuthenticationError,
+  AuthorizationError,
+  ConfigurationError,
   ProviderError,
   ProviderNotFoundError,
   IngestionError,

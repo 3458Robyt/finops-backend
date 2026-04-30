@@ -20,10 +20,15 @@
 import 'dotenv/config';
 
 import type { ICloudProvider } from './domain/interfaces/ICloudProvider.js';
+import { AuthService } from './application/services/AuthService.js';
 import { DataIngestionService } from './application/services/DataIngestionService.js';
 import { AWSProvider } from './infrastructure/providers/aws/AWSProvider.js';
-import { OCIProvider } from './infrastructure/providers/oci/OCIProvider.js';
-import { FinOpsBaseError } from './domain/errors/errors.js';
+import { getPrismaClient } from './infrastructure/database/prisma.js';
+import { PrismaCostRepository } from './infrastructure/repositories/PrismaCostRepository.js';
+import { PrismaRecommendationRepository } from './infrastructure/repositories/PrismaRecommendationRepository.js';
+import { PrismaUserRepository } from './infrastructure/repositories/PrismaUserRepository.js';
+import { Argon2PasswordHasher } from './infrastructure/security/Argon2PasswordHasher.js';
+import { JwtTokenService } from './infrastructure/security/JwtTokenService.js';
 
 /**
  * Composición Raíz — Configuración y arranque de la aplicación.
@@ -71,9 +76,14 @@ async function bootstrap(): Promise<void> {
    * En producción, usar Instance Principals o Resource Principals.
    */
   try {
-    const ociProvider = new OCIProvider();
-    providerRegistry.set(ociProvider.providerName, ociProvider);
-    console.log('  ✓ OCI Provider initialized');
+    if (process.env['ENABLE_OCI_PROVIDER'] === 'true') {
+      const { OCIProvider } = await import('./infrastructure/providers/oci/OCIProvider.js');
+      const ociProvider = new OCIProvider();
+      providerRegistry.set(ociProvider.providerName, ociProvider);
+      console.log('  ✓ OCI Provider initialized');
+    } else {
+      console.log('  ℹ OCI Provider disabled (set ENABLE_OCI_PROVIDER=true to enable)');
+    }
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     console.warn(`  ⚠ OCI Provider skipped (init failed): ${msg}`);
@@ -83,19 +93,33 @@ async function bootstrap(): Promise<void> {
 
   // ── 3. Instanciar Servicio de Ingesta ─────────────────────────
 
-  const ingestionService = new DataIngestionService(providerRegistry);
+  const prisma = getPrismaClient();
+  const costRepository = new PrismaCostRepository(prisma);
+  const recommendationRepository = new PrismaRecommendationRepository(prisma);
+  const userRepository = new PrismaUserRepository(prisma);
+  const passwordHasher = new Argon2PasswordHasher();
+  const tokenService = new JwtTokenService();
+  const authService = new AuthService(userRepository, passwordHasher, tokenService);
+  const ingestionService = new DataIngestionService(providerRegistry, costRepository);
 
   // ── 4. Iniciar Servidor RESTful ───────────────────────────────────
 
   const { createExpressServer } = await import('./presentation/server.js');
-  const app = createExpressServer(ingestionService);
+  const app = createExpressServer({
+    authService,
+    costRepository,
+    recommendationRepository,
+    tokenService,
+  });
   
   const PORT = process.env['PORT'] || 3000;
   
   app.listen(PORT, () => {
     console.log(`\n🚀 FinOps Backend API running on http://localhost:${PORT}`);
     console.log(`   Registered providers: [${ingestionService.getRegisteredProviders().join(', ')}]`);
-    console.log(`   Endpoint: GET http://localhost:${PORT}/api/v1/costs?provider=oci&accountId=...`);
+    console.log(`   Auth: POST http://localhost:${PORT}/api/v1/auth/login`);
+    console.log(`   Costs: GET http://localhost:${PORT}/api/v1/costs?provider=oci&startDate=...&endDate=...`);
+    console.log(`   Recommendations: GET http://localhost:${PORT}/api/v1/recommendations`);
   });
 }
 

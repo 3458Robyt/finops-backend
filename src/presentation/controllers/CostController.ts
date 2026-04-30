@@ -1,99 +1,140 @@
-import { Request, Response } from 'express';
-import { DataIngestionService } from '../../application/services/DataIngestionService.js';
+import type { Request, Response } from 'express';
+import type { ICostRepository } from '../../domain/interfaces/ICostRepository.js';
+import type { InternalCostMetric } from '../../domain/models/InternalCostMetric.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
 
-export class CostController {
-  constructor(private readonly dataIngestionService: DataIngestionService) {}
+interface ServiceBreakdownItem {
+  cost: number;
+  currency: string;
+  usage?: number;
+  usageUnit?: string;
+}
 
-  /**
-   * Obtener costos de una cuenta en una fecha específica (o el día actual por defecto)
-   */
+export class CostController {
+  constructor(private readonly costRepository: ICostRepository) {}
+
   public getDailyCosts = async (req: Request, res: Response): Promise<void> => {
     try {
-      const { provider, accountId, date } = req.query;
-
-      if (!provider || typeof provider !== 'string') {
-        res.status(400).json({ error: 'Missing or invalid provider' });
-        return;
-      }
-
-      if (!accountId || typeof accountId !== 'string') {
-        res.status(400).json({ error: 'Missing or invalid accountId' });
-        return;
-      }
-
-      const queryDate = date && typeof date === 'string' 
-        ? new Date(date) 
-        : new Date();
-
-      if (isNaN(queryDate.getTime())) {
-        res.status(400).json({ error: 'Invalid date format' });
-        return;
-      }
-
-      const ingestionResult = await this.dataIngestionService.runDailyIngestion(
-        provider,
-        accountId,
-        queryDate
-      );
-
-      const metrics = ingestionResult.metrics;
-
-      // ── Agrupar y resumir los costos para estructurar mejor el JSON ──
-      let totalCost = 0;
-      let primaryCurrency = 'USD';
-      const serviceBreakdown: Record<string, { cost: number; currency: string; usage?: number; usageUnit?: string }> = {};
-
-      for (const req of metrics) {
-        totalCost += req.amount;
-        primaryCurrency = req.currency;
-
-        if (!serviceBreakdown[req.service]) {
-          serviceBreakdown[req.service] = {
-            cost: 0,
-            currency: req.currency,
-            usage: 0,
-            usageUnit: req.usageUnit
-          };
-        }
-
-        serviceBreakdown[req.service].cost += req.amount;
-        
-        if (req.usage !== undefined) {
-          serviceBreakdown[req.service].usage! += req.usage;
-        }
-      }
-
-      res.status(200).json({
-        success: true,
-        summary: {
-          totalCost,
-          currency: primaryCurrency,
-          serviceBreakdown
-        },
-        metrics: metrics,
-        meta: {
-          provider: ingestionResult.providerName,
-          accountId: ingestionResult.accountId,
-          date: ingestionResult.date.toISOString().split('T')[0],
-          durationMs: ingestionResult.durationMs,
-          count: ingestionResult.metricsCount
-        }
-      });
-    } catch (error: unknown) {
-      if (error instanceof FinOpsBaseError) {
-        res.status(500).json({ 
-          success: false, 
-          error: error.message, 
-          code: error.name 
+      if (req.auth === undefined) {
+        res.status(401).json({
+          success: false,
+          error: 'Authentication is required',
+          code: 'AUTHENTICATION_REQUIRED',
         });
         return;
       }
 
-      res.status(500).json({ 
-        success: false, 
-        error: 'An unexpected error occurred processing costs' 
+      const { provider, cloudAccountId } = req.query;
+      const { startDate, endDate } = this.resolveDateRange(req);
+
+      const metrics = await this.costRepository.findByDateRange({
+        tenantId: req.auth.tenantId,
+        startDate,
+        endDate,
+        ...(typeof provider === 'string' && provider.trim() !== '' ? { providerName: provider } : {}),
+        ...(typeof cloudAccountId === 'string' && cloudAccountId.trim() !== '' ? { cloudAccountId } : {}),
+      });
+
+      res.status(200).json({
+        success: true,
+        summary: this.buildSummary(metrics),
+        metrics,
+        meta: {
+          tenantId: req.auth.tenantId,
+          provider: typeof provider === 'string' ? provider : undefined,
+          cloudAccountId: typeof cloudAccountId === 'string' ? cloudAccountId : undefined,
+          startDate: startDate.toISOString(),
+          endDate: endDate.toISOString(),
+          count: metrics.length,
+        },
+      });
+    } catch (error: unknown) {
+      if (error instanceof FinOpsBaseError) {
+        res.status(500).json({
+          success: false,
+          error: error.message,
+          code: error.code,
+        });
+        return;
+      }
+
+      res.status(500).json({
+        success: false,
+        error: 'An unexpected error occurred processing costs',
       });
     }
   };
+
+  private resolveDateRange(req: Request): { startDate: Date; endDate: Date } {
+    const startDate = this.parseDateQuery(req.query['startDate']);
+    const endDate = this.parseDateQuery(req.query['endDate']);
+
+    if (startDate !== undefined && endDate !== undefined) {
+      return { startDate, endDate };
+    }
+
+    const defaultEnd = new Date();
+    const defaultStart = new Date(defaultEnd);
+    defaultStart.setUTCDate(defaultStart.getUTCDate() - 30);
+
+    return {
+      startDate: startDate ?? defaultStart,
+      endDate: endDate ?? defaultEnd,
+    };
+  }
+
+  private parseDateQuery(value: unknown): Date | undefined {
+    if (typeof value !== 'string' || value.trim() === '') {
+      return undefined;
+    }
+
+    const parsed = new Date(value);
+
+    if (Number.isNaN(parsed.getTime())) {
+      throw new FinOpsBaseError(`Invalid date value: ${value}`, 'VALIDATION_ERROR');
+    }
+
+    return parsed;
+  }
+
+  private buildSummary(metrics: readonly InternalCostMetric[]): {
+    totalCost: number;
+    currency: string;
+    serviceBreakdown: Record<string, ServiceBreakdownItem>;
+  } {
+    let totalCost = 0;
+    let primaryCurrency = 'USD';
+    const serviceBreakdown: Record<string, ServiceBreakdownItem> = {};
+
+    for (const metric of metrics) {
+      totalCost += metric.amount;
+      primaryCurrency = metric.currency;
+
+      const existingBreakdown = serviceBreakdown[metric.service];
+      const breakdown = existingBreakdown ?? {
+        cost: 0,
+        currency: metric.currency,
+      };
+
+      if (metric.usageUnit !== undefined) {
+        breakdown.usageUnit = metric.usageUnit;
+      }
+
+      if (existingBreakdown === undefined) {
+        serviceBreakdown[metric.service] = breakdown;
+      }
+
+      breakdown.cost += metric.amount;
+
+      if (metric.usage !== undefined) {
+        breakdown.usage = (breakdown.usage ?? 0) + metric.usage;
+      }
+    }
+
+    return {
+      totalCost,
+      currency: primaryCurrency,
+      serviceBreakdown,
+    };
+  }
 }

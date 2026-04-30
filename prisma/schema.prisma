@@ -1,0 +1,283 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum UserRole {
+  ADMIN
+  VIEWER
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum CloudProvider {
+  AWS
+  OCI
+}
+
+enum CloudAccountStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum IngestionStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+enum RecommendationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  MANUAL_COMPLETED
+}
+
+enum RecommendationSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum RecommendationDecisionType {
+  APPROVED
+  REJECTED
+  MARKED_DONE
+}
+
+model Tenant {
+  id              String           @id @default(cuid())
+  name            String
+  slug            String           @unique
+  status          TenantStatus     @default(ACTIVE)
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  users           User[]
+  cloudAccounts   CloudAccount[]
+  ingestionRuns   IngestionRun[]
+  costMetrics     CostMetric[]
+  recommendations Recommendation[]
+  auditEvents     AuditEvent[]
+
+  @@map("tenants")
+}
+
+model User {
+  id           String        @id @default(cuid())
+  tenantId     String        @map("tenant_id")
+  email        String        @unique
+  name         String
+  passwordHash String        @map("password_hash")
+  role         UserRole      @default(VIEWER)
+  status       UserStatus    @default(ACTIVE)
+  lastLoginAt  DateTime?     @map("last_login_at") @db.Timestamptz(6)
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sessions     AuthSession[]
+  decisions    RecommendationDecision[]
+  auditEvents  AuditEvent[]
+
+  @@index([tenantId, role])
+  @@map("users")
+}
+
+model AuthSession {
+  id         String    @id @default(cuid())
+  userId     String    @map("user_id")
+  jwtId      String    @unique @map("jwt_id")
+  issuedAt   DateTime  @default(now()) @map("issued_at") @db.Timestamptz(6)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  ipAddress  String?   @map("ip_address")
+  userAgent  String?   @map("user_agent")
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("auth_sessions")
+}
+
+model CloudAccount {
+  id                String              @id @default(cuid())
+  tenantId          String              @map("tenant_id")
+  provider          CloudProvider
+  externalAccountId String              @map("external_account_id")
+  name              String
+  defaultRegion     String?             @map("default_region")
+  status            CloudAccountStatus  @default(ACTIVE)
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  credentials       CloudCredential[]
+  ingestionRuns     IngestionRun[]
+  costMetrics       CostMetric[]
+  recommendations   Recommendation[]
+
+  @@unique([tenantId, provider, externalAccountId])
+  @@index([tenantId, status])
+  @@map("cloud_accounts")
+}
+
+model CloudCredential {
+  id                    String       @id @default(cuid())
+  cloudAccountId         String       @map("cloud_account_id")
+  label                 String
+  encryptedPayload       String       @map("encrypted_payload") @db.Text
+  encryptionIv           String       @map("encryption_iv")
+  encryptionAuthTag      String       @map("encryption_auth_tag")
+  encryptionAlgorithm    String       @default("aes-256-gcm") @map("encryption_algorithm")
+  encryptionKeyVersion   String       @default("v1") @map("encryption_key_version")
+  createdAt             DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  rotatedAt             DateTime?    @map("rotated_at") @db.Timestamptz(6)
+  disabledAt            DateTime?    @map("disabled_at") @db.Timestamptz(6)
+  cloudAccount          CloudAccount @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
+
+  @@index([cloudAccountId, disabledAt])
+  @@map("cloud_credentials")
+}
+
+model IngestionRun {
+  id             String          @id @default(cuid())
+  tenantId       String          @map("tenant_id")
+  cloudAccountId String          @map("cloud_account_id")
+  provider       CloudProvider
+  targetDate     DateTime        @map("target_date") @db.Date
+  startedAt      DateTime        @default(now()) @map("started_at") @db.Timestamptz(6)
+  completedAt    DateTime?       @map("completed_at") @db.Timestamptz(6)
+  status         IngestionStatus @default(RUNNING)
+  trigger        String          @default("manual")
+  metricsCount   Int             @default(0) @map("metrics_count")
+  errorMessage   String?         @map("error_message") @db.Text
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cloudAccount   CloudAccount    @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
+  costMetrics    CostMetric[]
+
+  @@index([tenantId, targetDate])
+  @@index([cloudAccountId, startedAt])
+  @@map("ingestion_runs")
+}
+
+model CostMetric {
+  tenantId              String        @map("tenant_id")
+  cloudAccountId        String        @map("cloud_account_id")
+  ingestionRunId        String?       @map("ingestion_run_id")
+  provider              CloudProvider
+  billingAccountId      String?       @map("billing_account_id")
+  billingAccountName    String?       @map("billing_account_name")
+  subAccountId          String?       @map("sub_account_id")
+  subAccountName        String?       @map("sub_account_name")
+  serviceName           String        @map("service_name")
+  serviceCategory       String?       @map("service_category")
+  resourceId            String        @default("") @map("resource_id")
+  resourceName          String?       @map("resource_name")
+  resourceType          String?       @map("resource_type")
+  regionId              String?       @map("region_id")
+  regionName            String?       @map("region_name")
+  availabilityZone      String?       @map("availability_zone")
+  chargeCategory        String        @default("Usage") @map("charge_category")
+  chargeClass           String?       @map("charge_class")
+  chargeFrequency       String?       @map("charge_frequency")
+  chargePeriodStart     DateTime      @map("charge_period_start") @db.Timestamptz(6)
+  chargePeriodEnd       DateTime      @map("charge_period_end") @db.Timestamptz(6)
+  billingPeriodStart    DateTime?     @map("billing_period_start") @db.Timestamptz(6)
+  billingPeriodEnd      DateTime?     @map("billing_period_end") @db.Timestamptz(6)
+  billedCost            Decimal       @map("billed_cost") @db.Decimal(18, 6)
+  effectiveCost         Decimal?      @map("effective_cost") @db.Decimal(18, 6)
+  listCost              Decimal?      @map("list_cost") @db.Decimal(18, 6)
+  contractedCost        Decimal?      @map("contracted_cost") @db.Decimal(18, 6)
+  billingCurrency       String        @map("billing_currency") @db.VarChar(3)
+  pricingCurrency       String?       @map("pricing_currency") @db.VarChar(3)
+  consumedQuantity      Decimal?      @map("consumed_quantity") @db.Decimal(24, 9)
+  consumedUnit          String?       @map("consumed_unit")
+  pricingQuantity       Decimal?      @map("pricing_quantity") @db.Decimal(24, 9)
+  pricingUnit           String?       @map("pricing_unit")
+  sourceMetric          String        @default("UnblendedCost") @map("source_metric")
+  metricIdentityHash    String        @map("metric_identity_hash")
+  tags                  Json?
+  providerRaw           Json?         @map("provider_raw")
+  createdAt             DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant                Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cloudAccount          CloudAccount  @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
+  ingestionRun          IngestionRun? @relation(fields: [ingestionRunId], references: [id], onDelete: SetNull)
+
+  @@id([chargePeriodStart, metricIdentityHash])
+  @@index([tenantId, cloudAccountId, chargePeriodStart])
+  @@index([tenantId, serviceName, chargePeriodStart])
+  @@index([tenantId, provider, chargePeriodStart])
+  @@index([resourceId])
+  @@map("cost_metrics")
+}
+
+model Recommendation {
+  id                      String                 @id @default(cuid())
+  tenantId                String                 @map("tenant_id")
+  cloudAccountId           String                 @map("cloud_account_id")
+  sourceChargePeriodStart  DateTime?              @map("source_charge_period_start") @db.Timestamptz(6)
+  sourceMetricIdentityHash String?                @map("source_metric_identity_hash")
+  type                    String
+  status                  RecommendationStatus   @default(PENDING)
+  severity                RecommendationSeverity @default(MEDIUM)
+  title                   String
+  description             String                 @db.Text
+  evidence                Json?
+  estimatedMonthlySavings Decimal?               @map("estimated_monthly_savings") @db.Decimal(18, 6)
+  currency                String                 @default("USD") @db.VarChar(3)
+  createdAt               DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant                  Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cloudAccount            CloudAccount           @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
+  decisions               RecommendationDecision[]
+
+  @@index([tenantId, status, createdAt])
+  @@index([cloudAccountId, severity])
+  @@index([sourceChargePeriodStart, sourceMetricIdentityHash])
+  @@map("recommendations")
+}
+
+model RecommendationDecision {
+  id               String                     @id @default(cuid())
+  recommendationId String                     @map("recommendation_id")
+  userId           String                     @map("user_id")
+  decision         RecommendationDecisionType
+  reason           String?                    @db.Text
+  createdAt        DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  recommendation   Recommendation             @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  user             User                       @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([recommendationId, createdAt])
+  @@index([userId, createdAt])
+  @@map("recommendation_decisions")
+}
+
+model AuditEvent {
+  id          String   @id @default(cuid())
+  tenantId    String   @map("tenant_id")
+  actorUserId String?  @map("actor_user_id")
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String?  @map("entity_id")
+  metadata    Json?
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actorUser   User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([entityType, entityId])
+  @@map("audit_events")
+}

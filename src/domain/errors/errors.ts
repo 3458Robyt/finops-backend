@@ -83,3 +83,21 @@ export class IngestionError extends FinOpsBaseError {
     this.accountId = accountId;
   }
 }
+
+export class AuthenticationError extends FinOpsBaseError {
+  constructor(message = 'Invalid email or password') {
+    super(message, 'AUTHENTICATION_FAILED');
+  }
+}
+
+export class AuthorizationError extends FinOpsBaseError {
+  constructor(message = 'The authenticated user is not allowed to perform this action') {
+    super(message, 'AUTHORIZATION_FAILED');
+  }
+}
+
+export class ConfigurationError extends FinOpsBaseError {
+  constructor(message: string) {
+    super(message, 'CONFIGURATION_ERROR');
+  }
+}

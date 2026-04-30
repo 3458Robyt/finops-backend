@@ -24,6 +24,7 @@
  */
 
 import type { ICloudProvider } from '../../domain/interfaces/ICloudProvider.js';
+import type { ICostRepository } from '../../domain/interfaces/ICostRepository.js';
 import type { InternalCostMetric } from '../../domain/models/InternalCostMetric.js';
 import {
   ProviderNotFoundError,
@@ -46,6 +47,9 @@ export interface IngestionResult {
   /** Cantidad de métricas extraídas. */
   readonly metricsCount: number;
 
+  /** Cantidad de métricas persistidas. */
+  readonly persistedCount: number;
+
   /** Métricas de costo normalizadas. */
   readonly metrics: readonly InternalCostMetric[];
 
@@ -57,6 +61,13 @@ export interface IngestionResult {
 
   /** Mensaje de error si la ingesta falló. */
   readonly error?: string;
+}
+
+export interface RunDailyIngestionOptions {
+  readonly tenantId?: string;
+  readonly cloudAccountId?: string;
+  readonly ingestionRunId?: string;
+  readonly persist?: boolean;
 }
 
 /**
@@ -90,7 +101,10 @@ export class DataIngestionService {
    *                    La clave debe coincidir con el providerName
    *                    de cada implementación de ICloudProvider.
    */
-  constructor(providers: ReadonlyMap<string, ICloudProvider>) {
+  constructor(
+    providers: ReadonlyMap<string, ICloudProvider>,
+    private readonly costRepository?: ICostRepository,
+  ) {
     if (providers.size === 0) {
       console.warn(
         '[DataIngestionService] ⚠ Initialized with zero providers. ' +
@@ -126,6 +140,7 @@ export class DataIngestionService {
     providerName: string,
     accountId: string,
     date: Date,
+    options: RunDailyIngestionOptions = {},
   ): Promise<IngestionResult> {
     const startTime = performance.now();
 
@@ -153,22 +168,18 @@ export class DataIngestionService {
       // ── 3. Log detallado de resultados ────────────────────────
       this.logMetricsSummary(providerName, accountId, metrics, durationMs);
 
-      /**
-       * TODO: Inserción en PostgreSQL/TimescaleDB
-       * ──────────────────────────────────────────
-       * Aquí se invocará el repositorio (ICostRepository.insertBatch)
-       * para persistir las métricas en la tabla hypertable de TimescaleDB.
-       *
-       * Ejemplo futuro:
-       *   const insertedCount = await this.costRepository.insertBatch(metrics);
-       *   console.log(`[DB] Inserted ${insertedCount} records.`);
-       */
+      const persistedCount = await this.persistMetricsIfRequested(
+        providerName,
+        metrics,
+        options,
+      );
 
       return {
         providerName,
         accountId,
         date,
         metricsCount: metrics.length,
+        persistedCount,
         metrics,
         durationMs,
         status: 'success',
@@ -253,5 +264,41 @@ export class DataIngestionService {
     console.log(`  ${'─'.repeat(50)}`);
     console.log(`  ${'TOTAL'.padEnd(35)} ${totalCost.toFixed(4).padStart(12)}`);
     console.log('');
+  }
+
+  private async persistMetricsIfRequested(
+    providerName: string,
+    metrics: readonly InternalCostMetric[],
+    options: RunDailyIngestionOptions,
+  ): Promise<number> {
+    if (options.persist !== true || metrics.length === 0) {
+      return 0;
+    }
+
+    if (this.costRepository === undefined) {
+      throw new IngestionError(
+        providerName,
+        options.cloudAccountId ?? 'unknown',
+        'Persistence requested but no cost repository is configured',
+      );
+    }
+
+    if (options.tenantId === undefined || options.cloudAccountId === undefined) {
+      throw new IngestionError(
+        providerName,
+        options.cloudAccountId ?? 'unknown',
+        'Persistence requested without tenantId and cloudAccountId',
+      );
+    }
+
+    return this.costRepository.insertBatch(
+      {
+        tenantId: options.tenantId,
+        cloudAccountId: options.cloudAccountId,
+        providerName,
+        ...(options.ingestionRunId !== undefined ? { ingestionRunId: options.ingestionRunId } : {}),
+      },
+      metrics,
+    );
   }
 }

@@ -21,9 +21,17 @@ import 'dotenv/config';
 
 import type { ICloudProvider } from './domain/interfaces/ICloudProvider.js';
 import { AuthService } from './application/services/AuthService.js';
+import { AgentLearningService } from './application/services/AgentLearningService.js';
+import { CloudConnectionService } from './application/services/CloudConnectionService.js';
+import { CostAnalyticsService } from './application/services/CostAnalyticsService.js';
 import { DataIngestionService } from './application/services/DataIngestionService.js';
+import { FinOpsAiService } from './application/services/FinOpsAiService.js';
 import { AWSProvider } from './infrastructure/providers/aws/AWSProvider.js';
 import { getPrismaClient } from './infrastructure/database/prisma.js';
+import { OpenAiCompatibleAiGateway } from './infrastructure/ai/OpenAiCompatibleAiGateway.js';
+import { PrismaAgentLearningRepository } from './infrastructure/repositories/PrismaAgentLearningRepository.js';
+import { PrismaCloudConnectionRepository } from './infrastructure/repositories/PrismaCloudConnectionRepository.js';
+import { PrismaCostAnalyticsRepository } from './infrastructure/repositories/PrismaCostAnalyticsRepository.js';
 import { PrismaCostRepository } from './infrastructure/repositories/PrismaCostRepository.js';
 import { PrismaRecommendationRepository } from './infrastructure/repositories/PrismaRecommendationRepository.js';
 import { PrismaUserRepository } from './infrastructure/repositories/PrismaUserRepository.js';
@@ -94,12 +102,29 @@ async function bootstrap(): Promise<void> {
   // ── 3. Instanciar Servicio de Ingesta ─────────────────────────
 
   const prisma = getPrismaClient();
+  const cloudConnectionRepository = new PrismaCloudConnectionRepository(prisma);
+  const costAnalyticsRepository = new PrismaCostAnalyticsRepository(prisma);
   const costRepository = new PrismaCostRepository(prisma);
   const recommendationRepository = new PrismaRecommendationRepository(prisma);
+  const agentLearningRepository = new PrismaAgentLearningRepository(prisma);
   const userRepository = new PrismaUserRepository(prisma);
   const passwordHasher = new Argon2PasswordHasher();
   const tokenService = new JwtTokenService();
   const authService = new AuthService(userRepository, passwordHasher, tokenService);
+  const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository);
+  const analyticsService = new CostAnalyticsService(costAnalyticsRepository);
+  const aiGateway = new OpenAiCompatibleAiGateway();
+  const learningService = new AgentLearningService(
+    recommendationRepository,
+    agentLearningRepository,
+    aiGateway,
+  );
+  const aiService = new FinOpsAiService(
+    costAnalyticsRepository,
+    recommendationRepository,
+    aiGateway,
+    learningService,
+  );
   const ingestionService = new DataIngestionService(providerRegistry, costRepository);
 
   // ── 4. Iniciar Servidor RESTful ───────────────────────────────────
@@ -107,6 +132,10 @@ async function bootstrap(): Promise<void> {
   const { createExpressServer } = await import('./presentation/server.js');
   const app = createExpressServer({
     authService,
+    cloudConnectionService,
+    analyticsService,
+    aiService,
+    learningService,
     costRepository,
     recommendationRepository,
     tokenService,
@@ -118,6 +147,7 @@ async function bootstrap(): Promise<void> {
     console.log(`\n🚀 FinOps Backend API running on http://localhost:${PORT}`);
     console.log(`   Registered providers: [${ingestionService.getRegisteredProviders().join(', ')}]`);
     console.log(`   Auth: POST http://localhost:${PORT}/api/v1/auth/login`);
+    console.log(`   Cloud Connections: GET http://localhost:${PORT}/api/v1/cloud-connections`);
     console.log(`   Costs: GET http://localhost:${PORT}/api/v1/costs?provider=oci&startDate=...&endDate=...`);
     console.log(`   Recommendations: GET http://localhost:${PORT}/api/v1/recommendations`);
   });

@@ -3,4 +3,21 @@
  * Application Layer — Barrel Export
  * ═══════════════════════════════════════════════════════════════
  */
-export { DataIngestionService, type IngestionResult } from './services/index.js';
+export {
+  AuthService,
+  AgentLearningService,
+  ContextBudgeter,
+  CostAnalyticsService,
+  DataIngestionService,
+  FinOpsAiService,
+  type AiChatInput,
+  type AiChatMessage,
+  type AiChatResponse,
+  type AnalyticsQuery,
+  type AnalyticsRecomputeResult,
+  type GenerateAiRecommendationsInput,
+  type GenerateAiRecommendationsResponse,
+  type IngestionResult,
+  type LoginInput,
+  type LoginResult,
+} from './services/index.js';

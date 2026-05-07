@@ -13,7 +13,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "import:oci-focus": "tsx scripts/import-oci-focus.ts"
   },
   "keywords": [
     "finops",
@@ -36,6 +37,7 @@
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.3",
     "oci-sdk": "^2.100.0",
+    "openai": "^6.35.0",
     "pg": "^8.20.0",
     "zod": "^4.3.6"
   },

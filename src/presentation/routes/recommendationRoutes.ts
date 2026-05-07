@@ -8,6 +8,12 @@ export function createRecommendationRoutes(
 ): Router {
   const router = Router();
 
+  router.get('/:id/execution-plans/latest', requireAuth, recommendationController.getLatestExecutionPlan);
+  router.post('/:id/execution-plan', requireAuth, recommendationController.createExecutionPlan);
+  router.post('/:id/decisions', requireAuth, recommendationController.createDecision);
+  router.post('/:id/manual-execution', requireAuth, recommendationController.createManualExecution);
+  router.get('/:id/timeline', requireAuth, recommendationController.getTimeline);
+  router.get('/:id', requireAuth, recommendationController.getRecommendationById);
   router.get('/', requireAuth, recommendationController.getRecommendations);
 
   return router;

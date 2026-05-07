@@ -1,6 +1,7 @@
 import type { IPasswordHasher } from '../../domain/interfaces/IPasswordHasher.js';
 import type { ITokenService } from '../../domain/interfaces/ITokenService.js';
 import type { IUserRepository } from '../../domain/interfaces/IUserRepository.js';
+import type { UserRole } from '../../domain/models/AuthContext.js';
 import { AuthenticationError } from '../../domain/errors/errors.js';
 
 export interface LoginInput {
@@ -18,7 +19,7 @@ export interface LoginResult {
     readonly tenantId: string;
     readonly email: string;
     readonly name: string;
-    readonly role: 'ADMIN' | 'VIEWER';
+    readonly role: UserRole;
   };
 }
 

@@ -94,8 +94,19 @@ export interface SavingsKpis {
   readonly estimatedMonthlySavings: number;
   readonly observedMonthlySavings: number;
   readonly confirmedMonthlySavings: number;
+  readonly missedSavingsAmount: number;
   readonly currency: string;
   readonly executedRecommendations: number;
+  readonly pendingSavingsRecommendations: number;
+  readonly topMissedSavingsRecommendation?: {
+    readonly id: string;
+    readonly title: string;
+    readonly missedSavingsAmount: number;
+    readonly estimatedMonthlySavings: number;
+    readonly currency: string;
+    readonly createdAt: Date;
+    readonly status: FinOpsRecommendation['status'];
+  };
 }
 
 export interface AdoptionKpis {

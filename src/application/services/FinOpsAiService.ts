@@ -12,11 +12,14 @@ import type {
   AgentLearningContext,
   IAgentLearningContextProvider,
 } from '../../domain/interfaces/IAgentLearningService.js';
+import type { BuiltAiContext, IContextEngineService } from '../../domain/interfaces/IContextEngineService.js';
 import type { FinOpsRecommendation } from '../../domain/models/FinOpsRecommendation.js';
 import type {
   AiAuditReport,
   RecommendationExecutionPlan,
 } from '../../domain/models/RecommendationExecutionPlan.js';
+import type { AiContextOperation } from '../../domain/models/AgentContext.js';
+import type { AiObservabilityService } from './AiObservabilityService.js';
 
 export interface AiChatMessage {
   readonly role: 'user' | 'assistant';
@@ -25,6 +28,7 @@ export interface AiChatMessage {
 
 export interface AiChatInput {
   readonly tenantId: string;
+  readonly userId?: string;
   readonly message: string;
   readonly history?: readonly AiChatMessage[];
 }
@@ -36,6 +40,7 @@ export interface AiChatResponse {
 
 export interface GenerateAiRecommendationsInput {
   readonly tenantId: string;
+  readonly userId?: string;
   readonly persist?: boolean;
 }
 
@@ -71,6 +76,8 @@ export class FinOpsAiService {
     private readonly recommendationRepository: IRecommendationRepository,
     private readonly aiGateway: IAiGateway,
     private readonly learningContextProvider?: IAgentLearningContextProvider,
+    private readonly contextEngine?: IContextEngineService,
+    private readonly aiObservability?: AiObservabilityService,
   ) {
     this.mainModel = aiGateway.modelName ?? process.env['NVIDIA_MODEL'] ?? 'deepseek-ai/deepseek-v4-flash';
     this.auditorModel = process.env['NVIDIA_AUDITOR_MODEL'] ?? this.mainModel;
@@ -84,27 +91,44 @@ export class FinOpsAiService {
     }
 
     const snapshot = await this.analyticsRepository.getLatestTenantSnapshot(input.tenantId);
-    const answer = await this.aiGateway.generateText({
-      responseFormat: 'text',
-      temperature: 0.3,
-      maxTokens: 900,
-      messages: [
-        {
-          role: 'system',
-          content: this.buildChatSystemPrompt(snapshot),
-        },
-        ...this.normalizeHistory(input.history),
-        {
-          role: 'user',
-          content: message,
-        },
-      ],
-    });
-
-    return {
-      answer: answer.trim(),
+    const builtContext = await this.buildOptionalContext({
+      tenantId: input.tenantId,
+      ...(input.userId !== undefined ? { userId: input.userId } : {}),
+      operation: 'CHAT',
+      queryText: message,
       snapshot,
-    };
+      model: this.mainModel,
+    });
+    const startedAt = Date.now();
+
+    try {
+      const answer = await this.aiGateway.generateText({
+        responseFormat: 'text',
+        temperature: 0.3,
+        maxTokens: 900,
+        messages: [
+          {
+            role: 'system',
+            content: this.withBuiltContext(this.buildChatSystemPrompt(snapshot), builtContext),
+          },
+          ...this.normalizeHistory(input.history),
+          {
+            role: 'user',
+            content: message,
+          },
+        ],
+      });
+
+      await this.recordAiTrace(input.tenantId, input.userId, 'CHAT', this.mainModel, builtContext, startedAt, answer);
+
+      return {
+        answer: answer.trim(),
+        snapshot,
+      };
+    } catch (error: unknown) {
+      await this.recordAiTrace(input.tenantId, input.userId, 'CHAT', this.mainModel, builtContext, startedAt, undefined, error);
+      throw error;
+    }
   }
 
   public async generateRecommendations(
@@ -112,6 +136,19 @@ export class FinOpsAiService {
   ): Promise<GenerateAiRecommendationsResponse> {
     const snapshot = await this.analyticsRepository.getLatestTenantSnapshot(input.tenantId);
     const learningContext = await this.getRecommendationLearningContext(input.tenantId, snapshot);
+    const builtContext = await this.buildOptionalContext({
+      tenantId: input.tenantId,
+      ...(input.userId !== undefined ? { userId: input.userId } : {}),
+      operation: 'RECOMMENDATION',
+      queryText: [
+        ...snapshot.providers.map((item) => item.provider),
+        ...snapshot.services.map((item) => item.serviceName),
+        ...snapshot.topResources.map((item) => item.resourceId),
+      ].join(' '),
+      snapshot,
+      model: this.mainModel,
+    });
+    const startedAt = Date.now();
     const firstRawResponse = await this.aiGateway.generateText({
       responseFormat: 'json',
       temperature: 0.2,
@@ -119,7 +156,7 @@ export class FinOpsAiService {
       messages: [
         {
           role: 'system',
-          content: this.buildRecommendationSystemPrompt(snapshot, learningContext),
+          content: this.withBuiltContext(this.buildRecommendationSystemPrompt(snapshot, learningContext), builtContext),
         },
         {
           role: 'user',
@@ -136,6 +173,8 @@ export class FinOpsAiService {
     let auditReport = await this.auditGeneratedArtifact({
       artifactType: 'recommendations',
       snapshot,
+      tenantId: input.tenantId,
+      ...(input.userId !== undefined ? { userId: input.userId } : {}),
       artifact: drafts,
     });
 
@@ -147,7 +186,7 @@ export class FinOpsAiService {
         messages: [
           {
             role: 'system',
-            content: this.buildRecommendationSystemPrompt(snapshot, learningContext),
+            content: this.withBuiltContext(this.buildRecommendationSystemPrompt(snapshot, learningContext), builtContext),
           },
           {
             role: 'user',
@@ -167,6 +206,8 @@ export class FinOpsAiService {
       auditReport = await this.auditGeneratedArtifact({
         artifactType: 'recommendations',
         snapshot,
+        tenantId: input.tenantId,
+        ...(input.userId !== undefined ? { userId: input.userId } : {}),
         artifact: drafts,
       });
     }
@@ -197,6 +238,8 @@ export class FinOpsAiService {
       ? await this.recommendationRepository.createMany(auditedDrafts)
       : auditedDrafts.map((draft, index) => this.toEphemeralRecommendation(draft, index));
 
+    await this.recordAiTrace(input.tenantId, input.userId, 'RECOMMENDATION', this.mainModel, builtContext, startedAt, firstRawResponse);
+
     return {
       recommendations,
       snapshot,
@@ -217,6 +260,16 @@ export class FinOpsAiService {
     }
 
     const snapshot = await this.analyticsRepository.getLatestTenantSnapshot(input.tenantId);
+    const builtContext = await this.buildOptionalContext({
+      tenantId: input.tenantId,
+      userId: input.userId,
+      operation: 'EXECUTION_PLAN',
+      queryText: `${recommendation.title} ${recommendation.description}`,
+      snapshot,
+      recommendation,
+      model: this.mainModel,
+    });
+    const startedAt = Date.now();
     const firstRawResponse = await this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
@@ -225,7 +278,7 @@ export class FinOpsAiService {
       messages: [
         {
           role: 'system',
-          content: this.buildExecutionPlanSystemPrompt(snapshot, recommendation),
+          content: this.withBuiltContext(this.buildExecutionPlanSystemPrompt(snapshot, recommendation), builtContext),
         },
         {
           role: 'user',
@@ -238,6 +291,8 @@ export class FinOpsAiService {
       artifactType: 'execution_plan',
       snapshot,
       recommendation,
+      tenantId: input.tenantId,
+      userId: input.userId,
       artifact: content,
     });
 
@@ -250,7 +305,7 @@ export class FinOpsAiService {
         messages: [
           {
             role: 'system',
-            content: this.buildExecutionPlanSystemPrompt(snapshot, recommendation),
+            content: this.withBuiltContext(this.buildExecutionPlanSystemPrompt(snapshot, recommendation), builtContext),
           },
           {
             role: 'user',
@@ -267,11 +322,13 @@ export class FinOpsAiService {
         artifactType: 'execution_plan',
         snapshot,
         recommendation,
+        tenantId: input.tenantId,
+        userId: input.userId,
         artifact: content,
       });
     }
 
-    return this.recommendationRepository.createExecutionPlan({
+    const plan = await this.recommendationRepository.createExecutionPlan({
       recommendationId: recommendation.id,
       generatedByUserId: input.userId,
       model: this.mainModel,
@@ -280,6 +337,77 @@ export class FinOpsAiService {
       auditReport,
       auditVerdict: auditReport.verdict,
       auditScore: auditReport.score,
+    });
+
+    await this.recordAiTrace(input.tenantId, input.userId, 'EXECUTION_PLAN', this.mainModel, builtContext, startedAt, firstRawResponse);
+
+    return plan;
+  }
+
+  private async buildOptionalContext(input: {
+    readonly tenantId: string;
+    readonly userId?: string;
+    readonly operation: AiContextOperation;
+    readonly queryText: string;
+    readonly snapshot: CostAnalyticsSnapshot;
+    readonly recommendation?: FinOpsRecommendation;
+    readonly model: string;
+  }): Promise<BuiltAiContext | undefined> {
+    if (this.contextEngine === undefined) {
+      return undefined;
+    }
+
+    return this.contextEngine.buildContext(input);
+  }
+
+  private withBuiltContext(basePrompt: string, builtContext: BuiltAiContext | undefined): string {
+    if (builtContext === undefined) {
+      return basePrompt;
+    }
+
+    return [
+      basePrompt,
+      builtContext.systemInstructions,
+      'Contexto ensamblado por Context Engine:',
+      builtContext.contextText,
+      builtContext.conflicts.length > 0
+        ? `Conflictos registrados y excluidos: ${builtContext.conflicts.join(' | ')}`
+        : '',
+    ].filter((section) => section !== '').join('\n\n');
+  }
+
+  private async recordAiTrace(
+    tenantId: string,
+    userId: string | undefined,
+    operation: AiContextOperation,
+    model: string,
+    builtContext: BuiltAiContext | undefined,
+    startedAt: number,
+    responseText?: string,
+    error?: unknown,
+  ): Promise<void> {
+    if (this.aiObservability === undefined) {
+      return;
+    }
+
+    await this.aiObservability.recordTrace({
+      tenantId,
+      ...(userId !== undefined ? { userId } : {}),
+      operation,
+      model,
+      status: error === undefined ? 'SUCCESS' : 'ERROR',
+      ...(builtContext?.profileVersion !== undefined ? { profileVersion: builtContext.profileVersion } : {}),
+      promptTokenEstimate: builtContext?.promptTokenEstimate ?? 0,
+      ...(responseText !== undefined ? { responseText } : {}),
+      latencyMs: Date.now() - startedAt,
+      ...(builtContext !== undefined ? { artifactIds: builtContext.artifactIds } : {}),
+      ...(builtContext !== undefined ? { memoryIds: builtContext.memoryIds } : {}),
+      ...(builtContext !== undefined ? { knowledgeNodeIds: builtContext.knowledgeNodeIds } : {}),
+      ...(builtContext !== undefined ? { tenantRuleIds: builtContext.tenantRuleIds } : {}),
+      ...(builtContext !== undefined ? { conflicts: builtContext.conflicts } : {}),
+      ...(error !== undefined
+        ? { errorMessage: error instanceof Error ? error.message : 'AI call failed' }
+        : {}),
     });
   }
 
@@ -482,8 +610,11 @@ export class FinOpsAiService {
     readonly artifactType: 'recommendations' | 'execution_plan';
     readonly snapshot: CostAnalyticsSnapshot;
     readonly recommendation?: FinOpsRecommendation;
+    readonly tenantId?: string;
+    readonly userId?: string;
     readonly artifact: unknown;
   }): Promise<AiAuditReport> {
+    const startedAt = Date.now();
     const rawResponse = await this.aiGateway.generateText({
       model: this.auditorModel,
       responseFormat: 'json',
@@ -509,6 +640,18 @@ export class FinOpsAiService {
         },
       ],
     });
+
+    if (input.tenantId !== undefined) {
+      await this.recordAiTrace(
+        input.tenantId,
+        input.userId,
+        'AUDIT',
+        this.auditorModel,
+        undefined,
+        startedAt,
+        rawResponse,
+      );
+    }
 
     return this.parseAuditReport(rawResponse);
   }

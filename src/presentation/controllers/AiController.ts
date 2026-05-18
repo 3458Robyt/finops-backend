@@ -46,6 +46,7 @@ export class AiController {
     try {
       const result = await this.aiService.answerChat({
         tenantId: req.auth.tenantId,
+        userId: req.auth.userId,
         message: parsed.data.message,
         ...(parsed.data.history !== undefined ? { history: parsed.data.history } : {}),
       });
@@ -90,6 +91,7 @@ export class AiController {
     try {
       const result = await this.aiService.generateRecommendations({
         tenantId: req.auth.tenantId,
+        userId: req.auth.userId,
         persist: parsed.data.persist === true,
       });
 

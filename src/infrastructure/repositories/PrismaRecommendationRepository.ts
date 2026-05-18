@@ -340,7 +340,7 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
   }
 
   public async getSavingsKpis(tenantId: string): Promise<SavingsKpis> {
-    const [estimated, observed, executed] = await Promise.all([
+    const [estimated, observed, executed, pendingSavings] = await Promise.all([
       this.prisma.recommendation.aggregate({
         where: { tenantId },
         _sum: { estimatedMonthlySavings: true },
@@ -359,16 +359,53 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
           status: { in: ['EXECUTED', 'PARTIAL'] },
         },
       }),
+      this.prisma.recommendation.findMany({
+        where: {
+          tenantId,
+          status: { in: ['PENDING', 'APPROVED'] },
+          estimatedMonthlySavings: { gt: 0 },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
     ]);
 
     const observedMonthlySavings = Number(observed._sum.observedMonthlySavings ?? 0);
+    const missedSavings = pendingSavings
+      .map((recommendation) => ({
+        recommendation,
+        missedSavingsAmount: this.calculateMissedSavings(
+          Number(recommendation.estimatedMonthlySavings ?? 0),
+          recommendation.createdAt,
+        ),
+      }))
+      .filter((item) => item.missedSavingsAmount > 0.01);
+    const missedSavingsAmount = roundCurrency(
+      missedSavings.reduce((total, item) => total + item.missedSavingsAmount, 0),
+    );
+    const topMissed = missedSavings
+      .sort((left, right) => right.missedSavingsAmount - left.missedSavingsAmount)[0];
 
     return {
       estimatedMonthlySavings: Number(estimated._sum.estimatedMonthlySavings ?? 0),
       observedMonthlySavings,
       confirmedMonthlySavings: observedMonthlySavings,
+      missedSavingsAmount,
       currency: 'USD',
       executedRecommendations: executed.length,
+      pendingSavingsRecommendations: pendingSavings.length,
+      ...(topMissed !== undefined
+        ? {
+            topMissedSavingsRecommendation: {
+              id: topMissed.recommendation.id,
+              title: topMissed.recommendation.title,
+              missedSavingsAmount: topMissed.missedSavingsAmount,
+              estimatedMonthlySavings: Number(topMissed.recommendation.estimatedMonthlySavings ?? 0),
+              currency: topMissed.recommendation.currency,
+              createdAt: topMissed.recommendation.createdAt,
+              status: topMissed.recommendation.status,
+            },
+          }
+        : {}),
     };
   }
 
@@ -480,4 +517,13 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
 
     return descriptions[status] ?? `Estado ${status}`;
   }
+
+  private calculateMissedSavings(estimatedMonthlySavings: number, createdAt: Date): number {
+    const elapsedDays = Math.max(0, Math.floor((Date.now() - createdAt.getTime()) / (24 * 60 * 60 * 1000)));
+    return roundCurrency((estimatedMonthlySavings / 30) * elapsedDays);
+  }
+}
+
+function roundCurrency(value: number): number {
+  return Math.round(value * 100) / 100;
 }

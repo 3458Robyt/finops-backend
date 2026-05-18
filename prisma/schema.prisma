@@ -183,6 +183,54 @@ enum CostAnomalyStatus {
   RESOLVED
 }
 
+enum InAppNotificationType {
+  SAVINGS_REMINDER
+}
+
+enum InAppNotificationStatus {
+  UNREAD
+  READ
+  DISMISSED
+}
+
+enum AgentInstructionProfileStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+  REJECTED
+}
+
+enum TenantAgentRuleStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum AiContextOperation {
+  CHAT
+  RECOMMENDATION
+  EXECUTION_PLAN
+  AUDIT
+  LEARNING
+}
+
+enum ContextBuildRunStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+enum TelegramChatLinkStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum TelegramInteractionStatus {
+  PROCESSED
+  IGNORED
+  ERROR
+}
+
 enum ManualExecutionStatus {
   PLANNED
   EXECUTED
@@ -220,9 +268,17 @@ model Tenant {
   agentMemories            AgentMemory[]
   agentKnowledgeNodes      AgentKnowledgeNode[]
   agentKnowledgeEdges      AgentKnowledgeEdge[]
+  tenantAgentRules         TenantAgentRule[]
+  agentInstructionAuditEvents AgentInstructionAuditEvent[]
+  contextSummaryCaches     ContextSummaryCache[]
+  aiContextTraces          AiContextTrace[]
+  contextBuildRuns         ContextBuildRun[]
+  telegramChatLinks        TelegramChatLink[]
+  telegramInteractionLogs  TelegramInteractionLog[]
   costAnomalies            CostAnomaly[]
   costForecasts            CostForecast[]
   manualExecutions         RecommendationManualExecution[]
+  inAppNotifications       InAppNotification[]
 
   @@index([operatorOrganizationId, status])
   @@map("tenants")
@@ -251,6 +307,16 @@ model User {
   generatedIngestionJobs     IngestionJob[]                @relation("IngestionJobRequestedBy")
   generatedDataQualityChecks DataQualityCheck[]            @relation("DataQualityCheckCreatedBy")
   agentLearningEvents        AgentLearningEvent[]
+  inAppNotifications         InAppNotification[]
+  createdAgentInstructionProfiles   AgentInstructionProfile[]    @relation("AgentInstructionProfileCreatedBy")
+  activatedAgentInstructionProfiles AgentInstructionProfile[]    @relation("AgentInstructionProfileActivatedBy")
+  createdTenantAgentRules           TenantAgentRule[]            @relation("TenantAgentRuleCreatedBy")
+  agentInstructionAuditEvents       AgentInstructionAuditEvent[] @relation("AgentInstructionAuditActor")
+  aiContextTraces                   AiContextTrace[]
+  createdContextBuildRuns           ContextBuildRun[]            @relation("ContextBuildRunCreatedBy")
+  telegramChatLinks                 TelegramChatLink[]           @relation("TelegramChatLinkUser")
+  linkedTelegramChatLinks           TelegramChatLink[]           @relation("TelegramChatLinkLinkedBy")
+  telegramInteractionLogs           TelegramInteractionLog[]
 
   @@index([operatorOrganizationId, role])
   @@index([tenantId, role])
@@ -744,11 +810,40 @@ model Recommendation {
   executionPlans           RecommendationExecutionPlan[]
   learningEvents           AgentLearningEvent[]
   manualExecutions         RecommendationManualExecution[]
+  inAppNotifications       InAppNotification[]
 
   @@index([tenantId, status, createdAt])
   @@index([cloudAccountId, severity])
   @@index([sourceChargePeriodStart, sourceMetricIdentityHash])
   @@map("recommendations")
+}
+
+model InAppNotification {
+  id                       String                  @id @default(cuid())
+  tenantId                 String                  @map("tenant_id")
+  userId                   String                  @map("user_id")
+  recommendationId         String?                 @map("recommendation_id")
+  type                     InAppNotificationType
+  status                   InAppNotificationStatus @default(UNREAD)
+  title                    String
+  message                  String                  @db.Text
+  missedSavingsAmount      Decimal?                @map("missed_savings_amount") @db.Decimal(18, 6)
+  estimatedMonthlySavings  Decimal?                @map("estimated_monthly_savings") @db.Decimal(18, 6)
+  currency                 String                  @default("USD") @db.VarChar(3)
+  periodStart              DateTime?               @map("period_start") @db.Timestamptz(6)
+  periodEnd                DateTime?               @map("period_end") @db.Timestamptz(6)
+  generatedForDate         DateTime?               @map("generated_for_date") @db.Date
+  metadata                 Json?
+  createdAt                DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant                   Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user                     User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  recommendation           Recommendation?         @relation(fields: [recommendationId], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, userId, recommendationId, type, generatedForDate])
+  @@index([tenantId, userId, status, createdAt])
+  @@index([recommendationId, createdAt])
+  @@map("in_app_notifications")
 }
 
 model RecommendationExecutionPlan {
@@ -947,6 +1042,7 @@ model AgentKnowledgeNode {
   scope         AgentMemoryScope
   nodeType      String               @map("node_type")
   externalId    String?              @map("external_id")
+  dedupeKey     String?              @map("dedupe_key")
   label         String
   metadata      Json?
   createdAt     DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -957,6 +1053,7 @@ model AgentKnowledgeNode {
   @@index([tenantId, nodeType])
   @@index([scope, nodeType])
   @@index([externalId])
+  @@unique([tenantId, dedupeKey])
   @@map("agent_knowledge_nodes")
 }
 
@@ -966,6 +1063,7 @@ model AgentKnowledgeEdge {
   sourceNodeId          String              @map("source_node_id")
   targetNodeId          String              @map("target_node_id")
   relationType          String              @map("relation_type")
+  dedupeKey             String?             @map("dedupe_key")
   confidence            Float               @default(0.7)
   metadata              Json?
   sourceLearningEventId String?             @map("source_learning_event_id")
@@ -978,7 +1076,182 @@ model AgentKnowledgeEdge {
   @@index([tenantId, relationType])
   @@index([sourceNodeId, relationType])
   @@index([targetNodeId, relationType])
+  @@unique([tenantId, dedupeKey])
   @@map("agent_knowledge_edges")
+}
+
+model AgentInstructionProfile {
+  id                String                        @id @default(cuid())
+  version           Int                           @unique
+  status            AgentInstructionProfileStatus @default(DRAFT)
+  structuredRules   Json                          @map("structured_rules")
+  freeformNotes     String?                       @map("freeform_notes") @db.Text
+  validationReport  Json?                         @map("validation_report")
+  activatedAt       DateTime?                     @map("activated_at") @db.Timestamptz(6)
+  createdByUserId   String                        @map("created_by_user_id")
+  activatedByUserId String?                       @map("activated_by_user_id")
+  createdAt         DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy         User                          @relation("AgentInstructionProfileCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  activatedBy       User?                         @relation("AgentInstructionProfileActivatedBy", fields: [activatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([status, version])
+  @@map("agent_instruction_profiles")
+}
+
+model TenantAgentRule {
+  id              String                @id @default(cuid())
+  tenantId        String                @map("tenant_id")
+  category        String
+  ruleText        String                @map("rule_text") @db.Text
+  priority        Int                   @default(100)
+  status          TenantAgentRuleStatus @default(ACTIVE)
+  disabledAt      DateTime?             @map("disabled_at") @db.Timestamptz(6)
+  createdByUserId String                @map("created_by_user_id")
+  createdAt       DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant          Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy       User                  @relation("TenantAgentRuleCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, status, priority])
+  @@map("tenant_agent_rules")
+}
+
+model AgentInstructionAuditEvent {
+  id          String   @id @default(cuid())
+  tenantId    String?  @map("tenant_id")
+  actorUserId String?  @map("actor_user_id")
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String?  @map("entity_id")
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actorUser   User?    @relation("AgentInstructionAuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([entityType, entityId])
+  @@map("agent_instruction_audit_events")
+}
+
+model ContextSummaryCache {
+  id             String    @id @default(cuid())
+  tenantId       String    @map("tenant_id")
+  artifactType   String    @map("artifact_type")
+  scopeKey       String    @map("scope_key")
+  provider       String?
+  cloudAccountId String?   @map("cloud_account_id")
+  serviceName    String?   @map("service_name")
+  resourceId     String?   @map("resource_id")
+  periodStart    DateTime? @map("period_start") @db.Timestamptz(6)
+  periodEnd      DateTime? @map("period_end") @db.Timestamptz(6)
+  sourceHash     String    @map("source_hash")
+  summary        String    @db.Text
+  facts          Json?
+  evidenceRefs   Json?     @map("evidence_refs")
+  tokenEstimate  Int       @default(0) @map("token_estimate")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, artifactType, scopeKey, sourceHash])
+  @@index([tenantId, artifactType, updatedAt])
+  @@index([tenantId, provider, serviceName])
+  @@index([tenantId, resourceId])
+  @@map("context_summary_cache")
+}
+
+model AiContextTrace {
+  id                    String             @id @default(cuid())
+  tenantId              String             @map("tenant_id")
+  userId                String?            @map("user_id")
+  operation             AiContextOperation
+  model                 String
+  status                String
+  profileVersion        Int?               @map("profile_version")
+  promptTokenEstimate   Int                @default(0) @map("prompt_token_estimate")
+  responseTokenEstimate Int?               @map("response_token_estimate")
+  latencyMs             Int?               @map("latency_ms")
+  artifactIds           Json?              @map("artifact_ids")
+  memoryIds             Json?              @map("memory_ids")
+  knowledgeNodeIds      Json?              @map("knowledge_node_ids")
+  tenantRuleIds         Json?              @map("tenant_rule_ids")
+  conflicts             Json?
+  errorMessage          String?            @map("error_message") @db.Text
+  createdAt             DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt             DateTime           @map("expires_at") @db.Timestamptz(6)
+  tenant                Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user                  User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, operation, createdAt])
+  @@index([tenantId, status, createdAt])
+  @@index([expiresAt])
+  @@map("ai_context_traces")
+}
+
+model ContextBuildRun {
+  id              String                @id @default(cuid())
+  tenantId        String                @map("tenant_id")
+  runType         String                @map("run_type")
+  status          ContextBuildRunStatus @default(PENDING)
+  startedAt       DateTime?             @map("started_at") @db.Timestamptz(6)
+  completedAt     DateTime?             @map("completed_at") @db.Timestamptz(6)
+  errorMessage    String?               @map("error_message") @db.Text
+  metadata        Json?
+  createdByUserId String?               @map("created_by_user_id")
+  createdAt       DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant          Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy       User?                 @relation("ContextBuildRunCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, status, createdAt])
+  @@map("context_build_runs")
+}
+
+model TelegramChatLink {
+  id               String                 @id @default(cuid())
+  tenantId         String                 @map("tenant_id")
+  userId           String                 @map("user_id")
+  chatId           String                 @map("chat_id")
+  telegramUserId   String?                @map("telegram_user_id")
+  telegramUsername String?                @map("telegram_username")
+  status           TelegramChatLinkStatus @default(ACTIVE)
+  linkedByUserId   String                 @map("linked_by_user_id")
+  disabledAt       DateTime?              @map("disabled_at") @db.Timestamptz(6)
+  createdAt        DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant           Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user             User                   @relation("TelegramChatLinkUser", fields: [userId], references: [id], onDelete: Cascade)
+  linkedBy         User                   @relation("TelegramChatLinkLinkedBy", fields: [linkedByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([chatId])
+  @@unique([tenantId, userId, chatId])
+  @@index([tenantId, status])
+  @@index([userId, status])
+  @@map("telegram_chat_links")
+}
+
+model TelegramInteractionLog {
+  id               String                    @id @default(cuid())
+  tenantId         String?                   @map("tenant_id")
+  userId           String?                   @map("user_id")
+  chatId           String                    @map("chat_id")
+  telegramUserId   String?                   @map("telegram_user_id")
+  telegramUsername String?                   @map("telegram_username")
+  command          String?
+  status           TelegramInteractionStatus
+  textPreview      String?                   @map("text_preview") @db.VarChar(240)
+  errorMessage     String?                   @map("error_message") @db.Text
+  metadata         Json?
+  createdAt        DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant           Tenant?                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user             User?                     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, userId, createdAt])
+  @@index([chatId, createdAt])
+  @@index([status, createdAt])
+  @@map("telegram_interaction_logs")
 }
 
 model AuditEvent {

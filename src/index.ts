@@ -21,19 +21,32 @@ import 'dotenv/config';
 
 import type { ICloudProvider } from './domain/interfaces/ICloudProvider.js';
 import { AuthService } from './application/services/AuthService.js';
+import { AgentInstructionService } from './application/services/AgentInstructionService.js';
 import { AgentLearningService } from './application/services/AgentLearningService.js';
+import { AiObservabilityService } from './application/services/AiObservabilityService.js';
 import { CloudConnectionService } from './application/services/CloudConnectionService.js';
+import { ContextEngineService } from './application/services/ContextEngineService.js';
+import { ContextSummaryBuilderService } from './application/services/ContextSummaryBuilderService.js';
 import { CostAnalyticsService } from './application/services/CostAnalyticsService.js';
 import { DataIngestionService } from './application/services/DataIngestionService.js';
 import { FinOpsAiService } from './application/services/FinOpsAiService.js';
+import { KnowledgeGraphService } from './application/services/KnowledgeGraphService.js';
+import { SavingsReminderService } from './application/services/SavingsReminderService.js';
+import { TelegramBotService } from './application/services/TelegramBotService.js';
+import { TelegramClient } from './application/services/TelegramClient.js';
+import { TelegramLinkService } from './application/services/TelegramLinkService.js';
+import { TelegramMessageFormatter } from './application/services/TelegramMessageFormatter.js';
 import { AWSProvider } from './infrastructure/providers/aws/AWSProvider.js';
 import { getPrismaClient } from './infrastructure/database/prisma.js';
 import { OpenAiCompatibleAiGateway } from './infrastructure/ai/OpenAiCompatibleAiGateway.js';
+import { PrismaAgentContextRepository } from './infrastructure/repositories/PrismaAgentContextRepository.js';
 import { PrismaAgentLearningRepository } from './infrastructure/repositories/PrismaAgentLearningRepository.js';
 import { PrismaCloudConnectionRepository } from './infrastructure/repositories/PrismaCloudConnectionRepository.js';
 import { PrismaCostAnalyticsRepository } from './infrastructure/repositories/PrismaCostAnalyticsRepository.js';
 import { PrismaCostRepository } from './infrastructure/repositories/PrismaCostRepository.js';
+import { PrismaNotificationRepository } from './infrastructure/repositories/PrismaNotificationRepository.js';
 import { PrismaRecommendationRepository } from './infrastructure/repositories/PrismaRecommendationRepository.js';
+import { PrismaTelegramRepository } from './infrastructure/repositories/PrismaTelegramRepository.js';
 import { PrismaUserRepository } from './infrastructure/repositories/PrismaUserRepository.js';
 import { Argon2PasswordHasher } from './infrastructure/security/Argon2PasswordHasher.js';
 import { JwtTokenService } from './infrastructure/security/JwtTokenService.js';
@@ -106,6 +119,9 @@ async function bootstrap(): Promise<void> {
   const costAnalyticsRepository = new PrismaCostAnalyticsRepository(prisma);
   const costRepository = new PrismaCostRepository(prisma);
   const recommendationRepository = new PrismaRecommendationRepository(prisma);
+  const notificationRepository = new PrismaNotificationRepository(prisma);
+  const telegramRepository = new PrismaTelegramRepository(prisma);
+  const agentContextRepository = new PrismaAgentContextRepository(prisma);
   const agentLearningRepository = new PrismaAgentLearningRepository(prisma);
   const userRepository = new PrismaUserRepository(prisma);
   const passwordHasher = new Argon2PasswordHasher();
@@ -113,17 +129,43 @@ async function bootstrap(): Promise<void> {
   const authService = new AuthService(userRepository, passwordHasher, tokenService);
   const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository);
   const analyticsService = new CostAnalyticsService(costAnalyticsRepository);
+  const savingsReminderService = new SavingsReminderService(recommendationRepository, notificationRepository);
   const aiGateway = new OpenAiCompatibleAiGateway();
+  const agentInstructionService = new AgentInstructionService(agentContextRepository);
   const learningService = new AgentLearningService(
     recommendationRepository,
     agentLearningRepository,
     aiGateway,
   );
+  const contextEngineService = new ContextEngineService(
+    agentContextRepository,
+    agentInstructionService,
+    learningService,
+  );
+  const aiObservabilityService = new AiObservabilityService(agentContextRepository);
+  const contextSummaryBuilderService = new ContextSummaryBuilderService(agentContextRepository);
+  const knowledgeGraphService = new KnowledgeGraphService(agentContextRepository);
   const aiService = new FinOpsAiService(
     costAnalyticsRepository,
     recommendationRepository,
     aiGateway,
     learningService,
+    contextEngineService,
+    aiObservabilityService,
+  );
+  const telegramEnabled = process.env['TELEGRAM_ENABLED'] === 'true';
+  const telegramClient = new TelegramClient(process.env['TELEGRAM_BOT_TOKEN'], telegramEnabled);
+  const telegramMessageFormatter = new TelegramMessageFormatter();
+  const telegramLinkService = new TelegramLinkService(telegramRepository, telegramClient);
+  const telegramBotService = new TelegramBotService(
+    telegramRepository,
+    telegramClient,
+    telegramMessageFormatter,
+    aiService,
+    savingsReminderService,
+    recommendationRepository,
+    costAnalyticsRepository,
+    process.env['TELEGRAM_BOT_USERNAME'],
   );
   const ingestionService = new DataIngestionService(providerRegistry, costRepository);
 
@@ -135,6 +177,17 @@ async function bootstrap(): Promise<void> {
     cloudConnectionService,
     analyticsService,
     aiService,
+    agentInstructionService,
+    agentContextRepository,
+    contextSummaryBuilderService,
+    knowledgeGraphService,
+    savingsReminderService,
+    telegramBotService,
+    telegramLinkService,
+    ...(process.env['TELEGRAM_WEBHOOK_SECRET'] !== undefined
+      ? { telegramWebhookSecret: process.env['TELEGRAM_WEBHOOK_SECRET'] }
+      : {}),
+    telegramEnabled,
     learningService,
     costRepository,
     recommendationRepository,

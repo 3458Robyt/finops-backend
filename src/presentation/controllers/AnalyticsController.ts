@@ -28,6 +28,20 @@ export class AnalyticsController {
     }
   };
 
+  public getOpportunities = async (req: Request, res: Response): Promise<void> => {
+    if (req.auth === undefined) {
+      res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });
+      return;
+    }
+
+    try {
+      const opportunities = await this.analyticsService.getAnomalies(this.parseQuery(req));
+      res.status(200).json({ success: true, opportunities, meta: { count: opportunities.length } });
+    } catch (error: unknown) {
+      this.handleError(error, res, 'An unexpected analytics opportunities error occurred');
+    }
+  };
+
   public getForecast = async (req: Request, res: Response): Promise<void> => {
     if (req.auth === undefined) {
       res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });

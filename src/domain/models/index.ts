@@ -16,6 +16,30 @@ export {
   type RecommendationFeedbackReason,
 } from './AgentLearning.js';
 export {
+  type InAppNotification,
+  type InAppNotificationStatus,
+  type InAppNotificationType,
+} from './InAppNotification.js';
+export {
+  type TelegramChatLink,
+  type TelegramChatLinkStatus,
+  type TelegramInteractionLog,
+  type TelegramInteractionStatus,
+  type TelegramLinkedUser,
+} from './Telegram.js';
+export {
+  type AgentInstructionProfile,
+  type AgentInstructionProfileStatus,
+  type AgentInstructionRules,
+  type AgentInstructionValidationReport,
+  type AiContextOperation,
+  type AiContextTrace,
+  type ContextArtifact,
+  type KnowledgeGraphContext,
+  type TenantAgentRule,
+  type TenantAgentRuleStatus,
+} from './AgentContext.js';
+export {
   type CloudConnectionStatus,
   type CloudConnectionSummary,
   type DataQualityStatus,

@@ -171,7 +171,7 @@ export class CostAnalyticsService {
         ...(zScore !== undefined ? { zScore: round(zScore, 4) } : {}),
         severity,
         status: 'OPEN',
-        explanation: `Costo anomalo en ${current.groupBy} ${current.groupKey}: ${round(deltaPercent, 1)}% sobre la linea base.`,
+          explanation: `Oportunidad de costo en ${current.groupBy} ${current.groupKey}: ${round(deltaPercent, 1)}% sobre la linea base.`,
         evidence: {
           groupBy: current.groupBy,
           groupKey: current.groupKey,

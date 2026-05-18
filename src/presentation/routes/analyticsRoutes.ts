@@ -9,6 +9,7 @@ export function createAnalyticsRoutes(
   const router = Router();
 
   router.get('/anomalies', requireAuth, analyticsController.getAnomalies);
+  router.get('/opportunities', requireAuth, analyticsController.getOpportunities);
   router.get('/forecast', requireAuth, analyticsController.getForecast);
   router.get('/trends', requireAuth, analyticsController.getTrends);
   router.get('/usage', requireAuth, analyticsController.getUsage);

@@ -14,7 +14,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
-    "import:oci-focus": "tsx scripts/import-oci-focus.ts"
+    "import:oci-focus": "tsx scripts/import-oci-focus.ts",
+    "telegram:set-webhook": "tsx scripts/telegram-set-webhook.ts"
   },
   "keywords": [
     "finops",

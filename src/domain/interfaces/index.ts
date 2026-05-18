@@ -25,6 +25,18 @@ export {
   type IAiGateway,
 } from './IAiGateway.js';
 export {
+  type ActivateAgentProfileInput,
+  type CreateAiContextTraceInput,
+  type CreateContextBuildRunInput,
+  type CreateTenantAgentRuleInput,
+  type IAgentContextRepository,
+} from './IAgentContextRepository.js';
+export {
+  type BuildAiContextInput,
+  type BuiltAiContext,
+  type IContextEngineService,
+} from './IContextEngineService.js';
+export {
   type IAgentLearningContextProvider,
   type IAgentLearningService,
   type AgentLearningContext,
@@ -61,6 +73,17 @@ export {
   type SavingsKpis,
   type AdoptionKpis,
 } from './IRecommendationRepository.js';
+export {
+  type CreateInAppNotificationInput,
+  type INotificationRepository,
+  type ListNotificationsQuery,
+} from './INotificationRepository.js';
+export {
+  type CreateOrUpdateTelegramLinkInput,
+  type CreateTelegramAuditEventInput,
+  type CreateTelegramInteractionLogInput,
+  type ITelegramRepository,
+} from './ITelegramRepository.js';
 export { type ITokenService, type TokenIssueResult } from './ITokenService.js';
 export {
   type AuthUser,

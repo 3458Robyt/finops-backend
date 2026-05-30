@@ -52,7 +52,27 @@ import { Argon2PasswordHasher } from './infrastructure/security/Argon2PasswordHa
 import { JwtTokenService } from './infrastructure/security/JwtTokenService.js';
 
 /**
- * Composición Raíz — Configuración y arranque de la aplicación.
+ * Composición Raíz (Composition Root) — Configuración y arranque de la aplicación.
+ *
+ * Aquí se ensambla todo el grafo de dependencias de forma manual y se
+ * arranca el servidor HTTP. Pasos principales:
+ *
+ *   1. Instanciar adaptadores de proveedores de nube (AWS y, opcionalmente,
+ *      OCI) dentro de bloques `try/catch`: si un proveedor falla al
+ *      inicializarse (p. ej. faltan credenciales) se registra un warning y
+ *      se omite, sin abortar el arranque. Los proveedores válidos se
+ *      registran en `providerRegistry`.
+ *   2. Crear el cliente Prisma y los repositorios Prisma (conexiones,
+ *      analítica, costos, recomendaciones, notificaciones, Telegram,
+ *      contexto y aprendizaje del agente, usuarios).
+ *   3. Instanciar los servicios de aplicación (autenticación, conexiones,
+ *      analítica, recordatorios de ahorro, IA, contexto del agente,
+ *      Telegram, ingesta de datos, etc.) inyectando sus dependencias.
+ *   4. Construir el servidor Express con `createExpressServer` y ponerlo a
+ *      escuchar en el puerto indicado por `process.env.PORT` (por defecto
+ *      `3000`), registrando en consola las rutas principales.
+ *
+ * @returns Promesa que se resuelve una vez el servidor HTTP queda escuchando.
  */
 async function bootstrap(): Promise<void> {
   console.log(`
@@ -207,6 +227,11 @@ async function bootstrap(): Promise<void> {
 }
 
 // ── Ejecución ─────────────────────────────────────────────────────
+//
+// Arranca la Composición Raíz. Si `bootstrap` rechaza la promesa por un
+// error no controlado durante el arranque, se registra como error fatal y
+// el proceso termina con código de salida `1` para que el orquestador
+// (Docker, PM2, systemd, etc.) detecte el fallo y reinicie si procede.
 bootstrap().catch((error: unknown) => {
   console.error('💥 Fatal error during bootstrap:', error);
   process.exit(1);

@@ -10,7 +10,14 @@ import type {
   TelegramLinkedUser,
 } from '../../domain/models/Telegram.js';
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
+import { toChatLink, toInteractionLog, toLinkedUser } from './mappers/telegramMappers.js';
 
+/**
+ * Proyección de columnas de la tabla `users` reutilizada en las consultas de
+ * Telegram. Limita los campos expuestos del usuario a los estrictamente
+ * necesarios para vincular cuentas (evita filtrar credenciales u otros datos
+ * sensibles).
+ */
 const userSelect = {
   id: true,
   tenantId: true,
@@ -20,9 +27,32 @@ const userSelect = {
   status: true,
 } as const;
 
+/**
+ * Adaptador de infraestructura (Clean Architecture) que implementa el puerto de
+ * dominio {@link ITelegramRepository} sobre Prisma/PostgreSQL.
+ *
+ * Responsabilidad: gestionar la vinculación entre chats de Telegram y usuarios
+ * del sistema (tabla `telegram_chat_links`), así como el registro de
+ * interacciones (`telegram_interaction_logs`) y eventos de auditoría
+ * (`audit_events`). Las consultas por tenant aplican aislamiento multi-tenant;
+ * las búsquedas por `chatId` son globales porque `chatId` es único a nivel de
+ * Telegram.
+ */
 export class PrismaTelegramRepository implements ITelegramRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
+  /**
+   * Busca un usuario por correo dentro de un tenant concreto, para vincularlo a
+   * un chat de Telegram.
+   *
+   * El correo se normaliza a minúsculas antes de comparar. El filtro por
+   * `tenantId` garantiza el aislamiento multi-tenant.
+   *
+   * @param tenantId Tenant en el que buscar.
+   * @param email Correo del usuario (se compara en minúsculas).
+   * @returns El usuario vinculable de dominio, o `null` si no existe en ese
+   *   tenant.
+   */
   public async findUserByEmailInTenant(tenantId: string, email: string): Promise<TelegramLinkedUser | null> {
     const user = await this.prisma.user.findFirst({
       where: {
@@ -32,9 +62,19 @@ export class PrismaTelegramRepository implements ITelegramRepository {
       select: userSelect,
     });
 
-    return user === null ? null : this.toLinkedUser(user);
+    return user === null ? null : toLinkedUser(user);
   }
 
+  /**
+   * Lista todos los vínculos de chat de Telegram de un tenant, incluyendo los
+   * datos básicos del usuario asociado.
+   *
+   * Ordena por estado ascendente y, dentro de cada estado, por fecha de
+   * actualización descendente. Filtra por `tenantId` (aislamiento multi-tenant).
+   *
+   * @param tenantId Tenant cuyos vínculos se listan.
+   * @returns Lista de vínculos de dominio; arreglo vacío si no hay ninguno.
+   */
   public async findLinksByTenant(tenantId: string): Promise<TelegramChatLink[]> {
     const rows = await this.prisma.telegramChatLink.findMany({
       where: { tenantId },
@@ -42,18 +82,36 @@ export class PrismaTelegramRepository implements ITelegramRepository {
       orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
     });
 
-    return rows.map((row) => this.toChatLink(row));
+    return rows.map((row) => toChatLink(row));
   }
 
+  /**
+   * Busca un vínculo de chat por su identificador, restringido a un tenant.
+   *
+   * @param tenantId Tenant propietario del vínculo (aislamiento multi-tenant).
+   * @param id Identificador del vínculo.
+   * @returns El vínculo de dominio con su usuario, o `null` si no existe o no
+   *   pertenece al tenant.
+   */
   public async findLinkById(tenantId: string, id: string): Promise<TelegramChatLink | null> {
     const row = await this.prisma.telegramChatLink.findFirst({
       where: { id, tenantId },
       include: { user: { select: userSelect } },
     });
 
-    return row === null ? null : this.toChatLink(row);
+    return row === null ? null : toChatLink(row);
   }
 
+  /**
+   * Busca el vínculo activo asociado a un `chatId` de Telegram.
+   *
+   * `chatId` es único globalmente en Telegram, por lo que la búsqueda no filtra
+   * por tenant. Devuelve `null` si no existe vínculo o si su estado no es
+   * `ACTIVE` (p. ej. fue deshabilitado).
+   *
+   * @param chatId Identificador del chat de Telegram.
+   * @returns El vínculo activo de dominio, o `null` si no hay vínculo activo.
+   */
   public async findActiveLinkByChatId(chatId: string): Promise<TelegramChatLink | null> {
     const row = await this.prisma.telegramChatLink.findUnique({
       where: { chatId },
@@ -64,18 +122,41 @@ export class PrismaTelegramRepository implements ITelegramRepository {
       return null;
     }
 
-    return this.toChatLink(row);
+    return toChatLink(row);
   }
 
+  /**
+   * Busca cualquier vínculo asociado a un `chatId`, independientemente de su
+   * estado (activo o deshabilitado).
+   *
+   * A diferencia de {@link findActiveLinkByChatId}, no filtra por estado; útil
+   * para reactivar o inspeccionar vínculos existentes.
+   *
+   * @param chatId Identificador del chat de Telegram.
+   * @returns El vínculo de dominio si existe, o `null` en caso contrario.
+   */
   public async findAnyLinkByChatId(chatId: string): Promise<TelegramChatLink | null> {
     const row = await this.prisma.telegramChatLink.findUnique({
       where: { chatId },
       include: { user: { select: userSelect } },
     });
 
-    return row === null ? null : this.toChatLink(row);
+    return row === null ? null : toChatLink(row);
   }
 
+  /**
+   * Crea o reactiva (upsert por `chatId`) el vínculo entre un chat de Telegram y
+   * un usuario.
+   *
+   * Si el `chatId` ya existe, lo actualiza reasignando tenant/usuario, lo marca
+   * como `ACTIVE` y limpia `disabledAt` (reactivación). Si no existe, lo crea
+   * nuevo. Los campos de Telegram opcionales solo se incluyen cuando están
+   * definidos.
+   *
+   * @param input Datos del vínculo (tenant, usuario, chatId, metadatos de
+   *   Telegram y quién lo vincula).
+   * @returns El vínculo resultante de dominio, con su usuario asociado.
+   */
   public async createOrUpdateLink(input: CreateOrUpdateTelegramLinkInput): Promise<TelegramChatLink> {
     const row = await this.prisma.telegramChatLink.upsert({
       where: { chatId: input.chatId },
@@ -99,9 +180,22 @@ export class PrismaTelegramRepository implements ITelegramRepository {
       include: { user: { select: userSelect } },
     });
 
-    return this.toChatLink(row);
+    return toChatLink(row);
   }
 
+  /**
+   * Deshabilita un vínculo de chat, validando previamente su pertenencia al
+   * tenant.
+   *
+   * Comprueba la existencia del vínculo dentro del tenant (aislamiento
+   * multi-tenant) antes de actualizar su estado a `DISABLED` y registrar
+   * `disabledAt` con la fecha actual.
+   *
+   * @param tenantId Tenant propietario del vínculo.
+   * @param id Identificador del vínculo a deshabilitar.
+   * @returns El vínculo deshabilitado de dominio, o `null` si no existe o no
+   *   pertenece al tenant.
+   */
   public async disableLink(tenantId: string, id: string): Promise<TelegramChatLink | null> {
     const existing = await this.prisma.telegramChatLink.findFirst({
       where: { id, tenantId },
@@ -121,9 +215,19 @@ export class PrismaTelegramRepository implements ITelegramRepository {
       include: { user: { select: userSelect } },
     });
 
-    return this.toChatLink(row);
+    return toChatLink(row);
   }
 
+  /**
+   * Registra una entrada en la bitácora de interacciones de Telegram (comandos,
+   * mensajes, errores) para trazabilidad.
+   *
+   * `tenantId` y `userId` son opcionales porque una interacción puede provenir
+   * de un chat aún no vinculado. `metadata` se serializa como JSON de Prisma.
+   *
+   * @param input Datos de la interacción a registrar.
+   * @returns El registro de interacción de dominio.
+   */
   public async createInteractionLog(input: CreateTelegramInteractionLogInput): Promise<TelegramInteractionLog> {
     const row = await this.prisma.telegramInteractionLog.create({
       data: {
@@ -140,9 +244,20 @@ export class PrismaTelegramRepository implements ITelegramRepository {
       },
     });
 
-    return this.toInteractionLog(row);
+    return toInteractionLog(row);
   }
 
+  /**
+   * Registra un evento de auditoría asociado a acciones sobre Telegram (tabla
+   * `audit_events`).
+   *
+   * Deja constancia del actor, la acción, el tipo de entidad y metadatos
+   * opcionales para cumplimiento y trazabilidad. No devuelve valor.
+   *
+   * @param input Datos del evento de auditoría (tenant, actor, acción, entidad y
+   *   metadatos opcionales).
+   * @returns Promesa que se resuelve cuando el evento queda persistido.
+   */
   public async createAuditEvent(input: CreateTelegramAuditEventInput): Promise<void> {
     await this.prisma.auditEvent.create({
       data: {
@@ -154,90 +269,5 @@ export class PrismaTelegramRepository implements ITelegramRepository {
         ...(input.metadata !== undefined ? { metadata: input.metadata as Prisma.InputJsonValue } : {}),
       },
     });
-  }
-
-  private toChatLink(row: {
-    readonly id: string;
-    readonly tenantId: string;
-    readonly userId: string;
-    readonly chatId: string;
-    readonly telegramUserId: string | null;
-    readonly telegramUsername: string | null;
-    readonly status: string;
-    readonly linkedByUserId: string;
-    readonly disabledAt: Date | null;
-    readonly createdAt: Date;
-    readonly updatedAt: Date;
-    readonly user?: {
-      readonly id: string;
-      readonly tenantId: string;
-      readonly email: string;
-      readonly name: string;
-      readonly role: TelegramLinkedUser['role'];
-      readonly status: TelegramLinkedUser['status'];
-    };
-  }): TelegramChatLink {
-    return {
-      id: row.id,
-      tenantId: row.tenantId,
-      userId: row.userId,
-      chatId: row.chatId,
-      ...(row.telegramUserId !== null ? { telegramUserId: row.telegramUserId } : {}),
-      ...(row.telegramUsername !== null ? { telegramUsername: row.telegramUsername } : {}),
-      status: row.status as TelegramChatLink['status'],
-      linkedByUserId: row.linkedByUserId,
-      ...(row.disabledAt !== null ? { disabledAt: row.disabledAt } : {}),
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-      ...(row.user !== undefined ? { user: this.toLinkedUser(row.user) } : {}),
-    };
-  }
-
-  private toInteractionLog(row: {
-    readonly id: string;
-    readonly tenantId: string | null;
-    readonly userId: string | null;
-    readonly chatId: string;
-    readonly telegramUserId: string | null;
-    readonly telegramUsername: string | null;
-    readonly command: string | null;
-    readonly status: string;
-    readonly textPreview: string | null;
-    readonly errorMessage: string | null;
-    readonly metadata: unknown;
-    readonly createdAt: Date;
-  }): TelegramInteractionLog {
-    return {
-      id: row.id,
-      ...(row.tenantId !== null ? { tenantId: row.tenantId } : {}),
-      ...(row.userId !== null ? { userId: row.userId } : {}),
-      chatId: row.chatId,
-      ...(row.telegramUserId !== null ? { telegramUserId: row.telegramUserId } : {}),
-      ...(row.telegramUsername !== null ? { telegramUsername: row.telegramUsername } : {}),
-      ...(row.command !== null ? { command: row.command } : {}),
-      status: row.status as TelegramInteractionLog['status'],
-      ...(row.textPreview !== null ? { textPreview: row.textPreview } : {}),
-      ...(row.errorMessage !== null ? { errorMessage: row.errorMessage } : {}),
-      ...(row.metadata !== null ? { metadata: row.metadata } : {}),
-      createdAt: row.createdAt,
-    };
-  }
-
-  private toLinkedUser(row: {
-    readonly id: string;
-    readonly tenantId: string;
-    readonly email: string;
-    readonly name: string;
-    readonly role: TelegramLinkedUser['role'];
-    readonly status: TelegramLinkedUser['status'];
-  }): TelegramLinkedUser {
-    return {
-      id: row.id,
-      tenantId: row.tenantId,
-      email: row.email,
-      name: row.name,
-      role: row.role,
-      status: row.status,
-    };
   }
 }

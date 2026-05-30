@@ -11,6 +11,23 @@ const createLinkSchema = z.object({
   telegramUsername: z.string().optional(),
 });
 
+/**
+ * Controlador de la capa de presentación para la integración con Telegram
+ * (montado en `/api/v1/telegram`). Traduce las peticiones HTTP hacia los
+ * servicios de bot y de vínculos de Telegram y serializa la respuesta.
+ *
+ * Gestiona el webhook entrante de Telegram y la administración de vínculos
+ * (listar, crear, desactivar y enviar mensaje de prueba).
+ *
+ * Servicios y configuración que utiliza:
+ * - {@link TelegramBotService}: procesa las actualizaciones (updates) del webhook.
+ * - {@link TelegramLinkService}: gestiona los vínculos entre usuarios y chats de Telegram.
+ * - `webhookSecret`: secreto esperado en la cabecera del webhook para autenticar a Telegram.
+ * - `enabled`: indica si la integración con Telegram está habilitada.
+ *
+ * El webhook se autentica por secreto de cabecera (no por sesión); el resto de
+ * endpoints requieren autenticación de usuario.
+ */
 export class TelegramController {
   constructor(
     private readonly botService: TelegramBotService,
@@ -19,6 +36,22 @@ export class TelegramController {
     private readonly enabled: boolean,
   ) {}
 
+  /**
+   * Recibe y procesa una actualización (update) entrante del webhook de Telegram.
+   *
+   * Sirve: POST /api/v1/telegram/webhook
+   * Autenticación: por secreto de cabecera (no usa `req.auth`). Telegram debe
+   * enviar el secreto en la cabecera `X-Telegram-Bot-Api-Secret-Token`.
+   *
+   * Cuerpo (`req.body`): el objeto update de Telegram, delegado a {@link TelegramBotService}.
+   *
+   * Respuestas:
+   * - 200: `{ success: true }` si la actualización se procesa correctamente.
+   * - 503 TELEGRAM_DISABLED: la integración está deshabilitada (`enabled` false).
+   * - 503 CONFIGURATION_ERROR: el secreto del webhook no está configurado.
+   * - 401 AUTHENTICATION_FAILED: el secreto de la cabecera no coincide.
+   * - 400 / 404 / 409 / 500: errores de dominio (ver {@link handleError}).
+   */
   public webhook = async (req: Request, res: Response): Promise<void> => {
     if (!this.enabled) {
       res.status(503).json({ success: false, error: 'Telegram integration is disabled', code: 'TELEGRAM_DISABLED' });
@@ -43,6 +76,17 @@ export class TelegramController {
     }
   };
 
+  /**
+   * Lista los vínculos de Telegram accesibles para el usuario autenticado.
+   *
+   * Sirve: GET /api/v1/telegram/links
+   * Autenticación: requerida. Pasa el contexto `req.auth` al servicio de vínculos.
+   *
+   * Respuestas:
+   * - 200: `{ success: true, links }`.
+   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
+   * - 403 / 400 / 404 / 409 / 500: errores de dominio (ver {@link handleError}).
+   */
   public listLinks = async (req: Request, res: Response): Promise<void> => {
     if (req.auth === undefined) {
       res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });
@@ -57,6 +101,24 @@ export class TelegramController {
     }
   };
 
+  /**
+   * Crea un nuevo vínculo entre un usuario y un chat de Telegram.
+   *
+   * Sirve: POST /api/v1/telegram/links
+   * Autenticación: requerida. Pasa el contexto `req.auth` al servicio de vínculos.
+   *
+   * Cuerpo (`req.body`, validado con `createLinkSchema`):
+   * - `email` (obligatorio): correo electrónico del usuario a vincular.
+   * - `chatId` (obligatorio): identificador del chat de Telegram.
+   * - `telegramUserId` (opcional): identificador del usuario de Telegram.
+   * - `telegramUsername` (opcional): nombre de usuario de Telegram.
+   *
+   * Respuestas:
+   * - 201: `{ success: true, link }` con el vínculo creado.
+   * - 400 VALIDATION_ERROR: el cuerpo no cumple el esquema.
+   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
+   * - 403 / 404 / 409 / 500: errores de dominio (ver {@link handleError}).
+   */
   public createLink = async (req: Request, res: Response): Promise<void> => {
     if (req.auth === undefined) {
       res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });
@@ -83,6 +145,21 @@ export class TelegramController {
     }
   };
 
+  /**
+   * Desactiva un vínculo de Telegram identificado por su id.
+   *
+   * Sirve: PATCH /api/v1/telegram/links/:id/disable
+   * Autenticación: requerida. Pasa el contexto `req.auth` al servicio de vínculos.
+   *
+   * Parámetros de ruta:
+   * - `id` (`req.params.id`): identificador del vínculo a desactivar.
+   *
+   * Respuestas:
+   * - 200: `{ success: true, link }` con el vínculo desactivado.
+   * - 400 VALIDATION_ERROR: falta el `id` del vínculo.
+   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
+   * - 403 / 404 / 409 / 500: errores de dominio (ver {@link handleError}).
+   */
   public disableLink = async (req: Request, res: Response): Promise<void> => {
     if (req.auth === undefined) {
       res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });
@@ -104,6 +181,21 @@ export class TelegramController {
     }
   };
 
+  /**
+   * Envía un mensaje de prueba al chat asociado a un vínculo de Telegram.
+   *
+   * Sirve: POST /api/v1/telegram/links/:id/test-message
+   * Autenticación: requerida. Pasa el contexto `req.auth` al servicio de vínculos.
+   *
+   * Parámetros de ruta:
+   * - `id` (`req.params.id`): identificador del vínculo destino del mensaje.
+   *
+   * Respuestas:
+   * - 200: `{ success: true, link }`.
+   * - 400 VALIDATION_ERROR: falta el `id` del vínculo.
+   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
+   * - 403 / 404 / 409 / 500: errores de dominio (ver {@link handleError}).
+   */
   public sendTestMessage = async (req: Request, res: Response): Promise<void> => {
     if (req.auth === undefined) {
       res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });
@@ -125,11 +217,23 @@ export class TelegramController {
     }
   };
 
+  /**
+   * Lee el parámetro de ruta `id` (`req.params.id`) recortado. Devuelve la
+   * cadena no vacía o `undefined` si está ausente o vacía.
+   */
   private parseId(req: Request): string | undefined {
     const id = req.params['id'];
     return typeof id === 'string' && id.trim() !== '' ? id.trim() : undefined;
   }
 
+  /**
+   * Manejador centralizado de errores que traduce excepciones de dominio a
+   * códigos de estado HTTP:
+   * - {@link AuthorizationError} -> 403.
+   * - {@link FinOpsBaseError} con código `VALIDATION_ERROR` -> 400; `NOT_FOUND`
+   *   -> 404; `CONFLICT` -> 409; cualquier otro código -> 500.
+   * - Error no controlado -> 500 con `fallbackMessage`.
+   */
   private handleError(error: unknown, res: Response, fallbackMessage: string): void {
     if (error instanceof AuthorizationError) {
       res.status(403).json({ success: false, error: error.message, code: error.code });

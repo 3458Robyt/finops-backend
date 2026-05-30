@@ -3,34 +3,69 @@ import type { IAgentContextRepository } from '../../domain/interfaces/IAgentCont
 import type {
   AgentInstructionProfile,
   AgentInstructionRules,
-  AgentInstructionValidationReport,
   TenantAgentRule,
 } from '../../domain/models/AgentContext.js';
 import { agentAdminRoles } from '../../domain/models/AgentContext.js';
 import type { AuthContext } from '../../domain/models/AuthContext.js';
+import {
+  defaultProfile,
+  filterRulesAgainstProfile,
+  validateFreeText,
+  validateProfile,
+} from './agentInstruction/agentInstructionValidation.js';
 
-const forbiddenInstructionPatterns = [
-  /ignora(r)?\s+(el\s+)?(sistema|auditor|perfil|instrucciones)/i,
-  /sin\s+auditor(i|í)a/i,
-  /ejecut(a|ar)\s+automaticamente/i,
-  /remediaci(o|ó)n\s+autom(a|á)tica/i,
-  /credencial|password|secreto|api\s*key|token/i,
-];
-
+/**
+ * Servicio de aplicación de instrucciones del agente IA (perfil TAK).
+ *
+ * Responsabilidad: gobernar el "perfil de instrucciones" global del agente
+ * y las reglas específicas por tenant que personalizan su comportamiento.
+ * Aplica validaciones de seguridad y de negocio antes de activar cualquier
+ * instrucción, y deja traza de auditoría de cada cambio relevante. La lógica
+ * pura de validación y el perfil por defecto residen en
+ * {@link ./agentInstruction/agentInstructionValidation}.
+ *
+ * Colaborador inyectado (DIP):
+ * - {@link IAgentContextRepository}: persistencia del perfil activo, las
+ *   reglas por tenant y los eventos de auditoría de instrucciones.
+ */
 export class AgentInstructionService {
+  /**
+   * @param repository - Repositorio del contexto del agente (perfil, reglas
+   *                      por tenant y auditoría de instrucciones).
+   */
   constructor(private readonly repository: IAgentContextRepository) {}
 
+  /**
+   * Obtiene el perfil de instrucciones activo del agente.
+   *
+   * @returns El perfil activo persistido o, si no existe, un perfil por
+   *          defecto seguro ({@link defaultProfile}) como respaldo.
+   */
   public async getActiveProfile(): Promise<AgentInstructionProfile> {
-    return (await this.repository.findActiveProfile()) ?? this.defaultProfile();
+    return (await this.repository.findActiveProfile()) ?? defaultProfile();
   }
 
+  /**
+   * Valida y activa un nuevo perfil de instrucciones (operación de administración).
+   *
+   * Efectos secundarios: registra un evento de auditoría tanto si el perfil
+   * es rechazado (`PROFILE_REJECTED`) como si se activa (`PROFILE_ACTIVATED`),
+   * y **persiste** el nuevo perfil cuando supera la validación.
+   *
+   * @param input - Actor que ejecuta la acción, reglas estructuradas del
+   *                perfil y notas en texto libre opcionales.
+   * @returns El perfil activado.
+   *
+   * @throws {AuthorizationError} Si el actor no tiene rol de administrador del agente.
+   * @throws {FinOpsBaseError} Con código `VALIDATION_ERROR` si el perfil no pasa la validación.
+   */
   public async validateAndActivateProfile(input: {
     readonly actor: AuthContext;
     readonly structuredRules: AgentInstructionRules;
     readonly freeformNotes?: string;
   }): Promise<AgentInstructionProfile> {
     this.assertCanAdminAgent(input.actor);
-    const validationReport = this.validateProfile(input.structuredRules, input.freeformNotes);
+    const validationReport = validateProfile(input.structuredRules, input.freeformNotes);
 
     if (!validationReport.passed) {
       await this.repository.createInstructionAuditEvent({
@@ -60,10 +95,30 @@ export class AgentInstructionService {
     return profile;
   }
 
+  /**
+   * Lista las reglas del agente definidas por un tenant.
+   *
+   * @param tenantId - Identificador del tenant.
+   * @returns Reglas del agente asociadas al tenant.
+   */
   public async listTenantRules(tenantId: string): Promise<TenantAgentRule[]> {
     return this.repository.listTenantRules(tenantId);
   }
 
+  /**
+   * Crea una regla del agente específica de un tenant (operación de administración).
+   *
+   * Efectos secundarios: **persiste** la regla y registra un evento de
+   * auditoría `TENANT_RULE_CREATED`.
+   *
+   * @param input - Actor, categoría, texto de la regla y prioridad opcional
+   *                (por defecto 100; menor valor implica mayor prioridad según convención del dominio).
+   * @returns La regla creada.
+   *
+   * @throws {AuthorizationError} Si el actor no es administrador del agente.
+   * @throws {FinOpsBaseError} Con código `VALIDATION_ERROR` si la categoría o la regla
+   *         están vacías, o si el texto contiene contenido inseguro.
+   */
   public async createTenantRule(input: {
     readonly actor: AuthContext;
     readonly category: string;
@@ -78,7 +133,7 @@ export class AgentInstructionService {
       throw new FinOpsBaseError('La categoria y la regla son obligatorias.', 'VALIDATION_ERROR');
     }
 
-    const validation = this.validateFreeText(trimmedRule);
+    const validation = validateFreeText(trimmedRule);
 
     if (validation.issues.length > 0) {
       throw new FinOpsBaseError(validation.issues.join(' '), 'VALIDATION_ERROR');
@@ -103,6 +158,19 @@ export class AgentInstructionService {
     return rule;
   }
 
+  /**
+   * Desactiva una regla del agente de un tenant (operación de administración).
+   *
+   * Efectos secundarios: **persiste** la desactivación y registra un evento
+   * de auditoría `TENANT_RULE_DISABLED`.
+   *
+   * @param actor  - Actor que ejecuta la acción.
+   * @param ruleId - Identificador de la regla a desactivar.
+   * @returns La regla desactivada.
+   *
+   * @throws {AuthorizationError} Si el actor no es administrador del agente.
+   * @throws {FinOpsBaseError} Con código `NOT_FOUND` si la regla no existe para el tenant.
+   */
   public async disableTenantRule(actor: AuthContext, ruleId: string): Promise<TenantAgentRule> {
     this.assertCanAdminAgent(actor);
     const rule = await this.repository.disableTenantRule(actor.tenantId, ruleId);
@@ -122,6 +190,15 @@ export class AgentInstructionService {
     return rule;
   }
 
+  /**
+   * Filtra reglas de tenant frente al perfil global, descartando las que
+   * son inseguras o que contradicen el perfil TAK activo. Delega en la función
+   * pura {@link filterRulesAgainstProfile} de la capa de validación.
+   *
+   * @param input - Tenant, perfil global activo y reglas candidatas.
+   * @returns Reglas aceptadas y la lista de conflictos descriptivos de las
+   *          reglas descartadas.
+   */
   public filterRulesAgainstProfile(input: {
     readonly tenantId: string;
     readonly profile: AgentInstructionProfile;
@@ -130,140 +207,17 @@ export class AgentInstructionService {
     readonly acceptedRules: readonly TenantAgentRule[];
     readonly conflicts: readonly string[];
   } {
-    const conflicts: string[] = [];
-    const acceptedRules: TenantAgentRule[] = [];
-
-    for (const rule of input.rules) {
-      const validation = this.validateFreeText(rule.ruleText);
-      const contradictsProfile = this.contradictsGlobalTak(rule.ruleText, input.profile);
-
-      if (validation.issues.length > 0 || contradictsProfile) {
-        conflicts.push(`Regla ${rule.id} ignorada: contradice el perfil global TAK o las restricciones de auditoria.`);
-      } else {
-        acceptedRules.push(rule);
-      }
-    }
-
-    return { acceptedRules, conflicts };
+    return filterRulesAgainstProfile(input);
   }
 
+  /**
+   * Verifica que el actor tenga rol de administrador del agente.
+   *
+   * @throws {AuthorizationError} Si el rol del actor no está en {@link agentAdminRoles}.
+   */
   private assertCanAdminAgent(actor: AuthContext): void {
     if (!agentAdminRoles.includes(actor.role)) {
       throw new AuthorizationError();
     }
-  }
-
-  private validateProfile(
-    rules: AgentInstructionRules,
-    freeformNotes: string | undefined,
-  ): AgentInstructionValidationReport {
-    const issues: string[] = [];
-    const warnings: string[] = [];
-
-    if (rules.objective.trim().length < 20) {
-      issues.push('El objetivo del agente debe tener al menos 20 caracteres.');
-    }
-
-    if (rules.tone.trim() === '') {
-      issues.push('El tono del agente es obligatorio.');
-    }
-
-    if (rules.recommendationPriorities.length === 0) {
-      issues.push('Debe existir al menos una prioridad de recomendacion.');
-    }
-
-    if (rules.evidenceRequirements.length === 0) {
-      issues.push('Debe existir al menos un requisito de evidencia.');
-    }
-
-    if (rules.riskPolicy.trim() === '') {
-      issues.push('La politica de riesgo es obligatoria.');
-    }
-
-    const allText = [
-      rules.objective,
-      rules.tone,
-      ...rules.recommendationPriorities,
-      ...rules.evidenceRequirements,
-      rules.riskPolicy,
-      ...rules.forbiddenActions,
-      freeformNotes ?? '',
-    ].join('\n');
-    const textValidation = this.validateFreeText(allText);
-
-    issues.push(...textValidation.issues);
-    warnings.push(...textValidation.warnings);
-
-    if (allText.length > 8000) {
-      issues.push('El perfil TAK no puede superar 8000 caracteres.');
-    }
-
-    return {
-      passed: issues.length === 0,
-      issues,
-      warnings,
-    };
-  }
-
-  private validateFreeText(text: string): { readonly issues: string[]; readonly warnings: string[] } {
-    const issues = forbiddenInstructionPatterns
-      .filter((pattern) => pattern.test(text))
-      .map(() => 'La instruccion contiene contenido inseguro: no puede omitir auditoria, guardar secretos ni ejecutar remediacion automatica.');
-
-    return {
-      issues: [...new Set(issues)],
-      warnings: text.length > 4000 ? ['La instruccion es extensa y puede aumentar consumo de tokens.'] : [],
-    };
-  }
-
-  private contradictsGlobalTak(ruleText: string, profile: AgentInstructionProfile): boolean {
-    const normalized = ruleText.toLowerCase();
-
-    if (normalized.includes('no usar evidencia') || normalized.includes('sin evidencia')) {
-      return true;
-    }
-
-    if (
-      profile.structuredRules.forbiddenActions.some((action) => (
-        action.trim() !== '' && normalized.includes(action.toLowerCase())
-      ))
-    ) {
-      return true;
-    }
-
-    return false;
-  }
-
-  private defaultProfile(): AgentInstructionProfile {
-    const now = new Date(0);
-
-    return {
-      id: 'default-tak-profile',
-      version: 0,
-      status: 'ACTIVE',
-      structuredRules: {
-        objective: 'Generar recomendaciones FinOps en espanol, accionables, auditables y basadas en evidencia real.',
-        tone: 'Profesional, claro, prudente y orientado a operaciones.',
-        recommendationPriorities: [
-          'Priorizar ahorro verificable y bajo riesgo operativo.',
-          'Explicar limites de evidencia cuando solo existan datos FOCUS.',
-          'No recomendar cambios tecnicos fuertes sin metricas tecnicas suficientes.',
-        ],
-        evidenceRequirements: [
-          'Usar costos, consumo facturado, cuenta, servicio y recurso cuando esten disponibles.',
-          'Declarar si la recomendacion requiere validacion tecnica adicional.',
-        ],
-        riskPolicy: 'No prometer remediacion automatica; toda ejecucion debe ser manual, gobernada y reversible.',
-        forbiddenActions: [
-          'ejecutar automaticamente cambios cloud',
-          'ignorar auditoria',
-          'inventar recursos',
-          'inferir CPU, memoria, IOPS o throughput desde FOCUS',
-        ],
-      },
-      createdByUserId: 'system',
-      createdAt: now,
-      updatedAt: now,
-    };
   }
 }

@@ -37,26 +37,86 @@ import { createNotificationRoutes } from './routes/notificationRoutes.js';
 import { createRecommendationRoutes } from './routes/recommendationRoutes.js';
 import { createTelegramRoutes } from './routes/telegramRoutes.js';
 
+/**
+ * Dependencias inyectadas en el servidor Express.
+ *
+ * Cada propiedad es un servicio de aplicación, repositorio de dominio o
+ * configuración que los controladores y middlewares necesitan. Se inyectan
+ * desde la Composición Raíz (`index.ts`) para mantener desacoplada la capa
+ * de presentación de la infraestructura.
+ */
 interface ServerDependencies {
+  /** Servicio de autenticación (login, emisión de credenciales). */
   readonly authService: AuthService;
+  /** Servicio de gestión de conexiones a proveedores de nube. */
   readonly cloudConnectionService: CloudConnectionService;
+  /** Servicio de analítica de costos (anomalías, tendencias, forecast, etc.). */
   readonly analyticsService: CostAnalyticsService;
+  /** Servicio de IA FinOps (chat y generación de recomendaciones). */
   readonly aiService: FinOpsAiService;
+  /** Servicio de instrucciones/perfil del agente. */
   readonly agentInstructionService: AgentInstructionService;
+  /** Repositorio del contexto del agente (perfiles, reglas, trazas). */
   readonly agentContextRepository: IAgentContextRepository;
+  /** Servicio que construye resúmenes de contexto para el agente. */
   readonly contextSummaryBuilderService: ContextSummaryBuilderService;
+  /** Servicio del grafo de conocimiento del agente. */
   readonly knowledgeGraphService: KnowledgeGraphService;
+  /** Servicio de recordatorios de ahorro (genera notificaciones). */
   readonly savingsReminderService: SavingsReminderService;
+  /** Servicio del bot de Telegram (procesa actualizaciones del webhook). */
   readonly telegramBotService: TelegramBotService;
+  /** Servicio de vinculación de cuentas con Telegram (links). */
   readonly telegramLinkService: TelegramLinkService;
+  /** Secreto opcional para validar el webhook de Telegram. */
   readonly telegramWebhookSecret?: string;
+  /** Indica si la integración con Telegram está habilitada. */
   readonly telegramEnabled: boolean;
+  /** Servicio opcional de aprendizaje del agente (feedback/learning). */
   readonly learningService?: IAgentLearningService;
+  /** Repositorio de costos diarios. */
   readonly costRepository: ICostRepository;
+  /** Repositorio de recomendaciones. */
   readonly recommendationRepository: IRecommendationRepository;
+  /** Servicio de tokens usado por el middleware de autenticación. */
   readonly tokenService: ITokenService;
 }
 
+/**
+ * Crea y configura la aplicación Express con todas sus rutas.
+ *
+ * Configuración aplicada:
+ *   - Middleware CORS: origen tomado de `process.env.CORS_ORIGIN` (por
+ *     defecto `http://localhost:5173`) y `credentials: true`.
+ *   - Middleware `express.json()` para parsear cuerpos JSON.
+ *
+ * Controladores instanciados con sus dependencias: `AiController`,
+ * `AgentController`, `AnalyticsController`, `AuthController`,
+ * `CloudConnectionController`, `CostController`, `RecommendationController`,
+ * `KpiController`, `NotificationController` y `TelegramController`. Además
+ * crea el middleware `requireAuth` a partir de `tokenService`.
+ *
+ * Prefijos de ruta montados (todos bajo `/api/v1`):
+ *   - `/api/v1/agent`             → `createAgentRoutes`
+ *   - `/api/v1/ai`                → `createAiRoutes`
+ *   - `/api/v1/analytics`         → `createAnalyticsRoutes`
+ *   - `/api/v1/auth`              → `createAuthRoutes` (sin `requireAuth`)
+ *   - `/api/v1/cloud-connections` → `createCloudConnectionRoutes`
+ *   - `/api/v1/costs`             → `createCostRoutes`
+ *   - `/api/v1/kpis`              → `createKpiRoutes`
+ *   - `/api/v1/notifications`     → `createNotificationRoutes`
+ *   - `/api/v1/recommendations`   → `createRecommendationRoutes`
+ *   - `/api/v1/telegram`          → `createTelegramRoutes`
+ *
+ * Expone además un endpoint de salud `GET /health` que responde `200` con
+ * `{ status: 'ok', timestamp }`.
+ *
+ * Nota: esta función no registra un middleware global de manejo de errores
+ * ni un handler 404; cada controlador gestiona sus propias respuestas.
+ *
+ * @param dependencies Dependencias inyectadas (servicios, repositorios y configuración).
+ * @returns Instancia de la aplicación Express lista para escuchar conexiones.
+ */
 export function createExpressServer(dependencies: ServerDependencies): Express {
   const app = express();
 

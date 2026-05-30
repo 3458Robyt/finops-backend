@@ -13,35 +13,64 @@ import type {
 } from '../../domain/models/CloudConnection.js';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { Prisma } from '../../generated/prisma/client.js';
+import {
+  isJsonObject,
+  mapCloudConnection,
+  mapProvider,
+} from './mappers/cloudConnectionMappers.js';
 
-type PrismaProviderCatalog = Awaited<
-  ReturnType<PrismaClient['providerCatalog']['findUnique']>
->;
-
-type PrismaCloudConnection = Awaited<
-  ReturnType<PrismaClient['cloudConnection']['findUnique']>
->;
-
+/**
+ * Adaptador de infraestructura (Clean Architecture) que implementa el puerto de
+ * dominio {@link ICloudConnectionRepository} sobre Prisma/PostgreSQL.
+ *
+ * Responsabilidad: gestionar el catálogo de proveedores cloud
+ * (`provider_catalog`), las conexiones cloud de cada tenant
+ * (`cloud_connections`), los trabajos de ingesta (`ingestion_jobs`) y la salud
+ * de ingesta (watermarks y controles de calidad de datos). Las operaciones sobre
+ * conexiones filtran por `tenantId` para garantizar el aislamiento multi-tenant.
+ */
 export class PrismaCloudConnectionRepository implements ICloudConnectionRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
+  /**
+   * Lista el catálogo de proveedores cloud habilitados, ordenados por código.
+   *
+   * @returns Lista de solo lectura de entradas del catálogo de proveedores;
+   *   arreglo vacío si no hay proveedores habilitados.
+   */
   public async listProviderCatalog(): Promise<readonly ProviderCatalogEntry[]> {
     const providers = await this.prisma.providerCatalog.findMany({
       where: { enabled: true },
       orderBy: { code: 'asc' },
     });
 
-    return providers.map((provider) => this.mapProvider(provider));
+    return providers.map((provider) => mapProvider(provider));
   }
 
+  /**
+   * Busca una entrada del catálogo de proveedores por su código único.
+   *
+   * @param providerCode Código del proveedor (clave única en `provider_catalog`).
+   * @returns La entrada del catálogo de dominio, o `null` si no existe.
+   */
   public async findProviderCatalog(providerCode: string): Promise<ProviderCatalogEntry | null> {
     const provider = await this.prisma.providerCatalog.findUnique({
       where: { code: providerCode },
     });
 
-    return provider === null ? null : this.mapProvider(provider);
+    return provider === null ? null : mapProvider(provider);
   }
 
+  /**
+   * Crea una nueva conexión cloud para un tenant.
+   *
+   * Los campos opcionales (`defaultRegion`, `metadata`) solo se incluyen cuando
+   * están definidos; `metadata` se serializa como JSON de Prisma.
+   *
+   * @param input Datos de la conexión (tenant, proveedor, identificador raíz,
+   *   nombre y metadatos opcionales).
+   * @returns Resumen de la conexión creada en formato de dominio.
+   */
   public async createCloudConnection(
     input: CreateCloudConnectionInput,
   ): Promise<CloudConnectionSummary> {
@@ -56,9 +85,20 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
       },
     });
 
-    return this.mapCloudConnection(connection);
+    return mapCloudConnection(connection);
   }
 
+  /**
+   * Busca una conexión cloud por su id, restringida al tenant indicado.
+   *
+   * El filtro combinado `id` + `tenantId` garantiza el aislamiento multi-tenant
+   * (un tenant no puede acceder a conexiones de otro).
+   *
+   * @param tenantId Tenant propietario de la conexión.
+   * @param cloudConnectionId Identificador de la conexión.
+   * @returns Resumen de la conexión de dominio, o `null` si no existe o no
+   *   pertenece al tenant.
+   */
   public async findCloudConnectionForTenant(
     tenantId: string,
     cloudConnectionId: string,
@@ -70,9 +110,17 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
       },
     });
 
-    return connection === null ? null : this.mapCloudConnection(connection);
+    return connection === null ? null : mapCloudConnection(connection);
   }
 
+  /**
+   * Lista todas las conexiones cloud de un tenant, de la más reciente a la más
+   * antigua.
+   *
+   * @param tenantId Tenant cuyas conexiones se listan (aislamiento multi-tenant).
+   * @returns Lista de solo lectura de resúmenes de conexión; arreglo vacío si no
+   *   hay conexiones.
+   */
   public async listCloudConnectionsForTenant(
     tenantId: string,
   ): Promise<readonly CloudConnectionSummary[]> {
@@ -81,9 +129,17 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
       orderBy: { createdAt: 'desc' },
     });
 
-    return connections.map((connection) => this.mapCloudConnection(connection));
+    return connections.map((connection) => mapCloudConnection(connection));
   }
 
+  /**
+   * Marca una conexión cloud como validada en una fecha dada (actualiza
+   * `lastValidatedAt`).
+   *
+   * @param cloudConnectionId Identificador de la conexión a marcar.
+   * @param validatedAt Marca temporal de la validación exitosa.
+   * @returns Promesa que se resuelve cuando la actualización finaliza.
+   */
   public async markCloudConnectionValidated(
     cloudConnectionId: string,
     validatedAt: Date,
@@ -94,6 +150,18 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     });
   }
 
+  /**
+   * Crea un trabajo de ingesta (`ingestion_jobs`) para una conexión cloud,
+   * acotado a un rango temporal objetivo.
+   *
+   * Los campos opcionales (`requestedByUserId`, `maxAttempts`) solo se incluyen
+   * cuando están definidos. La proyección de salida se construye en línea (no usa
+   * un mapper compartido).
+   *
+   * @param input Datos del trabajo (tenant, conexión, tipo de fuente, rango
+   *   objetivo y opciones).
+   * @returns Resumen del trabajo de ingesta creado.
+   */
   public async createIngestionJob(input: CreateIngestionJobInput): Promise<IngestionJobSummary> {
     const job = await this.prisma.ingestionJob.create({
       data: {
@@ -124,6 +192,20 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     };
   }
 
+  /**
+   * Obtiene un resumen de salud de ingesta para una conexión cloud de un tenant.
+   *
+   * Carga la conexión junto con su proveedor, los watermarks de ingesta y los
+   * últimos 20 controles de calidad de datos. Además, cuenta en paralelo los
+   * trabajos en estado `PENDING`, `RUNNING` y `FAILED`. Los campos anulables de
+   * watermarks/checks solo se incluyen cuando no son `null`, y los `details`
+   * solo cuando son un objeto JSON (ver {@link isJsonObject}).
+   *
+   * @param tenantId Tenant propietario de la conexión (aislamiento multi-tenant).
+   * @param cloudConnectionId Identificador de la conexión.
+   * @returns Resumen de salud de ingesta de dominio, o `null` si la conexión no
+   *   existe o no pertenece al tenant.
+   */
   public async getIngestionHealth(
     tenantId: string,
     cloudConnectionId: string,
@@ -151,8 +233,8 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     ]);
 
     return {
-      cloudConnection: this.mapCloudConnection(connection),
-      provider: this.mapProvider(connection.providerCatalog),
+      cloudConnection: mapCloudConnection(connection),
+      provider: mapProvider(connection.providerCatalog),
       jobs: { pending, running, failed },
       watermarks: connection.ingestionWatermarks.map((watermark) => ({
         sourceType: watermark.sourceType as IngestionSourceType,
@@ -171,13 +253,22 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
         status: check.status as DataQualityStatus,
         observedAt: check.observedAt,
         ...(check.expectedAt !== null ? { expectedAt: check.expectedAt } : {}),
-        ...(this.isJsonObject(check.details)
+        ...(isJsonObject(check.details)
           ? { details: check.details as Record<string, unknown> }
           : {}),
       })),
     };
   }
 
+  /**
+   * Cuenta los trabajos de ingesta de una conexión que se encuentran en un
+   * estado concreto, dentro de un tenant.
+   *
+   * @param tenantId Tenant propietario (aislamiento multi-tenant).
+   * @param cloudConnectionId Conexión cuyos trabajos se cuentan.
+   * @param status Estado del trabajo a contabilizar.
+   * @returns Número de trabajos en ese estado.
+   */
   private async countJobs(
     tenantId: string,
     cloudConnectionId: string,
@@ -186,41 +277,5 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     return this.prisma.ingestionJob.count({
       where: { tenantId, cloudConnectionId, status },
     });
-  }
-
-  private mapProvider(provider: NonNullable<PrismaProviderCatalog>): ProviderCatalogEntry {
-    return {
-      code: provider.code,
-      displayName: provider.displayName,
-      provider: provider.provider,
-      capabilities: provider.capabilities,
-      ...(provider.defaultFocusVersion !== null
-        ? { defaultFocusVersion: provider.defaultFocusVersion }
-        : {}),
-      ...(provider.documentationUrl !== null ? { documentationUrl: provider.documentationUrl } : {}),
-      enabled: provider.enabled,
-    };
-  }
-
-  private mapCloudConnection(connection: NonNullable<PrismaCloudConnection>): CloudConnectionSummary {
-    return {
-      id: connection.id,
-      tenantId: connection.tenantId,
-      providerCode: connection.providerCode,
-      rootExternalId: connection.rootExternalId,
-      name: connection.name,
-      status: connection.status,
-      ...(connection.defaultRegion !== null ? { defaultRegion: connection.defaultRegion } : {}),
-      ...(this.isJsonObject(connection.metadata)
-        ? { metadata: connection.metadata as Record<string, unknown> }
-        : {}),
-      ...(connection.lastValidatedAt !== null ? { lastValidatedAt: connection.lastValidatedAt } : {}),
-      createdAt: connection.createdAt,
-      updatedAt: connection.updatedAt,
-    };
-  }
-
-  private isJsonObject(value: Prisma.JsonValue | null): boolean {
-    return value !== null && typeof value === 'object' && !Array.isArray(value);
   }
 }

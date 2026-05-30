@@ -487,7 +487,6 @@ model CloudAccount {
   createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
   tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  credentials       CloudCredential[]
   ingestionRuns     IngestionRun[]
   costMetrics       CostMetric[]
   recommendations   Recommendation[]
@@ -497,24 +496,6 @@ model CloudAccount {
   @@unique([tenantId, provider, externalAccountId])
   @@index([tenantId, status])
   @@map("cloud_accounts")
-}
-
-model CloudCredential {
-  id                   String       @id @default(cuid())
-  cloudAccountId       String       @map("cloud_account_id")
-  label                String
-  encryptedPayload     String       @map("encrypted_payload") @db.Text
-  encryptionIv         String       @map("encryption_iv")
-  encryptionAuthTag    String       @map("encryption_auth_tag")
-  encryptionAlgorithm  String       @default("aes-256-gcm") @map("encryption_algorithm")
-  encryptionKeyVersion String       @default("v1") @map("encryption_key_version")
-  createdAt            DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
-  rotatedAt            DateTime?    @map("rotated_at") @db.Timestamptz(6)
-  disabledAt           DateTime?    @map("disabled_at") @db.Timestamptz(6)
-  cloudAccount         CloudAccount @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
-
-  @@index([cloudAccountId, disabledAt])
-  @@map("cloud_credentials")
 }
 
 model IngestionRun {

@@ -1,198 +1,37 @@
-export interface CostAnalyticsProviderItem {
-  readonly provider: string;
-  readonly totalCost: number;
-  readonly metricCount: number;
-}
+import type {
+  AnalyticsGroupBy,
+  CostAnalyticsSnapshot,
+  CostAnomaly,
+  CostAnomalySeverity,
+  CostAnomalyStatus,
+  CostForecast,
+  MonthlyCostPoint,
+  MonthlyUsagePoint,
+} from './costAnalytics/costAnalyticsModels.js';
 
-export interface CostAnalyticsAccountItem {
-  readonly cloudAccountId: string;
-  readonly provider: string;
-  readonly name: string;
-  readonly totalCost: number;
-  readonly metricCount: number;
-}
+export * from './costAnalytics/costAnalyticsModels.js';
 
-export interface CostAnalyticsServiceItem {
-  readonly serviceName: string;
-  readonly provider: string;
-  readonly totalCost: number;
-  readonly metricCount: number;
-}
-
-export interface CostAnalyticsEnvironmentItem {
-  readonly environment: string;
-  readonly totalCost: number;
-  readonly metricCount: number;
-}
-
-export interface CostAnalyticsResourceItem {
-  readonly resourceId: string;
-  readonly serviceName: string;
-  readonly provider: string;
-  readonly totalCost: number;
-  readonly metricCount: number;
-}
-
-export interface CostAnalyticsUsageItem {
-  readonly serviceName: string;
-  readonly provider: string;
-  readonly consumedQuantity: number;
-  readonly consumedUnit: string;
-  readonly totalCost: number;
-  readonly unitCost?: number;
-  readonly currency: string;
-  readonly metricCount: number;
-}
-
-export interface CostAnalyticsSnapshot {
-  readonly tenantId: string;
-  readonly periodStart: string;
-  readonly periodEnd: string;
-  readonly totalCost: number;
-  readonly currency: string;
-  readonly metricCount: number;
-  readonly providers: readonly CostAnalyticsProviderItem[];
-  readonly accounts: readonly CostAnalyticsAccountItem[];
-  readonly services: readonly CostAnalyticsServiceItem[];
-  readonly environments: readonly CostAnalyticsEnvironmentItem[];
-  readonly topResources: readonly CostAnalyticsResourceItem[];
-  readonly topUsage?: readonly CostAnalyticsUsageItem[];
-  readonly usageInsights?: readonly UsageInsight[];
-  readonly anomalies?: readonly CostAnomaly[];
-  readonly forecasts?: readonly CostForecast[];
-}
-
-export type AnalyticsGroupBy = 'provider' | 'account' | 'service' | 'resource' | 'environment';
-export type CostAnomalySeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-export type CostAnomalyStatus = 'OPEN' | 'LINKED_TO_RECOMMENDATION' | 'RESOLVED';
-
+/**
+ * Filtros opcionales aplicables a las consultas analíticas.
+ *
+ * Acotan los resultados por rango temporal y dimensiones, y permiten elegir la
+ * agrupación de las series.
+ */
 export interface AnalyticsFilters {
+  /** Inicio del rango temporal (inclusivo); opcional. */
   readonly from?: Date;
+  /** Fin del rango temporal; opcional. */
   readonly to?: Date;
   readonly provider?: string;
   readonly cloudAccountId?: string;
   readonly serviceName?: string;
+  /** Dimensión de agrupación de los resultados; opcional. */
   readonly groupBy?: AnalyticsGroupBy;
 }
 
-export interface MonthlyCostPoint {
-  readonly month: string;
-  readonly groupBy: AnalyticsGroupBy;
-  readonly groupKey: string;
-  readonly provider?: string;
-  readonly cloudAccountId?: string;
-  readonly serviceName?: string;
-  readonly resourceId?: string;
-  readonly environment?: string;
-  readonly cost: number;
-  readonly currency: string;
-  readonly metricCount: number;
-}
-
-export interface MonthlyUsagePoint {
-  readonly month: string;
-  readonly groupBy: AnalyticsGroupBy;
-  readonly groupKey: string;
-  readonly provider?: string;
-  readonly cloudAccountId?: string;
-  readonly serviceName?: string;
-  readonly resourceId?: string;
-  readonly environment?: string;
-  readonly consumedQuantity: number;
-  readonly consumedUnit: string;
-  readonly cost: number;
-  readonly unitCost?: number;
-  readonly currency: string;
-  readonly metricCount: number;
-}
-
-export type UsageInsightKind =
-  | 'CONSUMPTION_GROWTH'
-  | 'UNIT_COST_INCREASE'
-  | 'COST_USAGE_DIVERGENCE'
-  | 'HIGH_USAGE_LOW_COST'
-  | 'INSUFFICIENT_USAGE_DATA';
-
-export type UsageInsightSeverity = 'INFO' | 'LOW' | 'MEDIUM' | 'HIGH';
-
-export interface UsageInsight {
-  readonly id: string;
-  readonly kind: UsageInsightKind;
-  readonly severity: UsageInsightSeverity;
-  readonly groupBy: AnalyticsGroupBy;
-  readonly groupKey: string;
-  readonly provider?: string;
-  readonly cloudAccountId?: string;
-  readonly serviceName?: string;
-  readonly resourceId?: string;
-  readonly environment?: string;
-  readonly title: string;
-  readonly description: string;
-  readonly consumedQuantity?: number;
-  readonly consumedUnit?: string;
-  readonly cost?: number;
-  readonly unitCost?: number;
-  readonly deltaConsumptionPercent?: number;
-  readonly deltaCostPercent?: number;
-  readonly evidenceLevel: 'COST_ONLY' | 'COST_AND_USAGE' | 'COST_USAGE_AND_TECHNICAL';
-  readonly currency: string;
-  readonly evidence: unknown;
-}
-
-export interface CostAnomaly {
-  readonly id: string;
-  readonly tenantId: string;
-  readonly cloudAccountId?: string;
-  readonly provider?: string;
-  readonly serviceName?: string;
-  readonly resourceId?: string;
-  readonly environment?: string;
-  readonly periodStart: string;
-  readonly periodEnd: string;
-  readonly baselineCost: number;
-  readonly observedCost: number;
-  readonly deltaAmount: number;
-  readonly deltaPercent: number;
-  readonly zScore?: number;
-  readonly severity: CostAnomalySeverity;
-  readonly status: CostAnomalyStatus;
-  readonly explanation: string;
-  readonly evidence?: unknown;
-  readonly detectedAt: string;
-}
-
-export interface CostForecast {
-  readonly id: string;
-  readonly tenantId: string;
-  readonly cloudAccountId?: string;
-  readonly provider?: string;
-  readonly serviceName?: string;
-  readonly groupBy: AnalyticsGroupBy | 'total';
-  readonly groupKey: string;
-  readonly forecastMonth: string;
-  readonly predictedCost: number;
-  readonly lowerBound: number;
-  readonly upperBound: number;
-  readonly method: string;
-  readonly confidence: number;
-  readonly currency: string;
-  readonly evidence?: unknown;
-  readonly generatedAt: string;
-}
-
-export interface CostTrend {
-  readonly groupBy: AnalyticsGroupBy | 'total';
-  readonly groupKey: string;
-  readonly provider?: string;
-  readonly cloudAccountId?: string;
-  readonly serviceName?: string;
-  readonly points: readonly MonthlyCostPoint[];
-  readonly totalCost: number;
-  readonly deltaAmount: number;
-  readonly deltaPercent: number;
-  readonly currency: string;
-}
-
+/**
+ * Datos de entrada para persistir una anomalía de costo detectada.
+ */
 export interface PersistCostAnomalyInput {
   readonly tenantId: string;
   readonly cloudAccountId?: string;
@@ -200,7 +39,9 @@ export interface PersistCostAnomalyInput {
   readonly serviceName?: string;
   readonly resourceId?: string;
   readonly environment?: string;
+  /** Inicio del periodo analizado. */
   readonly periodStart: Date;
+  /** Fin del periodo analizado. */
   readonly periodEnd: Date;
   readonly baselineCost: number;
   readonly observedCost: number;
@@ -213,6 +54,9 @@ export interface PersistCostAnomalyInput {
   readonly evidence?: unknown;
 }
 
+/**
+ * Datos de entrada para persistir un pronóstico de costo generado.
+ */
 export interface PersistCostForecastInput {
   readonly tenantId: string;
   readonly cloudAccountId?: string;
@@ -220,6 +64,7 @@ export interface PersistCostForecastInput {
   readonly serviceName?: string;
   readonly groupBy: AnalyticsGroupBy | 'total';
   readonly groupKey: string;
+  /** Mes pronosticado. */
   readonly forecastMonth: Date;
   readonly predictedCost: number;
   readonly lowerBound: number;
@@ -230,12 +75,73 @@ export interface PersistCostForecastInput {
   readonly evidence?: unknown;
 }
 
+/**
+ * Contrato de repositorio de analítica de costos.
+ *
+ * Puerto de dominio (DIP) cuya implementación concreta reside en la capa de
+ * infraestructura. Provee snapshots consolidados, series temporales y la
+ * persistencia/consulta de anomalías y pronósticos de costo.
+ */
 export interface ICostAnalyticsRepository {
+  /**
+   * Obtiene el snapshot analítico más reciente de un tenant.
+   *
+   * @param tenantId - Tenant cuyo snapshot se solicita.
+   * @returns Snapshot consolidado más reciente.
+   */
   getLatestTenantSnapshot(tenantId: string): Promise<CostAnalyticsSnapshot>;
+
+  /**
+   * Obtiene la serie mensual de costos de un tenant.
+   *
+   * @param tenantId - Tenant a consultar.
+   * @param filters  - Filtros opcionales de rango, dimensión y agrupación.
+   * @returns Puntos mensuales de costo.
+   */
   getMonthlyCostSeries(tenantId: string, filters?: AnalyticsFilters): Promise<MonthlyCostPoint[]>;
+
+  /**
+   * Obtiene la serie mensual de consumo y costo de un tenant.
+   *
+   * @param tenantId - Tenant a consultar.
+   * @param filters  - Filtros opcionales de rango, dimensión y agrupación.
+   * @returns Puntos mensuales de consumo.
+   */
   getMonthlyUsageSeries(tenantId: string, filters?: AnalyticsFilters): Promise<MonthlyUsagePoint[]>;
+
+  /**
+   * Busca anomalías de costo de un tenant.
+   *
+   * @param tenantId - Tenant a consultar.
+   * @param filters  - Filtros opcionales.
+   * @returns Anomalías encontradas (posiblemente vacío).
+   */
   findAnomalies(tenantId: string, filters?: AnalyticsFilters): Promise<CostAnomaly[]>;
+
+  /**
+   * Reemplaza el conjunto de anomalías de un tenant por el indicado.
+   *
+   * @param tenantId  - Tenant cuyas anomalías se reemplazan.
+   * @param anomalies - Nuevo conjunto de anomalías a persistir.
+   * @returns Anomalías persistidas resultantes.
+   */
   replaceAnomalies(tenantId: string, anomalies: readonly PersistCostAnomalyInput[]): Promise<CostAnomaly[]>;
+
+  /**
+   * Busca pronósticos de costo de un tenant.
+   *
+   * @param tenantId - Tenant a consultar.
+   * @param filters  - Filtros opcionales.
+   * @returns Pronósticos encontrados (posiblemente vacío).
+   */
   findForecasts(tenantId: string, filters?: AnalyticsFilters): Promise<CostForecast[]>;
+
+  /**
+   * Reemplaza el conjunto de pronósticos de un tenant por el indicado.
+   *
+   * @param tenantId  - Tenant cuyos pronósticos se reemplazan.
+   * @param forecasts - Nuevo conjunto de pronósticos a persistir.
+   * @returns Pronósticos persistidos resultantes.
+   */
   replaceForecasts(tenantId: string, forecasts: readonly PersistCostForecastInput[]): Promise<CostForecast[]>;
 }

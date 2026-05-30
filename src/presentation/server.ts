@@ -32,6 +32,7 @@ import { createAnalyticsRoutes } from './routes/analyticsRoutes.js';
 import { createAuthRoutes } from './routes/authRoutes.js';
 import { createCloudConnectionRoutes } from './routes/cloudConnectionRoutes.js';
 import { createCostRoutes } from './routes/costRoutes.js';
+import { createIngestionRoutes } from './routes/ingestionRoutes.js';
 import { createKpiRoutes } from './routes/kpiRoutes.js';
 import { createNotificationRoutes } from './routes/notificationRoutes.js';
 import { createRecommendationRoutes } from './routes/recommendationRoutes.js';
@@ -160,6 +161,7 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   app.use('/api/v1/auth', createAuthRoutes(authController));
   app.use('/api/v1/cloud-connections', createCloudConnectionRoutes(cloudConnectionController, requireAuth));
   app.use('/api/v1/costs', createCostRoutes(costController, requireAuth));
+  app.use('/api/v1/ingestion', createIngestionRoutes(cloudConnectionController, requireAuth));
   app.use('/api/v1/kpis', createKpiRoutes(kpiController, requireAuth));
   app.use('/api/v1/notifications', createNotificationRoutes(notificationController, requireAuth));
   app.use('/api/v1/recommendations', createRecommendationRoutes(recommendationController, requireAuth));

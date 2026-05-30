@@ -250,6 +250,64 @@ export class CloudConnectionController {
   };
 
   /**
+   * Lista el historial de trabajos de ingesta del tenant autenticado (todas sus
+   * conexiones), del más reciente al más antiguo.
+   *
+   * Sirve: GET /api/v1/ingestion/history
+   * Autenticación: requerida. Usa `req.auth.tenantId`.
+   *
+   * Parámetros de consulta (`req.query`):
+   * - `limit` (opcional): máximo de resultados; el servicio lo acota a [1, 200].
+   *
+   * Respuestas:
+   * - 200: `{ success: true, jobs }`.
+   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
+   * - 500: error inesperado (ver {@link respondWithError}).
+   */
+  public listIngestionHistory = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const tenantId = this.requireTenant(req);
+      const jobs = await this.cloudConnectionService.listIngestionHistory(
+        tenantId,
+        this.parseLimit(req.query['limit']),
+      );
+
+      res.status(200).json({ success: true, jobs });
+    } catch (error: unknown) {
+      this.respondWithError(res, error);
+    }
+  };
+
+  /**
+   * Lista los controles de calidad de datos del tenant autenticado, del más
+   * reciente al más antiguo.
+   *
+   * Sirve: GET /api/v1/ingestion/data-quality
+   * Autenticación: requerida. Usa `req.auth.tenantId`.
+   *
+   * Parámetros de consulta (`req.query`):
+   * - `limit` (opcional): máximo de resultados; el servicio lo acota a [1, 200].
+   *
+   * Respuestas:
+   * - 200: `{ success: true, checks }`.
+   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
+   * - 500: error inesperado (ver {@link respondWithError}).
+   */
+  public listDataQuality = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const tenantId = this.requireTenant(req);
+      const checks = await this.cloudConnectionService.listDataQualityChecks(
+        tenantId,
+        this.parseLimit(req.query['limit']),
+      );
+
+      res.status(200).json({ success: true, checks });
+    } catch (error: unknown) {
+      this.respondWithError(res, error);
+    }
+  };
+
+  /**
    * Garantiza que la petición está autenticada y devuelve el `tenantId` del
    * contexto de autenticación. Lanza AUTHENTICATION_REQUIRED (mapeado a 401) si
    * `req.auth` no está presente.
@@ -334,6 +392,22 @@ export class CloudConnectionController {
     }
 
     return sourceType as IngestionSourceType;
+  }
+
+  /**
+   * Convierte el query param `limit` (string | string[] | undefined) a número,
+   * o `undefined` si no viene o no es numérico. El acotado al rango válido lo
+   * realiza el servicio ({@link CloudConnectionService.listIngestionHistory}).
+   */
+  private parseLimit(value: unknown): number | undefined {
+    const raw = Array.isArray(value) ? value[0] : value;
+
+    if (typeof raw !== 'string' || raw.trim() === '') {
+      return undefined;
+    }
+
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
   }
 
   /**

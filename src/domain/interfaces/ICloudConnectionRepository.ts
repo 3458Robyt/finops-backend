@@ -1,5 +1,6 @@
 import type {
   CloudConnectionSummary,
+  DataQualityStatus,
   IngestionHealthSummary,
   IngestionSourceType,
   ProviderCatalogEntry,
@@ -63,6 +64,55 @@ export interface IngestionJobSummary {
   readonly maxAttempts: number;
   readonly createdAt: Date;
   readonly updatedAt: Date;
+}
+
+/**
+ * Elemento del historial de trabajos de ingesta a nivel tenant.
+ *
+ * Proyección de solo lectura de un `ingestion_jobs` para mostrar el historial
+ * cronológico de ingestas del tenant (todas sus conexiones), incluyendo el
+ * detalle de reintentos y el mensaje de error cuando el trabajo falló.
+ */
+export interface IngestionJobHistoryItem {
+  readonly id: string;
+  readonly cloudConnectionId: string;
+  readonly sourceType: IngestionSourceType;
+  /** Estado actual del ciclo de vida del trabajo de ingesta. */
+  readonly status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED';
+  /** Cantidad de intentos ya ejecutados. */
+  readonly attempts: number;
+  /** Cantidad máxima de intentos permitidos. */
+  readonly maxAttempts: number;
+  readonly targetStart: Date;
+  readonly targetEnd: Date;
+  /** Mensaje de error del último intento fallido, si lo hubo. */
+  readonly errorMessage?: string;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+}
+
+/**
+ * Elemento de control de calidad de datos a nivel tenant.
+ *
+ * Proyección de solo lectura de un `data_quality_checks` para mostrar el
+ * resultado de los controles de calidad ejecutados sobre las fuentes de datos
+ * del tenant (frescura, completitud, etc.).
+ */
+export interface DataQualityCheckItem {
+  readonly id: string;
+  /** Conexión cloud asociada al control, si aplica. */
+  readonly cloudConnectionId?: string;
+  readonly sourceType: IngestionSourceType;
+  /** Nombre del control de calidad ejecutado. */
+  readonly checkName: string;
+  /** Resultado del control. */
+  readonly status: DataQualityStatus;
+  /** Fecha en la que se observó/ejecutó el control. */
+  readonly observedAt: Date;
+  /** Fecha en la que se esperaba el dato, si aplica (controles de frescura). */
+  readonly expectedAt?: Date;
+  /** Detalles adicionales del control (estructura libre, solo lectura). */
+  readonly details?: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -143,4 +193,30 @@ export interface ICloudConnectionRepository {
     tenantId: string,
     cloudConnectionId: string,
   ): Promise<IngestionHealthSummary | null>;
+
+  /**
+   * Lista el historial de trabajos de ingesta de un tenant (todas sus
+   * conexiones), del más reciente al más antiguo.
+   *
+   * @param tenantId - Tenant cuyo historial se consulta (aislamiento multi-tenant).
+   * @param limit    - Número máximo de trabajos a devolver.
+   * @returns Historial de trabajos de ingesta (posiblemente vacío).
+   */
+  listIngestionJobsForTenant(
+    tenantId: string,
+    limit: number,
+  ): Promise<readonly IngestionJobHistoryItem[]>;
+
+  /**
+   * Lista los controles de calidad de datos de un tenant, del más reciente al
+   * más antiguo.
+   *
+   * @param tenantId - Tenant cuyos controles se consultan (aislamiento multi-tenant).
+   * @param limit    - Número máximo de controles a devolver.
+   * @returns Controles de calidad de datos (posiblemente vacío).
+   */
+  listDataQualityChecksForTenant(
+    tenantId: string,
+    limit: number,
+  ): Promise<readonly DataQualityCheckItem[]>;
 }

@@ -1,7 +1,9 @@
 import type {
   CreateCloudConnectionInput,
   CreateIngestionJobInput,
+  DataQualityCheckItem,
   ICloudConnectionRepository,
+  IngestionJobHistoryItem,
   IngestionJobSummary,
 } from '../../domain/interfaces/ICloudConnectionRepository.js';
 import type {
@@ -173,6 +175,41 @@ export class CloudConnectionService {
     }
 
     return health;
+  }
+
+  /**
+   * Lista el historial de trabajos de ingesta del tenant (todas sus conexiones),
+   * del más reciente al más antiguo. El `limit` se acota al rango [1, 200] con
+   * un valor por defecto de 50.
+   */
+  public listIngestionHistory(
+    tenantId: string,
+    limit?: number,
+  ): Promise<readonly IngestionJobHistoryItem[]> {
+    return this.repository.listIngestionJobsForTenant(tenantId, this.clampLimit(limit));
+  }
+
+  /**
+   * Lista los controles de calidad de datos del tenant, del más reciente al más
+   * antiguo. El `limit` se acota al rango [1, 200] con un valor por defecto de 50.
+   */
+  public listDataQualityChecks(
+    tenantId: string,
+    limit?: number,
+  ): Promise<readonly DataQualityCheckItem[]> {
+    return this.repository.listDataQualityChecksForTenant(tenantId, this.clampLimit(limit));
+  }
+
+  /**
+   * Normaliza y acota el límite de resultados al rango [1, 200]. Valores no
+   * finitos o ausentes usan el valor por defecto (50); los decimales se truncan.
+   */
+  private clampLimit(limit: number | undefined): number {
+    if (limit === undefined || !Number.isFinite(limit)) {
+      return 50;
+    }
+
+    return Math.min(200, Math.max(1, Math.floor(limit)));
   }
 
   private requireNonEmpty(value: string, fieldName: string): string {

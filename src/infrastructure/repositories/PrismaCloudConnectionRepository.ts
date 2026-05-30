@@ -1,7 +1,9 @@
 import type {
   CreateCloudConnectionInput,
   CreateIngestionJobInput,
+  DataQualityCheckItem,
   ICloudConnectionRepository,
+  IngestionJobHistoryItem,
   IngestionJobSummary,
 } from '../../domain/interfaces/ICloudConnectionRepository.js';
 import type {
@@ -17,6 +19,8 @@ import {
   isJsonObject,
   mapCloudConnection,
   mapProvider,
+  toDataQualityCheckItem,
+  toIngestionJobHistoryItem,
 } from './mappers/cloudConnectionMappers.js';
 
 /**
@@ -277,5 +281,53 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     return this.prisma.ingestionJob.count({
       where: { tenantId, cloudConnectionId, status },
     });
+  }
+
+  /**
+   * Lista el historial de trabajos de ingesta de un tenant (todas sus
+   * conexiones), del más reciente al más antiguo, acotado a `limit`.
+   *
+   * Filtra por `tenantId` (aislamiento multi-tenant) y ordena por `createdAt`
+   * descendente. Mapea cada fila con {@link toIngestionJobHistoryItem}.
+   *
+   * @param tenantId Tenant cuyo historial se consulta.
+   * @param limit Número máximo de trabajos a devolver.
+   * @returns Historial de trabajos de ingesta; arreglo vacío si no hay.
+   */
+  public async listIngestionJobsForTenant(
+    tenantId: string,
+    limit: number,
+  ): Promise<readonly IngestionJobHistoryItem[]> {
+    const jobs = await this.prisma.ingestionJob.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+
+    return jobs.map((job) => toIngestionJobHistoryItem(job));
+  }
+
+  /**
+   * Lista los controles de calidad de datos de un tenant, del más reciente al
+   * más antiguo, acotado a `limit`.
+   *
+   * Filtra por `tenantId` (aislamiento multi-tenant) y ordena por `observedAt`
+   * descendente. Mapea cada fila con {@link toDataQualityCheckItem}.
+   *
+   * @param tenantId Tenant cuyos controles se consultan.
+   * @param limit Número máximo de controles a devolver.
+   * @returns Controles de calidad de datos; arreglo vacío si no hay.
+   */
+  public async listDataQualityChecksForTenant(
+    tenantId: string,
+    limit: number,
+  ): Promise<readonly DataQualityCheckItem[]> {
+    const checks = await this.prisma.dataQualityCheck.findMany({
+      where: { tenantId },
+      orderBy: { observedAt: 'desc' },
+      take: limit,
+    });
+
+    return checks.map((check) => toDataQualityCheckItem(check));
   }
 }

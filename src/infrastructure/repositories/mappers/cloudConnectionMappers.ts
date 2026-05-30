@@ -13,6 +13,10 @@ import type {
   CloudConnectionSummary,
   ProviderCatalogEntry,
 } from '../../../domain/models/CloudConnection.js';
+import type {
+  DataQualityCheckItem,
+  IngestionJobHistoryItem,
+} from '../../../domain/interfaces/ICloudConnectionRepository.js';
 import type { Prisma, PrismaClient } from '../../../generated/prisma/client.js';
 
 type PrismaProviderCatalog = Awaited<
@@ -21,6 +25,14 @@ type PrismaProviderCatalog = Awaited<
 
 type PrismaCloudConnection = Awaited<
   ReturnType<PrismaClient['cloudConnection']['findUnique']>
+>;
+
+type PrismaIngestionJob = Awaited<
+  ReturnType<PrismaClient['ingestionJob']['findUnique']>
+>;
+
+type PrismaDataQualityCheck = Awaited<
+  ReturnType<PrismaClient['dataQualityCheck']['findUnique']>
 >;
 
 /**
@@ -88,4 +100,58 @@ export function mapCloudConnection(
  */
 export function isJsonObject(value: Prisma.JsonValue | null): boolean {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Mapea una fila de `ingestion_jobs` al elemento de historial de dominio
+ * {@link IngestionJobHistoryItem}.
+ *
+ * Casos borde: `errorMessage` solo se incluye cuando no es `null`.
+ *
+ * @param job Fila no nula de trabajo de ingesta de Prisma.
+ * @returns Elemento de historial de ingesta de dominio.
+ */
+export function toIngestionJobHistoryItem(
+  job: NonNullable<PrismaIngestionJob>,
+): IngestionJobHistoryItem {
+  return {
+    id: job.id,
+    cloudConnectionId: job.cloudConnectionId,
+    sourceType: job.sourceType,
+    status: job.status,
+    attempts: job.attempts,
+    maxAttempts: job.maxAttempts,
+    targetStart: job.targetStart,
+    targetEnd: job.targetEnd,
+    ...(job.errorMessage !== null ? { errorMessage: job.errorMessage } : {}),
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+  };
+}
+
+/**
+ * Mapea una fila de `data_quality_checks` al elemento de dominio
+ * {@link DataQualityCheckItem}.
+ *
+ * Casos borde: `cloudConnectionId` y `expectedAt` solo se incluyen cuando no
+ * son `null`; `details` solo cuando es un objeto JSON (ver {@link isJsonObject}).
+ *
+ * @param check Fila no nula de control de calidad de Prisma.
+ * @returns Elemento de control de calidad de dominio.
+ */
+export function toDataQualityCheckItem(
+  check: NonNullable<PrismaDataQualityCheck>,
+): DataQualityCheckItem {
+  return {
+    id: check.id,
+    ...(check.cloudConnectionId !== null ? { cloudConnectionId: check.cloudConnectionId } : {}),
+    sourceType: check.sourceType,
+    checkName: check.checkName,
+    status: check.status,
+    observedAt: check.observedAt,
+    ...(check.expectedAt !== null ? { expectedAt: check.expectedAt } : {}),
+    ...(isJsonObject(check.details)
+      ? { details: check.details as Record<string, unknown> }
+      : {}),
+  };
 }

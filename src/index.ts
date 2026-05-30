@@ -32,6 +32,7 @@ import { DataIngestionService } from './application/services/DataIngestionServic
 import { FinOpsAiService } from './application/services/FinOpsAiService.js';
 import { KnowledgeGraphService } from './application/services/KnowledgeGraphService.js';
 import { SavingsReminderService } from './application/services/SavingsReminderService.js';
+import { TechnicalMetricsService } from './application/services/TechnicalMetricsService.js';
 import { TelegramBotService } from './application/services/TelegramBotService.js';
 import { TelegramClient } from './application/services/TelegramClient.js';
 import { TelegramLinkService } from './application/services/TelegramLinkService.js';
@@ -46,6 +47,7 @@ import { PrismaCostAnalyticsRepository } from './infrastructure/repositories/Pri
 import { PrismaCostRepository } from './infrastructure/repositories/PrismaCostRepository.js';
 import { PrismaNotificationRepository } from './infrastructure/repositories/PrismaNotificationRepository.js';
 import { PrismaRecommendationRepository } from './infrastructure/repositories/PrismaRecommendationRepository.js';
+import { PrismaResourceMetricRepository } from './infrastructure/repositories/PrismaResourceMetricRepository.js';
 import { PrismaTelegramRepository } from './infrastructure/repositories/PrismaTelegramRepository.js';
 import { PrismaUserRepository } from './infrastructure/repositories/PrismaUserRepository.js';
 import { Argon2PasswordHasher } from './infrastructure/security/Argon2PasswordHasher.js';
@@ -139,6 +141,7 @@ async function bootstrap(): Promise<void> {
   const costAnalyticsRepository = new PrismaCostAnalyticsRepository(prisma);
   const costRepository = new PrismaCostRepository(prisma);
   const recommendationRepository = new PrismaRecommendationRepository(prisma);
+  const resourceMetricRepository = new PrismaResourceMetricRepository(prisma);
   const notificationRepository = new PrismaNotificationRepository(prisma);
   const telegramRepository = new PrismaTelegramRepository(prisma);
   const agentContextRepository = new PrismaAgentContextRepository(prisma);
@@ -148,6 +151,7 @@ async function bootstrap(): Promise<void> {
   const tokenService = new JwtTokenService();
   const authService = new AuthService(userRepository, passwordHasher, tokenService);
   const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository);
+  const technicalMetricsService = new TechnicalMetricsService(resourceMetricRepository);
   const analyticsService = new CostAnalyticsService(costAnalyticsRepository);
   const savingsReminderService = new SavingsReminderService(recommendationRepository, notificationRepository);
   const aiGateway = new OpenAiCompatibleAiGateway();
@@ -195,6 +199,7 @@ async function bootstrap(): Promise<void> {
   const app = createExpressServer({
     authService,
     cloudConnectionService,
+    technicalMetricsService,
     analyticsService,
     aiService,
     agentInstructionService,

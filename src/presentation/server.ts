@@ -8,6 +8,7 @@ import type { AgentInstructionService } from '../application/services/AgentInstr
 import type { ContextSummaryBuilderService } from '../application/services/ContextSummaryBuilderService.js';
 import type { KnowledgeGraphService } from '../application/services/KnowledgeGraphService.js';
 import type { SavingsReminderService } from '../application/services/SavingsReminderService.js';
+import type { TechnicalMetricsService } from '../application/services/TechnicalMetricsService.js';
 import type { TelegramBotService } from '../application/services/TelegramBotService.js';
 import type { TelegramLinkService } from '../application/services/TelegramLinkService.js';
 import type { IAgentContextRepository } from '../domain/interfaces/IAgentContextRepository.js';
@@ -24,6 +25,7 @@ import { CostController } from './controllers/CostController.js';
 import { KpiController } from './controllers/KpiController.js';
 import { NotificationController } from './controllers/NotificationController.js';
 import { RecommendationController } from './controllers/RecommendationController.js';
+import { TechnicalMetricsController } from './controllers/TechnicalMetricsController.js';
 import { TelegramController } from './controllers/TelegramController.js';
 import { createAuthMiddleware } from './middleware/authMiddleware.js';
 import { createAgentRoutes } from './routes/agentRoutes.js';
@@ -36,6 +38,7 @@ import { createIngestionRoutes } from './routes/ingestionRoutes.js';
 import { createKpiRoutes } from './routes/kpiRoutes.js';
 import { createNotificationRoutes } from './routes/notificationRoutes.js';
 import { createRecommendationRoutes } from './routes/recommendationRoutes.js';
+import { createTechnicalMetricsRoutes } from './routes/technicalMetricsRoutes.js';
 import { createTelegramRoutes } from './routes/telegramRoutes.js';
 
 /**
@@ -51,6 +54,8 @@ interface ServerDependencies {
   readonly authService: AuthService;
   /** Servicio de gestión de conexiones a proveedores de nube. */
   readonly cloudConnectionService: CloudConnectionService;
+  /** Servicio de métricas técnicas de recursos cloud (CPU, memoria, IOPS, etc.). */
+  readonly technicalMetricsService: TechnicalMetricsService;
   /** Servicio de analítica de costos (anomalías, tendencias, forecast, etc.). */
   readonly analyticsService: CostAnalyticsService;
   /** Servicio de IA FinOps (chat y generación de recomendaciones). */
@@ -139,6 +144,9 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   const cloudConnectionController = new CloudConnectionController(
     dependencies.cloudConnectionService,
   );
+  const technicalMetricsController = new TechnicalMetricsController(
+    dependencies.technicalMetricsService,
+  );
   const costController = new CostController(dependencies.costRepository);
   const recommendationController = new RecommendationController(
     dependencies.recommendationRepository,
@@ -162,6 +170,7 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   app.use('/api/v1/cloud-connections', createCloudConnectionRoutes(cloudConnectionController, requireAuth));
   app.use('/api/v1/costs', createCostRoutes(costController, requireAuth));
   app.use('/api/v1/ingestion', createIngestionRoutes(cloudConnectionController, requireAuth));
+  app.use('/api/v1/technical-metrics', createTechnicalMetricsRoutes(technicalMetricsController, requireAuth));
   app.use('/api/v1/kpis', createKpiRoutes(kpiController, requireAuth));
   app.use('/api/v1/notifications', createNotificationRoutes(notificationController, requireAuth));
   app.use('/api/v1/recommendations', createRecommendationRoutes(recommendationController, requireAuth));

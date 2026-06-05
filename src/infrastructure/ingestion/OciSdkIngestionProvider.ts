@@ -1,10 +1,13 @@
 import * as oci from 'oci-sdk';
+import { Readable } from 'node:stream';
 import type {
   CloudIngestionJobContext,
   CloudIngestionProvider,
   CloudIngestionResult,
+  NormalizedFocusCostLineItem,
   NormalizedResourceMetricSample,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
+import { decodeMaybeGzip, parseFocusCsvToLineItems } from './focusCsvIngestion.js';
 import { getCredential, optionalString, readObjectArray, readStringArray, requireString } from './providerConfig.js';
 
 interface OciMetricDefinition {
@@ -14,6 +17,13 @@ interface OciMetricDefinition {
   readonly resourceId: string;
   readonly query?: string;
   readonly unit?: string;
+}
+
+interface OciFocusReportObject {
+  readonly namespaceName: string;
+  readonly bucketName: string;
+  readonly objectName: string;
+  readonly focusVersion: string;
 }
 
 interface OciMonitoringClient {
@@ -30,18 +40,18 @@ interface OciMonitoringClient {
   }>;
 }
 
+interface OciObjectStorageClient {
+  getObject(request: unknown): Promise<{
+    readonly getObjectBody?: unknown;
+  }>;
+}
+
 export class OciSdkIngestionProvider implements CloudIngestionProvider {
   public readonly providerCode = 'oci';
 
   public async collect(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {
     if (job.sourceType === 'BILLING_EXPORT') {
-      return this.emptyResult(0, [
-        'OCI Cost Reports FOCUS are the canonical cost source, but Object Storage report parsing is pending for this SDK worker slice.',
-      ], {
-        costSource: 'OCI Cost Reports FOCUS',
-        expectedRefreshHours: 6,
-        implemented: false,
-      });
+      return this.collectBillingExport(job);
     }
 
     if (job.sourceType === 'INVENTORY') {
@@ -127,15 +137,88 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     };
   }
 
+  private async collectBillingExport(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {
+    const objects = this.readFocusObjects(job);
+    if (objects.length === 0) {
+      return this.emptyResult(0, [
+        'No OCI FOCUS report objects configured in cloud connection metadata key ociFocusReportObjects.',
+      ], {
+        costSource: 'OCI Cost Reports FOCUS',
+        expectedRefreshHours: 6,
+        objectsConfigured: 0,
+      });
+    }
+
+    const client = this.createObjectStorageClient(job);
+    const focusRows: NormalizedFocusCostLineItem[] = [];
+    let apiCallCount = 0;
+
+    for (const object of objects) {
+      apiCallCount += 1;
+      const response = await client.getObject({
+        namespaceName: object.namespaceName,
+        bucketName: object.bucketName,
+        objectName: object.objectName,
+      });
+      const bytes = await this.bodyToBytes(response.getObjectBody);
+      const csvText = decodeMaybeGzip(bytes, object.objectName);
+      focusRows.push(...parseFocusCsvToLineItems({
+        tenantId: job.tenantId,
+        cloudConnectionId: job.cloudConnectionId,
+        provider: 'OCI',
+        focusVersion: object.focusVersion,
+        csvText,
+      }));
+    }
+
+    return {
+      apiCallCount,
+      objectsProcessed: objects.length,
+      focusRows,
+      resources: [],
+      metricSamples: [],
+      warnings: focusRows.length === 0 ? ['OCI FOCUS objects were read but no valid rows were parsed.'] : [],
+      coverage: {
+        costSource: 'OCI Cost Reports FOCUS',
+        expectedRefreshHours: 6,
+        objectsConfigured: objects.length,
+        rowsParsed: focusRows.length,
+      },
+    };
+  }
+
   private createMonitoringClient(job: CloudIngestionJobContext): OciMonitoringClient {
-    const credential = getCredential(job.connection.credentials, ['METRICS_READ', 'OPERATIONAL']);
+    const provider = this.createAuthProvider(job);
+    const client = new oci.monitoring.MonitoringClient({
+      authenticationDetailsProvider: provider,
+    });
+
+    return client as unknown as OciMonitoringClient;
+  }
+
+  private createObjectStorageClient(job: CloudIngestionJobContext): OciObjectStorageClient {
+    const provider = this.createAuthProvider(job);
+    const client = new oci.objectstorage.ObjectStorageClient({
+      authenticationDetailsProvider: provider,
+    });
+
+    return client as unknown as OciObjectStorageClient;
+  }
+
+  private createAuthProvider(job: CloudIngestionJobContext): oci.common.AuthenticationDetailsProvider {
+    const credential = getCredential(job.connection.credentials, [
+      'METRICS_READ',
+      'BILLING_EXPORT_READ',
+      'STORAGE_READ',
+      'OPERATIONAL',
+    ]);
     if (credential === undefined) {
-      throw new Error('OCI METRICS_READ or OPERATIONAL credential is required');
+      throw new Error('OCI METRICS_READ, BILLING_EXPORT_READ, STORAGE_READ or OPERATIONAL credential is required');
     }
 
     const regionId = optionalString(credential.payload['region']) ?? job.connection.defaultRegion ?? 'sa-bogota-1';
     const region = oci.common.Region.fromRegionId(regionId);
-    const provider = new oci.common.SimpleAuthenticationDetailsProvider(
+    return new oci.common.SimpleAuthenticationDetailsProvider(
       requireString(credential.payload['tenancyId'], 'OCI tenancyId'),
       requireString(credential.payload['userId'], 'OCI userId'),
       requireString(credential.payload['fingerprint'], 'OCI fingerprint'),
@@ -143,12 +226,6 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
       optionalString(credential.payload['passphrase']) ?? null,
       region,
     );
-
-    const client = new oci.monitoring.MonitoringClient({
-      authenticationDetailsProvider: provider,
-    });
-
-    return client as unknown as OciMonitoringClient;
   }
 
   private readMetricDefinitions(job: CloudIngestionJobContext): readonly OciMetricDefinition[] {
@@ -169,6 +246,15 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     });
   }
 
+  private readFocusObjects(job: CloudIngestionJobContext): readonly OciFocusReportObject[] {
+    return readObjectArray(job.connection.metadata, 'ociFocusReportObjects').map((item) => ({
+      namespaceName: requireString(item['namespaceName'], 'ociFocusReportObjects.namespaceName'),
+      bucketName: requireString(item['bucketName'], 'ociFocusReportObjects.bucketName'),
+      objectName: requireString(item['objectName'], 'ociFocusReportObjects.objectName'),
+      focusVersion: optionalString(item['focusVersion']) ?? '1.0',
+    }));
+  }
+
   private emptyResult(
     apiCallCount: number,
     warnings: readonly string[],
@@ -183,5 +269,25 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
       warnings,
       coverage,
     };
+  }
+
+  private async bodyToBytes(body: unknown): Promise<Uint8Array> {
+    if (body instanceof Uint8Array) {
+      return body;
+    }
+
+    if (body instanceof Readable) {
+      const chunks: Buffer[] = [];
+      for await (const chunk of body) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+      }
+      return Buffer.concat(chunks);
+    }
+
+    if (typeof body === 'string') {
+      return Buffer.from(body, 'utf8');
+    }
+
+    throw new Error('Unsupported OCI Object Storage body type');
   }
 }

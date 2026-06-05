@@ -38,6 +38,7 @@ import { TelegramClient } from './application/services/TelegramClient.js';
 import { TelegramLinkService } from './application/services/TelegramLinkService.js';
 import { TelegramMessageFormatter } from './application/services/TelegramMessageFormatter.js';
 import { CloudIngestionWorkerService } from './application/services/CloudIngestionWorkerService.js';
+import { startCloudIngestionWorkerLoop } from './application/services/CloudIngestionWorkerLoop.js';
 import { AWSProvider } from './infrastructure/providers/aws/AWSProvider.js';
 import { getPrismaClient } from './infrastructure/database/prisma.js';
 import { OpenAiCompatibleAiGateway } from './infrastructure/ai/OpenAiCompatibleAiGateway.js';
@@ -250,11 +251,17 @@ async function bootstrap(): Promise<void> {
 
     console.log(`   Ingestion worker: enabled (${workerId}, ${intervalMs}ms)`);
 
-    setInterval(() => {
-      ingestionWorker.runOnce(workerId).catch((error: unknown) => {
+    startCloudIngestionWorkerLoop({
+      worker: ingestionWorker,
+      workerId,
+      intervalMs,
+      onError: (error: unknown) => {
         console.error('Ingestion worker iteration failed:', error);
-      });
-    }, Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 30000);
+      },
+      onSkip: () => {
+        console.warn('Ingestion worker iteration skipped because previous run is still active');
+      },
+    });
   }
 }
 

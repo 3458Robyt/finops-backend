@@ -18,6 +18,9 @@
 export { AWSProvider } from './providers/aws/index.js';
 export { OpenAiCompatibleAiGateway } from './ai/OpenAiCompatibleAiGateway.js';
 export { getPrismaClient } from './database/prisma.js';
+export { AwsSdkIngestionProvider } from './ingestion/AwsSdkIngestionProvider.js';
+export { OciSdkIngestionProvider } from './ingestion/OciSdkIngestionProvider.js';
+export { PrismaCloudIngestionJobRepository } from './ingestion/PrismaCloudIngestionJobRepository.js';
 export { OCIProvider } from './providers/oci/index.js';
 export { PrismaCostAnalyticsRepository } from './repositories/PrismaCostAnalyticsRepository.js';
 export { PrismaAgentLearningRepository } from './repositories/PrismaAgentLearningRepository.js';

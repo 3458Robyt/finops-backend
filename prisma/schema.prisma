@@ -533,9 +533,12 @@ model IngestionJob {
   targetEnd         DateTime            @map("target_end") @db.Timestamptz(6)
   attempts          Int                 @default(0)
   maxAttempts       Int                 @default(3) @map("max_attempts")
+  startedAt         DateTime?           @map("started_at") @db.Timestamptz(6)
+  completedAt       DateTime?           @map("completed_at") @db.Timestamptz(6)
   lockedAt          DateTime?           @map("locked_at") @db.Timestamptz(6)
   lockedBy          String?             @map("locked_by")
   errorMessage      String?             @map("error_message") @db.Text
+  resultSummary     Json?               @map("result_summary")
   createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
   tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)

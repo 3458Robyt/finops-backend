@@ -37,9 +37,13 @@ import { TelegramBotService } from './application/services/TelegramBotService.js
 import { TelegramClient } from './application/services/TelegramClient.js';
 import { TelegramLinkService } from './application/services/TelegramLinkService.js';
 import { TelegramMessageFormatter } from './application/services/TelegramMessageFormatter.js';
+import { CloudIngestionWorkerService } from './application/services/CloudIngestionWorkerService.js';
 import { AWSProvider } from './infrastructure/providers/aws/AWSProvider.js';
 import { getPrismaClient } from './infrastructure/database/prisma.js';
 import { OpenAiCompatibleAiGateway } from './infrastructure/ai/OpenAiCompatibleAiGateway.js';
+import { AwsSdkIngestionProvider } from './infrastructure/ingestion/AwsSdkIngestionProvider.js';
+import { OciSdkIngestionProvider } from './infrastructure/ingestion/OciSdkIngestionProvider.js';
+import { PrismaCloudIngestionJobRepository } from './infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
 import { PrismaAgentContextRepository } from './infrastructure/repositories/PrismaAgentContextRepository.js';
 import { PrismaAgentLearningRepository } from './infrastructure/repositories/PrismaAgentLearningRepository.js';
 import { PrismaCloudConnectionRepository } from './infrastructure/repositories/PrismaCloudConnectionRepository.js';
@@ -51,6 +55,7 @@ import { PrismaResourceMetricRepository } from './infrastructure/repositories/Pr
 import { PrismaTelegramRepository } from './infrastructure/repositories/PrismaTelegramRepository.js';
 import { PrismaUserRepository } from './infrastructure/repositories/PrismaUserRepository.js';
 import { Argon2PasswordHasher } from './infrastructure/security/Argon2PasswordHasher.js';
+import { CredentialCipher } from './infrastructure/security/CredentialCipher.js';
 import { JwtTokenService } from './infrastructure/security/JwtTokenService.js';
 
 /**
@@ -192,6 +197,15 @@ async function bootstrap(): Promise<void> {
     process.env['TELEGRAM_BOT_USERNAME'],
   );
   const ingestionService = new DataIngestionService(providerRegistry, costRepository);
+  const ingestionWorker = process.env['INGESTION_WORKER_ENABLED'] === 'true'
+    ? new CloudIngestionWorkerService(
+      new PrismaCloudIngestionJobRepository(prisma, new CredentialCipher()),
+      [
+        new AwsSdkIngestionProvider(),
+        new OciSdkIngestionProvider(),
+      ],
+    )
+    : null;
 
   // ── 4. Iniciar Servidor RESTful ───────────────────────────────────
 
@@ -229,6 +243,19 @@ async function bootstrap(): Promise<void> {
     console.log(`   Costs: GET http://localhost:${PORT}/api/v1/costs?provider=oci&startDate=...&endDate=...`);
     console.log(`   Recommendations: GET http://localhost:${PORT}/api/v1/recommendations`);
   });
+
+  if (ingestionWorker !== null) {
+    const workerId = process.env['INGESTION_WORKER_ID'] ?? `finops-worker-${process.pid}`;
+    const intervalMs = Number.parseInt(process.env['INGESTION_WORKER_INTERVAL_MS'] ?? '30000', 10);
+
+    console.log(`   Ingestion worker: enabled (${workerId}, ${intervalMs}ms)`);
+
+    setInterval(() => {
+      ingestionWorker.runOnce(workerId).catch((error: unknown) => {
+        console.error('Ingestion worker iteration failed:', error);
+      });
+    }, Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 30000);
+  }
 }
 
 // ── Ejecución ─────────────────────────────────────────────────────

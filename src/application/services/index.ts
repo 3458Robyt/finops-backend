@@ -27,6 +27,10 @@ export { TelegramLinkService, type CreateTelegramLinkInput } from './TelegramLin
 export { TelegramMessageFormatter } from './TelegramMessageFormatter.js';
 export { ContextBudgeter } from './ContextBudgeter.js';
 export {
+  CloudIngestionWorkerService,
+  type CloudIngestionWorkerRunResult,
+} from './CloudIngestionWorkerService.js';
+export {
   CloudConnectionService,
   type ProvisionCloudConnectionInput,
   type ProvisionCloudConnectionResult,

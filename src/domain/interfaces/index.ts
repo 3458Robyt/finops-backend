@@ -70,6 +70,16 @@ export {
   type IngestionJobSummary,
 } from './ICloudConnectionRepository.js';
 export {
+  type CloudIngestionConnection,
+  type CloudIngestionCredential,
+  type CloudIngestionJobContext,
+  type CloudIngestionProvider,
+  type CloudIngestionResult,
+  type NormalizedCloudResource,
+  type NormalizedFocusCostLineItem,
+  type NormalizedResourceMetricSample,
+} from './ICloudIngestionProvider.js';
+export {
   type CloudProviderPlugin,
   type TemporaryAdminProvisioningInput,
   type TemporaryAdminProvisioningResult,

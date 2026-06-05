@@ -8,7 +8,14 @@ import type {
   NormalizedResourceMetricSample,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import { decodeMaybeGzip, parseFocusCsvToLineItems } from './focusCsvIngestion.js';
-import { getCredential, optionalString, readObjectArray, readStringArray, requireString } from './providerConfig.js';
+import {
+  getCredential,
+  optionalString,
+  readBoundedPositiveInteger,
+  readObjectArray,
+  readStringArray,
+  requireString,
+} from './providerConfig.js';
 
 interface OciMetricDefinition {
   readonly compartmentId: string;
@@ -24,6 +31,14 @@ interface OciFocusReportObject {
   readonly bucketName: string;
   readonly objectName: string;
   readonly focusVersion: string;
+}
+
+interface OciFocusReportLocation {
+  readonly namespaceName: string;
+  readonly bucketName: string;
+  readonly prefix: string;
+  readonly focusVersion: string;
+  readonly maxObjects: number;
 }
 
 interface OciMonitoringClient {
@@ -43,6 +58,14 @@ interface OciMonitoringClient {
 interface OciObjectStorageClient {
   getObject(request: unknown): Promise<{
     readonly getObjectBody?: unknown;
+  }>;
+  listObjects(request: unknown): Promise<{
+    readonly listObjects?: {
+      readonly objects?: readonly {
+        readonly name?: string;
+      }[];
+      readonly nextStartWith?: string;
+    };
   }>;
 }
 
@@ -138,20 +161,22 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
   }
 
   private async collectBillingExport(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {
-    const objects = this.readFocusObjects(job);
+    const client = this.createObjectStorageClient(job);
+    const discovery = await this.discoverFocusObjects(job, client);
+    const objects = [...this.readFocusObjects(job), ...discovery.objects];
     if (objects.length === 0) {
       return this.emptyResult(0, [
-        'No OCI FOCUS report objects configured in cloud connection metadata key ociFocusReportObjects.',
+        'No OCI FOCUS report objects configured or discovered. Configure ociFocusReportObjects or ociFocusReportLocations.',
       ], {
         costSource: 'OCI Cost Reports FOCUS',
         expectedRefreshHours: 6,
         objectsConfigured: 0,
+        prefixesConfigured: this.readFocusLocations(job).length,
       });
     }
 
-    const client = this.createObjectStorageClient(job);
     const focusRows: NormalizedFocusCostLineItem[] = [];
-    let apiCallCount = 0;
+    let apiCallCount = discovery.apiCallCount;
 
     for (const object of objects) {
       apiCallCount += 1;
@@ -182,6 +207,8 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
         costSource: 'OCI Cost Reports FOCUS',
         expectedRefreshHours: 6,
         objectsConfigured: objects.length,
+        objectsDiscovered: discovery.objects.length,
+        prefixesConfigured: this.readFocusLocations(job).length,
         rowsParsed: focusRows.length,
       },
     };
@@ -255,6 +282,63 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     }));
   }
 
+  private readFocusLocations(job: CloudIngestionJobContext): readonly OciFocusReportLocation[] {
+    return readObjectArray(job.connection.metadata, 'ociFocusReportLocations').map((item) => {
+      return {
+        namespaceName: requireString(item['namespaceName'], 'ociFocusReportLocations.namespaceName'),
+        bucketName: requireString(item['bucketName'], 'ociFocusReportLocations.bucketName'),
+        prefix: requireString(item['prefix'], 'ociFocusReportLocations.prefix'),
+        focusVersion: optionalString(item['focusVersion']) ?? '1.0',
+        maxObjects: readBoundedPositiveInteger(item['maxObjects'], 100, 1, 1000),
+      };
+    });
+  }
+
+  private async discoverFocusObjects(
+    job: CloudIngestionJobContext,
+    client: OciObjectStorageClient,
+  ): Promise<{ readonly objects: readonly OciFocusReportObject[]; readonly apiCallCount: number }> {
+    const locations = this.readFocusLocations(job);
+    const discovered: OciFocusReportObject[] = [];
+    let apiCallCount = 0;
+
+    for (const location of locations) {
+      let start: string | undefined;
+
+      while (discovered.length < location.maxObjects) {
+        apiCallCount += 1;
+        const response = await client.listObjects({
+          namespaceName: location.namespaceName,
+          bucketName: location.bucketName,
+          prefix: location.prefix,
+          limit: Math.min(1000, location.maxObjects - discovered.length),
+          ...(start !== undefined ? { start } : {}),
+        });
+
+        for (const object of response.listObjects?.objects ?? []) {
+          if (object.name === undefined || !this.isFocusObjectName(object.name)) {
+            continue;
+          }
+
+          discovered.push({
+            namespaceName: location.namespaceName,
+            bucketName: location.bucketName,
+            objectName: object.name,
+            focusVersion: location.focusVersion,
+          });
+        }
+
+        if (response.listObjects?.nextStartWith === undefined) {
+          break;
+        }
+
+        start = response.listObjects.nextStartWith;
+      }
+    }
+
+    return { objects: discovered, apiCallCount };
+  }
+
   private emptyResult(
     apiCallCount: number,
     warnings: readonly string[],
@@ -289,5 +373,10 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     }
 
     throw new Error('Unsupported OCI Object Storage body type');
+  }
+
+  private isFocusObjectName(name: string): boolean {
+    const lower = name.toLowerCase();
+    return lower.endsWith('.csv') || lower.endsWith('.csv.gz');
   }
 }

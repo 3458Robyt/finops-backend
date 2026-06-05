@@ -45,3 +45,16 @@ export function readStringArray(
 
   return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
 }
+
+export function readBoundedPositiveInteger(
+  value: unknown,
+  defaultValue: number,
+  minValue: number,
+  maxValue: number,
+): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return defaultValue;
+  }
+
+  return Math.max(minValue, Math.min(maxValue, Math.floor(value)));
+}

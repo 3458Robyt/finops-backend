@@ -3,7 +3,7 @@ import {
   GetMetricDataCommand,
   type MetricDataQuery,
 } from '@aws-sdk/client-cloudwatch';
-import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 import { STSClient, AssumeRoleCommand } from '@aws-sdk/client-sts';
 import type { AwsCredentialIdentity } from '@smithy/types';
 import { Readable } from 'node:stream';
@@ -15,7 +15,13 @@ import type {
   NormalizedResourceMetricSample,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import { decodeMaybeGzip, parseFocusCsvToLineItems } from './focusCsvIngestion.js';
-import { getCredential, optionalString, readObjectArray, requireString } from './providerConfig.js';
+import {
+  getCredential,
+  optionalString,
+  readBoundedPositiveInteger,
+  readObjectArray,
+  requireString,
+} from './providerConfig.js';
 
 interface AwsMetricDefinition {
   readonly externalResourceId: string;
@@ -32,6 +38,14 @@ interface AwsFocusExportObject {
   readonly key: string;
   readonly region?: string;
   readonly focusVersion: string;
+}
+
+interface AwsFocusExportLocation {
+  readonly bucket: string;
+  readonly prefix: string;
+  readonly region?: string;
+  readonly focusVersion: string;
+  readonly maxObjects: number;
 }
 
 export class AwsSdkIngestionProvider implements CloudIngestionProvider {
@@ -153,16 +167,6 @@ export class AwsSdkIngestionProvider implements CloudIngestionProvider {
   }
 
   private async collectBillingExport(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {
-    const objects = this.readFocusObjects(job);
-    if (objects.length === 0) {
-      return this.emptyResult(0, [
-        'No AWS FOCUS export objects configured in cloud connection metadata key awsFocusExportObjects.',
-      ], {
-        costSource: 'AWS Data Exports FOCUS to S3',
-        objectsConfigured: 0,
-      });
-    }
-
     const credential = getCredential(job.connection.credentials, ['BILLING_EXPORT_READ', 'STORAGE_READ', 'OPERATIONAL']);
     if (credential === undefined) {
       throw new Error('AWS BILLING_EXPORT_READ, STORAGE_READ or OPERATIONAL credential is required');
@@ -170,8 +174,22 @@ export class AwsSdkIngestionProvider implements CloudIngestionProvider {
 
     const baseRegion = job.connection.defaultRegion ?? 'us-east-1';
     const assumed = await this.assumeRole(credential, baseRegion);
-    const focusRows: NormalizedFocusCostLineItem[] = [];
     let apiCallCount = 1;
+    const discovery = await this.discoverFocusObjects(job, assumed, baseRegion);
+    apiCallCount += discovery.apiCallCount;
+    const objects = [...this.readFocusObjects(job), ...discovery.objects];
+
+    if (objects.length === 0) {
+      return this.emptyResult(0, [
+        'No AWS FOCUS export objects configured or discovered. Configure awsFocusExportObjects or awsFocusExportLocations.',
+      ], {
+        costSource: 'AWS Data Exports FOCUS to S3',
+        objectsConfigured: 0,
+        prefixesConfigured: this.readFocusLocations(job).length,
+      });
+    }
+
+    const focusRows: NormalizedFocusCostLineItem[] = [];
 
     for (const object of objects) {
       apiCallCount += 1;
@@ -205,6 +223,8 @@ export class AwsSdkIngestionProvider implements CloudIngestionProvider {
       coverage: {
         costSource: 'AWS Data Exports FOCUS to S3',
         objectsConfigured: objects.length,
+        objectsDiscovered: discovery.objects.length,
+        prefixesConfigured: this.readFocusLocations(job).length,
         rowsParsed: focusRows.length,
       },
     };
@@ -273,6 +293,69 @@ export class AwsSdkIngestionProvider implements CloudIngestionProvider {
     });
   }
 
+  private readFocusLocations(job: CloudIngestionJobContext): readonly AwsFocusExportLocation[] {
+    return readObjectArray(job.connection.metadata, 'awsFocusExportLocations').map((item) => {
+      const region = optionalString(item['region']);
+      return {
+        bucket: requireString(item['bucket'], 'awsFocusExportLocations.bucket'),
+        prefix: requireString(item['prefix'], 'awsFocusExportLocations.prefix'),
+        focusVersion: optionalString(item['focusVersion']) ?? '1.0',
+        maxObjects: readBoundedPositiveInteger(item['maxObjects'], 100, 1, 1000),
+        ...(region !== undefined ? { region } : {}),
+      };
+    });
+  }
+
+  private async discoverFocusObjects(
+    job: CloudIngestionJobContext,
+    credentials: AwsCredentialIdentity,
+    defaultRegion: string,
+  ): Promise<{ readonly objects: readonly AwsFocusExportObject[]; readonly apiCallCount: number }> {
+    const locations = this.readFocusLocations(job);
+    const discovered: AwsFocusExportObject[] = [];
+    let apiCallCount = 0;
+
+    for (const location of locations) {
+      const client = new S3Client({
+        region: location.region ?? defaultRegion,
+        credentials,
+        maxAttempts: 2,
+      });
+      let continuationToken: string | undefined;
+
+      while (discovered.length < location.maxObjects) {
+        apiCallCount += 1;
+        const response = await client.send(new ListObjectsV2Command({
+          Bucket: location.bucket,
+          Prefix: location.prefix,
+          MaxKeys: Math.min(1000, location.maxObjects - discovered.length),
+          ...(continuationToken !== undefined ? { ContinuationToken: continuationToken } : {}),
+        }));
+
+        for (const object of response.Contents ?? []) {
+          if (object.Key === undefined || !this.isFocusObjectName(object.Key)) {
+            continue;
+          }
+
+          discovered.push({
+            bucket: location.bucket,
+            key: object.Key,
+            focusVersion: location.focusVersion,
+            ...(location.region !== undefined ? { region: location.region } : {}),
+          });
+        }
+
+        if (response.IsTruncated !== true || response.NextContinuationToken === undefined) {
+          break;
+        }
+
+        continuationToken = response.NextContinuationToken;
+      }
+    }
+
+    return { objects: discovered, apiCallCount };
+  }
+
   private groupByRegion(
     definitions: readonly AwsMetricDefinition[],
     defaultRegion: string,
@@ -333,5 +416,10 @@ export class AwsSdkIngestionProvider implements CloudIngestionProvider {
     }
 
     throw new Error('Unsupported AWS S3 body type');
+  }
+
+  private isFocusObjectName(name: string): boolean {
+    const lower = name.toLowerCase();
+    return lower.endsWith('.csv') || lower.endsWith('.csv.gz');
   }
 }

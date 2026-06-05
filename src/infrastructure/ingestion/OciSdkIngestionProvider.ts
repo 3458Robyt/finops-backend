@@ -43,6 +43,15 @@ interface OciFocusReportLocation {
 
 interface OciMonitoringClient {
   summarizeMetricsData(request: unknown): Promise<{
+    readonly items?: readonly {
+      readonly namespace?: string;
+      readonly name?: string;
+      readonly dimensions?: Record<string, string>;
+      readonly aggregatedDatapoints?: readonly {
+        readonly timestamp?: Date | string;
+        readonly value?: number;
+      }[];
+    }[];
     readonly summarizedMetricsData?: readonly {
       readonly namespace?: string;
       readonly name?: string;
@@ -105,8 +114,8 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
 
     for (const definition of definitions) {
       apiCallCount += 1;
-      const query = definition.query ?? `${definition.metricName}[30m].mean()`;
-      const response = await monitoringClient.summarizeMetricsData({
+      const query = definition.query ?? this.buildResourceMetricQuery(definition);
+      const response = await this.withProviderRetry(() => monitoringClient.summarizeMetricsData({
         compartmentId: definition.compartmentId,
         summarizeMetricsDataDetails: {
           namespace: definition.namespace,
@@ -115,9 +124,9 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
           endTime: job.targetEnd,
           resolution: '30m',
         },
-      });
+      }));
 
-      for (const metric of response.summarizedMetricsData ?? []) {
+      for (const metric of response.items ?? response.summarizedMetricsData ?? []) {
         const externalResourceId = metric.dimensions?.['resourceId'] ?? definition.resourceId;
         for (const point of metric.aggregatedDatapoints ?? []) {
           if (point.timestamp === undefined || point.value === undefined) {
@@ -180,11 +189,11 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
 
     for (const object of objects) {
       apiCallCount += 1;
-      const response = await client.getObject({
+      const response = await this.withProviderRetry(() => client.getObject({
         namespaceName: object.namespaceName,
         bucketName: object.bucketName,
         objectName: object.objectName,
-      });
+      }));
       const bytes = await this.bodyToBytes(response.getObjectBody);
       const csvText = decodeMaybeGzip(bytes, object.objectName);
       focusRows.push(...parseFocusCsvToLineItems({
@@ -307,13 +316,13 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
 
       while (discovered.length < location.maxObjects) {
         apiCallCount += 1;
-        const response = await client.listObjects({
+        const response = await this.withProviderRetry(() => client.listObjects({
           namespaceName: location.namespaceName,
           bucketName: location.bucketName,
           prefix: location.prefix,
           limit: Math.min(1000, location.maxObjects - discovered.length),
           ...(start !== undefined ? { start } : {}),
-        });
+        }));
 
         for (const object of response.listObjects?.objects ?? []) {
           if (object.name === undefined || !this.isFocusObjectName(object.name)) {
@@ -378,5 +387,40 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
   private isFocusObjectName(name: string): boolean {
     const lower = name.toLowerCase();
     return lower.endsWith('.csv') || lower.endsWith('.csv.gz');
+  }
+
+  private buildResourceMetricQuery(definition: OciMetricDefinition): string {
+    return `${definition.metricName}[30m]{resourceId = "${definition.resourceId}"}.mean()`;
+  }
+
+  private async withProviderRetry<T>(operation: () => Promise<T>): Promise<T> {
+    const delaysMs = [1000, 2500, 5000];
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= delaysMs.length; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+        if (!this.isRateLimitError(error) || attempt === delaysMs.length) {
+          throw error;
+        }
+
+        await this.sleep(delaysMs[attempt]!);
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error('OCI operation failed after retries');
+  }
+
+  private isRateLimitError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /rate exceeded|too many requests|429/i.test(message);
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
   }
 }

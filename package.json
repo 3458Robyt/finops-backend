@@ -15,8 +15,10 @@
     "prisma:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
     "import:oci-focus": "tsx scripts/import-oci-focus.ts",
+    "ingestion:create-job": "tsx scripts/create-ingestion-job.ts",
     "ingestion:worker:once": "tsx scripts/run-ingestion-worker-once.ts",
     "ingestion:worker:preflight": "tsx scripts/run-ingestion-worker-once.ts --preflight",
+    "oci:register-profile": "tsx scripts/register-oci-profile-credential.ts",
     "telegram:set-webhook": "tsx scripts/telegram-set-webhook.ts"
   },
   "keywords": [

@@ -7,6 +7,11 @@ import { PrismaCloudIngestionJobRepository } from '../src/infrastructure/ingesti
 import { CredentialCipher } from '../src/infrastructure/security/CredentialCipher.js';
 
 async function main(): Promise<void> {
+  if (process.argv.includes('--preflight')) {
+    printPreflight();
+    return;
+  }
+
   const startedAt = Date.now();
   const prisma = getPrismaClient();
   const workerId = process.env['INGESTION_WORKER_ID'] ?? `manual-worker-${process.pid}`;
@@ -25,6 +30,34 @@ async function main(): Promise<void> {
     durationMs,
     result,
   }, null, 2));
+}
+
+function printPreflight(): void {
+  const checks = {
+    DATABASE_URL: isConfigured(process.env['DATABASE_URL']),
+    CREDENTIAL_ENCRYPTION_KEY: isValidCredentialKey(process.env['CREDENTIAL_ENCRYPTION_KEY']),
+  };
+
+  console.log(JSON.stringify({
+    ok: Object.values(checks).every(Boolean),
+    checks,
+    commands: {
+      generateCredentialKey: 'node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"',
+      runOnce: 'npm run ingestion:worker:once',
+    },
+  }, null, 2));
+}
+
+function isConfigured(value: string | undefined): boolean {
+  return value !== undefined && value.trim() !== '';
+}
+
+function isValidCredentialKey(value: string | undefined): boolean {
+  if (!isConfigured(value)) {
+    return false;
+  }
+
+  return Buffer.from(value, 'base64').length === 32;
 }
 
 main().catch((error: unknown) => {

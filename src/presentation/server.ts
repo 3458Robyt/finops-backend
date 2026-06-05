@@ -1,5 +1,7 @@
 import express, { type Express } from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import { rateLimit } from 'express-rate-limit';
 import type { AuthService } from '../application/services/AuthService.js';
 import type { CloudConnectionService } from '../application/services/CloudConnectionService.js';
 import type { CostAnalyticsService } from '../application/services/CostAnalyticsService.js';
@@ -126,11 +128,35 @@ interface ServerDependencies {
 export function createExpressServer(dependencies: ServerDependencies): Express {
   const app = express();
 
+  // Cabeceras de seguridad HTTP (X-Content-Type-Options, HSTS, etc.).
+  // Se monta antes de CORS; helmet no interfiere con las cabeceras CORS.
+  app.use(helmet());
   app.use(cors({
     origin: process.env['CORS_ORIGIN'] ?? 'http://localhost:5173',
     credentials: true,
   }));
   app.use(express.json());
+
+  // Limitador anti fuerza bruta para el login (POST /api/v1/auth/login).
+  const authLoginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutos
+    limit: 10, // 10 intentos por ventana por IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+      success: false,
+      code: 'RATE_LIMITED',
+      message: 'Demasiados intentos de inicio de sesión. Intenta de nuevo más tarde.',
+    },
+  });
+
+  // Limitador anti flood para el webhook de Telegram (POST /api/v1/telegram/webhook).
+  const telegramWebhookLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minuto
+    limit: 120, // 120 updates por minuto por IP
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
 
   const aiController = new AiController(dependencies.aiService, dependencies.learningService);
   const agentController = new AgentController(
@@ -162,6 +188,10 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
     dependencies.telegramEnabled,
   );
   const requireAuth = createAuthMiddleware(dependencies.tokenService);
+
+  // Limitadores específicos montados ANTES de sus routers para ejecutarse primero.
+  app.use('/api/v1/auth/login', authLoginLimiter);
+  app.use('/api/v1/telegram/webhook', telegramWebhookLimiter);
 
   app.use('/api/v1/agent', createAgentRoutes(agentController, requireAuth));
   app.use('/api/v1/ai', createAiRoutes(aiController, requireAuth));

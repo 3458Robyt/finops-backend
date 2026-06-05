@@ -13,9 +13,14 @@ import type { OciFocusReportRow } from './ociFocusRowMapper.js';
  * Calcula un hash SHA-256 estable que identifica de forma única una línea del
  * reporte FOCUS de OCI.
  *
- * Combina los campos más discriminantes de la línea (cuenta, costes, periodos,
- * recurso, servicio y los números de referencia propios de OCI) y los serializa
- * a JSON antes de aplicar SHA-256. Sirve para deduplicar líneas en ingestas.
+ * Combina solo los campos inmutables que identifican la línea (cuenta, cargo,
+ * periodos, recurso, servicio, región, unidad de uso y los números de referencia
+ * propios de OCI) y los serializa a JSON antes de aplicar SHA-256. Sirve para
+ * deduplicar líneas en ingestas.
+ *
+ * No incluye medidas mutables (costes ni cantidad de uso): una corrección de
+ * monto debe actualizar la línea existente, no generar un hash distinto que la
+ * duplique.
  *
  * @param row - Fila normalizada del reporte FOCUS de OCI.
  * @returns Hash SHA-256 en hexadecimal de la identidad de la línea.
@@ -23,12 +28,10 @@ import type { OciFocusReportRow } from './ociFocusRowMapper.js';
 export function buildOciFocusLineHash(row: OciFocusReportRow): string {
   return sha256Json({
     billingAccountId: row.billingAccountId,
-    billedCost: row.billedCost,
     chargeCategory: row.chargeCategory,
     chargeDescription: row.chargeDescription,
     chargePeriodEnd: row.chargePeriodEnd.toISOString(),
     chargePeriodStart: row.chargePeriodStart.toISOString(),
-    effectiveCost: row.effectiveCost,
     ociBackReferenceNumber: row.oci['oci_BackReferenceNumber'] ?? null,
     ociReferenceNumber: row.oci['oci_ReferenceNumber'] ?? null,
     provider: row.provider,
@@ -36,7 +39,6 @@ export function buildOciFocusLineHash(row: OciFocusReportRow): string {
     resourceId: row.resourceId,
     serviceName: row.serviceName,
     subAccountId: row.subAccountId,
-    usageQuantity: row.usageQuantity,
     usageUnit: row.usageUnit,
   });
 }

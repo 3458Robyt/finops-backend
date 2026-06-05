@@ -119,6 +119,22 @@ describe('OCI FOCUS report parser', () => {
     expect(metricHash).toHaveLength(64);
   });
 
+  it('keeps the same identity hash when only cost measures change', () => {
+    const result = parseOciFocusCsvText(`${header}\n${row}\n`);
+    const parsed = result.rows[0];
+
+    expect(parsed).toBeDefined();
+
+    const corrected = {
+      ...parsed!,
+      billedCost: 999.99,
+      effectiveCost: 888.88,
+      usageQuantity: 42,
+    };
+
+    expect(buildOciFocusLineHash(corrected)).toBe(buildOciFocusLineHash(parsed!));
+  });
+
   it('reads gzipped CSV reports', async () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'oci-focus-'));
     const filePath = path.join(directory, 'report.csv.gz');

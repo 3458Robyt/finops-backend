@@ -5,6 +5,22 @@ import type { ITokenService, TokenIssueResult } from '../../domain/interfaces/IT
 import { AuthenticationError, ConfigurationError } from '../../domain/errors/errors.js';
 
 /**
+ * Conjunto de roles válidos aceptados al verificar un token JWT.
+ *
+ * Debe mantenerse sincronizado con el tipo {@link UserRole} y el enum `UserRole`
+ * de `prisma/schema.prisma`. Cubre los seis roles reales del sistema:
+ * `ADMIN`, `VIEWER`, `OPERATOR_ADMIN`, `FINOPS_TECHNICIAN`, `CLIENT_APPROVER` y `CLIENT_VIEWER`.
+ */
+const VALID_USER_ROLES: ReadonlySet<UserRole> = new Set<UserRole>([
+  'ADMIN',
+  'VIEWER',
+  'OPERATOR_ADMIN',
+  'FINOPS_TECHNICIAN',
+  'CLIENT_APPROVER',
+  'CLIENT_VIEWER',
+]);
+
+/**
  * Configuración interna del servicio de tokens JWT, resuelta en el constructor
  * a partir de los parámetros recibidos o de variables de entorno.
  */
@@ -121,7 +137,9 @@ export class JwtTokenService implements ITokenService {
    *
    * Valida algoritmo (`HS256`), emisor, audiencia y caducidad, y comprueba que
    * los claims obligatorios (`sub`, `jti`, `tenantId`, `email`, `role`) estén
-   * presentes y bien tipados. El `role` debe ser `ADMIN` o `VIEWER`.
+   * presentes y bien tipados. El `role` debe ser uno de los seis roles válidos
+   * del sistema (`ADMIN`, `VIEWER`, `OPERATOR_ADMIN`, `FINOPS_TECHNICIAN`,
+   * `CLIENT_APPROVER`, `CLIENT_VIEWER`).
    *
    * @param token - Token JWT en formato compacto a verificar.
    * @returns El {@link AuthContext} reconstruido a partir de los claims.
@@ -147,7 +165,8 @@ export class JwtTokenService implements ITokenService {
         typeof payload.jti !== 'string' ||
         typeof payload.tenantId !== 'string' ||
         typeof payload.email !== 'string' ||
-        (payload.role !== 'ADMIN' && payload.role !== 'VIEWER')
+        typeof payload.role !== 'string' ||
+        !VALID_USER_ROLES.has(payload.role as UserRole)
       ) {
         throw new AuthenticationError('Invalid token claims');
       }

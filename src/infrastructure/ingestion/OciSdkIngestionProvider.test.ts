@@ -41,6 +41,52 @@ describe('OciSdkIngestionProvider', () => {
     ]);
     expect(result.warnings).toEqual([]);
   });
+
+  it('discovers and parses OCI FOCUS reports from Object Storage prefixes', async () => {
+    const provider = new OciSdkIngestionProvider();
+    const calls: string[] = [];
+
+    Object.assign(provider as unknown as { createObjectStorageClient: () => unknown }, {
+      createObjectStorageClient: () => ({
+        listObjects: async () => {
+          calls.push('listObjects');
+          return {
+            listObjects: {
+              objects: [
+                { name: 'reports/focus/2026-06/report.csv' },
+                { name: 'reports/focus/2026-06/readme.txt' },
+              ],
+            },
+          };
+        },
+        getObject: async () => {
+          calls.push('getObject');
+          return {
+            getObjectBody: Buffer.from(buildFocusCsv(), 'utf8'),
+          };
+        },
+      }),
+    });
+
+    const result = await provider.collect(buildOciFocusJob());
+
+    expect(calls).toEqual(['listObjects', 'getObject']);
+    expect(result.objectsProcessed).toBe(1);
+    expect(result.focusRows).toHaveLength(1);
+    expect(result.focusRows[0]).toMatchObject({
+      provider: 'OCI',
+      serviceName: 'Compute',
+      resourceId: 'ocid1.instance.oc1.test',
+      billedCost: 8.75,
+      consumedQuantity: 2,
+      consumedUnit: 'Hours',
+    });
+    expect(result.coverage).toMatchObject({
+      objectsDiscovered: 1,
+      rowsParsed: 1,
+    });
+    expect(result.warnings).toEqual([]);
+  });
 });
 
 function buildMetricJob(): CloudIngestionJobContext {
@@ -69,4 +115,72 @@ function buildMetricJob(): CloudIngestionJobContext {
       },
     },
   };
+}
+
+function buildOciFocusJob(): CloudIngestionJobContext {
+  return {
+    id: 'job_2',
+    tenantId: 'tenant_1',
+    cloudConnectionId: 'connection_1',
+    sourceType: 'BILLING_EXPORT',
+    targetStart: new Date('2026-06-04T01:30:00Z'),
+    targetEnd: new Date('2026-06-04T02:00:00Z'),
+    connection: {
+      id: 'connection_1',
+      tenantId: 'tenant_1',
+      providerCode: 'oci',
+      rootExternalId: 'ocid1.tenancy.oc1.test',
+      credentials: [],
+      metadata: {
+        ociFocusReportLocations: [
+          {
+            namespaceName: 'tenantnamespace',
+            bucketName: 'finops-billing',
+            prefix: 'reports/focus/',
+            focusVersion: '1.0',
+            maxObjects: 10,
+          },
+        ],
+      },
+    },
+  };
+}
+
+function buildFocusCsv(): string {
+  return [
+    [
+      'BilledCost',
+      'BillingCurrency',
+      'BillingAccountId',
+      'ChargeCategory',
+      'ChargePeriodStart',
+      'ChargePeriodEnd',
+      'ConsumedQuantity',
+      'ConsumedUnit',
+      'EffectiveCost',
+      'ListCost',
+      'ProviderName',
+      'RegionId',
+      'ResourceId',
+      'ServiceName',
+      'SubAccountId',
+    ].join(','),
+    [
+      '8.75',
+      'USD',
+      'tenancy-1',
+      'Usage',
+      '2026-06-01 00:00:00',
+      '2026-06-01 01:00:00',
+      '2',
+      'Hours',
+      '8',
+      '9',
+      'Oracle Cloud Infrastructure',
+      'sa-bogota-1',
+      'ocid1.instance.oc1.test',
+      'Compute',
+      'compartment-1',
+    ].join(','),
+  ].join('\n');
 }

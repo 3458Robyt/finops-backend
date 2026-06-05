@@ -48,6 +48,59 @@ describe('AwsSdkIngestionProvider', () => {
     ]);
     expect(result.warnings).toEqual([]);
   });
+
+  it('discovers and parses AWS FOCUS exports from S3 prefixes', async () => {
+    const provider = new AwsSdkIngestionProvider();
+    const commands: string[] = [];
+
+    Object.assign(provider as unknown as {
+      assumeRole: () => Promise<unknown>;
+      createS3Client: () => unknown;
+    }, {
+      assumeRole: async () => ({
+        accessKeyId: 'test',
+        secretAccessKey: 'test',
+        sessionToken: 'test',
+      }),
+      createS3Client: () => ({
+        send: async (command: { readonly constructor?: { readonly name?: string } }) => {
+          commands.push(command.constructor?.name ?? 'UnknownCommand');
+          if (command.constructor?.name === 'ListObjectsV2Command') {
+            return {
+              Contents: [
+                { Key: 'exports/focus/2026-06/report.csv' },
+                { Key: 'exports/focus/2026-06/readme.txt' },
+              ],
+              IsTruncated: false,
+            };
+          }
+
+          return {
+            Body: Buffer.from(buildFocusCsv(), 'utf8'),
+          };
+        },
+      }),
+    });
+
+    const result = await provider.collect(buildAwsFocusJob());
+
+    expect(commands).toEqual(['ListObjectsV2Command', 'GetObjectCommand']);
+    expect(result.objectsProcessed).toBe(1);
+    expect(result.focusRows).toHaveLength(1);
+    expect(result.focusRows[0]).toMatchObject({
+      provider: 'AWS',
+      serviceName: 'AmazonEC2',
+      resourceId: 'i-0123456789abcdef0',
+      billedCost: 12.5,
+      consumedQuantity: 4,
+      consumedUnit: 'Hours',
+    });
+    expect(result.coverage).toMatchObject({
+      objectsDiscovered: 1,
+      rowsParsed: 1,
+    });
+    expect(result.warnings).toEqual([]);
+  });
 });
 
 function buildMetricJob(): CloudIngestionJobContext {
@@ -89,4 +142,80 @@ function buildMetricJob(): CloudIngestionJobContext {
       },
     },
   };
+}
+
+function buildAwsFocusJob(): CloudIngestionJobContext {
+  return {
+    id: 'job_2',
+    tenantId: 'tenant_1',
+    cloudConnectionId: 'connection_1',
+    sourceType: 'BILLING_EXPORT',
+    targetStart: new Date('2026-06-04T01:30:00Z'),
+    targetEnd: new Date('2026-06-04T02:00:00Z'),
+    connection: {
+      id: 'connection_1',
+      tenantId: 'tenant_1',
+      providerCode: 'aws',
+      rootExternalId: '123456789012',
+      defaultRegion: 'us-east-1',
+      credentials: [
+        {
+          purpose: 'OPERATIONAL',
+          payload: {
+            roleArn: 'arn:aws:iam::123456789012:role/FinOpsReadOnly',
+          },
+        },
+      ],
+      metadata: {
+        awsFocusExportLocations: [
+          {
+            bucket: 'finops-billing',
+            prefix: 'exports/focus/',
+            region: 'us-east-1',
+            focusVersion: '1.0',
+            maxObjects: 10,
+          },
+        ],
+      },
+    },
+  };
+}
+
+function buildFocusCsv(): string {
+  return [
+    [
+      'BilledCost',
+      'BillingCurrency',
+      'BillingAccountId',
+      'ChargeCategory',
+      'ChargePeriodStart',
+      'ChargePeriodEnd',
+      'ConsumedQuantity',
+      'ConsumedUnit',
+      'EffectiveCost',
+      'ListCost',
+      'ProviderName',
+      'RegionId',
+      'ResourceId',
+      'ServiceName',
+      'SubAccountId',
+    ].join(','),
+    [
+      '12.5',
+      'USD',
+      'payer-1',
+      'Usage',
+      '2026-06-01 00:00:00',
+      '2026-06-01 01:00:00',
+      '4',
+      'Hours',
+      '10',
+      '15',
+      'Amazon Web Services',
+      'us-east-1',
+      'i-0123456789abcdef0',
+      'AmazonEC2',
+      'linked-1',
+    ].join(','),
+  ].join('\n');
 }

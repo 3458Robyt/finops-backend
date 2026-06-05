@@ -48,6 +48,38 @@ interface AwsFocusExportLocation {
   readonly maxObjects: number;
 }
 
+interface AwsCommandClient<TResponse> {
+  send(command: unknown): Promise<TResponse>;
+}
+
+interface AwsAssumeRoleResponse {
+  readonly Credentials?: {
+    readonly AccessKeyId?: string;
+    readonly SecretAccessKey?: string;
+    readonly SessionToken?: string;
+  };
+}
+
+interface AwsMetricDataResponse {
+  readonly MetricDataResults?: readonly {
+    readonly Id?: string;
+    readonly Timestamps?: readonly Date[];
+    readonly Values?: readonly number[];
+  }[];
+}
+
+interface AwsGetObjectResponse {
+  readonly Body?: unknown;
+}
+
+interface AwsListObjectsResponse {
+  readonly Contents?: readonly {
+    readonly Key?: string;
+  }[];
+  readonly IsTruncated?: boolean;
+  readonly NextContinuationToken?: string;
+}
+
 export class AwsSdkIngestionProvider implements CloudIngestionProvider {
   public readonly providerCode = 'aws';
 
@@ -88,11 +120,7 @@ export class AwsSdkIngestionProvider implements CloudIngestionProvider {
     let apiCallCount = 1;
 
     for (const [region, regionDefinitions] of this.groupByRegion(definitions, baseRegion)) {
-      const client = new CloudWatchClient({
-        region,
-        credentials: assumed,
-        maxAttempts: 2,
-      });
+      const client = this.createCloudWatchClient(region, assumed);
 
       for (const batch of this.chunk(regionDefinitions, 500)) {
         apiCallCount += 1;
@@ -193,11 +221,7 @@ export class AwsSdkIngestionProvider implements CloudIngestionProvider {
 
     for (const object of objects) {
       apiCallCount += 1;
-      const client = new S3Client({
-        region: object.region ?? baseRegion,
-        credentials: assumed,
-        maxAttempts: 2,
-      });
+      const client = this.createS3Client(object.region ?? baseRegion, assumed);
       const response = await client.send(new GetObjectCommand({
         Bucket: object.bucket,
         Key: object.key,
@@ -237,7 +261,7 @@ export class AwsSdkIngestionProvider implements CloudIngestionProvider {
     const roleArn = requireString(credential.payload['roleArn'], 'AWS roleArn');
     const externalId = optionalString(credential.payload['externalId']);
     const sessionName = optionalString(credential.payload['sessionName']) ?? 'finops-ingestion-worker';
-    const client = new STSClient({ region, maxAttempts: 2 });
+    const client = this.createStsClient(region);
     const response = await client.send(new AssumeRoleCommand({
       RoleArn: roleArn,
       RoleSessionName: sessionName,
@@ -316,11 +340,7 @@ export class AwsSdkIngestionProvider implements CloudIngestionProvider {
     let apiCallCount = 0;
 
     for (const location of locations) {
-      const client = new S3Client({
-        region: location.region ?? defaultRegion,
-        credentials,
-        maxAttempts: 2,
-      });
+      const client = this.createS3Client(location.region ?? defaultRegion, credentials);
       let continuationToken: string | undefined;
 
       while (discovered.length < location.maxObjects) {
@@ -375,6 +395,29 @@ export class AwsSdkIngestionProvider implements CloudIngestionProvider {
       chunks.push(items.slice(index, index + size));
     }
     return chunks;
+  }
+
+  private createCloudWatchClient(region: string, credentials: AwsCredentialIdentity): AwsCommandClient<AwsMetricDataResponse> {
+    return new CloudWatchClient({
+      region,
+      credentials,
+      maxAttempts: 2,
+    }) as AwsCommandClient<AwsMetricDataResponse>;
+  }
+
+  private createS3Client(
+    region: string,
+    credentials: AwsCredentialIdentity,
+  ): AwsCommandClient<AwsGetObjectResponse & AwsListObjectsResponse> {
+    return new S3Client({
+      region,
+      credentials,
+      maxAttempts: 2,
+    }) as AwsCommandClient<AwsGetObjectResponse & AwsListObjectsResponse>;
+  }
+
+  private createStsClient(region: string): AwsCommandClient<AwsAssumeRoleResponse> {
+    return new STSClient({ region, maxAttempts: 2 }) as AwsCommandClient<AwsAssumeRoleResponse>;
   }
 
   private emptyResult(

@@ -1,11 +1,15 @@
 node_modules/
 dist/
 .env
+.env.*
 downloads/
 src/generated/prisma/
 docs/erd/
 *.log
 *.js.map
 *.d.ts.map
+*.pem
+*.key
+.oci/
 .claude/
 analisis-proyecto-grado/

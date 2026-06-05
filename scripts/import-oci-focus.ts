@@ -375,7 +375,6 @@ async function main(): Promise<void> {
       counters,
       end: targetEnd,
       files: files.length,
-      password: options.password,
       start: targetStart,
       tenantId: tenant.id,
       tenantSlug: tenant.slug,
@@ -424,6 +423,7 @@ function parseArgs(args: readonly string[]): ImportOptions {
   }
 
   const rootExternalId = options.get('root-external-id') ?? positional[0] ?? defaultRootExternalId;
+  const password = options.get('password') ?? process.env['OCI_FOCUS_IMPORT_PASSWORD'];
 
   if (rootExternalId.trim() === '') {
     throw new Error(
@@ -431,11 +431,15 @@ function parseArgs(args: readonly string[]): ImportOptions {
     );
   }
 
+  if (password === undefined || password.trim() === '') {
+    throw new Error('Missing --password or OCI_FOCUS_IMPORT_PASSWORD for the demo user');
+  }
+
   return {
     connectionName: options.get('connection-name') ?? 'OCI Personal - FOCUS Reports',
     defaultRegion: options.get('default-region') ?? 'sa-bogota-1',
     focusVersion: options.get('focus-version') ?? '1.0',
-    password: options.get('password') ?? process.env['OCI_FOCUS_IMPORT_PASSWORD'] ?? '[demo password removed]',
+    password,
     reportsDir: options.get('reports-dir') ?? positional[1] ?? defaultReportsDir,
     rootExternalId,
     tenantName: options.get('tenant-name') ?? 'OCI Personal Demo',
@@ -759,7 +763,6 @@ function printSummary(input: {
   readonly counters: ImportCounters;
   readonly end: Date;
   readonly files: number;
-  readonly password: string;
   readonly start: Date;
   readonly tenantId: string;
   readonly tenantSlug: string;
@@ -769,7 +772,7 @@ function printSummary(input: {
   console.log(`  Tenant:           ${input.tenantSlug} (${input.tenantId})`);
   console.log(`  Cloud account:    ${input.cloudAccountId}`);
   console.log(`  Cloud connection: ${input.cloudConnectionId}`);
-  console.log(`  Login:            ${input.userEmail} / ${input.password}`);
+  console.log(`  Login email:      ${input.userEmail}`);
   console.log(`  Files found:      ${input.files}`);
   console.log(`  Files read:       ${input.counters.filesRead}`);
   console.log(`  Files failed:     ${input.counters.filesFailed}`);

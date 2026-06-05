@@ -30,7 +30,12 @@ async function main(): Promise<void> {
     },
   });
 
-  const defaultPassword = process.env['SEED_DEFAULT_PASSWORD'] ?? '[demo password removed]';
+  const defaultPassword = process.env['SEED_DEFAULT_PASSWORD'];
+
+  if (defaultPassword === undefined || defaultPassword.trim() === '') {
+    throw new Error('SEED_DEFAULT_PASSWORD must be set before running the seed');
+  }
+
   const passwordHash = await passwordHasher.hash(defaultPassword);
 
   await prisma.user.upsert({

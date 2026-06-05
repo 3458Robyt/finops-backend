@@ -16,6 +16,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "import:oci-focus": "tsx scripts/import-oci-focus.ts",
     "aws:register-role": "tsx scripts/register-aws-role-credential.ts",
+    "ingestion:doctor": "tsx scripts/check-ingestion-readiness.ts",
     "ingestion:create-job": "tsx scripts/create-ingestion-job.ts",
     "ingestion:worker:once": "tsx scripts/run-ingestion-worker-once.ts",
     "ingestion:worker:preflight": "tsx scripts/run-ingestion-worker-once.ts --preflight",

@@ -221,6 +221,28 @@ export class CloudConnectionController {
     }
   };
 
+  public queueTenantIngestion = async (req: Request, res: Response): Promise<void> => {
+    try {
+      if (req.auth === undefined) {
+        throw new FinOpsBaseError('Authentication is required', 'AUTHENTICATION_REQUIRED');
+      }
+
+      const body = this.requireObjectBody(req.body);
+      const job = await this.cloudConnectionService.queueIngestion({
+        tenantId: req.auth.tenantId,
+        userId: req.auth.userId,
+        cloudConnectionId: this.requireString(body['cloudConnectionId'], 'cloudConnectionId'),
+        sourceType: this.parseSourceType(body['sourceType']),
+        targetStart: this.parseDate(body['targetStart'], 'targetStart'),
+        targetEnd: this.parseDate(body['targetEnd'], 'targetEnd'),
+      });
+
+      res.status(202).json({ success: true, job });
+    } catch (error: unknown) {
+      this.respondWithError(res, error);
+    }
+  };
+
   /**
    * Devuelve el estado de salud de la ingesta de una conexión.
    *

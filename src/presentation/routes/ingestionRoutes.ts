@@ -26,6 +26,7 @@ export function createIngestionRoutes(
 ): Router {
   const router = Router();
 
+  router.post('/jobs', requireAuth, cloudConnectionController.queueTenantIngestion);
   router.get('/history', requireAuth, cloudConnectionController.listIngestionHistory);
   router.get('/data-quality', requireAuth, cloudConnectionController.listDataQuality);
 

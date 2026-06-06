@@ -5,6 +5,7 @@ import type {
   CreateIngestionJobInput,
   DataQualityCheckItem,
   ICloudConnectionRepository,
+  IngestionReadinessSummary,
   IngestionJobHistoryItem,
   IngestionJobSummary,
 } from '../../domain/interfaces/ICloudConnectionRepository.js';
@@ -52,6 +53,18 @@ class FakeCloudConnectionRepository implements ICloudConnectionRepository {
       observedAt: new Date('2026-04-02T01:10:00.000Z'),
     },
   ];
+  public readiness: IngestionReadinessSummary = {
+    ok: false,
+    generatedAt: new Date('2026-06-05T12:00:00.000Z'),
+    connections: [],
+    issues: [
+      {
+        provider: 'oci',
+        severity: 'BLOCKER',
+        message: 'No active OCI cloud connection found for this tenant.',
+      },
+    ],
+  };
   public connection: CloudConnectionSummary | null = {
     id: 'conn-1',
     tenantId: 'tenant-1',
@@ -132,6 +145,10 @@ class FakeCloudConnectionRepository implements ICloudConnectionRepository {
   ): Promise<readonly DataQualityCheckItem[]> {
     this.dataQualityQuery = { tenantId, limit };
     return this.dataQualityChecks;
+  }
+
+  public async listIngestionReadinessForTenant(): Promise<IngestionReadinessSummary> {
+    return this.readiness;
   }
 }
 
@@ -230,5 +247,18 @@ describe('CloudConnectionService', () => {
     const checks = await service.listDataQualityChecks('tenant-1');
 
     expect(checks).toEqual([]);
+  });
+
+  test('returns ingestion readiness for the authenticated tenant', async () => {
+    const repository = new FakeCloudConnectionRepository();
+    const service = new CloudConnectionService(repository);
+
+    const readiness = await service.getIngestionReadiness('tenant-1');
+
+    expect(readiness.ok).toBe(false);
+    expect(readiness.issues[0]).toMatchObject({
+      provider: 'oci',
+      severity: 'BLOCKER',
+    });
   });
 });

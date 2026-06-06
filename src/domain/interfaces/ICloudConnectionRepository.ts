@@ -115,6 +115,38 @@ export interface DataQualityCheckItem {
   readonly details?: Readonly<Record<string, unknown>>;
 }
 
+export interface IngestionReadinessIssue {
+  readonly provider: ProviderCode | 'global';
+  readonly severity: 'INFO' | 'WARNING' | 'BLOCKER';
+  readonly message: string;
+}
+
+export interface IngestionReadinessConnectionSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly providerCode: ProviderCode;
+  readonly defaultRegion?: string;
+  readonly credentialPurposes: readonly string[];
+  readonly metadataCounts: Readonly<Record<string, number>>;
+  readonly recentJobs: readonly {
+    readonly id: string;
+    readonly sourceType: IngestionSourceType;
+    readonly status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED';
+    readonly targetStart: Date;
+    readonly targetEnd: Date;
+    readonly completedAt?: Date;
+    readonly hasError: boolean;
+    readonly summary: Readonly<Record<string, unknown>> | null;
+  }[];
+}
+
+export interface IngestionReadinessSummary {
+  readonly ok: boolean;
+  readonly generatedAt: Date;
+  readonly connections: readonly IngestionReadinessConnectionSummary[];
+  readonly issues: readonly IngestionReadinessIssue[];
+}
+
 /**
  * Contrato de repositorio para conexiones cloud y trabajos de ingesta.
  *
@@ -219,4 +251,6 @@ export interface ICloudConnectionRepository {
     tenantId: string,
     limit: number,
   ): Promise<readonly DataQualityCheckItem[]>;
+
+  listIngestionReadinessForTenant(tenantId: string): Promise<IngestionReadinessSummary>;
 }

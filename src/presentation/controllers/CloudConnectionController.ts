@@ -329,6 +329,17 @@ export class CloudConnectionController {
     }
   };
 
+  public getIngestionReadiness = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const tenantId = this.requireTenant(req);
+      const readiness = await this.cloudConnectionService.getIngestionReadiness(tenantId);
+
+      res.status(200).json({ success: true, readiness });
+    } catch (error: unknown) {
+      this.respondWithError(res, error);
+    }
+  };
+
   /**
    * Garantiza que la petición está autenticada y devuelve el `tenantId` del
    * contexto de autenticación. Lanza AUTHENTICATION_REQUIRED (mapeado a 401) si

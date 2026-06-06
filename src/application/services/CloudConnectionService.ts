@@ -3,6 +3,7 @@ import type {
   CreateIngestionJobInput,
   DataQualityCheckItem,
   ICloudConnectionRepository,
+  IngestionReadinessSummary,
   IngestionJobHistoryItem,
   IngestionJobSummary,
 } from '../../domain/interfaces/ICloudConnectionRepository.js';
@@ -198,6 +199,10 @@ export class CloudConnectionService {
     limit?: number,
   ): Promise<readonly DataQualityCheckItem[]> {
     return this.repository.listDataQualityChecksForTenant(tenantId, this.clampLimit(limit));
+  }
+
+  public getIngestionReadiness(tenantId: string): Promise<IngestionReadinessSummary> {
+    return this.repository.listIngestionReadinessForTenant(tenantId);
   }
 
   /**

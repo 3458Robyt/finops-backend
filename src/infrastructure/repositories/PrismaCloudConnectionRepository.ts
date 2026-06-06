@@ -1,5 +1,7 @@
 import type {
   CreateCloudConnectionInput,
+  ConfigureFocusSourceForConnectionInput,
+  ConfigureFocusSourceForConnectionResult,
   CreateIngestionJobInput,
   DataQualityCheckItem,
   ICloudConnectionRepository,
@@ -24,6 +26,7 @@ import {
   toIngestionJobHistoryItem,
 } from './mappers/cloudConnectionMappers.js';
 import { buildIngestionReadinessSummary } from '../ingestion/ingestionReadiness.js';
+import { configureFocusSourceMetadata } from '../ingestion/focusSourceMetadata.js';
 
 /**
  * Adaptador de infraestructura (Clean Architecture) que implementa el puerto de
@@ -390,5 +393,48 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
         })),
       })),
     });
+  }
+
+  public async configureFocusSourceForConnection(
+    input: ConfigureFocusSourceForConnectionInput,
+  ): Promise<ConfigureFocusSourceForConnectionResult | null> {
+    const connection = await this.prisma.cloudConnection.findFirst({
+      where: {
+        id: input.cloudConnectionId,
+        tenantId: input.tenantId,
+        status: 'ACTIVE',
+      },
+      select: {
+        id: true,
+        providerCode: true,
+        metadata: true,
+      },
+    });
+
+    if (connection === null) {
+      return null;
+    }
+
+    const result = configureFocusSourceMetadata({
+      provider: connection.providerCode,
+      mode: input.mode,
+      values: new Map(Object.entries(input.values)),
+      existingMetadata: isJsonObject(connection.metadata) ? connection.metadata as Record<string, unknown> : {},
+      replace: input.replace,
+    });
+
+    await this.prisma.cloudConnection.update({
+      where: { id: connection.id },
+      data: { metadata: result.metadata as Prisma.InputJsonValue },
+    });
+
+    return {
+      cloudConnectionId: connection.id,
+      providerCode: connection.providerCode,
+      mode: input.mode,
+      updatedKey: result.updatedKey,
+      configuredCount: result.configuredCount,
+      replaced: input.replace,
+    };
   }
 }

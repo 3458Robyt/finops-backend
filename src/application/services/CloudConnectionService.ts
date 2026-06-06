@@ -1,4 +1,5 @@
 import type {
+  ConfigureFocusSourceForConnectionResult,
   CreateCloudConnectionInput,
   CreateIngestionJobInput,
   DataQualityCheckItem,
@@ -45,6 +46,14 @@ export interface QueueIngestionInput {
   readonly sourceType: IngestionSourceType;
   readonly targetStart: Date;
   readonly targetEnd: Date;
+}
+
+export interface ConfigureFocusSourceInput {
+  readonly tenantId: string;
+  readonly cloudConnectionId: string;
+  readonly mode: 'location' | 'object';
+  readonly values: Readonly<Record<string, string>>;
+  readonly replace: boolean;
 }
 
 export class CloudConnectionService {
@@ -203,6 +212,18 @@ export class CloudConnectionService {
 
   public getIngestionReadiness(tenantId: string): Promise<IngestionReadinessSummary> {
     return this.repository.listIngestionReadinessForTenant(tenantId);
+  }
+
+  public async configureFocusSource(
+    input: ConfigureFocusSourceInput,
+  ): Promise<ConfigureFocusSourceForConnectionResult> {
+    const result = await this.repository.configureFocusSourceForConnection(input);
+
+    if (result === null) {
+      throw new FinOpsBaseError('Cloud connection was not found for this tenant', 'NOT_FOUND');
+    }
+
+    return result;
   }
 
   /**

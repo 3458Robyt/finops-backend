@@ -16,6 +16,7 @@ import type { CloudConnectionController } from '../controllers/CloudConnectionCo
  * | GET    | /history       | requireAuth | cloudConnectionController.listIngestionHistory |
  * | GET    | /data-quality  | requireAuth | cloudConnectionController.listDataQuality      |
  * | GET    | /readiness     | requireAuth | cloudConnectionController.getIngestionReadiness|
+ * | POST   | /focus-sources | requireAuth | cloudConnectionController.configureFocusSource |
  *
  * @param cloudConnectionController Controlador con los handlers de ingesta/calidad.
  * @param requireAuth Middleware que valida el Bearer token y rellena `req.auth`.
@@ -28,6 +29,7 @@ export function createIngestionRoutes(
   const router = Router();
 
   router.post('/jobs', requireAuth, cloudConnectionController.queueTenantIngestion);
+  router.post('/focus-sources', requireAuth, cloudConnectionController.configureFocusSource);
   router.get('/history', requireAuth, cloudConnectionController.listIngestionHistory);
   router.get('/data-quality', requireAuth, cloudConnectionController.listDataQuality);
   router.get('/readiness', requireAuth, cloudConnectionController.getIngestionReadiness);

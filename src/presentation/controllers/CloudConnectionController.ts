@@ -340,6 +340,24 @@ export class CloudConnectionController {
     }
   };
 
+  public configureFocusSource = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const tenantId = this.requireTenant(req);
+      const body = this.requireObjectBody(req.body);
+      const focusSource = await this.cloudConnectionService.configureFocusSource({
+        tenantId,
+        cloudConnectionId: this.requireString(body['cloudConnectionId'], 'cloudConnectionId'),
+        mode: this.parseFocusSourceMode(body['mode']),
+        values: this.requireStringRecord(body['values'], 'values'),
+        replace: body['replace'] === true,
+      });
+
+      res.status(200).json({ success: true, focusSource });
+    } catch (error: unknown) {
+      this.respondWithError(res, error);
+    }
+  };
+
   /**
    * Garantiza que la petición está autenticada y devuelve el `tenantId` del
    * contexto de autenticación. Lanza AUTHENTICATION_REQUIRED (mapeado a 401) si
@@ -425,6 +443,34 @@ export class CloudConnectionController {
     }
 
     return sourceType as IngestionSourceType;
+  }
+
+  private parseFocusSourceMode(value: unknown): 'location' | 'object' {
+    const mode = this.requireString(value, 'mode');
+    if (mode !== 'location' && mode !== 'object') {
+      throw new FinOpsBaseError('mode must be location or object', 'VALIDATION_ERROR');
+    }
+
+    return mode;
+  }
+
+  private requireStringRecord(value: unknown, fieldName: string): Readonly<Record<string, string>> {
+    if (!this.isRecord(value)) {
+      throw new FinOpsBaseError(`${fieldName} must be an object`, 'VALIDATION_ERROR');
+    }
+
+    const entries = Object.entries(value);
+    if (entries.length === 0) {
+      throw new FinOpsBaseError(`${fieldName} must not be empty`, 'VALIDATION_ERROR');
+    }
+
+    return Object.fromEntries(entries.map(([key, item]) => {
+      if (typeof item !== 'string' || item.trim() === '') {
+        throw new FinOpsBaseError(`${fieldName}.${key} must be a non-empty string`, 'VALIDATION_ERROR');
+      }
+
+      return [key, item.trim()];
+    }));
   }
 
   /**

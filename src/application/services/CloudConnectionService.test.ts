@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import { CloudConnectionService } from './CloudConnectionService.js';
 import type {
+  ConfigureFocusSourceForConnectionInput,
+  ConfigureFocusSourceForConnectionResult,
   CreateCloudConnectionInput,
   CreateIngestionJobInput,
   DataQualityCheckItem,
@@ -27,6 +29,7 @@ const awsProvider: ProviderCatalogEntry = {
 class FakeCloudConnectionRepository implements ICloudConnectionRepository {
   public createdConnectionInput: CreateCloudConnectionInput | null = null;
   public createdJobInput: CreateIngestionJobInput | null = null;
+  public configuredFocusInput: ConfigureFocusSourceForConnectionInput | null = null;
   public ingestionHistoryQuery: { tenantId: string; limit: number } | null = null;
   public dataQualityQuery: { tenantId: string; limit: number } | null = null;
   public ingestionHistory: readonly IngestionJobHistoryItem[] = [
@@ -150,6 +153,24 @@ class FakeCloudConnectionRepository implements ICloudConnectionRepository {
   public async listIngestionReadinessForTenant(): Promise<IngestionReadinessSummary> {
     return this.readiness;
   }
+
+  public async configureFocusSourceForConnection(
+    input: ConfigureFocusSourceForConnectionInput,
+  ): Promise<ConfigureFocusSourceForConnectionResult | null> {
+    this.configuredFocusInput = input;
+    if (this.connection === null) {
+      return null;
+    }
+
+    return {
+      cloudConnectionId: input.cloudConnectionId,
+      providerCode: this.connection.providerCode,
+      mode: input.mode,
+      updatedKey: 'ociFocusReportLocations',
+      configuredCount: 1,
+      replaced: input.replace,
+    };
+  }
 }
 
 describe('CloudConnectionService', () => {
@@ -259,6 +280,36 @@ describe('CloudConnectionService', () => {
     expect(readiness.issues[0]).toMatchObject({
       provider: 'oci',
       severity: 'BLOCKER',
+    });
+  });
+
+  test('configures a FOCUS source for a tenant connection', async () => {
+    const repository = new FakeCloudConnectionRepository();
+    const service = new CloudConnectionService(repository);
+
+    const result = await service.configureFocusSource({
+      tenantId: 'tenant-1',
+      cloudConnectionId: 'conn-1',
+      mode: 'location',
+      replace: false,
+      values: {
+        'namespace-name': 'tenantnamespace',
+        'bucket-name': 'finops-billing',
+        prefix: 'reports/focus/',
+      },
+    });
+
+    expect(result.updatedKey).toBe('ociFocusReportLocations');
+    expect(repository.configuredFocusInput).toEqual({
+      tenantId: 'tenant-1',
+      cloudConnectionId: 'conn-1',
+      mode: 'location',
+      replace: false,
+      values: {
+        'namespace-name': 'tenantnamespace',
+        'bucket-name': 'finops-billing',
+        prefix: 'reports/focus/',
+      },
     });
   });
 });

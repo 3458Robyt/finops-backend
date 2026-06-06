@@ -147,6 +147,23 @@ export interface IngestionReadinessSummary {
   readonly issues: readonly IngestionReadinessIssue[];
 }
 
+export interface ConfigureFocusSourceForConnectionInput {
+  readonly tenantId: string;
+  readonly cloudConnectionId: string;
+  readonly mode: 'location' | 'object';
+  readonly values: Readonly<Record<string, string>>;
+  readonly replace: boolean;
+}
+
+export interface ConfigureFocusSourceForConnectionResult {
+  readonly cloudConnectionId: string;
+  readonly providerCode: ProviderCode;
+  readonly mode: 'location' | 'object';
+  readonly updatedKey: string;
+  readonly configuredCount: number;
+  readonly replaced: boolean;
+}
+
 /**
  * Contrato de repositorio para conexiones cloud y trabajos de ingesta.
  *
@@ -253,4 +270,8 @@ export interface ICloudConnectionRepository {
   ): Promise<readonly DataQualityCheckItem[]>;
 
   listIngestionReadinessForTenant(tenantId: string): Promise<IngestionReadinessSummary>;
+
+  configureFocusSourceForConnection(
+    input: ConfigureFocusSourceForConnectionInput,
+  ): Promise<ConfigureFocusSourceForConnectionResult | null>;
 }

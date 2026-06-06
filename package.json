@@ -19,6 +19,7 @@
     "ingestion:configure-focus": "tsx scripts/configure-focus-source.ts",
     "ingestion:doctor": "tsx scripts/check-ingestion-readiness.ts",
     "ingestion:create-job": "tsx scripts/create-ingestion-job.ts",
+    "ingestion:schedule": "tsx scripts/schedule-ingestion-jobs.ts",
     "ingestion:worker:once": "tsx scripts/run-ingestion-worker-once.ts",
     "ingestion:worker:preflight": "tsx scripts/run-ingestion-worker-once.ts --preflight",
     "ingestion:preview-focus": "tsx scripts/preview-focus-sources.ts",

@@ -39,12 +39,14 @@ import { TelegramLinkService } from './application/services/TelegramLinkService.
 import { TelegramMessageFormatter } from './application/services/TelegramMessageFormatter.js';
 import { CloudIngestionWorkerService } from './application/services/CloudIngestionWorkerService.js';
 import { startCloudIngestionWorkerLoop } from './application/services/CloudIngestionWorkerLoop.js';
+import { startCloudIngestionSchedulerLoop } from './application/services/CloudIngestionSchedulerLoop.js';
 import { AWSProvider } from './infrastructure/providers/aws/AWSProvider.js';
 import { getPrismaClient } from './infrastructure/database/prisma.js';
 import { OpenAiCompatibleAiGateway } from './infrastructure/ai/OpenAiCompatibleAiGateway.js';
 import { AwsSdkIngestionProvider } from './infrastructure/ingestion/AwsSdkIngestionProvider.js';
 import { OciSdkIngestionProvider } from './infrastructure/ingestion/OciSdkIngestionProvider.js';
 import { PrismaCloudIngestionJobRepository } from './infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
+import { runPrismaIngestionJobScheduler } from './infrastructure/ingestion/PrismaIngestionJobScheduler.js';
 import { PrismaAgentContextRepository } from './infrastructure/repositories/PrismaAgentContextRepository.js';
 import { PrismaAgentLearningRepository } from './infrastructure/repositories/PrismaAgentLearningRepository.js';
 import { PrismaCloudConnectionRepository } from './infrastructure/repositories/PrismaCloudConnectionRepository.js';
@@ -263,6 +265,58 @@ async function bootstrap(): Promise<void> {
       },
     });
   }
+
+  if (process.env['INGESTION_SCHEDULER_ENABLED'] === 'true') {
+    const intervalMs = parsePositiveIntegerEnv('INGESTION_SCHEDULER_INTERVAL_MS', 300000);
+    const metricWindowMinutes = parsePositiveIntegerEnv('INGESTION_SCHEDULER_METRIC_WINDOW_MINUTES', 30);
+    const metricCooldownMinutes = parsePositiveIntegerEnv('INGESTION_SCHEDULER_METRIC_COOLDOWN_MINUTES', 25);
+    const billingWindowHours = parsePositiveIntegerEnv('INGESTION_SCHEDULER_BILLING_WINDOW_HOURS', 24);
+    const billingCooldownHours = parsePositiveIntegerEnv('INGESTION_SCHEDULER_BILLING_COOLDOWN_HOURS', 6);
+    const maxAttempts = parsePositiveIntegerEnv('INGESTION_SCHEDULER_MAX_ATTEMPTS', 1);
+    const providerCode = process.env['INGESTION_SCHEDULER_PROVIDER'];
+    const connectionId = process.env['INGESTION_SCHEDULER_CONNECTION_ID'];
+
+    console.log(`   Ingestion scheduler: enabled (${intervalMs}ms)`);
+
+    startCloudIngestionSchedulerLoop({
+      intervalMs,
+      scheduler: {
+        runOnce: async () => {
+          const result = await runPrismaIngestionJobScheduler(prisma, {
+            apply: true,
+            schedule: {
+              now: new Date(),
+              metricWindowMinutes,
+              metricCooldownMinutes,
+              billingWindowHours,
+              billingCooldownHours,
+              maxAttempts,
+            },
+            ...(providerCode !== undefined ? { providerCode } : {}),
+            ...(connectionId !== undefined ? { connectionId } : {}),
+          });
+          console.log(`Ingestion scheduler planned ${result.plannedJobs.length} job(s), created ${result.createdJobs.length}.`);
+          return result;
+        },
+      },
+      onError: (error: unknown) => {
+        console.error('Ingestion scheduler iteration failed:', error);
+      },
+      onSkip: () => {
+        console.warn('Ingestion scheduler iteration skipped because previous run is still active');
+      },
+    });
+  }
+}
+
+function parsePositiveIntegerEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 // ── Ejecución ─────────────────────────────────────────────────────

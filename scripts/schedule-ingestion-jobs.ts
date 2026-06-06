@@ -1,9 +1,7 @@
 import 'dotenv/config';
 import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
-import {
-  buildIngestionSchedulePlan,
-  type IngestionScheduleOptions,
-} from '../src/infrastructure/ingestion/ingestionJobScheduler.js';
+import type { IngestionScheduleOptions } from '../src/infrastructure/ingestion/ingestionJobScheduler.js';
+import { runPrismaIngestionJobScheduler } from '../src/infrastructure/ingestion/PrismaIngestionJobScheduler.js';
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -13,66 +11,17 @@ async function main(): Promise<void> {
   const connectionId = args.values.get('connection-id');
   const options = buildOptions(args.values);
 
-  const connections = await prisma.cloudConnection.findMany({
-    where: {
-      providerCode: provider === undefined ? { in: ['aws', 'oci'] } : provider,
-      status: 'ACTIVE',
-      ...(connectionId !== undefined ? { id: connectionId } : {}),
-    },
-    orderBy: [{ providerCode: 'asc' }, { createdAt: 'desc' }],
-    select: {
-      id: true,
-      tenantId: true,
-      providerCode: true,
-      metadata: true,
-      credentials: {
-        select: {
-          purpose: true,
-          status: true,
-        },
-      },
-      ingestionJobs: {
-        where: {
-          sourceType: { in: ['TECHNICAL_METRIC', 'BILLING_EXPORT'] },
-          status: { in: ['PENDING', 'RUNNING', 'SUCCESS'] },
-        },
-        orderBy: { targetEnd: 'desc' },
-        take: 20,
-        select: {
-          sourceType: true,
-          status: true,
-          targetEnd: true,
-        },
-      },
-    },
+  const result = await runPrismaIngestionJobScheduler(prisma, {
+    apply,
+    schedule: options,
+    ...(provider !== undefined ? { providerCode: provider } : {}),
+    ...(connectionId !== undefined ? { connectionId } : {}),
   });
-
-  const plan = buildIngestionSchedulePlan(connections, options);
-  const created = apply
-    ? await Promise.all(plan.jobs.map((job) => prisma.ingestionJob.create({
-        data: {
-          tenantId: job.tenantId,
-          cloudConnectionId: job.cloudConnectionId,
-          sourceType: job.sourceType,
-          targetStart: job.targetStart,
-          targetEnd: job.targetEnd,
-          maxAttempts: job.maxAttempts,
-        },
-        select: {
-          id: true,
-          cloudConnectionId: true,
-          sourceType: true,
-          status: true,
-          targetStart: true,
-          targetEnd: true,
-        },
-      })))
-    : [];
 
   console.log(JSON.stringify({
     success: true,
-    mode: apply ? 'apply' : 'dry-run',
-    generatedAt: options.now.toISOString(),
+    mode: result.mode,
+    generatedAt: result.generatedAt.toISOString(),
     options: {
       metricWindowMinutes: options.metricWindowMinutes,
       metricCooldownMinutes: options.metricCooldownMinutes,
@@ -80,17 +29,10 @@ async function main(): Promise<void> {
       billingCooldownHours: options.billingCooldownHours,
       maxAttempts: options.maxAttempts,
     },
-    connectionsEvaluated: connections.length,
-    plannedJobs: plan.jobs.map((job) => ({
-      cloudConnectionId: job.cloudConnectionId,
-      providerCode: job.providerCode,
-      sourceType: job.sourceType,
-      targetStart: job.targetStart,
-      targetEnd: job.targetEnd,
-      reason: job.reason,
-    })),
-    createdJobs: created,
-    skipped: plan.skipped,
+    connectionsEvaluated: result.connectionsEvaluated,
+    plannedJobs: result.plannedJobs,
+    createdJobs: result.createdJobs,
+    skipped: result.skipped,
   }, null, 2));
 
   await prisma.$disconnect();

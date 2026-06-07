@@ -67,6 +67,7 @@ interface OciMonitoringClient {
 interface OciObjectStorageClient {
   getObject(request: unknown): Promise<{
     readonly getObjectBody?: unknown;
+    readonly value?: unknown;
   }>;
   listObjects(request: unknown): Promise<{
     readonly listObjects?: {
@@ -194,7 +195,7 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
         bucketName: object.bucketName,
         objectName: object.objectName,
       }));
-      const bytes = await this.bodyToBytes(response.getObjectBody);
+      const bytes = await this.bodyToBytes(response.getObjectBody ?? response.value);
       const csvText = decodeMaybeGzip(bytes, object.objectName);
       focusRows.push(...parseFocusCsvToLineItems({
         tenantId: job.tenantId,
@@ -369,12 +370,20 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
       return body;
     }
 
+    if (hasArrayBufferMethod(body)) {
+      return new Uint8Array(await body.arrayBuffer());
+    }
+
     if (body instanceof Readable) {
-      const chunks: Buffer[] = [];
-      for await (const chunk of body) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
-      }
-      return Buffer.concat(chunks);
+      return this.asyncIterableToBytes(body);
+    }
+
+    if (isAsyncIterable(body)) {
+      return this.asyncIterableToBytes(body);
+    }
+
+    if (hasGetReaderMethod(body)) {
+      return this.readableStreamToBytes(body);
     }
 
     if (typeof body === 'string') {
@@ -382,6 +391,50 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     }
 
     throw new Error('Unsupported OCI Object Storage body type');
+  }
+
+  private async readableStreamToBytes(body: { getReader(): ReadableStreamDefaultReader<unknown> }): Promise<Uint8Array> {
+    const reader = body.getReader();
+    const chunks: Buffer[] = [];
+
+    try {
+      while (true) {
+        const read = await reader.read();
+        if (read.done === true) {
+          break;
+        }
+
+        const value = read.value;
+        if (value instanceof Uint8Array) {
+          chunks.push(Buffer.from(value));
+        } else if (typeof value === 'string') {
+          chunks.push(Buffer.from(value, 'utf8'));
+        } else {
+          chunks.push(Buffer.from(value as ArrayBuffer));
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return Buffer.concat(chunks);
+  }
+
+  private async asyncIterableToBytes(body: AsyncIterable<unknown>): Promise<Uint8Array> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of body) {
+      if (Buffer.isBuffer(chunk)) {
+        chunks.push(chunk);
+      } else if (chunk instanceof Uint8Array) {
+        chunks.push(Buffer.from(chunk));
+      } else if (typeof chunk === 'string') {
+        chunks.push(Buffer.from(chunk, 'utf8'));
+      } else {
+        chunks.push(Buffer.from(chunk as ArrayBuffer));
+      }
+    }
+
+    return Buffer.concat(chunks);
   }
 
   private isFocusObjectName(name: string): boolean {
@@ -423,4 +476,25 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
       setTimeout(resolve, ms);
     });
   }
+}
+
+function hasArrayBufferMethod(value: unknown): value is { arrayBuffer(): Promise<ArrayBuffer> } {
+  return value !== null &&
+    typeof value === 'object' &&
+    'arrayBuffer' in value &&
+    typeof (value as { readonly arrayBuffer?: unknown }).arrayBuffer === 'function';
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return value !== null &&
+    typeof value === 'object' &&
+    Symbol.asyncIterator in value &&
+    typeof (value as { readonly [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function';
+}
+
+function hasGetReaderMethod(value: unknown): value is { getReader(): ReadableStreamDefaultReader<unknown> } {
+  return value !== null &&
+    typeof value === 'object' &&
+    'getReader' in value &&
+    typeof (value as { readonly getReader?: unknown }).getReader === 'function';
 }

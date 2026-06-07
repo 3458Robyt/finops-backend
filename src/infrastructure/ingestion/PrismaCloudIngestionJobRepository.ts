@@ -17,6 +17,15 @@ interface ClaimedJobRow {
 }
 
 type PrismaIngestionJobWithConnection = NonNullable<Awaited<ReturnType<PrismaCloudIngestionJobRepository['findJobContext']>>>;
+type PrismaIngestionPersistenceClient = Pick<
+  Prisma.TransactionClient,
+  | 'cloudResource'
+  | 'dataQualityCheck'
+  | 'focusCostLineItem'
+  | 'ingestionJob'
+  | 'ingestionWatermark'
+  | 'resourceMetricSample'
+>;
 
 export interface IngestionJobExecutionSummary {
   readonly durationMs: number;
@@ -32,6 +41,11 @@ export interface IngestionJobExecutionSummary {
 }
 
 export class PrismaCloudIngestionJobRepository {
+  private static readonly COMPLETION_TRANSACTION_OPTIONS = {
+    maxWait: 10_000,
+    timeout: 60_000,
+  } as const;
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly credentialCipher: CredentialCipher,
@@ -80,25 +94,29 @@ export class PrismaCloudIngestionJobRepository {
     const completedAt = new Date();
     const summary = this.buildSummary(job, result, completedAt.getTime() - startedAt.getTime());
 
-    await this.prisma.$transaction(async (tx) => {
-      await this.upsertFocusRows(tx, result.focusRows);
-      await this.upsertResources(tx, result.resources);
-      await this.insertMetricSamples(tx, result.metricSamples);
-      await this.updateWatermark(tx, job);
-      await this.recordQualityCheck(tx, job, result);
+    await this.upsertFocusRows(this.prisma, result.focusRows);
+    await this.upsertResources(this.prisma, result.resources);
+    await this.insertMetricSamples(this.prisma, result.metricSamples);
 
-      await tx.ingestionJob.update({
-        where: { id: job.id },
-        data: {
-          status: 'SUCCESS',
-          completedAt,
-          lockedAt: null,
-          lockedBy: null,
-          errorMessage: null,
-          resultSummary: summary as unknown as Prisma.InputJsonValue,
-        },
-      });
-    });
+    await this.prisma.$transaction(
+      async (tx) => {
+        await this.updateWatermark(tx, job);
+        await this.recordQualityCheck(tx, job, result);
+
+        await tx.ingestionJob.update({
+          where: { id: job.id },
+          data: {
+            status: 'SUCCESS',
+            completedAt,
+            lockedAt: null,
+            lockedBy: null,
+            errorMessage: null,
+            resultSummary: summary as unknown as Prisma.InputJsonValue,
+          },
+        });
+      },
+      PrismaCloudIngestionJobRepository.COMPLETION_TRANSACTION_OPTIONS,
+    );
 
     return summary;
   }
@@ -217,7 +235,7 @@ export class PrismaCloudIngestionJobRepository {
   }
 
   private async upsertFocusRows(
-    tx: Prisma.TransactionClient,
+    tx: PrismaIngestionPersistenceClient,
     rows: readonly NormalizedFocusCostLineItem[],
   ): Promise<void> {
     for (const row of rows) {
@@ -267,7 +285,7 @@ export class PrismaCloudIngestionJobRepository {
   }
 
   private async upsertResources(
-    tx: Prisma.TransactionClient,
+    tx: PrismaIngestionPersistenceClient,
     resources: readonly NormalizedCloudResource[],
   ): Promise<void> {
     for (const resource of resources) {
@@ -313,7 +331,7 @@ export class PrismaCloudIngestionJobRepository {
   }
 
   private async insertMetricSamples(
-    tx: Prisma.TransactionClient,
+    tx: PrismaIngestionPersistenceClient,
     samples: readonly NormalizedResourceMetricSample[],
   ): Promise<void> {
     if (samples.length === 0) {
@@ -339,7 +357,7 @@ export class PrismaCloudIngestionJobRepository {
   }
 
   private async updateWatermark(
-    tx: Prisma.TransactionClient,
+    tx: PrismaIngestionPersistenceClient,
     job: CloudIngestionJobContext,
   ): Promise<void> {
     await tx.ingestionWatermark.upsert({
@@ -368,7 +386,7 @@ export class PrismaCloudIngestionJobRepository {
   }
 
   private async recordQualityCheck(
-    tx: Prisma.TransactionClient,
+    tx: PrismaIngestionPersistenceClient,
     job: CloudIngestionJobContext,
     result: CloudIngestionResult,
   ): Promise<void> {

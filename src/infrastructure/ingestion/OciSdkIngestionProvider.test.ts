@@ -87,6 +87,69 @@ describe('OciSdkIngestionProvider', () => {
     });
     expect(result.warnings).toEqual([]);
   });
+
+  it('parses OCI FOCUS reports when Object Storage returns an arrayBuffer body', async () => {
+    const provider = new OciSdkIngestionProvider();
+
+    Object.assign(provider as unknown as { createObjectStorageClient: () => unknown }, {
+      createObjectStorageClient: () => ({
+        listObjects: async () => ({
+          listObjects: {
+            objects: [
+              { name: 'reports/focus/2026-06/report.csv' },
+            ],
+          },
+        }),
+        getObject: async () => {
+          const bytes = Buffer.from(buildFocusCsv(), 'utf8');
+          return {
+            getObjectBody: {
+              arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+            },
+          };
+        },
+      }),
+    });
+
+    const result = await provider.collect(buildOciFocusJob());
+
+    expect(result.objectsProcessed).toBe(1);
+    expect(result.focusRows).toHaveLength(1);
+    expect(result.focusRows[0]?.provider).toBe('OCI');
+  });
+
+  it('parses OCI FOCUS reports when Object Storage returns a value ReadableStream', async () => {
+    const provider = new OciSdkIngestionProvider();
+
+    Object.assign(provider as unknown as { createObjectStorageClient: () => unknown }, {
+      createObjectStorageClient: () => ({
+        listObjects: async () => ({
+          listObjects: {
+            objects: [
+              { name: 'reports/focus/2026-06/report.csv' },
+            ],
+          },
+        }),
+        getObject: async () => {
+          const bytes = Buffer.from(buildFocusCsv(), 'utf8');
+          return {
+            value: new ReadableStream({
+              start(controller) {
+                controller.enqueue(bytes);
+                controller.close();
+              },
+            }),
+          };
+        },
+      }),
+    });
+
+    const result = await provider.collect(buildOciFocusJob());
+
+    expect(result.objectsProcessed).toBe(1);
+    expect(result.focusRows).toHaveLength(1);
+    expect(result.focusRows[0]?.provider).toBe('OCI');
+  });
 });
 
 function buildMetricJob(): CloudIngestionJobContext {

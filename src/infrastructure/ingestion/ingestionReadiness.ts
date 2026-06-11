@@ -151,11 +151,14 @@ export function summarizeReadinessJobResult(resultSummary: unknown): Readonly<Re
   }
 
   return {
+    durationMs: resultSummary['durationMs'],
     providerCode: resultSummary['providerCode'],
     sourceType: resultSummary['sourceType'],
     apiCallCount: resultSummary['apiCallCount'],
     objectsProcessed: resultSummary['objectsProcessed'],
     focusRows: resultSummary['focusRows'],
+    costMetrics: resultSummary['costMetrics'],
+    costMetricsInserted: resultSummary['costMetricsInserted'],
     metricSamples: resultSummary['metricSamples'],
     warnings: resultSummary['warnings'],
   };

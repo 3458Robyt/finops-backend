@@ -11,15 +11,27 @@ import type { IngestionSourceType } from '../../domain/models/CloudConnection.js
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { CredentialCipher, type EncryptedCredentialPayload } from '../security/CredentialCipher.js';
+import {
+  buildFocusCostMetricRows,
+  getFocusCloudAccountExternalId,
+  getFocusCloudAccountName,
+} from './focusCostMetricProjection.js';
 
 interface ClaimedJobRow {
   readonly id: string;
+}
+
+interface FocusCostMetricProjectionResult {
+  readonly projected: number;
+  readonly inserted: number;
 }
 
 type PrismaIngestionJobWithConnection = NonNullable<Awaited<ReturnType<PrismaCloudIngestionJobRepository['findJobContext']>>>;
 type PrismaIngestionPersistenceClient = Pick<
   Prisma.TransactionClient,
   | 'cloudResource'
+  | 'cloudAccount'
+  | 'costMetric'
   | 'dataQualityCheck'
   | 'focusCostLineItem'
   | 'ingestionJob'
@@ -34,6 +46,8 @@ export interface IngestionJobExecutionSummary {
   readonly apiCallCount: number;
   readonly objectsProcessed: number;
   readonly focusRows: number;
+  readonly costMetrics: number;
+  readonly costMetricsInserted: number;
   readonly resources: number;
   readonly metricSamples: number;
   readonly warnings: readonly string[];
@@ -91,17 +105,23 @@ export class PrismaCloudIngestionJobRepository {
     result: CloudIngestionResult,
     startedAt: Date,
   ): Promise<IngestionJobExecutionSummary> {
-    const completedAt = new Date();
-    const summary = this.buildSummary(job, result, completedAt.getTime() - startedAt.getTime());
-
     await this.upsertFocusRows(this.prisma, result.focusRows);
+    const costMetricProjection = await this.projectFocusRowsToCostMetrics(this.prisma, job, result.focusRows);
     await this.upsertResources(this.prisma, result.resources);
     await this.insertMetricSamples(this.prisma, result.metricSamples);
+
+    const completedAt = new Date();
+    const summary = this.buildSummary(
+      job,
+      result,
+      completedAt.getTime() - startedAt.getTime(),
+      costMetricProjection,
+    );
 
     await this.prisma.$transaction(
       async (tx) => {
         await this.updateWatermark(tx, job);
-        await this.recordQualityCheck(tx, job, result);
+        await this.recordQualityCheck(tx, job, result, costMetricProjection);
 
         await tx.ingestionJob.update({
           where: { id: job.id },
@@ -389,6 +409,7 @@ export class PrismaCloudIngestionJobRepository {
     tx: PrismaIngestionPersistenceClient,
     job: CloudIngestionJobContext,
     result: CloudIngestionResult,
+    costMetricProjection: FocusCostMetricProjectionResult,
   ): Promise<void> {
     await tx.dataQualityCheck.create({
       data: {
@@ -403,6 +424,8 @@ export class PrismaCloudIngestionJobRepository {
           apiCallCount: result.apiCallCount,
           objectsProcessed: result.objectsProcessed,
           focusRows: result.focusRows.length,
+          costMetrics: costMetricProjection.projected,
+          costMetricsInserted: costMetricProjection.inserted,
           resources: result.resources.length,
           metricSamples: result.metricSamples.length,
           warnings: result.warnings,
@@ -416,6 +439,7 @@ export class PrismaCloudIngestionJobRepository {
     job: CloudIngestionJobContext,
     result: CloudIngestionResult,
     durationMs: number,
+    costMetricProjection: FocusCostMetricProjectionResult,
   ): IngestionJobExecutionSummary {
     return {
       durationMs,
@@ -424,11 +448,81 @@ export class PrismaCloudIngestionJobRepository {
       apiCallCount: result.apiCallCount,
       objectsProcessed: result.objectsProcessed,
       focusRows: result.focusRows.length,
+      costMetrics: costMetricProjection.projected,
+      costMetricsInserted: costMetricProjection.inserted,
       resources: result.resources.length,
       metricSamples: result.metricSamples.length,
       warnings: result.warnings,
       coverage: result.coverage,
     };
+  }
+
+  private async projectFocusRowsToCostMetrics(
+    tx: PrismaIngestionPersistenceClient,
+    job: CloudIngestionJobContext,
+    rows: readonly NormalizedFocusCostLineItem[],
+  ): Promise<FocusCostMetricProjectionResult> {
+    if (rows.length === 0) {
+      return { projected: 0, inserted: 0 };
+    }
+
+    const accountIdsByExternalId = await this.upsertFocusCloudAccounts(tx, job, rows);
+    const result = await tx.costMetric.createMany({
+      data: buildFocusCostMetricRows({
+        job,
+        rows,
+        accountIdsByExternalId,
+      }),
+      skipDuplicates: true,
+    });
+
+    return {
+      projected: rows.length,
+      inserted: result.count,
+    };
+  }
+
+  private async upsertFocusCloudAccounts(
+    tx: PrismaIngestionPersistenceClient,
+    job: CloudIngestionJobContext,
+    rows: readonly NormalizedFocusCostLineItem[],
+  ): Promise<ReadonlyMap<string, string>> {
+    const samplesByExternalId = new Map<string, NormalizedFocusCostLineItem>();
+    for (const row of rows) {
+      const externalId = getFocusCloudAccountExternalId(job, row);
+      if (!samplesByExternalId.has(externalId)) {
+        samplesByExternalId.set(externalId, row);
+      }
+    }
+
+    const accountIdsByExternalId = new Map<string, string>();
+    for (const [externalId, row] of samplesByExternalId) {
+      const account = await tx.cloudAccount.upsert({
+        where: {
+          tenantId_provider_externalAccountId: {
+            tenantId: job.tenantId,
+            provider: row.provider,
+            externalAccountId: externalId,
+          },
+        },
+        update: {
+          name: getFocusCloudAccountName(job, row),
+          status: 'ACTIVE',
+          ...(job.connection.defaultRegion !== undefined ? { defaultRegion: job.connection.defaultRegion } : {}),
+        },
+        create: {
+          tenantId: job.tenantId,
+          provider: row.provider,
+          externalAccountId: externalId,
+          name: getFocusCloudAccountName(job, row),
+          ...(job.connection.defaultRegion !== undefined ? { defaultRegion: job.connection.defaultRegion } : {}),
+        },
+        select: { id: true },
+      });
+      accountIdsByExternalId.set(externalId, account.id);
+    }
+
+    return accountIdsByExternalId;
   }
 
   private calculateFreshnessDeadline(job: CloudIngestionJobContext): Date {

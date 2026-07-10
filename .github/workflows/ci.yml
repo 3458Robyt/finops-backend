@@ -15,6 +15,7 @@ env:
   AI_API_KEY: ci-placeholder-key
   AI_BASE_URL: http://127.0.0.1:9999/v1
   INGESTION_WORKER_ENABLED: 'false'
+  INGESTION_SCHEDULER_ENABLED: 'false'
   AGENT_LEARNING_WORKER_ENABLED: 'false'
 
 jobs:
@@ -58,10 +59,16 @@ jobs:
           AI_API_KEY: ci-placeholder-key
           AI_BASE_URL: http://127.0.0.1:9999/v1
           INGESTION_WORKER_ENABLED: 'false'
+          INGESTION_SCHEDULER_ENABLED: 'false'
           AGENT_LEARNING_WORKER_ENABLED: 'false'
         run: |
           node dist/index.js > backend-smoke.log 2>&1 &
-          for i in {1..30}; do curl -fsS http://127.0.0.1:3000/health && break || sleep 1; done
+          ready=false
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:3000/health; then ready=true; break; fi
+            sleep 1
+          done
+          test "$ready" = true
           npm run test:api:smoke
       - name: Print API log on failure
         if: failure()

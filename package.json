@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "build": "prisma generate && tsc",
+    "build": "prisma generate && tsc && node -e \"require('node:fs').cpSync('src/generated/prisma', 'dist/generated/prisma', { recursive: true })\"",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "typecheck": "prisma generate && tsc --noEmit",

@@ -1,13 +1,7 @@
 import type {
   AnalyticsFilters,
   CostAnomaly,
-  CostAnalyticsAccountItem,
-  CostAnalyticsEnvironmentItem,
-  CostAnalyticsProviderItem,
-  CostAnalyticsResourceItem,
-  CostAnalyticsServiceItem,
   CostAnalyticsSnapshot,
-  CostAnalyticsUsageItem,
   CostForecast,
   ICostAnalyticsRepository,
   MonthlyCostPoint,
@@ -15,90 +9,52 @@ import type {
   PersistCostAnomalyInput,
   PersistCostForecastInput,
 } from '../../domain/interfaces/ICostAnalyticsRepository.js';
-import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
-
-interface ProviderRow {
-  readonly provider: string;
-  readonly metric_count: number;
-  readonly total_cost: number;
-}
-
-interface AccountRow {
-  readonly cloud_account_id: string;
-  readonly provider: string;
-  readonly name: string;
-  readonly metric_count: number;
-  readonly total_cost: number;
-}
-
-interface ServiceRow {
-  readonly service_name: string;
-  readonly provider: string;
-  readonly metric_count: number;
-  readonly total_cost: number;
-}
-
-interface EnvironmentRow {
-  readonly environment: string;
-  readonly metric_count: number;
-  readonly total_cost: number;
-}
-
-interface ResourceRow {
-  readonly resource_id: string;
-  readonly service_name: string;
-  readonly provider: string;
-  readonly metric_count: number;
-  readonly total_cost: number;
-}
-
-interface CurrencyRow {
-  readonly currency: string;
-}
-
-interface MonthlyCostRow {
-  readonly month: Date;
-  readonly group_by: string;
-  readonly group_key: string;
-  readonly provider: string | null;
-  readonly cloud_account_id: string | null;
-  readonly service_name: string | null;
-  readonly resource_id: string | null;
-  readonly environment: string | null;
-  readonly currency: string;
-  readonly metric_count: number;
-  readonly total_cost: number;
-}
-
-interface MonthlyUsageRow {
-  readonly month: Date;
-  readonly group_by: string;
-  readonly group_key: string;
-  readonly provider: string | null;
-  readonly cloud_account_id: string | null;
-  readonly service_name: string | null;
-  readonly resource_id: string | null;
-  readonly environment: string | null;
-  readonly consumed_unit: string;
-  readonly currency: string;
-  readonly metric_count: number;
-  readonly consumed_quantity: number;
-  readonly total_cost: number;
-}
-
-interface TopUsageRow {
-  readonly service_name: string;
-  readonly provider: string;
-  readonly consumed_unit: string;
-  readonly currency: string;
-  readonly metric_count: number;
-  readonly consumed_quantity: number;
-  readonly total_cost: number;
-}
+import { type PrismaClient } from '../../generated/prisma/client.js';
+import {
+  toAccountItem,
+  toAnomalyDomain,
+  toEnvironmentItem,
+  toForecastDomain,
+  toProviderItem,
+  toResourceItem,
+  toServiceItem,
+  toUsageItem,
+} from './mappers/costAnalyticsMappers.js';
+import { runSnapshotAggregations } from './queries/costAnalyticsSnapshotQueries.js';
+import {
+  queryMonthlyCostRows,
+  queryMonthlyUsageRows,
+} from './queries/costAnalyticsSeriesQueries.js';
+import {
+  replaceTenantAnomalies,
+  replaceTenantForecasts,
+} from './queries/costAnalyticsPersistenceQueries.js';
 
 export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
+  /**
+   * Construye el snapshot analítico de costes más reciente de un tenant.
+   *
+   * Estrategia: primero localiza el `chargePeriodStart` máximo del tenant y, a
+   * partir de él, calcula los límites del mes natural en UTC (`periodStart`
+   * inclusive, `periodEnd` exclusivo). Si el tenant no tiene métricas, devuelve
+   * un snapshot vacío (ver {@link emptySnapshot}).
+   *
+   * Luego ejecuta en paralelo varias agregaciones (todas filtradas por
+   * `tenant_id` para aislamiento multi-tenant y por el rango mensual):
+   * - resumen (conteo y suma de `billed_cost`),
+   * - divisa predominante (la más frecuente en el periodo),
+   * - desgloses por proveedor, cuenta (join con `cloud_accounts`), servicio (top
+   *   10), entorno (etiqueta `tags->>'environment'`) y recursos (top 10,
+   *   excluyendo `resource_id` vacío),
+   * - top de uso por servicio/unidad consumida.
+   * Finalmente añade anomalías (máx. 5) y pronósticos (máx. 6). Los importes en
+   * SQL se castean a `float8` para devolver `number` y no `Decimal`.
+   *
+   * @param tenantId Tenant del que se construye el snapshot.
+   * @returns Snapshot analítico de costes; snapshot vacío si no hay métricas.
+   */
   public async getLatestTenantSnapshot(tenantId: string): Promise<CostAnalyticsSnapshot> {
     const bounds = await this.prisma.costMetric.aggregate({
       where: { tenantId },
@@ -122,114 +78,7 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       1,
     ));
 
-    const [summary, currencies, providers, accounts, services, environments, topResources, topUsage] = await Promise.all([
-      this.prisma.costMetric.aggregate({
-        where: {
-          tenantId,
-          chargePeriodStart: {
-            gte: periodStart,
-            lt: periodEnd,
-          },
-        },
-        _count: true,
-        _sum: {
-          billedCost: true,
-        },
-      }),
-      this.prisma.$queryRaw<CurrencyRow[]>`
-        select billing_currency as currency
-        from cost_metrics
-        where tenant_id = ${tenantId}
-          and charge_period_start >= ${periodStart}
-          and charge_period_start < ${periodEnd}
-        group by billing_currency
-        order by count(*) desc
-        limit 1
-      `,
-      this.prisma.$queryRaw<ProviderRow[]>`
-        select provider::text as provider,
-               count(*)::int as metric_count,
-               coalesce(sum(billed_cost), 0)::float8 as total_cost
-        from cost_metrics
-        where tenant_id = ${tenantId}
-          and charge_period_start >= ${periodStart}
-          and charge_period_start < ${periodEnd}
-        group by provider
-        order by total_cost desc
-      `,
-      this.prisma.$queryRaw<AccountRow[]>`
-        select cm.cloud_account_id,
-               cm.provider::text as provider,
-               max(ca.name) as name,
-               count(*)::int as metric_count,
-               coalesce(sum(cm.billed_cost), 0)::float8 as total_cost
-        from cost_metrics cm
-        inner join cloud_accounts ca on ca.id = cm.cloud_account_id
-        where cm.tenant_id = ${tenantId}
-          and cm.charge_period_start >= ${periodStart}
-          and cm.charge_period_start < ${periodEnd}
-        group by cm.cloud_account_id, cm.provider
-        order by total_cost desc
-      `,
-      this.prisma.$queryRaw<ServiceRow[]>`
-        select service_name,
-               provider::text as provider,
-               count(*)::int as metric_count,
-               coalesce(sum(billed_cost), 0)::float8 as total_cost
-        from cost_metrics
-        where tenant_id = ${tenantId}
-          and charge_period_start >= ${periodStart}
-          and charge_period_start < ${periodEnd}
-        group by service_name, provider
-        order by total_cost desc
-        limit 10
-      `,
-      this.prisma.$queryRaw<EnvironmentRow[]>`
-        select coalesce(tags->>'environment', 'unknown') as environment,
-               count(*)::int as metric_count,
-               coalesce(sum(billed_cost), 0)::float8 as total_cost
-        from cost_metrics
-        where tenant_id = ${tenantId}
-          and charge_period_start >= ${periodStart}
-          and charge_period_start < ${periodEnd}
-        group by coalesce(tags->>'environment', 'unknown')
-        order by total_cost desc
-      `,
-      this.prisma.$queryRaw<ResourceRow[]>`
-        select resource_id,
-               max(service_name) as service_name,
-               max(provider::text) as provider,
-               count(*)::int as metric_count,
-               coalesce(sum(billed_cost), 0)::float8 as total_cost
-        from cost_metrics
-        where tenant_id = ${tenantId}
-          and charge_period_start >= ${periodStart}
-          and charge_period_start < ${periodEnd}
-          and resource_id <> ''
-        group by resource_id
-        order by total_cost desc
-        limit 10
-      `,
-      this.prisma.$queryRaw<TopUsageRow[]>`
-        select service_name,
-               provider::text as provider,
-               consumed_unit,
-               max(billing_currency) as currency,
-               count(*)::int as metric_count,
-               coalesce(sum(consumed_quantity), 0)::float8 as consumed_quantity,
-               coalesce(sum(billed_cost), 0)::float8 as total_cost
-        from cost_metrics
-        where tenant_id = ${tenantId}
-          and charge_period_start >= ${periodStart}
-          and charge_period_start < ${periodEnd}
-          and consumed_quantity is not null
-          and consumed_unit is not null
-          and consumed_unit <> ''
-        group by service_name, provider, consumed_unit
-        order by total_cost desc, consumed_quantity desc
-        limit 10
-      `,
-    ]);
+    const aggregations = await runSnapshotAggregations(this.prisma, tenantId, periodStart, periodEnd);
 
     const [anomalies, forecasts] = await Promise.all([
       this.findAnomalies(tenantId),
@@ -240,65 +89,42 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       tenantId,
       periodStart: periodStart.toISOString(),
       periodEnd: periodEnd.toISOString(),
-      totalCost: Number(summary._sum.billedCost ?? 0),
-      currency: currencies[0]?.currency ?? 'USD',
-      metricCount: summary._count,
-      providers: providers.map(this.toProviderItem),
-      accounts: accounts.map(this.toAccountItem),
-      services: services.map(this.toServiceItem),
-      environments: environments.map(this.toEnvironmentItem),
-      topResources: topResources.map(this.toResourceItem),
-      topUsage: topUsage.map(this.toUsageItem),
+      totalCost: aggregations.summary.totalCost,
+      currency: aggregations.currencies[0]?.currency ?? 'USD',
+      metricCount: aggregations.summary.metricCount,
+      providers: aggregations.providers.map(toProviderItem),
+      accounts: aggregations.accounts.map(toAccountItem),
+      services: aggregations.services.map(toServiceItem),
+      environments: aggregations.environments.map(toEnvironmentItem),
+      topResources: aggregations.topResources.map(toResourceItem),
+      topUsage: aggregations.topUsage.map(toUsageItem),
       anomalies: anomalies.slice(0, 5),
       forecasts: forecasts.slice(0, 6),
     };
   }
 
+  /**
+   * Devuelve la serie mensual de costes de un tenant, agrupada por la dimensión
+   * indicada en los filtros (`provider`, `account`, `service`, `resource` o
+   * `environment`; por defecto `service`).
+   *
+   * Construye dinámicamente las cláusulas `where` a partir de los filtros
+   * opcionales (rango temporal semiabierto, proveedor, cuenta, servicio),
+   * partiendo siempre del filtro `tenant_id` (aislamiento multi-tenant). Agrega
+   * por mes (`date_trunc('month', ...)`) y por la expresión de agrupación
+   * (ver {@link groupExpression}); el coste se castea a `float8`.
+   *
+   * @param tenantId Tenant cuya serie se calcula.
+   * @param filters Filtros opcionales de rango, dimensiones y `groupBy`.
+   * @returns Puntos mensuales de coste; arreglo vacío si no hay datos. Los
+   *   campos dimensionales anulables solo se incluyen cuando no son `null`.
+   */
   public async getMonthlyCostSeries(
     tenantId: string,
     filters: AnalyticsFilters = {},
   ): Promise<MonthlyCostPoint[]> {
     const groupBy = filters.groupBy ?? 'service';
-    const groupExpression = this.groupExpression(groupBy);
-    const clauses: Prisma.Sql[] = [Prisma.sql`tenant_id = ${tenantId}`];
-
-    if (filters.from !== undefined) {
-      clauses.push(Prisma.sql`charge_period_start >= ${filters.from}`);
-    }
-
-    if (filters.to !== undefined) {
-      clauses.push(Prisma.sql`charge_period_start < ${filters.to}`);
-    }
-
-    if (filters.provider !== undefined) {
-      clauses.push(Prisma.sql`provider::text = ${filters.provider}`);
-    }
-
-    if (filters.cloudAccountId !== undefined) {
-      clauses.push(Prisma.sql`cloud_account_id = ${filters.cloudAccountId}`);
-    }
-
-    if (filters.serviceName !== undefined) {
-      clauses.push(Prisma.sql`service_name = ${filters.serviceName}`);
-    }
-
-    const rows = await this.prisma.$queryRaw<MonthlyCostRow[]>`
-      select date_trunc('month', charge_period_start)::timestamptz as month,
-             ${groupBy} as group_by,
-             ${groupExpression} as group_key,
-             max(provider::text) as provider,
-             max(cloud_account_id) as cloud_account_id,
-             max(service_name) as service_name,
-             nullif(max(resource_id), '') as resource_id,
-             max(coalesce(tags->>'environment', 'unknown')) as environment,
-             max(billing_currency) as currency,
-             count(*)::int as metric_count,
-             coalesce(sum(billed_cost), 0)::float8 as total_cost
-      from cost_metrics
-      where ${Prisma.join(clauses, ' and ')}
-      group by date_trunc('month', charge_period_start), ${groupExpression}
-      order by month asc, total_cost desc
-    `;
+    const rows = await queryMonthlyCostRows(this.prisma, tenantId, groupBy, filters);
 
     return rows.map((row) => ({
       month: row.month.toISOString(),
@@ -315,58 +141,28 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
     }));
   }
 
+  /**
+   * Devuelve la serie mensual de uso (consumo) de un tenant, agrupada por la
+   * dimensión indicada y por unidad consumida.
+   *
+   * Igual que {@link getMonthlyCostSeries}, pero restringe a métricas con
+   * cantidad y unidad de consumo válidas (no nulas ni vacías) y agrega también
+   * por `consumed_unit`. Calcula un coste unitario derivado
+   * (`total_cost / consumed_quantity`) solo cuando la cantidad es positiva; el
+   * `groupKey` se enriquece con la unidad entre paréntesis para distinguir
+   * series con distinta unidad.
+   *
+   * @param tenantId Tenant cuya serie de uso se calcula.
+   * @param filters Filtros opcionales de rango, dimensiones y `groupBy`.
+   * @returns Puntos mensuales de uso (con `unitCost` cuando aplica); arreglo
+   *   vacío si no hay datos.
+   */
   public async getMonthlyUsageSeries(
     tenantId: string,
     filters: AnalyticsFilters = {},
   ): Promise<MonthlyUsagePoint[]> {
     const groupBy = filters.groupBy ?? 'service';
-    const groupExpression = this.groupExpression(groupBy);
-    const clauses: Prisma.Sql[] = [
-      Prisma.sql`tenant_id = ${tenantId}`,
-      Prisma.sql`consumed_quantity is not null`,
-      Prisma.sql`consumed_unit is not null`,
-      Prisma.sql`consumed_unit <> ''`,
-    ];
-
-    if (filters.from !== undefined) {
-      clauses.push(Prisma.sql`charge_period_start >= ${filters.from}`);
-    }
-
-    if (filters.to !== undefined) {
-      clauses.push(Prisma.sql`charge_period_start < ${filters.to}`);
-    }
-
-    if (filters.provider !== undefined) {
-      clauses.push(Prisma.sql`provider::text = ${filters.provider}`);
-    }
-
-    if (filters.cloudAccountId !== undefined) {
-      clauses.push(Prisma.sql`cloud_account_id = ${filters.cloudAccountId}`);
-    }
-
-    if (filters.serviceName !== undefined) {
-      clauses.push(Prisma.sql`service_name = ${filters.serviceName}`);
-    }
-
-    const rows = await this.prisma.$queryRaw<MonthlyUsageRow[]>`
-      select date_trunc('month', charge_period_start)::timestamptz as month,
-             ${groupBy} as group_by,
-             ${groupExpression} as group_key,
-             max(provider::text) as provider,
-             max(cloud_account_id) as cloud_account_id,
-             max(service_name) as service_name,
-             nullif(max(resource_id), '') as resource_id,
-             max(coalesce(tags->>'environment', 'unknown')) as environment,
-             consumed_unit,
-             max(billing_currency) as currency,
-             count(*)::int as metric_count,
-             coalesce(sum(consumed_quantity), 0)::float8 as consumed_quantity,
-             coalesce(sum(billed_cost), 0)::float8 as total_cost
-      from cost_metrics
-      where ${Prisma.join(clauses, ' and ')}
-      group by date_trunc('month', charge_period_start), ${groupExpression}, consumed_unit
-      order by month asc, total_cost desc, consumed_quantity desc
-    `;
+    const rows = await queryMonthlyUsageRows(this.prisma, tenantId, groupBy, filters);
 
     return rows.map((row) => {
       const unitCost = row.consumed_quantity > 0 ? row.total_cost / row.consumed_quantity : undefined;
@@ -390,6 +186,18 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
     });
   }
 
+  /**
+   * Lista las anomalías de coste persistidas de un tenant, aplicando filtros
+   * opcionales.
+   *
+   * Filtra por `tenantId` (aislamiento multi-tenant) y, opcionalmente, por rango
+   * de `periodStart`, proveedor, cuenta y servicio. Ordena por severidad y fecha
+   * de detección descendentes, limitando a 100 resultados.
+   *
+   * @param tenantId Tenant cuyas anomalías se consultan.
+   * @param filters Filtros opcionales.
+   * @returns Lista de anomalías de dominio; arreglo vacío si no hay coincidencias.
+   */
   public async findAnomalies(
     tenantId: string,
     filters: AnalyticsFilters = {},
@@ -410,55 +218,47 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       take: 100,
     });
 
-    return rows.map((row) => this.toAnomalyDomain(row));
+    return rows.map((row) => toAnomalyDomain(row));
   }
 
+  /**
+   * Reemplaza atómicamente todas las anomalías de coste de un tenant por el
+   * nuevo conjunto calculado.
+   *
+   * Ejecuta dentro de una transacción que: (1) toma un lock consultivo a nivel de
+   * transacción (`pg_advisory_xact_lock`) basado en un hash de
+   * `cost_anomalies:<tenantId>` para serializar regeneraciones concurrentes del
+   * mismo tenant y evitar condiciones de carrera; (2) borra las anomalías
+   * existentes del tenant; (3) inserta el nuevo lote (con `skipDuplicates`); y
+   * (4) relee el conjunto resultante ordenado por severidad y detección.
+   *
+   * @param tenantId Tenant cuyas anomalías se reemplazan (aislamiento
+   *   multi-tenant).
+   * @param anomalies Nuevo conjunto de anomalías a persistir.
+   * @returns Las anomalías persistidas en formato de dominio (máx. 100).
+   */
   public async replaceAnomalies(
     tenantId: string,
     anomalies: readonly PersistCostAnomalyInput[],
   ): Promise<CostAnomaly[]> {
-    const rows = await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`select pg_advisory_xact_lock(hashtext(${`cost_anomalies:${tenantId}`}))`;
-      await tx.costAnomaly.deleteMany({ where: { tenantId } });
+    const rows = await replaceTenantAnomalies(this.prisma, tenantId, anomalies);
 
-      if (anomalies.length > 0) {
-        await tx.costAnomaly.createMany({
-          data: anomalies.map((item) => ({
-          tenantId: item.tenantId,
-          ...(item.cloudAccountId !== undefined ? { cloudAccountId: item.cloudAccountId } : {}),
-          ...(item.provider !== undefined ? { provider: item.provider as never } : {}),
-          ...(item.serviceName !== undefined ? { serviceName: item.serviceName } : {}),
-          ...(item.resourceId !== undefined ? { resourceId: item.resourceId } : {}),
-          ...(item.environment !== undefined ? { environment: item.environment } : {}),
-          periodStart: item.periodStart,
-          periodEnd: item.periodEnd,
-          baselineCost: item.baselineCost,
-          observedCost: item.observedCost,
-          deltaAmount: item.deltaAmount,
-          deltaPercent: item.deltaPercent,
-          ...(item.zScore !== undefined ? { zScore: item.zScore } : {}),
-          severity: item.severity,
-          status: item.status,
-          explanation: item.explanation,
-          ...(item.evidence !== undefined ? { evidence: item.evidence as Prisma.InputJsonValue } : {}),
-          })),
-          skipDuplicates: true,
-        });
-      }
-
-      return tx.costAnomaly.findMany({
-        where: { tenantId },
-        orderBy: [
-          { severity: 'desc' },
-          { detectedAt: 'desc' },
-        ],
-        take: 100,
-      });
-    });
-
-    return rows.map((row) => this.toAnomalyDomain(row));
+    return rows.map((row) => toAnomalyDomain(row));
   }
 
+  /**
+   * Lista los pronósticos de coste persistidos de un tenant, con filtros
+   * opcionales.
+   *
+   * Filtra por `tenantId` (aislamiento multi-tenant) y, opcionalmente, por
+   * proveedor, cuenta, servicio y `groupBy`. Ordena por mes pronosticado
+   * ascendente y coste previsto descendente, limitando a 100 resultados.
+   *
+   * @param tenantId Tenant cuyos pronósticos se consultan.
+   * @param filters Filtros opcionales.
+   * @returns Lista de pronósticos de dominio; arreglo vacío si no hay
+   *   coincidencias.
+   */
   public async findForecasts(
     tenantId: string,
     filters: AnalyticsFilters = {},
@@ -478,52 +278,39 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       take: 100,
     });
 
-    return rows.map((row) => this.toForecastDomain(row));
+    return rows.map((row) => toForecastDomain(row));
   }
 
+  /**
+   * Reemplaza atómicamente todos los pronósticos de coste de un tenant por el
+   * nuevo conjunto calculado.
+   *
+   * Mismo patrón que {@link replaceAnomalies}: lock consultivo de transacción
+   * (`pg_advisory_xact_lock` sobre `cost_forecasts:<tenantId>`) para serializar
+   * regeneraciones concurrentes, borrado del conjunto previo, inserción del nuevo
+   * lote (con `skipDuplicates`) y relectura ordenada.
+   *
+   * @param tenantId Tenant cuyos pronósticos se reemplazan (aislamiento
+   *   multi-tenant).
+   * @param forecasts Nuevo conjunto de pronósticos a persistir.
+   * @returns Los pronósticos persistidos en formato de dominio (máx. 100).
+   */
   public async replaceForecasts(
     tenantId: string,
     forecasts: readonly PersistCostForecastInput[],
   ): Promise<CostForecast[]> {
-    const rows = await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`select pg_advisory_xact_lock(hashtext(${`cost_forecasts:${tenantId}`}))`;
-      await tx.costForecast.deleteMany({ where: { tenantId } });
+    const rows = await replaceTenantForecasts(this.prisma, tenantId, forecasts);
 
-      if (forecasts.length > 0) {
-        await tx.costForecast.createMany({
-          data: forecasts.map((item) => ({
-          tenantId: item.tenantId,
-          ...(item.cloudAccountId !== undefined ? { cloudAccountId: item.cloudAccountId } : {}),
-          ...(item.provider !== undefined ? { provider: item.provider as never } : {}),
-          ...(item.serviceName !== undefined ? { serviceName: item.serviceName } : {}),
-          groupBy: item.groupBy,
-          groupKey: item.groupKey,
-          forecastMonth: item.forecastMonth,
-          predictedCost: item.predictedCost,
-          lowerBound: item.lowerBound,
-          upperBound: item.upperBound,
-          method: item.method,
-          confidence: item.confidence,
-          currency: item.currency,
-          ...(item.evidence !== undefined ? { evidence: item.evidence as Prisma.InputJsonValue } : {}),
-          })),
-          skipDuplicates: true,
-        });
-      }
-
-      return tx.costForecast.findMany({
-        where: { tenantId },
-        orderBy: [
-          { forecastMonth: 'asc' },
-          { predictedCost: 'desc' },
-        ],
-        take: 100,
-      });
-    });
-
-    return rows.map((row) => this.toForecastDomain(row));
+    return rows.map((row) => toForecastDomain(row));
   }
 
+  /**
+   * Crea un snapshot vacío (sin métricas) usado cuando el tenant aún no tiene
+   * datos de coste. Fija divisa por defecto `USD` y periodos a la fecha actual.
+   *
+   * @param tenantId Tenant para el que se genera el snapshot vacío.
+   * @returns Snapshot con totales en cero y colecciones vacías.
+   */
   private emptySnapshot(tenantId: string): CostAnalyticsSnapshot {
     const now = new Date();
 
@@ -541,127 +328,6 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       topResources: [],
       anomalies: [],
       forecasts: [],
-    };
-  }
-
-  private groupExpression(groupBy: 'provider' | 'account' | 'service' | 'resource' | 'environment'): Prisma.Sql {
-    switch (groupBy) {
-      case 'provider':
-        return Prisma.sql`provider::text`;
-      case 'account':
-        return Prisma.sql`cloud_account_id`;
-      case 'resource':
-        return Prisma.sql`coalesce(nullif(resource_id, ''), 'sin-recurso')`;
-      case 'environment':
-        return Prisma.sql`coalesce(tags->>'environment', 'unknown')`;
-      case 'service':
-      default:
-        return Prisma.sql`service_name`;
-    }
-  }
-
-  private toProviderItem(row: ProviderRow): CostAnalyticsProviderItem {
-    return {
-      provider: row.provider,
-      totalCost: row.total_cost,
-      metricCount: row.metric_count,
-    };
-  }
-
-  private toAccountItem(row: AccountRow): CostAnalyticsAccountItem {
-    return {
-      cloudAccountId: row.cloud_account_id,
-      provider: row.provider,
-      name: row.name,
-      totalCost: row.total_cost,
-      metricCount: row.metric_count,
-    };
-  }
-
-  private toServiceItem(row: ServiceRow): CostAnalyticsServiceItem {
-    return {
-      serviceName: row.service_name,
-      provider: row.provider,
-      totalCost: row.total_cost,
-      metricCount: row.metric_count,
-    };
-  }
-
-  private toEnvironmentItem(row: EnvironmentRow): CostAnalyticsEnvironmentItem {
-    return {
-      environment: row.environment,
-      totalCost: row.total_cost,
-      metricCount: row.metric_count,
-    };
-  }
-
-  private toResourceItem(row: ResourceRow): CostAnalyticsResourceItem {
-    return {
-      resourceId: row.resource_id,
-      serviceName: row.service_name,
-      provider: row.provider,
-      totalCost: row.total_cost,
-      metricCount: row.metric_count,
-    };
-  }
-
-  private toUsageItem(row: TopUsageRow): CostAnalyticsUsageItem {
-    const unitCost = row.consumed_quantity > 0 ? row.total_cost / row.consumed_quantity : undefined;
-
-    return {
-      serviceName: row.service_name,
-      provider: row.provider,
-      consumedQuantity: row.consumed_quantity,
-      consumedUnit: row.consumed_unit,
-      totalCost: row.total_cost,
-      ...(unitCost !== undefined ? { unitCost } : {}),
-      currency: row.currency,
-      metricCount: row.metric_count,
-    };
-  }
-
-  private toAnomalyDomain(row: Awaited<ReturnType<PrismaClient['costAnomaly']['findFirst']>> & {}): CostAnomaly {
-    return {
-      id: row.id,
-      tenantId: row.tenantId,
-      ...(row.cloudAccountId !== null ? { cloudAccountId: row.cloudAccountId } : {}),
-      ...(row.provider !== null ? { provider: row.provider } : {}),
-      ...(row.serviceName !== null ? { serviceName: row.serviceName } : {}),
-      ...(row.resourceId !== null ? { resourceId: row.resourceId } : {}),
-      ...(row.environment !== null ? { environment: row.environment } : {}),
-      periodStart: row.periodStart.toISOString(),
-      periodEnd: row.periodEnd.toISOString(),
-      baselineCost: Number(row.baselineCost),
-      observedCost: Number(row.observedCost),
-      deltaAmount: Number(row.deltaAmount),
-      deltaPercent: Number(row.deltaPercent),
-      ...(row.zScore !== null ? { zScore: Number(row.zScore) } : {}),
-      severity: row.severity,
-      status: row.status,
-      explanation: row.explanation,
-      ...(row.evidence !== null ? { evidence: row.evidence } : {}),
-      detectedAt: row.detectedAt.toISOString(),
-    };
-  }
-
-  private toForecastDomain(row: Awaited<ReturnType<PrismaClient['costForecast']['findFirst']>> & {}): CostForecast {
-    return {
-      id: row.id,
-      tenantId: row.tenantId,
-      ...(row.cloudAccountId !== null ? { cloudAccountId: row.cloudAccountId } : {}),
-      ...(row.provider !== null ? { provider: row.provider } : {}),
-      ...(row.serviceName !== null ? { serviceName: row.serviceName } : {}),
-      groupBy: row.groupBy as CostForecast['groupBy'],
-      groupKey: row.groupKey,
-      forecastMonth: row.forecastMonth.toISOString(),
-      predictedCost: Number(row.predictedCost),
-      lowerBound: Number(row.lowerBound),
-      upperBound: Number(row.upperBound),
-      method: row.method,
-      confidence: Number(row.confidence),
-      currency: row.currency,
-      ...(row.evidence !== null ? { evidence: row.evidence } : {}),
-      generatedAt: row.generatedAt.toISOString(),
     };
   }
 }

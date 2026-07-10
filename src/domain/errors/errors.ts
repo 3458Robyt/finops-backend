@@ -101,3 +101,19 @@ export class ConfigurationError extends FinOpsBaseError {
     super(message, 'CONFIGURATION_ERROR');
   }
 }
+
+export interface AiAuditRejectedDetails {
+  readonly diagnosticId: string;
+  readonly audit: unknown;
+}
+
+export class AiAuditRejectedError extends FinOpsBaseError {
+  public readonly diagnosticId: string;
+  public readonly audit: unknown;
+
+  constructor(message: string, details: AiAuditRejectedDetails) {
+    super(message, 'AI_AUDIT_REJECTED');
+    this.diagnosticId = details.diagnosticId;
+    this.audit = details.audit;
+  }
+}

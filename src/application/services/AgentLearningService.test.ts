@@ -95,6 +95,7 @@ class FakeAgentLearningRepository implements IAgentLearningRepository {
   public eventInput: CreateAgentLearningEventInput | null = null;
   public completed: CompleteAgentLearningEventInput | null = null;
   public memoryInput: CreateAgentMemoryInput | null = null;
+  public retryInput: { readonly eventId: string; readonly workerId: string; readonly errorMessage: string } | null = null;
 
   public async createEvent(input: CreateAgentLearningEventInput): Promise<AgentLearningEvent> {
     this.eventInput = input;
@@ -120,9 +121,24 @@ class FakeAgentLearningRepository implements IAgentLearningRepository {
       decisionId: this.eventInput.decisionId,
       userId: this.eventInput.userId,
       decision: this.eventInput.decision,
-      reasonCode: this.eventInput.reasonCode,
-      ...(this.eventInput.reason !== undefined ? { reason: this.eventInput.reason } : {}),
-    };
+        reasonCode: this.eventInput.reasonCode,
+        attempts: 1,
+        maxAttempts: 3,
+        ...(this.eventInput.reason !== undefined ? { reason: this.eventInput.reason } : {}),
+      };
+  }
+
+  public async claimNextQueuedEvent() {
+    return this.findQueuedEventById('event-1');
+  }
+
+  public async releaseEventForRetry(input: {
+    readonly eventId: string;
+    readonly workerId: string;
+    readonly errorMessage: string;
+  }): Promise<'PENDING'> {
+    this.retryInput = input;
+    return 'PENDING';
   }
 
   public async completeEvent(input: CompleteAgentLearningEventInput): Promise<AgentLearningEvent> {
@@ -247,5 +263,32 @@ describe('AgentLearningService', () => {
       status: 'SKIPPED',
       errorMessage: 'Request timed out.',
     });
+  });
+
+  test('keeps external worker failures pending for durable retry', async () => {
+    const learningRepository = new FakeAgentLearningRepository();
+    const service = new AgentLearningService(
+      new FakeRecommendationRepository(),
+      learningRepository,
+      new TimeoutAiGateway(),
+    );
+    await service.queueRecommendationDecision({
+      tenantId: 'tenant-1',
+      recommendationId: 'rec-1',
+      decisionId: 'decision-1',
+      userId: 'user-1',
+      decision: 'APPROVED',
+      reasonCode: 'APPROVED_HIGH_CONFIDENCE',
+    });
+
+    const result = await service.processNextQueuedRecommendationDecision('worker-1');
+
+    expect(result).toMatchObject({ status: 'PENDING', eventId: 'event-1' });
+    expect(learningRepository.retryInput).toMatchObject({
+      eventId: 'event-1',
+      workerId: 'worker-1',
+      errorMessage: 'Request timed out.',
+    });
+    expect(learningRepository.completed).toBeNull();
   });
 });

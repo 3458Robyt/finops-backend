@@ -10,9 +10,42 @@ interface ServiceBreakdownItem {
   usageUnit?: string;
 }
 
+/**
+ * Controlador de la capa de presentación para las consultas de costes diarios
+ * (montado en `/api/v1/costs`). Traduce las peticiones HTTP hacia el repositorio
+ * de costes y serializa las métricas junto con un resumen agregado.
+ *
+ * Dependencias que utiliza:
+ * - {@link ICostRepository}: lectura de métricas de coste por rango de fechas.
+ *
+ * El endpoint requiere autenticación y acota la consulta al tenant del usuario.
+ */
 export class CostController {
   constructor(private readonly costRepository: ICostRepository) {}
 
+  /**
+   * Devuelve las métricas de coste diario del tenant en un rango de fechas, con
+   * filtros opcionales por proveedor y cuenta de nube, junto con un resumen
+   * agregado por servicio.
+   *
+   * Sirve: GET /api/v1/costs
+   * Autenticación: requerida. Usa `req.auth.tenantId` para acotar la consulta.
+   *
+   * Parámetros de consulta (`req.query`):
+   * - `provider` (opcional): filtra por nombre de proveedor.
+   * - `cloudAccountId` (opcional): filtra por cuenta de nube.
+   * - `startDate` / `endDate` (opcionales): rango de fechas ISO. Si faltan, se
+   *   usa por defecto los últimos 30 días (ver {@link resolveDateRange}).
+   *
+   * Respuestas:
+   * - 200: `{ success: true, summary, metrics, meta }` con el resumen, las
+   *   métricas y metadatos de la consulta (tenant, filtros, rango y conteo).
+   * - 400 VALIDATION_ERROR: alguna fecha de la query no es válida (propagado por
+   *   {@link parseDateQuery} como {@link FinOpsBaseError}, respondido con 500
+   *   junto al resto de errores de dominio).
+   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
+   * - 500: error de dominio o error inesperado al procesar los costes.
+   */
   public getDailyCosts = async (req: Request, res: Response): Promise<void> => {
     try {
       if (req.auth === undefined) {
@@ -65,6 +98,11 @@ export class CostController {
     }
   };
 
+  /**
+   * Resuelve el rango de fechas de la consulta a partir de `req.query.startDate`
+   * y `req.query.endDate`. Si ambas están presentes las usa; en caso contrario,
+   * aplica un rango por defecto de los últimos 30 días (UTC) para los extremos ausentes.
+   */
   private resolveDateRange(req: Request): { startDate: Date; endDate: Date } {
     const startDate = this.parseDateQuery(req.query['startDate']);
     const endDate = this.parseDateQuery(req.query['endDate']);
@@ -83,6 +121,10 @@ export class CostController {
     };
   }
 
+  /**
+   * Convierte un valor de query string en fecha. Devuelve `undefined` si no se
+   * proporciona, o lanza VALIDATION_ERROR si la cadena no representa una fecha válida.
+   */
   private parseDateQuery(value: unknown): Date | undefined {
     if (typeof value !== 'string' || value.trim() === '') {
       return undefined;
@@ -97,6 +139,11 @@ export class CostController {
     return parsed;
   }
 
+  /**
+   * Construye el resumen agregado de las métricas: coste total, divisa
+   * principal y desglose por servicio (coste, uso y unidad de uso acumulados).
+   * La divisa principal toma la de la última métrica procesada.
+   */
   private buildSummary(metrics: readonly InternalCostMetric[]): {
     totalCost: number;
     currency: string;

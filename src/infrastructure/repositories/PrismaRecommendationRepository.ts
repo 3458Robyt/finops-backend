@@ -14,10 +14,46 @@ import type {
 import type { FinOpsRecommendation } from '../../domain/models/FinOpsRecommendation.js';
 import type { RecommendationExecutionPlan } from '../../domain/models/RecommendationExecutionPlan.js';
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
+import {
+  toDomain,
+  toExecutionPlanDomain,
+  toManualExecutionDomain,
+} from './mappers/recommendationMappers.js';
+import {
+  computeAdoptionKpis,
+  computeSavingsKpis,
+} from './queries/recommendationKpiQueries.js';
+import { buildRecommendationTimeline } from './queries/recommendationTimelineBuilder.js';
+import {
+  createDecisionTx,
+  createManualExecutionTx,
+} from './queries/recommendationWriteQueries.js';
 
+/**
+ * Adaptador de infraestructura (Clean Architecture) que implementa el puerto de
+ * dominio {@link IRecommendationRepository} sobre Prisma/PostgreSQL.
+ *
+ * Responsabilidad: persistencia y consulta del ciclo de vida de las
+ * recomendaciones FinOps y sus entidades relacionadas: planes de ejecución
+ * auditados (`recommendation_execution_plans`), decisiones humanas
+ * (`recommendation_decisions`), ejecuciones manuales
+ * (`recommendation_manual_executions`) y los KPIs de ahorro y adopción. Todas
+ * las consultas filtran por `tenantId` (a veces a través de la relación con
+ * `recommendation`) para garantizar el aislamiento multi-tenant.
+ */
 export class PrismaRecommendationRepository implements IRecommendationRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
+  /**
+   * Busca una recomendación por su id dentro de un tenant.
+   *
+   * El filtro combinado `id` + `tenantId` garantiza el aislamiento multi-tenant.
+   *
+   * @param tenantId Tenant propietario de la recomendación.
+   * @param recommendationId Identificador de la recomendación.
+   * @returns La recomendación de dominio, o `null` si no existe o no pertenece
+   *   al tenant.
+   */
   public async findById(tenantId: string, recommendationId: string): Promise<FinOpsRecommendation | null> {
     const row = await this.prisma.recommendation.findFirst({
       where: {
@@ -26,9 +62,20 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
       },
     });
 
-    return row === null ? null : this.toDomain(row);
+    return row === null ? null : toDomain(row);
   }
 
+  /**
+   * Lista las recomendaciones de un tenant, con filtros opcionales por cuenta
+   * cloud y estado.
+   *
+   * Filtra por `tenantId` (aislamiento multi-tenant) y ordena por fecha de
+   * creación descendente.
+   *
+   * @param query Criterios de consulta (tenant y filtros opcionales).
+   * @returns Lista de recomendaciones de dominio; arreglo vacío si no hay
+   *   coincidencias.
+   */
   public async findByTenant(query: RecommendationQuery): Promise<FinOpsRecommendation[]> {
     const rows = await this.prisma.recommendation.findMany({
       where: {
@@ -41,9 +88,21 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
       ],
     });
 
-    return rows.map((row) => this.toDomain(row));
+    return rows.map((row) => toDomain(row));
   }
 
+  /**
+   * Crea múltiples recomendaciones, una por cada entrada del lote.
+   *
+   * Cada recomendación se inicializa con estado `PENDING`. Las inserciones se
+   * lanzan en paralelo con `Promise.all`. El campo `evidence` se serializa como
+   * JSON de Prisma y `estimatedMonthlySavings` (en la divisa `currency`) solo se
+   * incluye cuando está definido.
+   *
+   * @param input Lote de recomendaciones a crear.
+   * @returns Las recomendaciones creadas en formato de dominio; arreglo vacío si
+   *   el lote viene vacío.
+   */
   public async createMany(input: readonly CreateRecommendationInput[]): Promise<FinOpsRecommendation[]> {
     if (input.length === 0) {
       return [];
@@ -68,9 +127,20 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
       })
     )));
 
-    return rows.map((row) => this.toDomain(row));
+    return rows.map((row) => toDomain(row));
   }
 
+  /**
+   * Crea un plan de ejecución auditado para una recomendación.
+   *
+   * Persiste tanto el contenido del plan como el reporte de auditoría IA
+   * (`content` y `auditReport` se serializan como JSON), junto con el veredicto y
+   * la puntuación del auditor.
+   *
+   * @param input Datos del plan (recomendación, autor, modelos, contenido y
+   *   resultado de auditoría).
+   * @returns El plan de ejecución creado en formato de dominio.
+   */
   public async createExecutionPlan(
     input: CreateRecommendationExecutionPlanInput,
   ): Promise<RecommendationExecutionPlan> {
@@ -87,9 +157,20 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
       },
     });
 
-    return this.toExecutionPlanDomain(row);
+    return toExecutionPlanDomain(row);
   }
 
+  /**
+   * Busca un plan de ejecución por su id, validando que la recomendación
+   * asociada pertenezca al tenant.
+   *
+   * El aislamiento multi-tenant se aplica filtrando por la relación
+   * `recommendation.tenantId`.
+   *
+   * @param tenantId Tenant propietario de la recomendación asociada.
+   * @param executionPlanId Identificador del plan de ejecución.
+   * @returns El plan de dominio, o `null` si no existe o no pertenece al tenant.
+   */
   public async findExecutionPlanById(
     tenantId: string,
     executionPlanId: string,
@@ -103,9 +184,20 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
       },
     });
 
-    return row === null ? null : this.toExecutionPlanDomain(row);
+    return row === null ? null : toExecutionPlanDomain(row);
   }
 
+  /**
+   * Obtiene el plan de ejecución más reciente de una recomendación dentro de un
+   * tenant.
+   *
+   * Filtra por recomendación y por la relación `recommendation.tenantId`
+   * (aislamiento multi-tenant), ordenando por fecha de creación descendente.
+   *
+   * @param tenantId Tenant propietario de la recomendación.
+   * @param recommendationId Identificador de la recomendación.
+   * @returns El plan más reciente de dominio, o `null` si no hay planes.
+   */
   public async findLatestExecutionPlanByRecommendation(
     tenantId: string,
     recommendationId: string,
@@ -122,121 +214,71 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
       },
     });
 
-    return row === null ? null : this.toExecutionPlanDomain(row);
+    return row === null ? null : toExecutionPlanDomain(row);
   }
 
+  /**
+   * Registra una decisión humana (aprobar/rechazar/marcar como hecha) sobre una
+   * recomendación y sincroniza el estado de la recomendación, todo de forma
+   * atómica.
+   *
+   * Dentro de una transacción: (1) verifica que la recomendación exista en el
+   * tenant (aislamiento multi-tenant), lanzando error si no; (2) crea la decisión
+   * con `learningStatus: 'PENDING'` (el aprendizaje del agente se procesa
+   * después); y (3) actualiza el estado de la recomendación, mapeando
+   * `MARKED_DONE` a `MANUAL_COMPLETED` y, en el resto de casos, usando el propio
+   * valor de la decisión.
+   *
+   * @param input Datos de la decisión (tenant, recomendación, usuario, decisión
+   *   y motivo opcional).
+   * @returns El id de la decisión creada y la recomendación actualizada en
+   *   formato de dominio.
+   * @throws Error si la recomendación no existe en el tenant.
+   */
   public async createDecision(
     input: CreateRecommendationDecisionInput,
   ): Promise<CreateRecommendationDecisionResult> {
-    const result = await this.prisma.$transaction(async (tx) => {
-      const recommendation = await tx.recommendation.findFirst({
-        where: {
-          id: input.recommendationId,
-          tenantId: input.tenantId,
-        },
-      });
-
-      if (recommendation === null) {
-        throw new Error('Recommendation not found');
-      }
-
-      const decision = await tx.recommendationDecision.create({
-        data: {
-          recommendationId: input.recommendationId,
-          ...(input.executionPlanId !== undefined ? { executionPlanId: input.executionPlanId } : {}),
-          userId: input.userId,
-          decision: input.decision,
-          ...(input.reasonCode !== undefined ? { reasonCode: input.reasonCode } : {}),
-          learningStatus: 'PENDING',
-          ...(input.reason !== undefined ? { reason: input.reason } : {}),
-        },
-      });
-
-      const updatedRecommendation = await tx.recommendation.update({
-        where: {
-          id: input.recommendationId,
-        },
-        data: {
-          status: input.decision === 'MARKED_DONE'
-            ? 'MANUAL_COMPLETED'
-            : input.decision,
-        },
-      });
-
-      return {
-        decisionId: decision.id,
-        recommendation: updatedRecommendation,
-      };
-    });
+    const result = await createDecisionTx(this.prisma, input);
 
     return {
       decisionId: result.decisionId,
-      recommendation: this.toDomain(result.recommendation),
+      recommendation: toDomain(result.recommendation),
     };
   }
 
+  /**
+   * Registra una ejecución manual de una recomendación y, si procede, actualiza
+   * el estado de la recomendación, de forma atómica.
+   *
+   * Dentro de una transacción valida invariantes de negocio: (1) la recomendación
+   * debe existir en el tenant (aislamiento multi-tenant); (2) solo se pueden
+   * ejecutar manualmente recomendaciones en estado `APPROVED` o
+   * `MANUAL_COMPLETED`; (3) si se indica `executionPlanId`, este debe pertenecer
+   * a la recomendación. Crea el registro de ejecución (importe observado en la
+   * divisa `currency`, `evidence` como JSON) y, cuando el estado es `EXECUTED`,
+   * marca la recomendación como `MANUAL_COMPLETED`.
+   *
+   * @param input Datos de la ejecución manual.
+   * @returns La ejecución manual creada en formato de dominio.
+   * @throws Error si la recomendación no existe, no está en un estado válido o
+   *   el plan de ejecución indicado no corresponde a la recomendación.
+   */
   public async createManualExecution(
     input: CreateManualExecutionInput,
   ): Promise<RecommendationManualExecution> {
-    const result = await this.prisma.$transaction(async (tx) => {
-      const recommendation = await tx.recommendation.findFirst({
-        where: {
-          id: input.recommendationId,
-          tenantId: input.tenantId,
-        },
-      });
+    const result = await createManualExecutionTx(this.prisma, input);
 
-      if (recommendation === null) {
-        throw new Error('Recommendation not found');
-      }
-
-      if (recommendation.status !== 'APPROVED' && recommendation.status !== 'MANUAL_COMPLETED') {
-        throw new Error('Only approved recommendations can be manually executed');
-      }
-
-      if (input.executionPlanId !== undefined) {
-        const plan = await tx.recommendationExecutionPlan.findFirst({
-          where: {
-            id: input.executionPlanId,
-            recommendationId: input.recommendationId,
-          },
-        });
-
-        if (plan === null) {
-          throw new Error('Execution plan not found for recommendation');
-        }
-      }
-
-      const execution = await tx.recommendationManualExecution.create({
-        data: {
-          tenantId: input.tenantId,
-          recommendationId: input.recommendationId,
-          ...(input.executionPlanId !== undefined ? { executionPlanId: input.executionPlanId } : {}),
-          userId: input.userId,
-          status: input.status,
-          ...(input.executedAt !== undefined ? { executedAt: input.executedAt } : {}),
-          ...(input.observedMonthlySavings !== undefined
-            ? { observedMonthlySavings: input.observedMonthlySavings }
-            : {}),
-          currency: input.currency,
-          ...(input.notes !== undefined ? { notes: input.notes } : {}),
-          ...(input.evidence !== undefined ? { evidence: input.evidence as Prisma.InputJsonValue } : {}),
-        },
-      });
-
-      if (input.status === 'EXECUTED') {
-        await tx.recommendation.update({
-          where: { id: input.recommendationId },
-          data: { status: 'MANUAL_COMPLETED' },
-        });
-      }
-
-      return execution;
-    });
-
-    return this.toManualExecutionDomain(result);
+    return toManualExecutionDomain(result);
   }
 
+  /**
+   * Lista las ejecuciones manuales de una recomendación dentro de un tenant,
+   * de la más reciente a la más antigua.
+   *
+   * @param tenantId Tenant propietario (aislamiento multi-tenant).
+   * @param recommendationId Recomendación cuyas ejecuciones se listan.
+   * @returns Lista de ejecuciones manuales de dominio; arreglo vacío si no hay.
+   */
   public async findManualExecutionsByRecommendation(
     tenantId: string,
     recommendationId: string,
@@ -249,9 +291,26 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
       orderBy: { createdAt: 'desc' },
     });
 
-    return rows.map((row) => this.toManualExecutionDomain(row));
+    return rows.map((row) => toManualExecutionDomain(row));
   }
 
+  /**
+   * Construye una línea de tiempo unificada y cronológica de todos los eventos
+   * de una recomendación.
+   *
+   * Verifica primero que la recomendación pertenezca al tenant (aislamiento
+   * multi-tenant); si no, devuelve un arreglo vacío. Luego carga en paralelo los
+   * planes de ejecución, decisiones, ejecuciones manuales y eventos de
+   * aprendizaje del agente, y los combina en eventos homogéneos
+   * {@link RecommendationTimelineEvent} (incluyendo el evento sintético de
+   * creación de la recomendación). Finalmente ordena todos los eventos por
+   * `createdAt` ascendente.
+   *
+   * @param tenantId Tenant propietario de la recomendación.
+   * @param recommendationId Recomendación cuya línea de tiempo se construye.
+   * @returns Eventos ordenados cronológicamente; arreglo vacío si la
+   *   recomendación no existe o no pertenece al tenant.
+   */
   public async findTimelineByRecommendation(
     tenantId: string,
     recommendationId: string,
@@ -283,247 +342,48 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
       }),
     ]);
 
-    const events: RecommendationTimelineEvent[] = [
-      {
-        id: recommendation.id,
-        type: 'RECOMMENDATION_CREATED',
-        title: 'Recomendacion generada',
-        description: recommendation.title,
-        createdAt: recommendation.createdAt,
-        metadata: this.toDomain(recommendation),
-      },
-      ...plans.map((plan): RecommendationTimelineEvent => ({
-        id: plan.id,
-        type: 'PLAN_GENERATED',
-        title: 'Plan de ejecucion auditado',
-        description: `Auditoria ${plan.auditVerdict} con score ${plan.auditScore}/100`,
-        createdAt: plan.createdAt,
-        metadata: this.toExecutionPlanDomain(plan),
-      })),
-      ...decisions.map((decision): RecommendationTimelineEvent => ({
-        id: decision.id,
-        type: 'DECISION_RECORDED',
-        title: decision.decision === 'APPROVED' ? 'Recomendacion aprobada' : 'Recomendacion rechazada',
-        description: decision.reason ?? decision.reasonCode ?? decision.decision,
-        createdAt: decision.createdAt,
-        metadata: {
-          decision: decision.decision,
-          reasonCode: decision.reasonCode,
-          executionPlanId: decision.executionPlanId,
-        },
-      })),
-      ...executions.map((execution): RecommendationTimelineEvent => ({
-        id: execution.id,
-        type: 'MANUAL_EXECUTION_RECORDED',
-        title: 'Ejecucion manual registrada',
-        description: execution.notes ?? `Estado ${execution.status}`,
-        createdAt: execution.createdAt,
-        metadata: this.toManualExecutionDomain(execution),
-      })),
-      ...learningEvents.map((event): RecommendationTimelineEvent => ({
-        id: event.id,
-        type: 'LEARNING_EVENT',
-        title: this.learningTimelineTitle(event.status),
-        description: this.learningTimelineDescription(event.status, event.errorMessage),
-        createdAt: event.createdAt,
-        metadata: {
-          status: event.status,
-          auditVerdict: event.auditVerdict,
-          auditScore: event.auditScore,
-          reasonCode: event.reasonCode,
-          errorMessage: event.errorMessage,
-        },
-      })),
-    ];
-
-    return events.sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+    return buildRecommendationTimeline(recommendation, plans, decisions, executions, learningEvents);
   }
 
+  /**
+   * Calcula los KPIs de ahorro de un tenant (ahorro estimado, observado,
+   * confirmado y ahorro perdido por inacción).
+   *
+   * Ejecuta en paralelo: (1) suma del ahorro mensual estimado de todas las
+   * recomendaciones; (2) suma del ahorro mensual observado en ejecuciones
+   * `EXECUTED`/`PARTIAL`; (3) recuento de recomendaciones distintas efectivamente
+   * ejecutadas (groupBy); y (4) recomendaciones pendientes/aprobadas con ahorro
+   * estimado positivo. Sobre estas últimas calcula el "ahorro perdido"
+   * (proporcional al tiempo transcurrido sin ejecutar, ver
+   * {@link calculateMissedSavings}), filtrando importes despreciables (< 0.01),
+   * acumulando el total redondeado y destacando la recomendación con mayor ahorro
+   * perdido. La divisa de los KPIs se fija a `USD`.
+   *
+   * @param tenantId Tenant del que se calculan los KPIs (aislamiento
+   *   multi-tenant).
+   * @returns KPIs de ahorro de dominio.
+   */
   public async getSavingsKpis(tenantId: string): Promise<SavingsKpis> {
-    const [estimated, observed, executed, pendingSavings] = await Promise.all([
-      this.prisma.recommendation.aggregate({
-        where: { tenantId },
-        _sum: { estimatedMonthlySavings: true },
-      }),
-      this.prisma.recommendationManualExecution.aggregate({
-        where: {
-          tenantId,
-          status: { in: ['EXECUTED', 'PARTIAL'] },
-        },
-        _sum: { observedMonthlySavings: true },
-      }),
-      this.prisma.recommendationManualExecution.groupBy({
-        by: ['recommendationId'],
-        where: {
-          tenantId,
-          status: { in: ['EXECUTED', 'PARTIAL'] },
-        },
-      }),
-      this.prisma.recommendation.findMany({
-        where: {
-          tenantId,
-          status: { in: ['PENDING', 'APPROVED'] },
-          estimatedMonthlySavings: { gt: 0 },
-        },
-        orderBy: { createdAt: 'desc' },
-      }),
-    ]);
-
-    const observedMonthlySavings = Number(observed._sum.observedMonthlySavings ?? 0);
-    const missedSavings = pendingSavings
-      .map((recommendation) => ({
-        recommendation,
-        missedSavingsAmount: this.calculateMissedSavings(
-          Number(recommendation.estimatedMonthlySavings ?? 0),
-          recommendation.createdAt,
-        ),
-      }))
-      .filter((item) => item.missedSavingsAmount > 0.01);
-    const missedSavingsAmount = roundCurrency(
-      missedSavings.reduce((total, item) => total + item.missedSavingsAmount, 0),
-    );
-    const topMissed = missedSavings
-      .sort((left, right) => right.missedSavingsAmount - left.missedSavingsAmount)[0];
-
-    return {
-      estimatedMonthlySavings: Number(estimated._sum.estimatedMonthlySavings ?? 0),
-      observedMonthlySavings,
-      confirmedMonthlySavings: observedMonthlySavings,
-      missedSavingsAmount,
-      currency: 'USD',
-      executedRecommendations: executed.length,
-      pendingSavingsRecommendations: pendingSavings.length,
-      ...(topMissed !== undefined
-        ? {
-            topMissedSavingsRecommendation: {
-              id: topMissed.recommendation.id,
-              title: topMissed.recommendation.title,
-              missedSavingsAmount: topMissed.missedSavingsAmount,
-              estimatedMonthlySavings: Number(topMissed.recommendation.estimatedMonthlySavings ?? 0),
-              currency: topMissed.recommendation.currency,
-              createdAt: topMissed.recommendation.createdAt,
-              status: topMissed.recommendation.status,
-            },
-          }
-        : {}),
-    };
+    return computeSavingsKpis(this.prisma, tenantId);
   }
 
+  /**
+   * Calcula los KPIs de adopción de un tenant (totales por estado y tasas de
+   * aceptación, rechazo y ejecución).
+   *
+   * Agrupa las recomendaciones por estado (`groupBy`) y deriva los conteos. Las
+   * tasas se calculan de forma defensiva sobre el conjunto de recomendaciones ya
+   * "decididas" (aprobadas + rechazadas + completadas), devolviendo 0 cuando el
+   * denominador es 0 para evitar divisiones por cero:
+   * - `acceptanceRate`: (aprobadas + completadas) / decididas.
+   * - `rejectionRate`: rechazadas / decididas.
+   * - `executionRate`: completadas / total de recomendaciones.
+   *
+   * @param tenantId Tenant del que se calculan los KPIs (aislamiento
+   *   multi-tenant).
+   * @returns KPIs de adopción de dominio.
+   */
   public async getAdoptionKpis(tenantId: string): Promise<AdoptionKpis> {
-    const grouped = await this.prisma.recommendation.groupBy({
-      by: ['status'],
-      where: { tenantId },
-      _count: true,
-    });
-    const counts = new Map(grouped.map((row) => [row.status, row._count]));
-    const totalRecommendations = grouped.reduce((total, row) => total + row._count, 0);
-    const approvedRecommendations = counts.get('APPROVED') ?? 0;
-    const rejectedRecommendations = counts.get('REJECTED') ?? 0;
-    const completedRecommendations = counts.get('MANUAL_COMPLETED') ?? 0;
-    const decided = approvedRecommendations + rejectedRecommendations + completedRecommendations;
-
-    return {
-      totalRecommendations,
-      pendingRecommendations: counts.get('PENDING') ?? 0,
-      approvedRecommendations,
-      rejectedRecommendations,
-      completedRecommendations,
-      acceptanceRate: decided > 0 ? (approvedRecommendations + completedRecommendations) / decided : 0,
-      rejectionRate: decided > 0 ? rejectedRecommendations / decided : 0,
-      executionRate: totalRecommendations > 0 ? completedRecommendations / totalRecommendations : 0,
-    };
+    return computeAdoptionKpis(this.prisma, tenantId);
   }
-
-  private toDomain(row: Awaited<ReturnType<PrismaClient['recommendation']['findFirst']>> & {}): FinOpsRecommendation {
-    return {
-      id: row.id,
-      cloudAccountId: row.cloudAccountId,
-      type: row.type,
-      status: row.status,
-      severity: row.severity,
-      title: row.title,
-      description: row.description,
-      evidence: row.evidence,
-      ...(row.estimatedMonthlySavings !== null
-        ? { estimatedMonthlySavings: Number(row.estimatedMonthlySavings) }
-        : {}),
-      currency: row.currency,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    };
-  }
-
-  private toExecutionPlanDomain(row: Awaited<ReturnType<PrismaClient['recommendationExecutionPlan']['findFirst']>> & {}): RecommendationExecutionPlan {
-    return {
-      id: row.id,
-      recommendationId: row.recommendationId,
-      generatedByUserId: row.generatedByUserId,
-      model: row.model,
-      auditorModel: row.auditorModel,
-      content: row.content,
-      auditReport: row.auditReport,
-      auditVerdict: row.auditVerdict,
-      auditScore: row.auditScore,
-      createdAt: row.createdAt,
-    };
-  }
-
-  private toManualExecutionDomain(
-    row: Awaited<ReturnType<PrismaClient['recommendationManualExecution']['findFirst']>> & {},
-  ): RecommendationManualExecution {
-    return {
-      id: row.id,
-      tenantId: row.tenantId,
-      recommendationId: row.recommendationId,
-      ...(row.executionPlanId !== null ? { executionPlanId: row.executionPlanId } : {}),
-      userId: row.userId,
-      status: row.status,
-      ...(row.executedAt !== null ? { executedAt: row.executedAt } : {}),
-      ...(row.observedMonthlySavings !== null
-        ? { observedMonthlySavings: Number(row.observedMonthlySavings) }
-        : {}),
-      currency: row.currency,
-      ...(row.notes !== null ? { notes: row.notes } : {}),
-      ...(row.evidence !== null ? { evidence: row.evidence } : {}),
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    };
-  }
-
-  private learningTimelineTitle(status: string): string {
-    const titles: Record<string, string> = {
-      PENDING: 'Aprendizaje en cola',
-      APPROVED: 'Aprendizaje registrado',
-      REJECTED: 'Memoria descartada por auditor',
-      SKIPPED: 'Aprendizaje omitido temporalmente',
-      ERROR: 'Error interno de aprendizaje',
-    };
-
-    return titles[status] ?? 'Aprendizaje del agente';
-  }
-
-  private learningTimelineDescription(status: string, errorMessage: string | null): string {
-    const descriptions: Record<string, string> = {
-      PENDING: 'La decision ya fue guardada. El agente procesara el aprendizaje en segundo plano.',
-      APPROVED: 'El auditor aprobo la memoria y el agente incorporo el aprendizaje.',
-      REJECTED: 'El auditor IA descarto la memoria para evitar aprendizaje incorrecto.',
-      SKIPPED: 'El auditor IA no respondio de forma confiable a tiempo. La decision humana sigue guardada.',
-      ERROR: 'Ocurrio un error interno procesando el aprendizaje. La decision humana sigue guardada.',
-    };
-
-    if (status === 'ERROR' && errorMessage !== null && errorMessage.trim() !== '') {
-      return `${descriptions[status]} Detalle: ${errorMessage}`;
-    }
-
-    return descriptions[status] ?? `Estado ${status}`;
-  }
-
-  private calculateMissedSavings(estimatedMonthlySavings: number, createdAt: Date): number {
-    const elapsedDays = Math.max(0, Math.floor((Date.now() - createdAt.getTime()) / (24 * 60 * 60 * 1000)));
-    return roundCurrency((estimatedMonthlySavings / 30) * elapsedDays);
-  }
-}
-
-function roundCurrency(value: number): number {
-  return Math.round(value * 100) / 100;
 }

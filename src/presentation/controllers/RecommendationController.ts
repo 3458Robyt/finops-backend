@@ -2,24 +2,48 @@ import type { Request, Response } from 'express';
 import type { FinOpsAiService } from '../../application/services/FinOpsAiService.js';
 import type { IAgentLearningService } from '../../domain/interfaces/IAgentLearningService.js';
 import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
-import type { FinOpsRecommendation } from '../../domain/models/FinOpsRecommendation.js';
-import type { RecommendationFeedbackReason } from '../../domain/models/AgentLearning.js';
-import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import {
+  parseStatus,
+  parseString,
+} from './recommendation/recommendationRequestParsers.js';
+import {
+  requireAuth,
+  requireRecommendationId,
+} from './recommendation/recommendationRequestGuards.js';
+import { respondWithRecommendationError } from './recommendation/recommendationErrorResponse.js';
+import {
+  handleCreateDecision,
+  handleCreateManualExecution,
+} from './recommendation/recommendationDecisionHandlers.js';
 
-const supportedManualExecutionStatuses = new Set([
-  'PLANNED',
-  'EXECUTED',
-  'PARTIAL',
-  'CANCELLED',
-]);
-
-const supportedStatuses = new Set<FinOpsRecommendation['status']>([
-  'PENDING',
-  'APPROVED',
-  'REJECTED',
-  'MANUAL_COMPLETED',
-]);
-
+/**
+ * Controlador de la capa de presentación para las recomendaciones de
+ * optimización FinOps (montado en `/api/v1/recommendations`). Traduce las
+ * peticiones HTTP hacia el repositorio de recomendaciones y los servicios de IA
+ * y aprendizaje, y serializa la respuesta al cliente.
+ *
+ * Gestiona la generación y consulta de planes de ejecución, el registro de
+ * ejecuciones manuales, la consulta del timeline, la toma de decisiones
+ * (aprobar/rechazar) y la consulta de recomendaciones (detalle y listado).
+ *
+ * La validación y normalización de la entrada se delega en funciones puras de
+ * {@link ./recommendation/recommendationRequestParsers}, las guardas de acceso
+ * y entrada básica en {@link ./recommendation/recommendationRequestGuards}, y el
+ * mapeo de errores de dominio a HTTP en
+ * {@link ./recommendation/recommendationErrorResponse}.
+ *
+ * Servicios y dependencias que utiliza:
+ * - {@link IRecommendationRepository}: persistencia y consulta de recomendaciones,
+ *   planes de ejecución, ejecuciones manuales, decisiones y timeline.
+ * - {@link FinOpsAiService} (opcional): generación de planes de ejecución; si no
+ *   está configurado, el endpoint correspondiente responde 503.
+ * - {@link IAgentLearningService} (opcional): procesa el aprendizaje del agente a
+ *   partir de las decisiones.
+ *
+ * Todos los endpoints requieren autenticación; las operaciones de ejecución
+ * manual y de decisión exigen además rol `ADMIN`.
+ */
 export class RecommendationController {
   constructor(
     private readonly recommendationRepository: IRecommendationRepository,
@@ -27,16 +51,27 @@ export class RecommendationController {
     private readonly learningService?: IAgentLearningService,
   ) {}
 
+  /**
+   * Genera (mediante IA) un plan de ejecución para una recomendación.
+   *
+   * Sirve: POST /api/v1/recommendations/:id/execution-plan
+   * Autenticación: requerida. Usa `req.auth.tenantId` y `req.auth.userId`.
+   *
+   * Parámetros de ruta:
+   * - `id` (`req.params.id`): identificador de la recomendación.
+   *
+   * Respuestas:
+   * - 200: `{ success: true, executionPlan }` con el plan generado.
+   * - 400 VALIDATION_ERROR: falta el `id` de la recomendación.
+   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
+   * - 503 AI_NOT_CONFIGURED: el servicio de IA no está configurado.
+   * - 404 NOT_FOUND / 403 / 409 / 400: errores de dominio (ver {@link respondWithRecommendationError}).
+   * - 500: error inesperado al generar el plan.
+   */
   public createExecutionPlan = async (req: Request, res: Response): Promise<void> => {
     try {
-      if (req.auth === undefined) {
-        res.status(401).json({
-          success: false,
-          error: 'Authentication is required',
-          code: 'AUTHENTICATION_REQUIRED',
-        });
-        return;
-      }
+      const auth = requireAuth(req, res);
+      if (auth === undefined) return;
 
       if (this.aiService === undefined) {
         res.status(503).json({
@@ -47,311 +82,184 @@ export class RecommendationController {
         return;
       }
 
-      const recommendationId = this.parseString(req.params['id']);
-
-      if (recommendationId === undefined) {
-        res.status(400).json({
-          success: false,
-          error: 'Recommendation id is required',
-          code: 'VALIDATION_ERROR',
-        });
-        return;
-      }
+      const recommendationId = requireRecommendationId(res, req.params['id']);
+      if (recommendationId === undefined) return;
 
       const executionPlan = await this.aiService.generateExecutionPlan({
-        tenantId: req.auth.tenantId,
-        userId: req.auth.userId,
+        tenantId: auth.tenantId,
+        userId: auth.userId,
         recommendationId,
       });
 
-      res.status(200).json({
-        success: true,
-        executionPlan,
-      });
+      res.status(200).json({ success: true, executionPlan });
     } catch (error: unknown) {
-      this.handleError(error, res, 'An unexpected error occurred generating execution plan');
+      respondWithRecommendationError(res, error, 'An unexpected error occurred generating execution plan');
     }
   };
 
+  /**
+   * Devuelve el plan de ejecución más reciente de una recomendación.
+   *
+   * Sirve: GET /api/v1/recommendations/:id/execution-plans/latest
+   * Autenticación: requerida. Usa `req.auth.tenantId`.
+   *
+   * Parámetros de ruta:
+   * - `id` (`req.params.id`): identificador de la recomendación.
+   *
+   * Respuestas:
+   * - 200: `{ success: true, executionPlan }` (puede ser nulo si no existe plan).
+   * - 400 VALIDATION_ERROR: falta el `id` de la recomendación.
+   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
+   * - 404 NOT_FOUND / 403 / 409 / 400: errores de dominio (ver {@link respondWithRecommendationError}).
+   * - 500: error inesperado al cargar el plan.
+   */
   public getLatestExecutionPlan = async (req: Request, res: Response): Promise<void> => {
     try {
-      if (req.auth === undefined) {
-        res.status(401).json({
-          success: false,
-          error: 'Authentication is required',
-          code: 'AUTHENTICATION_REQUIRED',
-        });
-        return;
-      }
+      const auth = requireAuth(req, res);
+      if (auth === undefined) return;
 
-      const recommendationId = this.parseString(req.params['id']);
-
-      if (recommendationId === undefined) {
-        res.status(400).json({
-          success: false,
-          error: 'Recommendation id is required',
-          code: 'VALIDATION_ERROR',
-        });
-        return;
-      }
+      const recommendationId = requireRecommendationId(res, req.params['id']);
+      if (recommendationId === undefined) return;
 
       const executionPlan = await this.recommendationRepository.findLatestExecutionPlanByRecommendation(
-        req.auth.tenantId,
+        auth.tenantId,
         recommendationId,
       );
 
-      res.status(200).json({
-        success: true,
-        executionPlan,
-      });
+      res.status(200).json({ success: true, executionPlan });
     } catch (error: unknown) {
-      this.handleError(error, res, 'An unexpected error occurred loading execution plan');
+      respondWithRecommendationError(res, error, 'An unexpected error occurred loading execution plan');
     }
   };
 
+  /**
+   * Registra una ejecución manual de una recomendación y devuelve la ejecución
+   * creada junto con la recomendación actualizada.
+   *
+   * Sirve: POST /api/v1/recommendations/:id/manual-execution
+   * Autenticación: requerida. Rol: `ADMIN`. Usa `req.auth.tenantId` y `req.auth.userId`.
+   *
+   * Parámetros de ruta:
+   * - `id` (`req.params.id`): identificador de la recomendación.
+   *
+   * Cuerpo (`req.body`):
+   * - `status` (obligatorio): estado de la ejecución; uno de `PLANNED`,
+   *   `EXECUTED`, `PARTIAL`, `CANCELLED`.
+   * - `executionPlanId` (opcional): identificador del plan de ejecución asociado.
+   * - `executedAt` (opcional): fecha de ejecución (ISO).
+   * - `observedMonthlySavings` (opcional): ahorro mensual observado; no puede ser negativo.
+   * - `currency` (opcional): divisa; por defecto `USD`.
+   * - `notes` (opcional): notas libres.
+   * - `evidence` (opcional): evidencia adjunta.
+   *
+   * Respuestas:
+   * - 200: `{ success: true, execution, recommendation }`.
+   * - 400 VALIDATION_ERROR: falta `id`/`status`, o `observedMonthlySavings` negativo.
+   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
+   * - 403: el rol del usuario no es `ADMIN`.
+   * - 404 NOT_FOUND / 409 / 400: errores de dominio (ver {@link respondWithRecommendationError}).
+   * - 500: error inesperado al registrar la ejecución manual.
+   */
   public createManualExecution = async (req: Request, res: Response): Promise<void> => {
-    try {
-      if (req.auth === undefined) {
-        res.status(401).json({
-          success: false,
-          error: 'Authentication is required',
-          code: 'AUTHENTICATION_REQUIRED',
-        });
-        return;
-      }
-
-      if (req.auth.role !== 'ADMIN') {
-        const error = new AuthorizationError();
-        res.status(403).json({
-          success: false,
-          error: error.message,
-          code: error.code,
-        });
-        return;
-      }
-
-      const recommendationId = this.parseString(req.params['id']);
-      const executionPlanId = this.parseString(this.readBodyValue(req.body, 'executionPlanId'));
-      const status = this.parseManualExecutionStatus(this.readBodyValue(req.body, 'status'));
-      const executedAt = this.parseDate(this.readBodyValue(req.body, 'executedAt'));
-      const observedMonthlySavings = this.parseNumber(this.readBodyValue(req.body, 'observedMonthlySavings'));
-      const currency = this.parseString(this.readBodyValue(req.body, 'currency')) ?? 'USD';
-      const notes = this.parseString(this.readBodyValue(req.body, 'notes'));
-      const evidence = this.readBodyValue(req.body, 'evidence');
-
-      if (recommendationId === undefined || status === undefined) {
-        res.status(400).json({
-          success: false,
-          error: 'Recommendation id and status are required',
-          code: 'VALIDATION_ERROR',
-        });
-        return;
-      }
-
-      if (observedMonthlySavings !== undefined && observedMonthlySavings < 0) {
-        res.status(400).json({
-          success: false,
-          error: 'Observed monthly savings cannot be negative',
-          code: 'VALIDATION_ERROR',
-        });
-        return;
-      }
-
-      const execution = await this.recommendationRepository.createManualExecution({
-        tenantId: req.auth.tenantId,
-        recommendationId,
-        ...(executionPlanId !== undefined ? { executionPlanId } : {}),
-        userId: req.auth.userId,
-        status,
-        ...(executedAt !== undefined ? { executedAt } : {}),
-        ...(observedMonthlySavings !== undefined ? { observedMonthlySavings } : {}),
-        currency,
-        ...(notes !== undefined ? { notes } : {}),
-        ...(evidence !== undefined ? { evidence } : {}),
-      });
-
-      const recommendation = await this.recommendationRepository.findById(req.auth.tenantId, recommendationId);
-
-      res.status(200).json({
-        success: true,
-        execution,
-        recommendation,
-      });
-    } catch (error: unknown) {
-      this.handleError(error, res, 'An unexpected error occurred registering manual execution');
-    }
+    await handleCreateManualExecution(this.recommendationRepository, req, res);
   };
 
+  /**
+   * Devuelve el timeline (cronología de eventos) de una recomendación.
+   *
+   * Sirve: GET /api/v1/recommendations/:id/timeline
+   * Autenticación: requerida. Usa `req.auth.tenantId`.
+   *
+   * Parámetros de ruta:
+   * - `id` (`req.params.id`): identificador de la recomendación.
+   *
+   * Respuestas:
+   * - 200: `{ success: true, timeline, meta: { count } }`.
+   * - 400 VALIDATION_ERROR: falta el `id` de la recomendación.
+   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
+   * - 404 NOT_FOUND / 403 / 409 / 400: errores de dominio (ver {@link respondWithRecommendationError}).
+   * - 500: error inesperado al cargar el timeline.
+   */
   public getTimeline = async (req: Request, res: Response): Promise<void> => {
     try {
-      if (req.auth === undefined) {
-        res.status(401).json({
-          success: false,
-          error: 'Authentication is required',
-          code: 'AUTHENTICATION_REQUIRED',
-        });
-        return;
-      }
+      const auth = requireAuth(req, res);
+      if (auth === undefined) return;
 
-      const recommendationId = this.parseString(req.params['id']);
-
-      if (recommendationId === undefined) {
-        res.status(400).json({
-          success: false,
-          error: 'Recommendation id is required',
-          code: 'VALIDATION_ERROR',
-        });
-        return;
-      }
+      const recommendationId = requireRecommendationId(res, req.params['id']);
+      if (recommendationId === undefined) return;
 
       const timeline = await this.recommendationRepository.findTimelineByRecommendation(
-        req.auth.tenantId,
+        auth.tenantId,
         recommendationId,
       );
 
       res.status(200).json({
         success: true,
         timeline,
-        meta: {
-          count: timeline.length,
-        },
+        meta: { count: timeline.length },
       });
     } catch (error: unknown) {
-      this.handleError(error, res, 'An unexpected error occurred loading recommendation timeline');
+      respondWithRecommendationError(res, error, 'An unexpected error occurred loading recommendation timeline');
     }
   };
 
+  /**
+   * Registra una decisión (aprobar o rechazar) sobre el plan de ejecución de una
+   * recomendación. Valida que el plan exista, pertenezca a la recomendación y
+   * haya sido aprobado por la auditoría de IA antes de persistir la decisión, y
+   * lanza el procesamiento de aprendizaje del agente.
+   *
+   * Sirve: POST /api/v1/recommendations/:id/decisions
+   * Autenticación: requerida. Rol: `ADMIN`. Usa `req.auth.tenantId` y `req.auth.userId`.
+   *
+   * Parámetros de ruta:
+   * - `id` (`req.params.id`): identificador de la recomendación.
+   *
+   * Cuerpo (`req.body`):
+   * - `executionPlanId` (obligatorio): identificador del plan de ejecución.
+   * - `decision` (obligatorio): `APPROVED` o `REJECTED`.
+   * - `reasonCode` (obligatorio): código de motivo soportado (ver {@link parseReasonCode}).
+   * - `reason` (obligatorio si `decision` es `REJECTED`): motivo en texto libre.
+   *
+   * Respuestas:
+   * - 200: `{ success: true, recommendation, executionPlan, learning }`.
+   * - 400 VALIDATION_ERROR: faltan campos obligatorios o falta motivo de rechazo.
+   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
+   * - 403: el rol del usuario no es `ADMIN`.
+   * - 404 NOT_FOUND: el plan no existe o no corresponde a la recomendación.
+   * - 409 AI_AUDIT_REJECTED: el plan no fue aprobado por la auditoría de IA.
+   * - 500: error inesperado al procesar la decisión.
+   */
   public createDecision = async (req: Request, res: Response): Promise<void> => {
-    try {
-      if (req.auth === undefined) {
-        res.status(401).json({
-          success: false,
-          error: 'Authentication is required',
-          code: 'AUTHENTICATION_REQUIRED',
-        });
-        return;
-      }
-
-      if (req.auth.role !== 'ADMIN') {
-        const error = new AuthorizationError();
-        res.status(403).json({
-          success: false,
-          error: error.message,
-          code: error.code,
-        });
-        return;
-      }
-
-      const recommendationId = this.parseString(req.params['id']);
-      const executionPlanId = this.parseString(this.readBodyValue(req.body, 'executionPlanId'));
-      const decision = this.parseDecision(this.readBodyValue(req.body, 'decision'));
-      const reasonCode = this.parseReasonCode(this.readBodyValue(req.body, 'reasonCode'));
-      const reason = this.parseString(this.readBodyValue(req.body, 'reason'));
-
-      if (
-        recommendationId === undefined ||
-        executionPlanId === undefined ||
-        decision === undefined ||
-        reasonCode === undefined
-      ) {
-        res.status(400).json({
-          success: false,
-          error: 'Recommendation id, executionPlanId, decision and reasonCode are required',
-          code: 'VALIDATION_ERROR',
-        });
-        return;
-      }
-
-      if (decision === 'REJECTED' && reason === undefined) {
-        res.status(400).json({
-          success: false,
-          error: 'A rejection reason is required',
-          code: 'VALIDATION_ERROR',
-        });
-        return;
-      }
-
-      const executionPlan = await this.recommendationRepository.findExecutionPlanById(
-        req.auth.tenantId,
-        executionPlanId,
-      );
-
-      if (
-        executionPlan === null ||
-        executionPlan.recommendationId !== recommendationId
-      ) {
-        res.status(404).json({
-          success: false,
-          error: 'Execution plan not found',
-          code: 'NOT_FOUND',
-        });
-        return;
-      }
-
-      if (executionPlan.auditVerdict !== 'APPROVED') {
-        res.status(409).json({
-          success: false,
-          error: 'Execution plan was not approved by AI audit',
-          code: 'AI_AUDIT_REJECTED',
-        });
-        return;
-      }
-
-      const decisionResult = await this.recommendationRepository.createDecision({
-        tenantId: req.auth.tenantId,
-        recommendationId,
-        executionPlanId,
-        userId: req.auth.userId,
-        decision,
-        reasonCode,
-        ...(reason !== undefined ? { reason } : {}),
-      });
-
-      const learning = await this.processLearningSafely({
-        tenantId: req.auth.tenantId,
-        recommendationId,
-        decisionId: decisionResult.decisionId,
-        userId: req.auth.userId,
-        decision,
-        reasonCode,
-        ...(reason !== undefined ? { reason } : {}),
-      });
-
-      res.status(200).json({
-        success: true,
-        recommendation: decisionResult.recommendation,
-        executionPlan,
-        learning,
-      });
-    } catch (error: unknown) {
-      this.handleError(error, res, 'An unexpected error occurred processing recommendation decision');
-    }
+    await handleCreateDecision(this.recommendationRepository, this.learningService, req, res);
   };
 
+  /**
+   * Devuelve el detalle de una recomendación por su identificador.
+   *
+   * Sirve: GET /api/v1/recommendations/:id
+   * Autenticación: requerida. Usa `req.auth.tenantId`.
+   *
+   * Parámetros de ruta:
+   * - `id` (`req.params.id`): identificador de la recomendación.
+   *
+   * Respuestas:
+   * - 200: `{ success: true, recommendation }`.
+   * - 400 VALIDATION_ERROR: falta el `id` de la recomendación.
+   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
+   * - 404 NOT_FOUND: la recomendación no existe.
+   * - 500: error inesperado al cargar el detalle (cualquier excepción se mapea a 500).
+   */
   public getRecommendationById = async (req: Request, res: Response): Promise<void> => {
     try {
-      if (req.auth === undefined) {
-        res.status(401).json({
-          success: false,
-          error: 'Authentication is required',
-          code: 'AUTHENTICATION_REQUIRED',
-        });
-        return;
-      }
+      const auth = requireAuth(req, res);
+      if (auth === undefined) return;
 
-      const recommendationId = this.parseString(req.params['id']);
-
-      if (recommendationId === undefined) {
-        res.status(400).json({
-          success: false,
-          error: 'Recommendation id is required',
-          code: 'VALIDATION_ERROR',
-        });
-        return;
-      }
+      const recommendationId = requireRecommendationId(res, req.params['id']);
+      if (recommendationId === undefined) return;
 
       const recommendation = await this.recommendationRepository.findById(
-        req.auth.tenantId,
+        auth.tenantId,
         recommendationId,
       );
 
@@ -364,10 +272,7 @@ export class RecommendationController {
         return;
       }
 
-      res.status(200).json({
-        success: true,
-        recommendation,
-      });
+      res.status(200).json({ success: true, recommendation });
     } catch {
       res.status(500).json({
         success: false,
@@ -376,128 +281,32 @@ export class RecommendationController {
     }
   };
 
-  private parseDecision(value: unknown): 'APPROVED' | 'REJECTED' | undefined {
-    const decision = this.parseString(value)?.toUpperCase();
-
-    if (decision === 'APPROVED' || decision === 'REJECTED') {
-      return decision;
-    }
-
-    return undefined;
-  }
-
-  private parseManualExecutionStatus(value: unknown): 'PLANNED' | 'EXECUTED' | 'PARTIAL' | 'CANCELLED' | undefined {
-    const status = this.parseString(value)?.toUpperCase();
-
-    if (status !== undefined && supportedManualExecutionStatuses.has(status)) {
-      return status as 'PLANNED' | 'EXECUTED' | 'PARTIAL' | 'CANCELLED';
-    }
-
-    return undefined;
-  }
-
-  private parseDate(value: unknown): Date | undefined {
-    const raw = this.parseString(value);
-
-    if (raw === undefined) {
-      return undefined;
-    }
-
-    const date = new Date(raw);
-
-    if (Number.isNaN(date.getTime())) {
-      return undefined;
-    }
-
-    return date;
-  }
-
-  private parseNumber(value: unknown): number | undefined {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return value;
-    }
-
-    if (typeof value === 'string') {
-      const parsed = Number.parseFloat(value);
-      return Number.isFinite(parsed) ? parsed : undefined;
-    }
-
-    return undefined;
-  }
-
-  private parseReasonCode(value: unknown): RecommendationFeedbackReason | undefined {
-    const reasonCode = this.parseString(value)?.toUpperCase();
-    const supportedReasons = new Set<RecommendationFeedbackReason>([
-      'APPROVED_HIGH_CONFIDENCE',
-      'APPROVED_LOW_RISK_QUICK_WIN',
-      'REJECTED_INSUFFICIENT_EVIDENCE',
-      'REJECTED_SAVINGS_UNREALISTIC',
-      'REJECTED_OPERATIONAL_RISK',
-      'REJECTED_BUSINESS_EXCEPTION',
-      'REJECTED_ALREADY_HANDLED',
-      'REJECTED_WRONG_SCOPE',
-      'REJECTED_NOT_ACTIONABLE',
-    ]);
-
-    if (reasonCode !== undefined && supportedReasons.has(reasonCode as RecommendationFeedbackReason)) {
-      return reasonCode as RecommendationFeedbackReason;
-    }
-
-    return undefined;
-  }
-
-  private async processLearningSafely(
-    input: Parameters<IAgentLearningService['processRecommendationDecision']>[0],
-  ): Promise<Awaited<ReturnType<IAgentLearningService['processRecommendationDecision']>>> {
-    if (this.learningService === undefined) {
-      return {
-        status: 'PENDING',
-        error: 'Learning service is not configured',
-      };
-    }
-
-    try {
-      const queued = await this.learningService.queueRecommendationDecision(input);
-
-      if (queued.eventId !== undefined) {
-        void this.learningService.processQueuedRecommendationDecision(queued.eventId)
-          .catch((error: unknown) => {
-            console.error('Background learning processing failed', error);
-          });
-      }
-
-      return queued;
-    } catch (error: unknown) {
-      return {
-        status: 'ERROR',
-        error: error instanceof Error ? error.message : 'Learning processing failed',
-      };
-    }
-  }
-
-  private readBodyValue(body: unknown, key: string): unknown {
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return undefined;
-    }
-
-    return (body as Record<string, unknown>)[key];
-  }
-
+  /**
+   * Lista las recomendaciones del tenant, con filtros opcionales por estado y
+   * cuenta de nube, junto con metadatos de la consulta.
+   *
+   * Sirve: GET /api/v1/recommendations
+   * Autenticación: requerida. Usa `req.auth.tenantId`.
+   *
+   * Parámetros de consulta (`req.query`):
+   * - `status` (opcional): estado de recomendación soportado (ver {@link parseStatus}).
+   * - `cloudAccountId` (opcional): filtra por cuenta de nube.
+   *
+   * Respuestas:
+   * - 200: `{ success: true, recommendations, meta }`.
+   * - 400 VALIDATION_ERROR: `status` no soportado.
+   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
+   * - 500: error inesperado al procesar las recomendaciones.
+   */
   public getRecommendations = async (req: Request, res: Response): Promise<void> => {
     try {
-      if (req.auth === undefined) {
-        res.status(401).json({
-          success: false,
-          error: 'Authentication is required',
-          code: 'AUTHENTICATION_REQUIRED',
-        });
-        return;
-      }
+      const auth = requireAuth(req, res);
+      if (auth === undefined) return;
 
-      const status = this.parseStatus(req.query['status']);
-      const cloudAccountId = this.parseString(req.query['cloudAccountId']);
+      const status = parseStatus(req.query['status']);
+      const cloudAccountId = parseString(req.query['cloudAccountId']);
       const recommendations = await this.recommendationRepository.findByTenant({
-        tenantId: req.auth.tenantId,
+        tenantId: auth.tenantId,
         ...(status !== undefined ? { status } : {}),
         ...(cloudAccountId !== undefined ? { cloudAccountId } : {}),
       });
@@ -506,7 +315,7 @@ export class RecommendationController {
         success: true,
         recommendations,
         meta: {
-          tenantId: req.auth.tenantId,
+          tenantId: auth.tenantId,
           count: recommendations.length,
           ...(status !== undefined ? { status } : {}),
           ...(cloudAccountId !== undefined ? { cloudAccountId } : {}),
@@ -528,50 +337,4 @@ export class RecommendationController {
       });
     }
   };
-
-  private parseStatus(value: unknown): FinOpsRecommendation['status'] | undefined {
-    const status = this.parseString(value)?.toUpperCase();
-
-    if (status === undefined) {
-      return undefined;
-    }
-
-    if (!supportedStatuses.has(status as FinOpsRecommendation['status'])) {
-      throw new FinOpsBaseError(`Invalid recommendation status: ${status}`, 'VALIDATION_ERROR');
-    }
-
-    return status as FinOpsRecommendation['status'];
-  }
-
-  private parseString(value: unknown): string | undefined {
-    if (typeof value !== 'string' || value.trim() === '') {
-      return undefined;
-    }
-
-    return value.trim();
-  }
-
-  private handleError(error: unknown, res: Response, fallbackMessage: string): void {
-    if (error instanceof FinOpsBaseError) {
-      const status = error.code === 'NOT_FOUND'
-        ? 404
-        : error.code === 'AUTHORIZATION_FAILED'
-          ? 403
-          : error.code === 'AI_AUDIT_REJECTED'
-            ? 409
-            : 400;
-
-      res.status(status).json({
-        success: false,
-        error: error.message,
-        code: error.code,
-      });
-      return;
-    }
-
-    res.status(500).json({
-      success: false,
-      error: fallbackMessage,
-    });
-  }
 }

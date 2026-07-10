@@ -1,3 +1,16 @@
+/**
+ * Barrel (índice de re-exportación) de la capa de interfaces de dominio.
+ *
+ * Centraliza la exportación pública de todos los puertos (contratos) y sus DTOs
+ * asociados, de modo que las capas de aplicación e infraestructura importen las
+ * abstracciones desde un único punto de entrada en lugar de hacerlo por módulo.
+ *
+ * En términos de Clean Architecture, este archivo expone las abstracciones del
+ * dominio que sustentan el principio de inversión de dependencias (DIP): las
+ * implementaciones concretas dependen de estos contratos, no al revés.
+ *
+ * @module domain/interfaces
+ */
 export { type ICloudProvider } from './ICloudProvider.js';
 export {
   type CostMetricBatchContext,
@@ -56,6 +69,16 @@ export {
   type ICloudConnectionRepository,
   type IngestionJobSummary,
 } from './ICloudConnectionRepository.js';
+export {
+  type CloudIngestionConnection,
+  type CloudIngestionCredential,
+  type CloudIngestionJobContext,
+  type CloudIngestionProvider,
+  type CloudIngestionResult,
+  type NormalizedCloudResource,
+  type NormalizedFocusCostLineItem,
+  type NormalizedResourceMetricSample,
+} from './ICloudIngestionProvider.js';
 export {
   type CloudProviderPlugin,
   type TemporaryAdminProvisioningInput,

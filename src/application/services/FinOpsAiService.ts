@@ -1,88 +1,129 @@
-import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import { AiAuditRejectedError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { IAiGateway } from '../../domain/interfaces/IAiGateway.js';
-import type {
-  CostAnalyticsSnapshot,
-  ICostAnalyticsRepository,
-} from '../../domain/interfaces/ICostAnalyticsRepository.js';
-import type {
-  CreateRecommendationInput,
-  IRecommendationRepository,
-} from '../../domain/interfaces/IRecommendationRepository.js';
-import type {
-  AgentLearningContext,
-  IAgentLearningContextProvider,
-} from '../../domain/interfaces/IAgentLearningService.js';
+import type { ICostAnalyticsRepository } from '../../domain/interfaces/ICostAnalyticsRepository.js';
+import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
+import type { IAgentLearningContextProvider } from '../../domain/interfaces/IAgentLearningService.js';
 import type { BuiltAiContext, IContextEngineService } from '../../domain/interfaces/IContextEngineService.js';
-import type { FinOpsRecommendation } from '../../domain/models/FinOpsRecommendation.js';
-import type {
-  AiAuditReport,
-  RecommendationExecutionPlan,
-} from '../../domain/models/RecommendationExecutionPlan.js';
+import type { RecommendationExecutionPlan } from '../../domain/models/RecommendationExecutionPlan.js';
 import type { AiContextOperation } from '../../domain/models/AgentContext.js';
 import type { AiObservabilityService } from './AiObservabilityService.js';
+import { normalizeHistory } from './ai/finOpsAiPrompts.js';
+import { toEphemeralRecommendation } from './ai/finOpsAiResponseParser.js';
+import { applyAuditEvidence } from './ai/recommendationEvidence.js';
+import { FinOpsContextAssembler } from './ai/finOpsContextAssembler.js';
+import { AiTraceRecorder } from './ai/aiTraceRecorder.js';
+import { FinOpsArtifactGenerator } from './ai/finOpsArtifactGenerator.js';
+import type { TechnicalRecommendationEvidenceProvider } from './ai/TechnicalRecommendationEvidenceService.js';
 
-export interface AiChatMessage {
-  readonly role: 'user' | 'assistant';
-  readonly content: string;
-}
+// Reexporta los contratos públicos para preservar la API del servicio.
+export type {
+  AiChatInput,
+  AiChatMessage,
+  AiChatResponse,
+  GenerateAiRecommendationsInput,
+  GenerateAiRecommendationsResponse,
+  GenerateExecutionPlanInput,
+} from './ai/finOpsAiTypes.js';
 
-export interface AiChatInput {
-  readonly tenantId: string;
-  readonly userId?: string;
-  readonly message: string;
-  readonly history?: readonly AiChatMessage[];
-}
+import type {
+  AiChatInput,
+  AiChatResponse,
+  GenerateAiRecommendationsInput,
+  GenerateAiRecommendationsResponse,
+  GenerateExecutionPlanInput,
+} from './ai/finOpsAiTypes.js';
 
-export interface AiChatResponse {
-  readonly answer: string;
-  readonly snapshot: CostAnalyticsSnapshot;
-}
-
-export interface GenerateAiRecommendationsInput {
-  readonly tenantId: string;
-  readonly userId?: string;
-  readonly persist?: boolean;
-}
-
-export interface GenerateAiRecommendationsResponse {
-  readonly recommendations: readonly FinOpsRecommendation[];
-  readonly snapshot: CostAnalyticsSnapshot;
-  readonly persisted: boolean;
-}
-
-export interface GenerateExecutionPlanInput {
-  readonly tenantId: string;
-  readonly userId: string;
-  readonly recommendationId: string;
-}
-
-type AiRecommendationDraft = Omit<CreateRecommendationInput, 'tenantId'>;
-
-const supportedSeverities = new Set<FinOpsRecommendation['severity']>([
-  'LOW',
-  'MEDIUM',
-  'HIGH',
-  'CRITICAL',
-]);
-
+/** Veredicto de auditoría requerido para aceptar el artefacto generado por IA. */
 const approvedAuditVerdict = 'APPROVED';
 
+/**
+ * Servicio de aplicación de IA FinOps.
+ *
+ * Responsabilidad: orquestar los tres casos de uso de IA — chat sobre costos,
+ * generación de recomendaciones y generación de planes de ejecución — obteniendo
+ * el snapshot factual, pidiendo el contexto y el prompt al
+ * {@link FinOpsContextAssembler} y delegando la generación auditada en
+ * {@link FinOpsArtifactGenerator}. Mantiene dos garantías clave:
+ * 1. La única fuente factual es el snapshot FOCUS (costos y consumo facturado),
+ *    nunca métricas técnicas inventadas (CPU, memoria, IOPS, throughput).
+ * 2. Todo artefacto generado pasa por un auditor IA independiente antes de
+ *    persistirse o devolverse.
+ *
+ * Colaboradores de apoyo: el ensamblado de contexto/prompt vive en
+ * {@link ./ai/finOpsContextAssembler}, los prompts en {@link ./ai/finOpsAiPrompts},
+ * el parsing en {@link ./ai/finOpsAiResponseParser}, la generación auditada en
+ * {@link ./ai/finOpsArtifactGenerator} y las trazas en {@link ./ai/aiTraceRecorder}.
+ *
+ * Colaboradores inyectados (DIP):
+ * - {@link ICostAnalyticsRepository}: obtiene el snapshot de costos del tenant.
+ * - {@link IRecommendationRepository}: persiste recomendaciones y planes.
+ * - {@link IAiGateway}: pasarela al proveedor IA (generación y auditoría).
+ * - {@link IAgentLearningContextProvider} (opcional): contexto de aprendizaje auditado.
+ * - {@link IContextEngineService} (opcional): ensambla contexto adicional (Context Engine).
+ * - {@link AiObservabilityService} (opcional): registra trazas de cada llamada IA.
+ */
 export class FinOpsAiService {
+  /** Modelo principal usado para generar respuestas/artefactos. */
   private readonly mainModel: string;
+  /** Modelo usado como auditor independiente de los artefactos generados. */
   private readonly auditorModel: string;
+  /** Registrador de trazas de observabilidad IA. */
+  private readonly traceRecorder: AiTraceRecorder;
+  /** Generador de artefactos IA con auditoría y revisión. */
+  private readonly artifactGenerator: FinOpsArtifactGenerator;
+  /** Ensamblador de contexto y prompts por caso de uso. */
+  private readonly contextAssembler: FinOpsContextAssembler;
 
+  /**
+   * @param analyticsRepository      - Repositorio de analítica de costos (snapshots).
+   * @param recommendationRepository - Repositorio de recomendaciones y planes de ejecución.
+   * @param aiGateway                - Pasarela hacia el proveedor IA.
+   * @param learningContextProvider  - Proveedor opcional de contexto de aprendizaje auditado.
+   * @param contextEngine            - Motor opcional de ensamblado de contexto.
+   * @param aiObservability          - Servicio opcional de observabilidad/trazas IA.
+   */
   constructor(
     private readonly analyticsRepository: ICostAnalyticsRepository,
     private readonly recommendationRepository: IRecommendationRepository,
     private readonly aiGateway: IAiGateway,
-    private readonly learningContextProvider?: IAgentLearningContextProvider,
-    private readonly contextEngine?: IContextEngineService,
-    private readonly aiObservability?: AiObservabilityService,
+    learningContextProvider?: IAgentLearningContextProvider,
+    contextEngine?: IContextEngineService,
+    aiObservability?: AiObservabilityService,
+    technicalEvidenceProvider?: TechnicalRecommendationEvidenceProvider,
   ) {
-    this.mainModel = aiGateway.modelName ?? process.env['NVIDIA_MODEL'] ?? 'deepseek-ai/deepseek-v4-flash';
-    this.auditorModel = process.env['NVIDIA_AUDITOR_MODEL'] ?? this.mainModel;
+    this.mainModel = aiGateway.modelName ?? process.env['AI_MODEL'] ?? process.env['NVIDIA_MODEL'] ?? 'gpt-5.4-mini';
+    this.auditorModel = process.env['AI_AUDITOR_MODEL'] ?? process.env['NVIDIA_AUDITOR_MODEL'] ?? this.mainModel;
+    if (this.mainModel === this.auditorModel) {
+      console.warn('AI generator and auditor use the same model; deterministic quality gates remain required.');
+    }
+    this.traceRecorder = new AiTraceRecorder(aiObservability);
+    this.artifactGenerator = new FinOpsArtifactGenerator(
+      aiGateway,
+      this.traceRecorder,
+      this.mainModel,
+      this.auditorModel,
+    );
+    this.contextAssembler = new FinOpsContextAssembler(
+      this.mainModel,
+      learningContextProvider,
+      contextEngine,
+      technicalEvidenceProvider,
+    );
   }
 
+  /**
+   * Responde una consulta de chat sobre costos del tenant.
+   *
+   * Flujo: obtiene el snapshot de costos, pide al ensamblador el contexto y el
+   * prompt de sistema, llama al modelo principal con temperatura baja (0.3) y
+   * registra la traza de observabilidad (éxito o error).
+   *
+   * @param input - Tenant, mensaje y, opcionalmente, usuario e historial.
+   * @returns Respuesta del asistente y el snapshot factual usado.
+   *
+   * @throws {FinOpsBaseError} Con código `VALIDATION_ERROR` si el mensaje está vacío.
+   * @throws Propaga errores del gateway IA tras registrarlos en la traza.
+   */
   public async answerChat(input: AiChatInput): Promise<AiChatResponse> {
     const message = input.message.trim();
 
@@ -91,13 +132,11 @@ export class FinOpsAiService {
     }
 
     const snapshot = await this.analyticsRepository.getLatestTenantSnapshot(input.tenantId);
-    const builtContext = await this.buildOptionalContext({
+    const { builtContext, systemPrompt } = await this.contextAssembler.assembleChatContext({
       tenantId: input.tenantId,
       ...(input.userId !== undefined ? { userId: input.userId } : {}),
-      operation: 'CHAT',
-      queryText: message,
+      message,
       snapshot,
-      model: this.mainModel,
     });
     const startedAt = Date.now();
 
@@ -109,9 +148,9 @@ export class FinOpsAiService {
         messages: [
           {
             role: 'system',
-            content: this.withBuiltContext(this.buildChatSystemPrompt(snapshot), builtContext),
+            content: systemPrompt,
           },
-          ...this.normalizeHistory(input.history),
+          ...normalizeHistory(input.history),
           {
             role: 'user',
             content: message,
@@ -119,126 +158,79 @@ export class FinOpsAiService {
         ],
       });
 
-      await this.recordAiTrace(input.tenantId, input.userId, 'CHAT', this.mainModel, builtContext, startedAt, answer);
+      await this.recordTrace(input, 'CHAT', builtContext, startedAt, answer);
 
       return {
         answer: answer.trim(),
         snapshot,
       };
     } catch (error: unknown) {
-      await this.recordAiTrace(input.tenantId, input.userId, 'CHAT', this.mainModel, builtContext, startedAt, undefined, error);
+      await this.recordTrace(input, 'CHAT', builtContext, startedAt, undefined, error);
       throw error;
     }
   }
 
+  /**
+   * Genera recomendaciones FinOps priorizadas a partir del snapshot del tenant.
+   *
+   * Flujo: obtiene snapshot y, vía el ensamblador, el contexto de aprendizaje y
+   * el prompt; delega la generación y auditoría (con una ronda de revisión) en el
+   * generador de artefactos, rechaza si la auditoría no aprueba, enriquece la
+   * evidencia y **persiste** solo si `persist === true` (si no, devuelve preview
+   * efímero).
+   *
+   * @param input - Tenant, usuario opcional y bandera de persistencia.
+   * @returns Recomendaciones (persistidas o preview), snapshot y flag `persisted`.
+   *
+   * @throws {FinOpsBaseError} `AI_RESPONSE_ERROR` si la IA no devuelve recomendaciones
+   *         válidas, o `AI_AUDIT_REJECTED` si la auditoría las rechaza.
+   */
   public async generateRecommendations(
     input: GenerateAiRecommendationsInput,
   ): Promise<GenerateAiRecommendationsResponse> {
     const snapshot = await this.analyticsRepository.getLatestTenantSnapshot(input.tenantId);
-    const learningContext = await this.getRecommendationLearningContext(input.tenantId, snapshot);
-    const builtContext = await this.buildOptionalContext({
+    const { builtContext, systemPrompt, learningContext, readinessReport } =
+      await this.contextAssembler.assembleRecommendationContext({
       tenantId: input.tenantId,
       ...(input.userId !== undefined ? { userId: input.userId } : {}),
-      operation: 'RECOMMENDATION',
-      queryText: [
-        ...snapshot.providers.map((item) => item.provider),
-        ...snapshot.services.map((item) => item.serviceName),
-        ...snapshot.topResources.map((item) => item.resourceId),
-      ].join(' '),
       snapshot,
-      model: this.mainModel,
     });
     const startedAt = Date.now();
-    const firstRawResponse = await this.aiGateway.generateText({
-      responseFormat: 'json',
-      temperature: 0.2,
-      maxTokens: 900,
-      messages: [
-        {
-          role: 'system',
-          content: this.withBuiltContext(this.buildRecommendationSystemPrompt(snapshot, learningContext), builtContext),
-        },
-        {
-          role: 'user',
-          content: 'Genera exactamente 3 recomendaciones FinOps priorizadas en español a partir de este contexto.',
-        },
-      ],
-    });
 
-    let drafts = this.parseRecommendationDrafts(firstRawResponse, snapshot)
-      .map((draft) => ({
-        tenantId: input.tenantId,
-        ...draft,
-      }));
-    let auditReport = await this.auditGeneratedArtifact({
-      artifactType: 'recommendations',
+    const { drafts, auditReport, firstRawResponse } = await this.artifactGenerator.generateAuditedDrafts(
+      input.tenantId,
+      input.userId,
       snapshot,
-      tenantId: input.tenantId,
-      ...(input.userId !== undefined ? { userId: input.userId } : {}),
-      artifact: drafts,
-    });
-
-    if (auditReport.verdict === 'NEEDS_REVISION') {
-      const revisedRawResponse = await this.aiGateway.generateText({
-        responseFormat: 'json',
-        temperature: 0.2,
-        maxTokens: 900,
-        messages: [
-          {
-            role: 'system',
-            content: this.withBuiltContext(this.buildRecommendationSystemPrompt(snapshot, learningContext), builtContext),
-          },
-          {
-            role: 'user',
-            content: [
-              'Corrige las recomendaciones usando exactamente estos cambios requeridos por auditoria.',
-              'No agregues cuentas, proveedores ni recursos que no esten en el contexto.',
-              JSON.stringify(auditReport.requiredChanges, null, 2),
-            ].join('\n'),
-          },
-        ],
-      });
-      drafts = this.parseRecommendationDrafts(revisedRawResponse, snapshot)
-        .map((draft) => ({
-          tenantId: input.tenantId,
-          ...draft,
-        }));
-      auditReport = await this.auditGeneratedArtifact({
-        artifactType: 'recommendations',
-        snapshot,
-        tenantId: input.tenantId,
-        ...(input.userId !== undefined ? { userId: input.userId } : {}),
-        artifact: drafts,
-      });
-    }
+      systemPrompt,
+    );
 
     if (auditReport.verdict !== approvedAuditVerdict) {
-      throw new FinOpsBaseError('AI audit rejected recommendation output', 'AI_AUDIT_REJECTED');
+      throw new AiAuditRejectedError('AI audit rejected recommendation output', {
+        diagnosticId: this.buildAuditDiagnosticId(input.tenantId),
+        audit: {
+          ...auditReport,
+          readinessSummary: readinessReport.summary,
+          candidates: readinessReport.candidates.map((candidate) => ({
+            id: candidate.id,
+            readiness: candidate.readiness,
+            cloudAccountId: candidate.cloudAccountId,
+            serviceName: candidate.serviceName,
+            resourceId: candidate.resourceId,
+            maxEstimatedMonthlySavings: candidate.maxEstimatedMonthlySavings,
+            reasons: candidate.reasons,
+          })),
+        },
+      });
     }
 
-    const auditedDrafts = drafts.map((draft) => ({
-      ...draft,
-        evidence: {
-          ...(this.isRecord(draft.evidence) ? draft.evidence : {}),
-          aiAudit: auditReport,
-          ...(learningContext.summary !== ''
-            ? {
-                aiLearning: {
-                  memoryIds: learningContext.memoryIds,
-                  caseIds: learningContext.caseIds,
-                  summary: learningContext.summary,
-                },
-              }
-            : {}),
-        },
-      }));
+    const auditedDrafts = drafts.map((draft) => applyAuditEvidence(draft, auditReport, learningContext));
 
     const persisted = input.persist === true;
     const recommendations = persisted
       ? await this.recommendationRepository.createMany(auditedDrafts)
-      : auditedDrafts.map((draft, index) => this.toEphemeralRecommendation(draft, index));
+      : auditedDrafts.map((draft, index) => toEphemeralRecommendation(draft, index));
 
-    await this.recordAiTrace(input.tenantId, input.userId, 'RECOMMENDATION', this.mainModel, builtContext, startedAt, firstRawResponse);
+    await this.recordTrace(input, 'RECOMMENDATION', builtContext, startedAt, firstRawResponse);
 
     return {
       recommendations,
@@ -247,6 +239,20 @@ export class FinOpsAiService {
     };
   }
 
+  /**
+   * Genera un plan de ejecución manual y gobernado para una recomendación.
+   *
+   * Flujo: localiza la recomendación, obtiene snapshot y, vía el ensamblador, el
+   * contexto y el prompt; delega la generación y auditoría del plan (con una
+   * ronda de revisión) en el generador de artefactos y **persiste** siempre el
+   * plan resultante.
+   *
+   * @param input - Tenant, usuario y recomendación objetivo.
+   * @returns El plan de ejecución persistido.
+   *
+   * @throws {FinOpsBaseError} `NOT_FOUND` si la recomendación no existe, o
+   *         `AI_RESPONSE_ERROR` si la IA no devuelve un plan válido/completo.
+   */
   public async generateExecutionPlan(
     input: GenerateExecutionPlanInput,
   ): Promise<RecommendationExecutionPlan> {
@@ -260,73 +266,21 @@ export class FinOpsAiService {
     }
 
     const snapshot = await this.analyticsRepository.getLatestTenantSnapshot(input.tenantId);
-    const builtContext = await this.buildOptionalContext({
+    const { builtContext, systemPrompt } = await this.contextAssembler.assembleExecutionPlanContext({
       tenantId: input.tenantId,
       userId: input.userId,
-      operation: 'EXECUTION_PLAN',
-      queryText: `${recommendation.title} ${recommendation.description}`,
       snapshot,
       recommendation,
-      model: this.mainModel,
     });
     const startedAt = Date.now();
-    const firstRawResponse = await this.aiGateway.generateText({
-      model: this.mainModel,
-      responseFormat: 'json',
-      temperature: 0.2,
-      maxTokens: 1200,
-      messages: [
-        {
-          role: 'system',
-          content: this.withBuiltContext(this.buildExecutionPlanSystemPrompt(snapshot, recommendation), builtContext),
-        },
-        {
-          role: 'user',
-          content: 'Genera un plan de ejecucion manual, verificable y en español para esta recomendacion.',
-        },
-      ],
-    });
-    let content = this.parseExecutionPlan(firstRawResponse, recommendation);
-    let auditReport = await this.auditGeneratedArtifact({
-      artifactType: 'execution_plan',
+
+    const { content, auditReport, firstRawResponse } = await this.artifactGenerator.generateAuditedPlan(
+      input.tenantId,
+      input.userId,
       snapshot,
       recommendation,
-      tenantId: input.tenantId,
-      userId: input.userId,
-      artifact: content,
-    });
-
-    if (auditReport.verdict === 'NEEDS_REVISION') {
-      const revisedRawResponse = await this.aiGateway.generateText({
-        model: this.mainModel,
-        responseFormat: 'json',
-        temperature: 0.2,
-        maxTokens: 1200,
-        messages: [
-          {
-            role: 'system',
-            content: this.withBuiltContext(this.buildExecutionPlanSystemPrompt(snapshot, recommendation), builtContext),
-          },
-          {
-            role: 'user',
-            content: [
-              'Corrige el plan de ejecucion usando exactamente estos cambios requeridos por auditoria.',
-              'Mantiene el alcance manual y no prometas ejecucion automatica.',
-              JSON.stringify(auditReport.requiredChanges, null, 2),
-            ].join('\n'),
-          },
-        ],
-      });
-      content = this.parseExecutionPlan(revisedRawResponse, recommendation);
-      auditReport = await this.auditGeneratedArtifact({
-        artifactType: 'execution_plan',
-        snapshot,
-        recommendation,
-        tenantId: input.tenantId,
-        userId: input.userId,
-        artifact: content,
-      });
-    }
+      systemPrompt,
+    );
 
     const plan = await this.recommendationRepository.createExecutionPlan({
       recommendationId: recommendation.id,
@@ -339,492 +293,42 @@ export class FinOpsAiService {
       auditScore: auditReport.score,
     });
 
-    await this.recordAiTrace(input.tenantId, input.userId, 'EXECUTION_PLAN', this.mainModel, builtContext, startedAt, firstRawResponse);
+    await this.recordTrace(
+      { tenantId: input.tenantId, userId: input.userId },
+      'EXECUTION_PLAN',
+      builtContext,
+      startedAt,
+      firstRawResponse,
+    );
 
     return plan;
   }
 
-  private async buildOptionalContext(input: {
-    readonly tenantId: string;
-    readonly userId?: string;
-    readonly operation: AiContextOperation;
-    readonly queryText: string;
-    readonly snapshot: CostAnalyticsSnapshot;
-    readonly recommendation?: FinOpsRecommendation;
-    readonly model: string;
-  }): Promise<BuiltAiContext | undefined> {
-    if (this.contextEngine === undefined) {
-      return undefined;
-    }
-
-    return this.contextEngine.buildContext(input);
-  }
-
-  private withBuiltContext(basePrompt: string, builtContext: BuiltAiContext | undefined): string {
-    if (builtContext === undefined) {
-      return basePrompt;
-    }
-
-    return [
-      basePrompt,
-      builtContext.systemInstructions,
-      'Contexto ensamblado por Context Engine:',
-      builtContext.contextText,
-      builtContext.conflicts.length > 0
-        ? `Conflictos registrados y excluidos: ${builtContext.conflicts.join(' | ')}`
-        : '',
-    ].filter((section) => section !== '').join('\n\n');
-  }
-
-  private async recordAiTrace(
-    tenantId: string,
-    userId: string | undefined,
+  /**
+   * Registra una traza de observabilidad de una operación IA de alto nivel
+   * (chat, recomendación o plan), delegando en {@link AiTraceRecorder}.
+   */
+  private recordTrace(
+    actor: { readonly tenantId: string; readonly userId?: string },
     operation: AiContextOperation,
-    model: string,
     builtContext: BuiltAiContext | undefined,
     startedAt: number,
     responseText?: string,
     error?: unknown,
   ): Promise<void> {
-    if (this.aiObservability === undefined) {
-      return;
-    }
-
-    await this.aiObservability.recordTrace({
-      tenantId,
-      ...(userId !== undefined ? { userId } : {}),
+    return this.traceRecorder.record({
+      tenantId: actor.tenantId,
+      ...(actor.userId !== undefined ? { userId: actor.userId } : {}),
       operation,
-      model,
-      status: error === undefined ? 'SUCCESS' : 'ERROR',
-      ...(builtContext?.profileVersion !== undefined ? { profileVersion: builtContext.profileVersion } : {}),
-      promptTokenEstimate: builtContext?.promptTokenEstimate ?? 0,
+      model: this.mainModel,
+      ...(builtContext !== undefined ? { builtContext } : {}),
+      startedAt,
       ...(responseText !== undefined ? { responseText } : {}),
-      latencyMs: Date.now() - startedAt,
-      ...(builtContext !== undefined ? { artifactIds: builtContext.artifactIds } : {}),
-      ...(builtContext !== undefined ? { memoryIds: builtContext.memoryIds } : {}),
-      ...(builtContext !== undefined ? { knowledgeNodeIds: builtContext.knowledgeNodeIds } : {}),
-      ...(builtContext !== undefined ? { tenantRuleIds: builtContext.tenantRuleIds } : {}),
-      ...(builtContext !== undefined ? { conflicts: builtContext.conflicts } : {}),
-      ...(error !== undefined
-        ? { errorMessage: error instanceof Error ? error.message : 'AI call failed' }
-        : {}),
+      ...(error !== undefined ? { error } : {}),
     });
   }
 
-  private buildChatSystemPrompt(snapshot: CostAnalyticsSnapshot): string {
-    return [
-      'Eres un asistente IA FinOps para FinOps Demo.',
-      'Debes responder siempre en español, con orientación operativa y concisa.',
-      'Usa solo el contexto FOCUS proporcionado como fuente factual. Si falta información, indícalo.',
-      'FOCUS puede incluir consumo facturado y unidades, pero no CPU, memoria, IOPS, throughput ni utilización técnica.',
-      'No inventes recursos cloud, métricas técnicas ni ahorros.',
-      'Contexto de costos y consumo:',
-      JSON.stringify(this.compactSnapshot(snapshot), null, 2),
-    ].join('\n');
-  }
-
-  private buildRecommendationSystemPrompt(
-    snapshot: CostAnalyticsSnapshot,
-    learningContext: AgentLearningContext,
-  ): string {
-    return [
-      'Eres un motor IA de optimización FinOps.',
-      'Analiza el contexto FOCUS proporcionado y produce recomendaciones como JSON estricto.',
-      'Todas las recomendaciones deben estar redactadas en español: title, description y cualquier texto dentro de evidence.',
-      'Devuelve solo esta forma: {"recommendations":[{"cloudAccountId":"...","type":"...","severity":"LOW|MEDIUM|HIGH|CRITICAL","title":"...","description":"...","estimatedMonthlySavings":0,"currency":"USD","evidence":{}}]}',
-      'Usa solo cloudAccountId presentes en accounts. No inventes recursos ni proveedores.',
-      'Usa topUsage y unit economics cuando existan. Incluye evidence.evidenceLevel como COST_ONLY, COST_AND_USAGE o COST_USAGE_AND_TECHNICAL.',
-      'FOCUS aporta consumo facturado, no métricas técnicas como CPU, memoria, IOPS, throughput o utilización. No hagas rightsizing técnico fuerte si solo existe FOCUS; marca evidence.requiresTechnicalValidation=true.',
-      'Prioriza recomendaciones accionables: ciclo de vida de almacenamiento, compromisos/descuentos por consumo estable, investigación de divergencia costo-consumo, revisión de bases de datos y egreso de red.',
-      'El contexto de aprendizaje auditado orienta criterios, riesgos y patrones de aceptacion o rechazo; no lo trates como dato factual de costos.',
-      learningContext.summary === ''
-        ? 'Contexto de aprendizaje auditado: no hay patrones previos relevantes.'
-        : [
-            'Contexto de aprendizaje auditado:',
-            learningContext.summary,
-            `Memorias usadas: ${learningContext.memoryIds.join(', ') || 'ninguna'}`,
-            `Casos usados: ${learningContext.caseIds.join(', ') || 'ninguno'}`,
-          ].join('\n'),
-      'Contexto:',
-      JSON.stringify(this.compactSnapshot(snapshot), null, 2),
-    ].join('\n');
-  }
-
-  private async getRecommendationLearningContext(
-    tenantId: string,
-    snapshot: CostAnalyticsSnapshot,
-  ): Promise<AgentLearningContext> {
-    if (this.learningContextProvider === undefined) {
-      return {
-        memoryIds: [],
-        caseIds: [],
-        summary: '',
-      };
-    }
-
-    return this.learningContextProvider.getRecommendationLearningContext({
-      tenantId,
-      queryText: [
-        ...snapshot.providers.map((item) => item.provider),
-        ...snapshot.services.map((item) => item.serviceName),
-        ...snapshot.topResources.map((item) => item.resourceId),
-        ...(snapshot.topUsage ?? []).map((item) => `${item.serviceName} ${item.consumedUnit}`),
-      ].join(' '),
-      limit: 5,
-    });
-  }
-
-  private buildExecutionPlanSystemPrompt(
-    snapshot: CostAnalyticsSnapshot,
-    recommendation: FinOpsRecommendation,
-  ): string {
-    return [
-      'Eres un arquitecto FinOps senior para FinOps Demo.',
-      'Debes generar un plan de ejecucion manual, gobernado y en español.',
-      'No afirmes que el sistema ejecutara cambios automaticamente en AWS, OCI u otro proveedor.',
-      'Usa solo la recomendacion, evidencia y contexto FOCUS proporcionados. No inventes recursos, cuentas, metricas tecnicas ni proveedores.',
-      'Si la recomendacion solo tiene evidencia FOCUS, indica que CPU, memoria, IOPS o throughput deben validarse fuera de FOCUS antes de ejecutar cambios tecnicos.',
-      'Devuelve solo JSON estricto con esta forma:',
-      '{"summary":"...","scope":{"cloudAccountId":"...","service":"..."},"prerequisites":["..."],"steps":["..."],"validation":["..."],"risks":["..."],"rollback":["..."],"successCriteria":["..."],"estimatedSavings":{"amount":0,"currency":"USD"}}',
-      'Contexto de costos:',
-      JSON.stringify(this.compactSnapshot(snapshot), null, 2),
-      'Recomendacion:',
-      JSON.stringify(recommendation, null, 2),
-    ].join('\n');
-  }
-
-  private buildAuditSystemPrompt(): string {
-    return [
-      'Eres un agente auditor FinOps independiente para FinOps Demo.',
-      'Tu tarea es auditar contenido generado por otro agente IA antes de que sea persistido o aprobado.',
-      'Debes comprobar que el contenido este en español, sea consistente con los datos, no invente recursos, sea realista, viable y tenga validaciones suficientes.',
-      'Verifica que el contenido no trate consumo FOCUS como CPU, memoria, IOPS, throughput o utilizacion tecnica.',
-      'Rechaza cualquier contenido que prometa ejecucion automatica real de cambios cloud.',
-      'Devuelve solo JSON estricto con esta forma:',
-      '{"verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":["..."],"requiredChanges":["..."]}',
-      'Usa APPROVED solo si no hay problemas bloqueantes y el score es mayor o igual a 80.',
-    ].join('\n');
-  }
-
-  private compactSnapshot(snapshot: CostAnalyticsSnapshot): unknown {
-    return {
-      tenantId: snapshot.tenantId,
-      periodStart: snapshot.periodStart,
-      periodEnd: snapshot.periodEnd,
-      totalCost: snapshot.totalCost,
-      currency: snapshot.currency,
-      metricCount: snapshot.metricCount,
-      providers: snapshot.providers,
-      accounts: snapshot.accounts.slice(0, 4),
-      services: snapshot.services.slice(0, 6),
-      environments: snapshot.environments,
-      topResources: snapshot.topResources.slice(0, 6),
-      topUsage: snapshot.topUsage?.slice(0, 8) ?? [],
-      usageInsights: snapshot.usageInsights?.slice(0, 8) ?? [],
-      anomalies: snapshot.anomalies?.slice(0, 5) ?? [],
-      forecasts: snapshot.forecasts?.slice(0, 6) ?? [],
-    };
-  }
-
-  private normalizeHistory(history: readonly AiChatMessage[] | undefined): AiChatMessage[] {
-    if (history === undefined) {
-      return [];
-    }
-
-    return history
-      .slice(-8)
-      .map((item) => ({
-        role: item.role,
-        content: item.content.trim(),
-      }))
-      .filter((item) => item.content !== '');
-  }
-
-  private parseRecommendationDrafts(
-    rawResponse: string,
-    snapshot: CostAnalyticsSnapshot,
-  ): readonly AiRecommendationDraft[] {
-    const json = this.extractJson(rawResponse);
-    const parsed = JSON.parse(json) as unknown;
-    const container = this.isRecord(parsed) ? parsed : {};
-    const rawRecommendations = Array.isArray(container['recommendations'])
-      ? container['recommendations']
-      : [];
-
-    const allowedAccountIds = new Set(snapshot.accounts.map((account) => account.cloudAccountId));
-
-    const drafts = rawRecommendations
-      .map((item) => this.toRecommendationDraft(item, allowedAccountIds, snapshot.currency))
-      .filter((item): item is AiRecommendationDraft => item !== null);
-
-    if (drafts.length === 0) {
-      throw new FinOpsBaseError('AI did not return valid recommendations', 'AI_RESPONSE_ERROR');
-    }
-
-    return drafts;
-  }
-
-  private parseExecutionPlan(
-    rawResponse: string,
-    recommendation: FinOpsRecommendation,
-  ): Record<string, unknown> {
-    const json = this.extractJson(rawResponse);
-    const parsed = JSON.parse(json) as unknown;
-
-    if (!this.isRecord(parsed)) {
-      throw new FinOpsBaseError('AI did not return a valid execution plan', 'AI_RESPONSE_ERROR');
-    }
-
-    const requiredArrayFields = [
-      'prerequisites',
-      'steps',
-      'validation',
-      'risks',
-      'rollback',
-      'successCriteria',
-    ];
-
-    const hasRequiredArrays = requiredArrayFields.every((field) => (
-      Array.isArray(parsed[field]) &&
-      (parsed[field] as unknown[]).every((item) => typeof item === 'string' && item.trim() !== '')
-    ));
-
-    if (
-      this.readString(parsed, 'summary') === undefined ||
-      !this.isRecord(parsed['scope']) ||
-      !hasRequiredArrays ||
-      !this.isRecord(parsed['estimatedSavings'])
-    ) {
-      throw new FinOpsBaseError('AI did not return a complete execution plan', 'AI_RESPONSE_ERROR');
-    }
-
-    return {
-      ...parsed,
-      recommendationId: recommendation.id,
-      cloudAccountId: recommendation.cloudAccountId,
-      generatedBy: 'nvidia-nim',
-    };
-  }
-
-  private async auditGeneratedArtifact(input: {
-    readonly artifactType: 'recommendations' | 'execution_plan';
-    readonly snapshot: CostAnalyticsSnapshot;
-    readonly recommendation?: FinOpsRecommendation;
-    readonly tenantId?: string;
-    readonly userId?: string;
-    readonly artifact: unknown;
-  }): Promise<AiAuditReport> {
-    const startedAt = Date.now();
-    const rawResponse = await this.aiGateway.generateText({
-      model: this.auditorModel,
-      responseFormat: 'json',
-      temperature: 0,
-      maxTokens: 900,
-      messages: [
-        {
-          role: 'system',
-          content: this.buildAuditSystemPrompt(),
-        },
-        {
-          role: 'user',
-          content: [
-            `Audita este artefacto: ${input.artifactType}.`,
-            'Contexto autorizado:',
-            JSON.stringify(this.compactSnapshot(input.snapshot), null, 2),
-            ...(input.recommendation !== undefined
-              ? ['Recomendacion original:', JSON.stringify(input.recommendation, null, 2)]
-              : []),
-            'Artefacto generado:',
-            JSON.stringify(input.artifact, null, 2),
-          ].join('\n'),
-        },
-      ],
-    });
-
-    if (input.tenantId !== undefined) {
-      await this.recordAiTrace(
-        input.tenantId,
-        input.userId,
-        'AUDIT',
-        this.auditorModel,
-        undefined,
-        startedAt,
-        rawResponse,
-      );
-    }
-
-    return this.parseAuditReport(rawResponse);
-  }
-
-  private parseAuditReport(rawResponse: string): AiAuditReport {
-    const parsed = JSON.parse(this.extractJson(rawResponse)) as unknown;
-
-    if (!this.isRecord(parsed)) {
-      throw new FinOpsBaseError('AI auditor did not return a valid report', 'AI_RESPONSE_ERROR');
-    }
-
-    const verdict = this.readString(parsed, 'verdict')?.toUpperCase();
-    const score = this.readNumber(parsed, 'score');
-    const checks = Array.isArray(parsed['checks']) ? parsed['checks'] : [];
-    const blockingIssues = this.readStringList(parsed['blockingIssues']);
-    const requiredChanges = this.readStringList(parsed['requiredChanges']);
-
-    if (
-      (verdict !== 'APPROVED' && verdict !== 'REJECTED' && verdict !== 'NEEDS_REVISION') ||
-      score === undefined ||
-      score < 0 ||
-      score > 100
-    ) {
-      throw new FinOpsBaseError('AI auditor returned an invalid verdict', 'AI_RESPONSE_ERROR');
-    }
-
-    return {
-      verdict,
-      score,
-      checks: checks
-        .filter((item): item is Record<string, unknown> => this.isRecord(item))
-        .map((item) => ({
-          name: this.readString(item, 'name') ?? 'verificacion',
-          passed: item['passed'] === true,
-          notes: this.readString(item, 'notes') ?? '',
-        })),
-      blockingIssues,
-      requiredChanges,
-    };
-  }
-
-  private toRecommendationDraft(
-    value: unknown,
-    allowedAccountIds: ReadonlySet<string>,
-    defaultCurrency: string,
-  ): AiRecommendationDraft | null {
-    if (!this.isRecord(value)) {
-      return null;
-    }
-
-    const cloudAccountId = this.readString(value, 'cloudAccountId');
-    const type = this.readString(value, 'type');
-    const severity = this.readString(value, 'severity')?.toUpperCase();
-    const title = this.readString(value, 'title');
-    const description = this.readString(value, 'description');
-
-    if (
-      cloudAccountId === undefined ||
-      !allowedAccountIds.has(cloudAccountId) ||
-      type === undefined ||
-      severity === undefined ||
-      !supportedSeverities.has(severity as FinOpsRecommendation['severity']) ||
-      title === undefined ||
-      description === undefined
-    ) {
-      return null;
-    }
-
-    const estimatedMonthlySavings = this.readNumber(value, 'estimatedMonthlySavings');
-    const currency = this.readString(value, 'currency') ?? defaultCurrency;
-    const evidence = this.isRecord(value['evidence']) ? value['evidence'] : {};
-    const evidenceLevel = this.readEvidenceLevel(evidence) ?? 'COST_AND_USAGE';
-
-    return {
-      cloudAccountId,
-      type,
-      severity: severity as FinOpsRecommendation['severity'],
-      title,
-      description,
-      evidence: {
-        source: 'nvidia-nim',
-        evidenceLevel,
-        focusLimitation: 'FOCUS contiene costo y consumo facturado; no contiene CPU, memoria, IOPS, throughput ni utilizacion tecnica.',
-        ...evidence,
-      },
-      ...(estimatedMonthlySavings !== undefined ? { estimatedMonthlySavings } : {}),
-      currency,
-    };
-  }
-
-  private extractJson(rawResponse: string): string {
-    const trimmed = rawResponse.trim();
-    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-
-    if (fenced?.[1] !== undefined) {
-      return fenced[1].trim();
-    }
-
-    return trimmed;
-  }
-
-  private toEphemeralRecommendation(
-    input: CreateRecommendationInput,
-    index: number,
-  ): FinOpsRecommendation {
-    const now = new Date();
-
-    return {
-      id: `ai-preview-${index + 1}`,
-      cloudAccountId: input.cloudAccountId,
-      type: input.type,
-      status: 'PENDING',
-      severity: input.severity,
-      title: input.title,
-      description: input.description,
-      evidence: input.evidence,
-      ...(input.estimatedMonthlySavings !== undefined
-        ? { estimatedMonthlySavings: input.estimatedMonthlySavings }
-        : {}),
-      currency: input.currency,
-      createdAt: now,
-      updatedAt: now,
-    };
-  }
-
-  private isRecord(value: unknown): value is Record<string, unknown> {
-    return value !== null && typeof value === 'object' && !Array.isArray(value);
-  }
-
-  private readString(record: Record<string, unknown>, key: string): string | undefined {
-    const value = record[key];
-
-    if (typeof value !== 'string' || value.trim() === '') {
-      return undefined;
-    }
-
-    return value.trim();
-  }
-
-  private readNumber(record: Record<string, unknown>, key: string): number | undefined {
-    const value = record[key];
-
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return value;
-    }
-
-    if (typeof value === 'string') {
-      const parsed = Number.parseFloat(value);
-      return Number.isFinite(parsed) ? parsed : undefined;
-    }
-
-    return undefined;
-  }
-
-  private readEvidenceLevel(record: Record<string, unknown>): string | undefined {
-    const raw = this.readString(record, 'evidenceLevel')?.toUpperCase();
-
-    if (
-      raw === 'COST_ONLY' ||
-      raw === 'COST_AND_USAGE' ||
-      raw === 'COST_USAGE_AND_TECHNICAL'
-    ) {
-      return raw;
-    }
-
-    return undefined;
-  }
-
-  private readStringList(value: unknown): string[] {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
-    return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+  private buildAuditDiagnosticId(tenantId: string): string {
+    return `audit-${tenantId}-${Date.now().toString(36)}`;
   }
 }

@@ -1,3 +1,12 @@
+/**
+ * Barrel de servicios de aplicación (capa de casos de uso).
+ *
+ * Reexporta los servicios y sus tipos de entrada/salida públicos para que
+ * la capa de presentación y la composición de dependencias importen desde
+ * un único punto, sin acoplarse a las rutas internas de cada archivo.
+ *
+ * @module application/services
+ */
 export { AuthService, type LoginInput, type LoginResult } from './AuthService.js';
 export { CostAnalyticsService, type AnalyticsQuery, type AnalyticsRecomputeResult } from './CostAnalyticsService.js';
 export { DataIngestionService, type IngestionResult } from './DataIngestionService.js';
@@ -6,7 +15,6 @@ export { AgentLearningService } from './AgentLearningService.js';
 export { AiObservabilityService } from './AiObservabilityService.js';
 export { ContextEngineService } from './ContextEngineService.js';
 export { ContextSummaryBuilderService } from './ContextSummaryBuilderService.js';
-export { KnowledgeGraphService } from './KnowledgeGraphService.js';
 export {
   SavingsReminderService,
   type SavingsReminderQuery,
@@ -17,6 +25,10 @@ export { TelegramClient, type ITelegramClient, type TelegramSendMessageInput } f
 export { TelegramLinkService, type CreateTelegramLinkInput } from './TelegramLinkService.js';
 export { TelegramMessageFormatter } from './TelegramMessageFormatter.js';
 export { ContextBudgeter } from './ContextBudgeter.js';
+export {
+  CloudIngestionWorkerService,
+  type CloudIngestionWorkerRunResult,
+} from './CloudIngestionWorkerService.js';
 export {
   CloudConnectionService,
   type ProvisionCloudConnectionInput,

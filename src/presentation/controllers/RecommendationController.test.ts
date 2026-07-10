@@ -307,7 +307,7 @@ describe('RecommendationController decisions', () => {
       reasonCode: 'APPROVED_HIGH_CONFIDENCE',
       reason: 'Validado por FinOps.',
     });
-    expect(learningService.processedEventId).toBe('learning-event-1');
+    expect(learningService.processedEventId).toBeNull();
   });
 });
 

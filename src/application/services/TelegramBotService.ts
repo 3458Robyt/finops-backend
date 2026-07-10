@@ -5,45 +5,48 @@ import type { SavingsReminderService } from './SavingsReminderService.js';
 import type { ICostAnalyticsRepository } from '../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
 import type { ITelegramRepository } from '../../domain/interfaces/ITelegramRepository.js';
-import type { TelegramChatLink, TelegramInteractionStatus } from '../../domain/models/Telegram.js';
-import type { FinOpsRecommendation } from '../../domain/models/FinOpsRecommendation.js';
+import type { TelegramChatLink } from '../../domain/models/Telegram.js';
+import {
+  parseCommand,
+  parseMessage,
+  type ParsedCommand,
+  type ParsedTelegramMessage,
+  type TelegramUpdate,
+} from './telegram/telegramUpdateParser.js';
+import {
+  formatCosts as renderCosts,
+  formatOpportunities as renderOpportunities,
+  formatRecommendations as renderRecommendations,
+  formatSavingsReminders as renderSavingsReminders,
+  truncatePreview,
+} from './telegram/telegramMessageFormatters.js';
 
-export interface TelegramUpdate {
-  readonly update_id?: number;
-  readonly message?: {
-    readonly message_id?: number;
-    readonly text?: string;
-    readonly chat?: {
-      readonly id?: number | string;
-      readonly type?: string;
-    };
-    readonly from?: {
-      readonly id?: number | string;
-      readonly username?: string;
-      readonly first_name?: string;
-      readonly last_name?: string;
-    };
-  };
-}
+// Reexporta el tipo público del update para preservar la API del módulo.
+export type { TelegramUpdate } from './telegram/telegramUpdateParser.js';
 
-interface ParsedTelegramMessage {
-  readonly chatId: string;
-  readonly telegramUserId?: string;
-  readonly telegramUsername?: string;
-  readonly text: string;
-}
-
-interface ParsedCommand {
-  readonly command: string;
-  readonly argument: string;
-}
-
-const currencyFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 2,
-});
-
+/**
+ * Servicio de aplicación que implementa la lógica del bot de Telegram FinOps.
+ * Recibe los updates entrantes, valida la vinculación del chat, interpreta los
+ * comandos y compone las respuestas combinando IA, recordatorios de ahorro,
+ * recomendaciones y analítica de costos. También registra cada interacción.
+ *
+ * El parseo de updates vive en {@link ./telegram/telegramUpdateParser} y el
+ * formateo de respuestas en {@link ./telegram/telegramMessageFormatters}; este
+ * servicio orquesta la obtención de datos y delega la presentación en ellos.
+ *
+ * Colaboradores inyectados:
+ * - {@link ITelegramRepository}: vínculos de chat y logs de interacción.
+ * - {@link ITelegramClient}: envío de mensajes a Telegram.
+ * - {@link TelegramMessageFormatter}: formateo y fragmentación de respuestas.
+ * - {@link FinOpsAiService}: respuestas conversacionales del asistente.
+ * - {@link SavingsReminderService}: recordatorios de ahorro no capturado.
+ * - {@link IRecommendationRepository}: recomendaciones activas del tenant.
+ * - {@link ICostAnalyticsRepository}: snapshot de costos y oportunidades.
+ * - `botUsername` (opcional): nombre del bot para los mensajes de ayuda.
+ *
+ * Rol dentro del flujo: orquestador del canal Telegram; traduce comandos de
+ * usuario en consultas a los servicios FinOps y devuelve respuestas en español.
+ */
 export class TelegramBotService {
   constructor(
     private readonly repository: ITelegramRepository,
@@ -56,8 +59,22 @@ export class TelegramBotService {
     private readonly botUsername?: string,
   ) {}
 
+  /**
+   * Punto de entrada que procesa un update entrante de Telegram de principio a fin.
+   *
+   * Parsea el mensaje; si no es soportado registra un log IGNORED y termina. Si
+   * el chat no está vinculado (o el usuario está deshabilitado) responde con el
+   * mensaje correspondiente. En caso contrario interpreta el comando, construye
+   * la respuesta, la envía fragmentada y registra la interacción como PROCESSED.
+   * Cualquier error se captura: se notifica al usuario y se registra como ERROR.
+   *
+   * Efectos secundarios: envía mensajes por Telegram y persiste logs de interacción.
+   *
+   * @param update - Update crudo recibido del webhook/polling de Telegram.
+   * @returns Promesa que se resuelve cuando el update ha sido atendido.
+   */
   public async handleUpdate(update: TelegramUpdate): Promise<void> {
-    const message = this.parseMessage(update);
+    const message = parseMessage(update);
 
     if (message === null) {
       await this.repository.createInteractionLog({
@@ -68,7 +85,7 @@ export class TelegramBotService {
       return;
     }
 
-    const parsed = this.parseCommand(message.text);
+    const parsed = parseCommand(message.text);
 
     try {
       const link = await this.repository.findActiveLinkByChatId(message.chatId);
@@ -93,6 +110,15 @@ export class TelegramBotService {
     }
   }
 
+  /**
+   * Atiende un mensaje proveniente de un chat no vinculado.
+   *
+   * Para /start ofrece el mensaje de bienvenida con el Chat ID; para el resto,
+   * el mensaje informativo de chat no vinculado. Registra la interacción como
+   * IGNORED con el motivo `chat_not_linked`.
+   *
+   * Efectos secundarios: envía mensajes por Telegram y persiste un log de interacción.
+   */
   private async handleUnlinkedMessage(message: ParsedTelegramMessage, parsed: ParsedCommand): Promise<void> {
     const reply = parsed.command === '/start'
       ? this.formatter.unlinkedStartMessage(message.chatId)
@@ -102,6 +128,20 @@ export class TelegramBotService {
     await this.logMessage(message, undefined, parsed.command, 'IGNORED', undefined, { reason: 'chat_not_linked' });
   }
 
+  /**
+   * Construye la respuesta para un chat ya vinculado en función del comando
+   * interpretado.
+   *
+   * Despacha cada comando soportado (/start, /ayuda, /chat, /recordatorios,
+   * /recomendaciones, /costos, /oportunidades) a su manejador. El texto libre
+   * (`TEXT`) se trata como una pregunta de chat, y los comandos desconocidos
+   * devuelven la ayuda.
+   *
+   * @param link - Vínculo activo del chat con el usuario/tenant.
+   * @param parsed - Comando y argumento interpretados del mensaje.
+   * @param originalText - Texto original del mensaje (usado para el caso `TEXT`).
+   * @returns El texto de respuesta a enviar al usuario.
+   */
   private async buildLinkedReply(
     link: TelegramChatLink,
     parsed: ParsedCommand,
@@ -137,6 +177,19 @@ export class TelegramBotService {
     }
   }
 
+  /**
+   * Responde una pregunta de chat delegando en el servicio de IA FinOps.
+   *
+   * Si la pregunta viene vacía, devuelve una indicación de uso en lugar de
+   * invocar al modelo.
+   *
+   * Efecto secundario: invoca al servicio de IA (que a su vez puede consultar
+   * contexto y modelo).
+   *
+   * @param link - Vínculo activo con tenant y usuario para acotar el contexto.
+   * @param question - Pregunta del usuario.
+   * @returns La respuesta del asistente, o una indicación de uso si no hay pregunta.
+   */
   private async answerChat(link: TelegramChatLink, question: string): Promise<string> {
     const trimmed = question.trim();
 
@@ -153,143 +206,101 @@ export class TelegramBotService {
     return response.answer;
   }
 
+  /**
+   * Obtiene los recordatorios de ahorro del usuario y delega su formateo en
+   * {@link renderSavingsReminders}.
+   *
+   * Efecto secundario: consulta el servicio de recordatorios de ahorro.
+   *
+   * @param link - Vínculo activo con tenant y usuario.
+   * @returns El texto con los recordatorios, o un aviso si no hay ninguno activo.
+   */
   private async formatSavingsReminders(link: TelegramChatLink): Promise<string> {
     const result = await this.savingsReminderService.getNotificationsForUser({
       tenantId: link.tenantId,
       userId: link.userId,
     });
 
-    if (result.notifications.length === 0) {
-      return 'No hay recordatorios de ahorro activos para este usuario.';
-    }
-
-    const lines = result.notifications.slice(0, 5).map((notification, index) => [
-      `${index + 1}. ${notification.title}`,
-      notification.message,
-      notification.missedSavingsAmount !== undefined
-        ? `Ahorro no capturado: ${formatCurrency(notification.missedSavingsAmount, notification.currency)}`
-        : undefined,
-    ].filter((line): line is string => line !== undefined).join('\n'));
-
-    return ['Recordatorios de ahorro:', '', ...lines].join('\n\n');
+    return renderSavingsReminders(result.notifications);
   }
 
+  /**
+   * Obtiene las recomendaciones del tenant y delega su formateo en
+   * {@link renderRecommendations}.
+   *
+   * Efecto secundario: consulta el repositorio de recomendaciones.
+   *
+   * @param link - Vínculo activo que aporta el tenant.
+   * @returns El texto con las recomendaciones, o un aviso si no hay ninguna activa.
+   */
   private async formatRecommendations(link: TelegramChatLink): Promise<string> {
     const recommendations = await this.recommendationRepository.findByTenant({ tenantId: link.tenantId });
-    const active = recommendations
-      .filter((recommendation) => recommendation.status === 'PENDING' || recommendation.status === 'APPROVED')
-      .sort((left, right) => (right.estimatedMonthlySavings ?? 0) - (left.estimatedMonthlySavings ?? 0))
-      .slice(0, 5);
 
-    if (active.length === 0) {
-      return 'No hay recomendaciones pendientes o aprobadas en este momento.';
-    }
-
-    return [
-      'Recomendaciones activas:',
-      '',
-      ...active.map((recommendation, index) => this.formatRecommendationLine(recommendation, index)),
-    ].join('\n\n');
+    return renderRecommendations(recommendations);
   }
 
+  /**
+   * Obtiene el último snapshot de costos del tenant y delega su formateo en
+   * {@link renderCosts}.
+   *
+   * Efecto secundario: consulta el repositorio de analítica de costos.
+   *
+   * @param link - Vínculo activo que aporta el tenant.
+   * @returns El texto con el resumen de costos.
+   */
   private async formatCosts(link: TelegramChatLink): Promise<string> {
     const snapshot = await this.analyticsRepository.getLatestTenantSnapshot(link.tenantId);
-    const providers = snapshot.providers
-      .slice(0, 3)
-      .map((provider) => `- ${provider.provider}: ${formatCurrency(provider.totalCost, snapshot.currency)}`)
-      .join('\n');
-    const services = snapshot.services
-      .slice(0, 5)
-      .map((service) => `- ${service.serviceName}: ${formatCurrency(service.totalCost, snapshot.currency)}`)
-      .join('\n');
 
-    return [
-      'Resumen de costos FinOps:',
-      `Periodo: ${formatDate(snapshot.periodStart)} a ${formatDate(snapshot.periodEnd)}`,
-      `Costo total: ${formatCurrency(snapshot.totalCost, snapshot.currency)}`,
-      `Metricas: ${snapshot.metricCount}`,
-      '',
-      'Proveedores principales:',
-      providers !== '' ? providers : '- Sin datos',
-      '',
-      'Servicios principales:',
-      services !== '' ? services : '- Sin datos',
-    ].join('\n');
+    return renderCosts(snapshot);
   }
 
+  /**
+   * Obtiene el último snapshot de costos del tenant y delega el formateo de las
+   * oportunidades en {@link renderOpportunities}.
+   *
+   * Efecto secundario: consulta el repositorio de analítica de costos.
+   *
+   * @param link - Vínculo activo que aporta el tenant.
+   * @returns El texto con las oportunidades, o un aviso si no hay evidencia disponible.
+   */
   private async formatOpportunities(link: TelegramChatLink): Promise<string> {
     const snapshot = await this.analyticsRepository.getLatestTenantSnapshot(link.tenantId);
-    const anomalyLines = (snapshot.anomalies ?? []).slice(0, 3).map((opportunity) => (
-      `- ${opportunity.explanation} (${formatCurrency(opportunity.deltaAmount, snapshot.currency)})`
-    ));
-    const insightLines = (snapshot.usageInsights ?? []).slice(0, 3).map((insight) => (
-      `- ${insight.title}: ${insight.description}`
-    ));
-    const lines = [...anomalyLines, ...insightLines].slice(0, 5);
 
-    if (lines.length === 0) {
-      return 'No hay oportunidades activas con la evidencia disponible.';
-    }
-
-    return ['Oportunidades detectadas:', '', ...lines].join('\n');
+    return renderOpportunities(snapshot);
   }
 
-  private formatRecommendationLine(recommendation: FinOpsRecommendation, index: number): string {
-    const savings = recommendation.estimatedMonthlySavings !== undefined
-      ? formatCurrency(recommendation.estimatedMonthlySavings, recommendation.currency)
-      : 'Ahorro no estimado';
-
-    return [
-      `${index + 1}. ${recommendation.title}`,
-      `Estado: ${recommendation.status}`,
-      `Ahorro estimado: ${savings}/mes`,
-      `Severidad: ${recommendation.severity}`,
-    ].join('\n');
-  }
-
-  private parseMessage(update: TelegramUpdate): ParsedTelegramMessage | null {
-    const chatId = update.message?.chat?.id;
-    const text = update.message?.text;
-
-    if ((typeof chatId !== 'number' && typeof chatId !== 'string') || typeof text !== 'string' || text.trim() === '') {
-      return null;
-    }
-
-    const from = update.message?.from;
-
-    return {
-      chatId: String(chatId),
-      ...(from?.id !== undefined ? { telegramUserId: String(from.id) } : {}),
-      ...(from?.username !== undefined ? { telegramUsername: from.username } : {}),
-      text: text.trim(),
-    };
-  }
-
-  private parseCommand(text: string): ParsedCommand {
-    if (!text.startsWith('/')) {
-      return { command: 'TEXT', argument: text };
-    }
-
-    const [rawCommand, ...rest] = text.split(/\s+/);
-    const command = (rawCommand ?? '').split('@')[0]?.toLowerCase() ?? '';
-
-    return {
-      command,
-      argument: rest.join(' ').trim(),
-    };
-  }
-
+  /**
+   * Envía un texto al chat dividiéndolo previamente en fragmentos que respeten
+   * el límite de Telegram, enviando cada fragmento como un mensaje separado.
+   *
+   * Efecto secundario: una o varias llamadas de envío a través del cliente de Telegram.
+   */
   private async sendChunks(chatId: string, text: string): Promise<void> {
     for (const chunk of this.formatter.split(text)) {
       await this.telegramClient.sendMessage({ chatId, text: chunk });
     }
   }
 
+  /**
+   * Registra una interacción de Telegram en el log de auditoría.
+   *
+   * Incluye tenant y usuario solo cuando hay vínculo, recorta el texto a una
+   * vista previa acotada y añade error o metadatos cuando se proporcionan.
+   *
+   * Efecto secundario: persiste un log de interacción.
+   *
+   * @param message - Mensaje parseado que originó la interacción.
+   * @param link - Vínculo asociado, o `undefined` si el chat no está vinculado.
+   * @param command - Comando interpretado.
+   * @param status - Estado final de la interacción (PROCESSED, IGNORED, ERROR...).
+   * @param errorMessage - Mensaje de error a registrar (opcional).
+   * @param metadata - Metadatos adicionales del contexto (opcional).
+   */
   private async logMessage(
     message: ParsedTelegramMessage,
     link: TelegramChatLink | undefined,
     command: string,
-    status: TelegramInteractionStatus,
+    status: Parameters<ITelegramRepository['createInteractionLog']>[0]['status'],
     errorMessage?: string,
     metadata?: unknown,
   ): Promise<void> {
@@ -305,20 +316,4 @@ export class TelegramBotService {
       ...(metadata !== undefined ? { metadata } : {}),
     });
   }
-}
-
-function truncatePreview(value: string): string {
-  return value.length <= 240 ? value : value.slice(0, 237).concat('...');
-}
-
-function formatDate(value: string): string {
-  return new Date(value).toLocaleDateString('es-CO');
-}
-
-function formatCurrency(value: number, currency: string): string {
-  if (currency === 'USD') {
-    return currencyFormatter.format(value);
-  }
-
-  return `${currency} ${value.toFixed(2)}`;
 }

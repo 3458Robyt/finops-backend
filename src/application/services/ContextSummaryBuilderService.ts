@@ -1,9 +1,40 @@
 import { createHash } from 'node:crypto';
 import type { IAgentContextRepository } from '../../domain/interfaces/IAgentContextRepository.js';
 
+/**
+ * Servicio de aplicación que construye y mantiene los resúmenes de contexto
+ * cacheados a partir de los agregados FOCUS por recurso y periodo. Estos
+ * resúmenes son la evidencia que luego consume el Context Engine para no tener
+ * que recalcular ni reenviar datos crudos de costos al modelo.
+ *
+ * Colaborador inyectado:
+ * - {@link IAgentContextRepository}: persistencia de corridas de construcción
+ *   ("context build runs") y de los resúmenes de contexto.
+ *
+ * Rol dentro del flujo: tarea de backfill/precómputo que alimenta la capa de
+ * contexto del agente de IA con resúmenes textuales por recurso y mes.
+ */
 export class ContextSummaryBuilderService {
   constructor(private readonly repository: IAgentContextRepository) {}
 
+  /**
+   * Reconstruye (backfill) los resúmenes de contexto FOCUS por recurso y periodo
+   * para un tenant.
+   *
+   * Crea una corrida de construcción, itera sobre los agregados FOCUS y, por
+   * cada uno, genera un resumen textual con costo, periodo, nº de filas y
+   * consumo facturado, y lo persiste mediante upsert usando una `scopeKey`
+   * determinista (proveedor:cuenta:servicio:recurso:mes) y un `sourceHash` para
+   * detectar cambios. Al finalizar marca la corrida como exitosa.
+   *
+   * Efectos secundarios: crea una corrida de build, realiza múltiples upserts de
+   * resúmenes y actualiza el estado de la corrida (SUCCESS o FAILED).
+   *
+   * @param input - Tenant objetivo y, opcionalmente, el usuario que dispara el backfill.
+   * @returns El identificador de la corrida y el número de resúmenes generados.
+   * @throws Propaga cualquier error ocurrido durante el proceso tras marcar la
+   *   corrida como FAILED con el mensaje de error.
+   */
   public async backfillTenantContext(input: {
     readonly tenantId: string;
     readonly userId?: string;
@@ -19,8 +50,12 @@ export class ContextSummaryBuilderService {
       let summaryCount = 0;
 
       for (const aggregate of aggregates) {
+        // El hash de la fuente permite detectar si el agregado cambió respecto a
+        // un resumen previo y evitar reescrituras innecesarias en el upsert.
         const sourceHash = this.hash(aggregate);
         const month = aggregate.periodStart.toISOString().slice(0, 7);
+        // Clave de ámbito determinista que identifica de forma única el resumen
+        // por proveedor, cuenta, servicio, recurso y mes.
         const scopeKey = [
           aggregate.provider,
           aggregate.cloudAccountId,
@@ -79,6 +114,10 @@ export class ContextSummaryBuilderService {
     }
   }
 
+  /**
+   * Calcula un hash SHA-256 estable de un valor serializado a JSON. Se usa como
+   * huella ("sourceHash") del agregado para detectar cambios entre corridas.
+   */
   private hash(value: unknown): string {
     return createHash('sha256').update(JSON.stringify(value)).digest('hex');
   }

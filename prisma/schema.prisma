@@ -14,6 +14,7 @@ enum TenantStatus {
 
 enum UserRole {
   ADMIN
+  MASTER_ADMIN
   VIEWER
   OPERATOR_ADMIN
   FINOPS_TECHNICIAN
@@ -231,6 +232,26 @@ enum TelegramInteractionStatus {
   ERROR
 }
 
+enum OutboundMessageChannel {
+  TELEGRAM
+  EMAIL
+}
+
+enum OutboundMessageType {
+  TEST
+  SAVINGS_REMINDER
+  AI_CHAT_RESPONSE
+  RECOMMENDATION_SUMMARY
+  EXECUTION_PLAN_READY
+}
+
+enum OutboundMessageStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
 enum ManualExecutionStatus {
   PLANNED
   EXECUTED
@@ -266,8 +287,6 @@ model Tenant {
   dataQualityChecks        DataQualityCheck[]
   agentLearningEvents      AgentLearningEvent[]
   agentMemories            AgentMemory[]
-  agentKnowledgeNodes      AgentKnowledgeNode[]
-  agentKnowledgeEdges      AgentKnowledgeEdge[]
   tenantAgentRules         TenantAgentRule[]
   agentInstructionAuditEvents AgentInstructionAuditEvent[]
   contextSummaryCaches     ContextSummaryCache[]
@@ -279,6 +298,7 @@ model Tenant {
   costForecasts            CostForecast[]
   manualExecutions         RecommendationManualExecution[]
   inAppNotifications       InAppNotification[]
+  outboundMessageDeliveries OutboundMessageDelivery[]
 
   @@index([operatorOrganizationId, status])
   @@map("tenants")
@@ -317,6 +337,7 @@ model User {
   telegramChatLinks                 TelegramChatLink[]           @relation("TelegramChatLinkUser")
   linkedTelegramChatLinks           TelegramChatLink[]           @relation("TelegramChatLinkLinkedBy")
   telegramInteractionLogs           TelegramInteractionLog[]
+  outboundMessageDeliveries         OutboundMessageDelivery[]
 
   @@index([operatorOrganizationId, role])
   @@index([tenantId, role])
@@ -487,7 +508,6 @@ model CloudAccount {
   createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
   tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  credentials       CloudCredential[]
   ingestionRuns     IngestionRun[]
   costMetrics       CostMetric[]
   recommendations   Recommendation[]
@@ -497,24 +517,6 @@ model CloudAccount {
   @@unique([tenantId, provider, externalAccountId])
   @@index([tenantId, status])
   @@map("cloud_accounts")
-}
-
-model CloudCredential {
-  id                   String       @id @default(cuid())
-  cloudAccountId       String       @map("cloud_account_id")
-  label                String
-  encryptedPayload     String       @map("encrypted_payload") @db.Text
-  encryptionIv         String       @map("encryption_iv")
-  encryptionAuthTag    String       @map("encryption_auth_tag")
-  encryptionAlgorithm  String       @default("aes-256-gcm") @map("encryption_algorithm")
-  encryptionKeyVersion String       @default("v1") @map("encryption_key_version")
-  createdAt            DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
-  rotatedAt            DateTime?    @map("rotated_at") @db.Timestamptz(6)
-  disabledAt           DateTime?    @map("disabled_at") @db.Timestamptz(6)
-  cloudAccount         CloudAccount @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
-
-  @@index([cloudAccountId, disabledAt])
-  @@map("cloud_credentials")
 }
 
 model IngestionRun {
@@ -552,9 +554,12 @@ model IngestionJob {
   targetEnd         DateTime            @map("target_end") @db.Timestamptz(6)
   attempts          Int                 @default(0)
   maxAttempts       Int                 @default(3) @map("max_attempts")
+  startedAt         DateTime?           @map("started_at") @db.Timestamptz(6)
+  completedAt       DateTime?           @map("completed_at") @db.Timestamptz(6)
   lockedAt          DateTime?           @map("locked_at") @db.Timestamptz(6)
   lockedBy          String?             @map("locked_by")
   errorMessage      String?             @map("error_message") @db.Text
+  resultSummary     Json?               @map("result_summary")
   createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
   tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -692,7 +697,9 @@ model ResourceMetricSample {
   cloudResource      CloudResource?      @relation(fields: [cloudResourceId], references: [id], onDelete: SetNull)
 
   @@unique([cloudConnectionId, externalResourceId, metricName, sampledAt])
+  @@index([tenantId, sampledAt])
   @@index([tenantId, metricName, sampledAt])
+  @@index([tenantId, externalResourceId, metricName, sampledAt])
   @@index([cloudResourceId, sampledAt])
   @@map("resource_metric_samples")
 }
@@ -811,6 +818,7 @@ model Recommendation {
   learningEvents           AgentLearningEvent[]
   manualExecutions         RecommendationManualExecution[]
   inAppNotifications       InAppNotification[]
+  outboundMessageDeliveries OutboundMessageDelivery[]
 
   @@index([tenantId, status, createdAt])
   @@index([cloudAccountId, severity])
@@ -993,6 +1001,11 @@ model AgentLearningEvent {
   auditScore         Int?                         @map("audit_score")
   auditReport        Json?                        @map("audit_report")
   errorMessage       String?                      @map("error_message") @db.Text
+  attempts           Int                          @default(0)
+  maxAttempts        Int                          @default(3) @map("max_attempts")
+  nextAttemptAt      DateTime                     @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lockedAt           DateTime?                    @map("locked_at") @db.Timestamptz(6)
+  lockedBy           String?                      @map("locked_by")
   createdAt          DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
   tenant             Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1000,9 +1013,9 @@ model AgentLearningEvent {
   decisionRecord     RecommendationDecision       @relation(fields: [decisionId], references: [id], onDelete: Cascade)
   user               User                         @relation(fields: [userId], references: [id], onDelete: Restrict)
   memories           AgentMemory[]
-  knowledgeEdges     AgentKnowledgeEdge[]
 
   @@index([tenantId, status, createdAt])
+  @@index([status, nextAttemptAt, lockedAt, createdAt])
   @@index([recommendationId, createdAt])
   @@index([decisionId])
   @@index([reasonCode, recommendationType])
@@ -1033,51 +1046,8 @@ model AgentMemory {
   @@index([scope, active, createdAt])
   @@index([memoryType, active])
   @@index([fingerprint, active])
+  @@unique([sourceLearningEventId, scope])
   @@map("agent_memory")
-}
-
-model AgentKnowledgeNode {
-  id            String               @id @default(cuid())
-  tenantId      String?              @map("tenant_id")
-  scope         AgentMemoryScope
-  nodeType      String               @map("node_type")
-  externalId    String?              @map("external_id")
-  dedupeKey     String?              @map("dedupe_key")
-  label         String
-  metadata      Json?
-  createdAt     DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
-  tenant        Tenant?              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  outgoingEdges AgentKnowledgeEdge[] @relation("AgentKnowledgeSource")
-  incomingEdges AgentKnowledgeEdge[] @relation("AgentKnowledgeTarget")
-
-  @@index([tenantId, nodeType])
-  @@index([scope, nodeType])
-  @@index([externalId])
-  @@unique([tenantId, dedupeKey])
-  @@map("agent_knowledge_nodes")
-}
-
-model AgentKnowledgeEdge {
-  id                    String              @id @default(cuid())
-  tenantId              String?             @map("tenant_id")
-  sourceNodeId          String              @map("source_node_id")
-  targetNodeId          String              @map("target_node_id")
-  relationType          String              @map("relation_type")
-  dedupeKey             String?             @map("dedupe_key")
-  confidence            Float               @default(0.7)
-  metadata              Json?
-  sourceLearningEventId String?             @map("source_learning_event_id")
-  createdAt             DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  tenant                Tenant?             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  sourceNode            AgentKnowledgeNode  @relation("AgentKnowledgeSource", fields: [sourceNodeId], references: [id], onDelete: Cascade)
-  targetNode            AgentKnowledgeNode  @relation("AgentKnowledgeTarget", fields: [targetNodeId], references: [id], onDelete: Cascade)
-  sourceLearningEvent   AgentLearningEvent? @relation(fields: [sourceLearningEventId], references: [id], onDelete: SetNull)
-
-  @@index([tenantId, relationType])
-  @@index([sourceNodeId, relationType])
-  @@index([targetNodeId, relationType])
-  @@unique([tenantId, dedupeKey])
-  @@map("agent_knowledge_edges")
 }
 
 model AgentInstructionProfile {
@@ -1175,7 +1145,6 @@ model AiContextTrace {
   latencyMs             Int?               @map("latency_ms")
   artifactIds           Json?              @map("artifact_ids")
   memoryIds             Json?              @map("memory_ids")
-  knowledgeNodeIds      Json?              @map("knowledge_node_ids")
   tenantRuleIds         Json?              @map("tenant_rule_ids")
   conflicts             Json?
   errorMessage          String?            @map("error_message") @db.Text
@@ -1252,6 +1221,32 @@ model TelegramInteractionLog {
   @@index([chatId, createdAt])
   @@index([status, createdAt])
   @@map("telegram_interaction_logs")
+}
+
+model OutboundMessageDelivery {
+  id                String                @id @default(cuid())
+  tenantId          String                @map("tenant_id")
+  userId            String?               @map("user_id")
+  recommendationId  String?               @map("recommendation_id")
+  channel           OutboundMessageChannel
+  messageType       OutboundMessageType   @map("message_type")
+  status            OutboundMessageStatus @default(PENDING)
+  subject           String?
+  preview           String                @db.Text
+  providerMessageId String?               @map("provider_message_id")
+  errorMessage      String?               @map("error_message") @db.Text
+  metadata          Json?
+  sentAt            DateTime?             @map("sent_at") @db.Timestamptz(6)
+  createdAt         DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant            Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user              User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  recommendation    Recommendation?       @relation(fields: [recommendationId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, channel, status, createdAt])
+  @@index([userId, createdAt])
+  @@index([recommendationId, createdAt])
+  @@map("outbound_message_deliveries")
 }
 
 model AuditEvent {

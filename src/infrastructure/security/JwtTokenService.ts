@@ -4,22 +4,81 @@ import type { AuthContext, UserRole } from '../../domain/models/AuthContext.js';
 import type { ITokenService, TokenIssueResult } from '../../domain/interfaces/ITokenService.js';
 import { AuthenticationError, ConfigurationError } from '../../domain/errors/errors.js';
 
+/**
+ * Conjunto de roles válidos aceptados al verificar un token JWT.
+ *
+ * Debe mantenerse sincronizado con el tipo {@link UserRole} y el enum `UserRole`
+ * de `prisma/schema.prisma`. Cubre los seis roles reales del sistema:
+ * `ADMIN`, `VIEWER`, `OPERATOR_ADMIN`, `FINOPS_TECHNICIAN`, `CLIENT_APPROVER` y `CLIENT_VIEWER`.
+ */
+const VALID_USER_ROLES: ReadonlySet<UserRole> = new Set<UserRole>([
+  'ADMIN',
+  'MASTER_ADMIN',
+  'VIEWER',
+  'OPERATOR_ADMIN',
+  'FINOPS_TECHNICIAN',
+  'CLIENT_APPROVER',
+  'CLIENT_VIEWER',
+]);
+
+/**
+ * Configuración interna del servicio de tokens JWT, resuelta en el constructor
+ * a partir de los parámetros recibidos o de variables de entorno.
+ */
 interface JwtTokenServiceConfig {
+  /** Secreto compartido usado para firmar y verificar tokens HS256. */
   readonly secret: string;
+  /** Emisor (`iss`) que se incrusta y valida en los tokens. */
   readonly issuer: string;
+  /** Audiencia (`aud`) que se incrusta y valida en los tokens. */
   readonly audience: string;
+  /** Tiempo de expiración del token, en segundos. */
   readonly expiresInSeconds: number;
 }
 
+/**
+ * Forma del payload de los tokens JWT emitidos por este servicio.
+ *
+ * Extiende el {@link JwtPayload} estándar (que aporta `sub`, `jti`, `exp`, etc.)
+ * con los claims específicos del dominio FinOps.
+ */
 interface FinOpsJwtPayload extends JwtPayload {
+  /** Identificador del tenant al que pertenece el usuario. */
   readonly tenantId: string;
+  /** Correo electrónico del usuario. */
   readonly email: string;
+  /** Rol del usuario dentro del sistema. */
   readonly role: UserRole;
 }
 
+/**
+ * Adaptador de infraestructura que implementa la interfaz de dominio
+ * {@link ITokenService} usando la librería `jsonwebtoken`.
+ *
+ * Responsabilidad: emitir y verificar tokens de acceso JWT firmados de forma
+ * simétrica con el algoritmo **HS256** (HMAC-SHA256).
+ *
+ * Aspectos de seguridad:
+ * - Firma simétrica HS256; el `secret` debe tener **al menos 32 caracteres**.
+ * - Cada token incluye un `jti` (JWT ID) aleatorio (`randomUUID`) para permitir
+ *   revocación/seguimiento individual.
+ * - Se validan emisor (`issuer`), audiencia (`audience`) y caducidad (`exp`).
+ * - Expiración por defecto: 15 minutos (900 s) si no se configura.
+ */
 export class JwtTokenService implements ITokenService {
   private readonly config: JwtTokenServiceConfig;
 
+  /**
+   * Construye el servicio resolviendo la configuración desde los parámetros
+   * o desde variables de entorno (`JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`,
+   * `JWT_EXPIRES_IN_SECONDS`).
+   *
+   * @param config - Configuración parcial opcional; cualquier campo ausente se
+   *   completa con la variable de entorno correspondiente o un valor por defecto
+   *   (`issuer` = `finops-backend`, `audience` = `finops-app`, expiración = 900 s).
+   * @throws {ConfigurationError} Si el secreto no está definido o tiene menos de 32 caracteres.
+   * @throws {ConfigurationError} Si `JWT_EXPIRES_IN_SECONDS` está presente pero no es un entero positivo.
+   */
   constructor(config?: Partial<JwtTokenServiceConfig>) {
     const secret = config?.secret ?? process.env['JWT_SECRET'];
 
@@ -35,6 +94,17 @@ export class JwtTokenService implements ITokenService {
     };
   }
 
+  /**
+   * Emite un nuevo token JWT firmado para el contexto de autenticación dado.
+   *
+   * Genera un `jti` único, calcula el instante de expiración y firma el payload
+   * con HS256 incluyendo `issuer`, `audience` y `expiresIn`.
+   *
+   * @param context - Contexto de autenticación del usuario, sin el campo `jwtId`
+   *   (este se genera internamente).
+   * @returns {@link TokenIssueResult} con el token firmado, el `jwtId` generado
+   *   y la fecha de expiración (`expiresAt`).
+   */
   public issueToken(context: Omit<AuthContext, 'jwtId'>): TokenIssueResult {
     const jwtId = randomUUID();
     const now = Math.floor(Date.now() / 1000);
@@ -62,6 +132,21 @@ export class JwtTokenService implements ITokenService {
     };
   }
 
+  /**
+   * Verifica la firma y los claims de un token JWT y reconstruye el contexto
+   * de autenticación del dominio.
+   *
+   * Valida algoritmo (`HS256`), emisor, audiencia y caducidad, y comprueba que
+   * los claims obligatorios (`sub`, `jti`, `tenantId`, `email`, `role`) estén
+   * presentes y bien tipados. El `role` debe ser uno de los seis roles válidos
+   * del sistema (`ADMIN`, `VIEWER`, `OPERATOR_ADMIN`, `FINOPS_TECHNICIAN`,
+   * `CLIENT_APPROVER`, `CLIENT_VIEWER`).
+   *
+   * @param token - Token JWT en formato compacto a verificar.
+   * @returns El {@link AuthContext} reconstruido a partir de los claims.
+   * @throws {AuthenticationError} Si el payload es un string, si faltan o son
+   *   inválidos los claims requeridos, o si el token es inválido o ha expirado.
+   */
   public verifyToken(token: string): AuthContext {
     try {
       const decoded = jwt.verify(token, this.config.secret, {
@@ -81,7 +166,8 @@ export class JwtTokenService implements ITokenService {
         typeof payload.jti !== 'string' ||
         typeof payload.tenantId !== 'string' ||
         typeof payload.email !== 'string' ||
-        (payload.role !== 'ADMIN' && payload.role !== 'VIEWER')
+        typeof payload.role !== 'string' ||
+        !VALID_USER_ROLES.has(payload.role as UserRole)
       ) {
         throw new AuthenticationError('Invalid token claims');
       }
@@ -102,6 +188,14 @@ export class JwtTokenService implements ITokenService {
     }
   }
 
+  /**
+   * Lee y valida el tiempo de expiración (en segundos) desde la variable de
+   * entorno `JWT_EXPIRES_IN_SECONDS`.
+   *
+   * @returns El número de segundos configurado, o 900 (15 minutos) si la
+   *   variable no está definida.
+   * @throws {ConfigurationError} Si el valor existe pero no es un entero positivo finito.
+   */
   private readExpirySeconds(): number {
     const raw = process.env['JWT_EXPIRES_IN_SECONDS'];
 

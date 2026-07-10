@@ -1,0 +1,41 @@
+import { describe, expect, it, vi } from 'vitest';
+import type { CloudConnectionController } from '../controllers/CloudConnectionController.js';
+import { createIngestionRoutes } from './ingestionRoutes.js';
+
+describe('createIngestionRoutes', () => {
+  it('registers tenant-level job creation under POST /jobs', () => {
+    const controller = {
+      queueTenantIngestion: vi.fn(),
+      queueTechnicalBackfill: vi.fn(),
+      configureFocusSource: vi.fn(),
+      listIngestionHistory: vi.fn(),
+      listDataQuality: vi.fn(),
+      getIngestionReadiness: vi.fn(),
+    } as unknown as CloudConnectionController;
+    const router = createIngestionRoutes(controller, (_req, _res, next) => next());
+    const stack = router.stack as readonly {
+      readonly route?: {
+        readonly path: string;
+        readonly methods: Record<string, boolean>;
+        readonly stack: readonly { readonly handle: unknown }[];
+      };
+    }[];
+
+    const postJobs = stack.find((layer) => layer.route?.path === '/jobs' && layer.route.methods['post']);
+
+    expect(postJobs).toBeDefined();
+    expect(postJobs?.route?.stack.at(-1)?.handle).toBe(controller.queueTenantIngestion);
+
+    const readiness = stack.find((layer) => layer.route?.path === '/readiness' && layer.route.methods['get']);
+    expect(readiness).toBeDefined();
+    expect(readiness?.route?.stack.at(-1)?.handle).toBe(controller.getIngestionReadiness);
+
+    const focusSources = stack.find((layer) => layer.route?.path === '/focus-sources' && layer.route.methods['post']);
+    expect(focusSources).toBeDefined();
+    expect(focusSources?.route?.stack.at(-1)?.handle).toBe(controller.configureFocusSource);
+
+    const backfill = stack.find((layer) => layer.route?.path === '/backfill' && layer.route.methods['post']);
+    expect(backfill).toBeDefined();
+    expect(backfill?.route?.stack.at(-1)?.handle).toBe(controller.queueTechnicalBackfill);
+  });
+});

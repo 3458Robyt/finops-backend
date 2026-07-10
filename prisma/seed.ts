@@ -30,14 +30,19 @@ async function main(): Promise<void> {
     },
   });
 
-  const defaultPassword = process.env['SEED_DEFAULT_PASSWORD'] ?? '[demo password removed]';
+  const defaultPassword = process.env['SEED_DEFAULT_PASSWORD'];
+
+  if (defaultPassword === undefined || defaultPassword.trim() === '') {
+    throw new Error('SEED_DEFAULT_PASSWORD must be set before running the seed');
+  }
+
   const passwordHash = await passwordHasher.hash(defaultPassword);
 
   await prisma.user.upsert({
     where: { email: '[correo omitido]' },
     update: {
       passwordHash,
-      role: UserRole.ADMIN,
+      role: UserRole.MASTER_ADMIN,
       tenantId: tenant.id,
       status: 'ACTIVE',
     },
@@ -46,7 +51,7 @@ async function main(): Promise<void> {
       email: '[correo omitido]',
       name: 'FinOps Operator',
       passwordHash,
-      role: UserRole.ADMIN,
+      role: UserRole.MASTER_ADMIN,
     },
   });
 

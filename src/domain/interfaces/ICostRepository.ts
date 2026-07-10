@@ -11,18 +11,35 @@
 
 import type { InternalCostMetric } from '../models/InternalCostMetric.js';
 
+/**
+ * Contexto de tenant/cuenta para un lote de métricas de costo.
+ *
+ * Aporta los datos de propiedad y trazabilidad que no provienen del proveedor
+ * cloud y que deben asociarse a cada métrica al persistirla.
+ */
 export interface CostMetricBatchContext {
+  /** Tenant propietario de las métricas; clave del aislamiento multi-tenant. */
   readonly tenantId: string;
+  /** Cuenta cloud a la que pertenecen las métricas. */
   readonly cloudAccountId: string;
+  /** Nombre del proveedor de origen (e.g., "aws", "oci"). */
   readonly providerName: string;
+  /** Identificador de la ejecución de ingesta que originó el lote; opcional, usado para trazabilidad. */
   readonly ingestionRunId?: string;
 }
 
+/**
+ * Criterios de consulta de métricas de costo por rango temporal.
+ */
 export interface CostMetricQuery {
   readonly tenantId: string;
+  /** Filtra por proveedor; opcional. */
   readonly providerName?: string;
+  /** Filtra por cuenta cloud; opcional. */
   readonly cloudAccountId?: string;
+  /** Inicio del rango temporal a consultar (inclusivo). */
   readonly startDate: Date;
+  /** Fin del rango temporal a consultar. */
   readonly endDate: Date;
 }
 

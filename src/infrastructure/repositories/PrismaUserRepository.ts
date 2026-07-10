@@ -1,69 +1,91 @@
 import type {
+  AccessibleTenant,
   AuthUser,
   CreateSessionInput,
   IUserRepository,
 } from '../../domain/interfaces/IUserRepository.js';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 
-/**
- * Adaptador de infraestructura (Clean Architecture) que implementa el puerto de
- * dominio {@link IUserRepository} sobre Prisma/PostgreSQL.
- *
- * Responsabilidad: persistencia y consulta de identidades de usuario y sesiones
- * de autenticación. Encapsula el acceso a las tablas `users` y `auth_sessions`,
- * exponiendo únicamente los datos necesarios para el flujo de autenticación
- * (login, registro de sesión JWT y actualización de último acceso).
- */
 export class PrismaUserRepository implements IUserRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
-  /**
-   * Busca un usuario por su correo electrónico (clave única global).
-   *
-   * Selecciona explícitamente solo los campos requeridos para autenticar,
-   * incluyendo el `passwordHash`, por lo que el resultado no debe exponerse
-   * directamente hacia capas externas sin filtrar credenciales.
-   *
-   * @param email Correo electrónico exacto a buscar.
-   * @returns El usuario en formato de dominio {@link AuthUser}, o `null` si no
-   *   existe ningún usuario con ese correo.
-   */
   public async findByEmail(email: string): Promise<AuthUser | null> {
     const user = await this.prisma.user.findUnique({
       where: { email },
-      select: {
-        id: true,
-        tenantId: true,
-        email: true,
-        name: true,
-        passwordHash: true,
-        role: true,
-        status: true,
-      },
+      select: authUserSelect,
     });
 
-    if (user === null) {
-      return null;
-    }
-
-    return {
-      id: user.id,
-      tenantId: user.tenantId,
-      email: user.email,
-      name: user.name,
-      passwordHash: user.passwordHash,
-      role: user.role,
-      status: user.status,
-    };
+    return user === null ? null : toAuthUser(user);
   }
 
-  /**
-   * Registra la marca temporal del último inicio de sesión exitoso del usuario.
-   *
-   * @param userId Identificador del usuario a actualizar.
-   * @param loggedInAt Fecha/hora del acceso a persistir en `lastLoginAt`.
-   * @returns Promesa que se resuelve cuando la actualización finaliza.
-   */
+  public async findById(userId: string): Promise<AuthUser | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: authUserSelect,
+    });
+
+    return user === null ? null : toAuthUser(user);
+  }
+
+  public async listAccessibleTenants(user: AuthUser): Promise<readonly AccessibleTenant[]> {
+    if (user.role === 'MASTER_ADMIN') {
+      const tenants = await this.prisma.tenant.findMany({
+        where: { status: 'ACTIVE' },
+        orderBy: { name: 'asc' },
+        select: { id: true, name: true, slug: true },
+      });
+
+      return tenants.map((tenant) => ({
+        ...tenant,
+        accessRole: 'MASTER',
+      }));
+    }
+
+    const [homeTenant, assignments] = await Promise.all([
+      this.prisma.tenant.findFirst({
+        where: {
+          id: user.tenantId,
+          status: 'ACTIVE',
+        },
+        select: { id: true, name: true, slug: true },
+      }),
+      this.prisma.tenantAccessAssignment.findMany({
+        where: {
+          userId: user.id,
+          disabledAt: null,
+          tenant: { status: 'ACTIVE' },
+        },
+        orderBy: { tenant: { name: 'asc' } },
+        select: {
+          role: true,
+          tenant: {
+            select: { id: true, name: true, slug: true },
+          },
+        },
+      }),
+    ]);
+
+    const tenantsById = new Map<string, AccessibleTenant>();
+
+    if (homeTenant !== null) {
+      tenantsById.set(homeTenant.id, {
+        ...homeTenant,
+        accessRole: 'HOME',
+      });
+    }
+
+    for (const assignment of assignments) {
+      if (!tenantsById.has(assignment.tenant.id)) {
+        tenantsById.set(assignment.tenant.id, {
+          ...assignment.tenant,
+          accessRole: assignment.role,
+        });
+      }
+    }
+
+    return [...tenantsById.values()].sort((left, right) => left.name.localeCompare(right.name));
+  }
+
   public async updateLastLogin(userId: string, loggedInAt: Date): Promise<void> {
     await this.prisma.user.update({
       where: { id: userId },
@@ -71,17 +93,6 @@ export class PrismaUserRepository implements IUserRepository {
     });
   }
 
-  /**
-   * Crea una sesión de autenticación (registro del token JWT emitido).
-   *
-   * Persiste el identificador del JWT (`jwtId`) junto con su expiración para
-   * permitir revocación/validación posterior. Los campos `ipAddress` y
-   * `userAgent` son opcionales y solo se incluyen cuando se proporcionan.
-   *
-   * @param input Datos de la sesión a crear (usuario, jwtId, expiración y
-   *   metadatos opcionales de origen).
-   * @returns Promesa que se resuelve cuando la sesión queda persistida.
-   */
   public async createSession(input: CreateSessionInput): Promise<void> {
     await this.prisma.authSession.create({
       data: {
@@ -93,4 +104,34 @@ export class PrismaUserRepository implements IUserRepository {
       },
     });
   }
+}
+
+const authUserSelect = {
+  id: true,
+  tenantId: true,
+  email: true,
+  name: true,
+  passwordHash: true,
+  role: true,
+  status: true,
+} as const;
+
+function toAuthUser(user: {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly email: string;
+  readonly name: string;
+  readonly passwordHash: string;
+  readonly role: AuthUser['role'];
+  readonly status: AuthUser['status'];
+}): AuthUser {
+  return {
+    id: user.id,
+    tenantId: user.tenantId,
+    email: user.email,
+    name: user.name,
+    passwordHash: user.passwordHash,
+    role: user.role,
+    status: user.status,
+  };
 }

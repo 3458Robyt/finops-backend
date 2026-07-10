@@ -16,6 +16,12 @@ import {
   buildSnapshotQueryText,
   withBuiltContext,
 } from './finOpsAiPrompts.js';
+import type { TechnicalRecommendationEvidenceProvider } from './TechnicalRecommendationEvidenceService.js';
+import {
+  buildRecommendationReadinessReport,
+  formatRecommendationReadinessForPrompt,
+  type RecommendationReadinessReport,
+} from './RecommendationReadinessGate.js';
 
 /**
  * Ensamblador de contexto y prompts de la IA FinOps.
@@ -45,6 +51,7 @@ export interface AssembledRecommendationContext {
   readonly builtContext: BuiltAiContext | undefined;
   readonly systemPrompt: string;
   readonly learningContext: AgentLearningContext;
+  readonly readinessReport: RecommendationReadinessReport;
 }
 
 /** Contexto y prompt ensamblados para un plan de ejecución. */
@@ -59,11 +66,12 @@ export class FinOpsContextAssembler {
    * @param learningContextProvider - Proveedor opcional de contexto de aprendizaje auditado.
    * @param contextEngine           - Motor opcional de ensamblado de contexto.
    */
-  constructor(
-    private readonly mainModel: string,
-    private readonly learningContextProvider?: IAgentLearningContextProvider,
-    private readonly contextEngine?: IContextEngineService,
-  ) {}
+constructor(
+private readonly mainModel: string,
+private readonly learningContextProvider?: IAgentLearningContextProvider,
+private readonly contextEngine?: IContextEngineService,
+private readonly technicalEvidenceProvider?: TechnicalRecommendationEvidenceProvider,
+) {}
 
   /**
    * Ensambla el contexto y el `systemPrompt` para una consulta de chat.
@@ -102,10 +110,15 @@ export class FinOpsContextAssembler {
     readonly tenantId: string;
     readonly userId?: string;
     readonly snapshot: CostAnalyticsSnapshot;
-  }): Promise<AssembledRecommendationContext> {
+}): Promise<AssembledRecommendationContext> {
     const learningContext = await this.getRecommendationLearningContext(input.tenantId, input.snapshot);
+    const technicalEvidence = await this.getRecommendationTechnicalEvidence(input.tenantId, input.snapshot);
+    const readinessReport = buildRecommendationReadinessReport({
+      snapshot: input.snapshot,
+      ...(technicalEvidence !== undefined ? { technicalEvidence } : {}),
+    });
     const builtContext = await this.buildOptionalContext({
-      tenantId: input.tenantId,
+tenantId: input.tenantId,
       ...(input.userId !== undefined ? { userId: input.userId } : {}),
       operation: 'RECOMMENDATION',
       queryText: buildSnapshotQueryText(input.snapshot),
@@ -113,13 +126,19 @@ export class FinOpsContextAssembler {
       model: this.mainModel,
     });
 
-    return {
+return {
       builtContext,
       systemPrompt: withBuiltContext(
-        buildRecommendationSystemPrompt(input.snapshot, learningContext),
+        buildRecommendationSystemPrompt(
+          input.snapshot,
+          learningContext,
+          technicalEvidence,
+          formatRecommendationReadinessForPrompt(readinessReport),
+        ),
         builtContext,
       ),
       learningContext,
+      readinessReport,
     };
   }
 
@@ -195,10 +214,21 @@ export class FinOpsContextAssembler {
       };
     }
 
-    return this.learningContextProvider.getRecommendationLearningContext({
-      tenantId,
-      queryText: buildSnapshotQueryText(snapshot, true),
-      limit: 5,
-    });
-  }
+return this.learningContextProvider.getRecommendationLearningContext({
+tenantId,
+queryText: buildSnapshotQueryText(snapshot, true),
+limit: 5,
+});
+}
+
+private async getRecommendationTechnicalEvidence(
+tenantId: string,
+snapshot: CostAnalyticsSnapshot,
+): Promise<string | undefined> {
+if (this.technicalEvidenceProvider === undefined) {
+return undefined;
+}
+
+return this.technicalEvidenceProvider.buildRecommendationEvidence({ tenantId, snapshot });
+}
 }

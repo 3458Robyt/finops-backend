@@ -91,6 +91,8 @@ export interface CloudIngestionResult {
   readonly apiCallCount: number;
   readonly objectsProcessed: number;
   readonly focusRows: readonly NormalizedFocusCostLineItem[];
+  /** Optional streaming path for large FOCUS exports; consumed once by the worker. */
+  readonly focusBatches?: AsyncIterable<readonly NormalizedFocusCostLineItem[]>;
   readonly resources: readonly NormalizedCloudResource[];
   readonly metricSamples: readonly NormalizedResourceMetricSample[];
   readonly warnings: readonly string[];

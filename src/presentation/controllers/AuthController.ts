@@ -8,6 +8,10 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
+const switchTenantSchema = z.object({
+  tenantId: z.string().min(1),
+});
+
 /**
  * Controlador de la capa de presentación para la autenticación (montado en
  * `/api/v1/auth`). Traduce las peticiones HTTP de login hacia el caso de uso de
@@ -67,6 +71,8 @@ export class AuthController {
         accessToken: result.accessToken,
         expiresAt: result.expiresAt.toISOString(),
         user: result.user,
+        activeTenant: result.activeTenant,
+        availableTenants: result.availableTenants,
       });
     } catch (error: unknown) {
       if (error instanceof AuthenticationError) {
@@ -93,4 +99,94 @@ export class AuthController {
       });
     }
   };
+
+  public listTenants = async (req: Request, res: Response): Promise<void> => {
+    if (req.auth === undefined) {
+      res.status(401).json({
+        success: false,
+        error: 'Authentication is required',
+        code: 'AUTHENTICATION_REQUIRED',
+      });
+      return;
+    }
+
+    try {
+      const tenants = await this.authService.listAccessibleTenants(req.auth);
+      res.status(200).json({
+        success: true,
+        activeTenant: tenants.find((tenant) => tenant.isCurrent) ?? null,
+        availableTenants: tenants,
+      });
+    } catch (error: unknown) {
+      this.respondWithAuthError(res, error);
+    }
+  };
+
+  public switchTenant = async (req: Request, res: Response): Promise<void> => {
+    if (req.auth === undefined) {
+      res.status(401).json({
+        success: false,
+        error: 'Authentication is required',
+        code: 'AUTHENTICATION_REQUIRED',
+      });
+      return;
+    }
+
+    const parsed = switchTenantSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid switch tenant payload',
+        code: 'VALIDATION_ERROR',
+      });
+      return;
+    }
+
+    try {
+      const userAgent = req.header('user-agent');
+      const result = await this.authService.switchTenant({
+        actor: req.auth,
+        tenantId: parsed.data.tenantId,
+        ...(req.ip !== undefined ? { ipAddress: req.ip } : {}),
+        ...(userAgent !== undefined ? { userAgent } : {}),
+      });
+
+      res.status(200).json({
+        success: true,
+        accessToken: result.accessToken,
+        expiresAt: result.expiresAt.toISOString(),
+        user: result.user,
+        activeTenant: result.activeTenant,
+        availableTenants: result.availableTenants,
+      });
+    } catch (error: unknown) {
+      this.respondWithAuthError(res, error);
+    }
+  };
+
+  private respondWithAuthError(res: Response, error: unknown): void {
+    if (error instanceof AuthenticationError) {
+      res.status(401).json({
+        success: false,
+        error: error.message,
+        code: error.code,
+      });
+      return;
+    }
+
+    if (error instanceof FinOpsBaseError) {
+      const status = error.code === 'AUTHORIZATION_FAILED' ? 403 : 500;
+      res.status(status).json({
+        success: false,
+        error: error.message,
+        code: error.code,
+      });
+      return;
+    }
+
+    res.status(500).json({
+      success: false,
+      error: 'An unexpected authentication error occurred',
+    });
+  }
 }

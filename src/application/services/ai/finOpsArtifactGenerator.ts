@@ -3,6 +3,11 @@ import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnal
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
 import type { AiAuditReport } from '../../../domain/models/RecommendationExecutionPlan.js';
 import { buildAuditSystemPrompt, compactSnapshot } from './finOpsAiPrompts.js';
+import {
+  evaluateExecutionPlan,
+  evaluateRecommendationDrafts,
+  type QualityReport,
+} from './evaluation/qualityRubric.js';
 import { parseAuditReport, parseExecutionPlan, parseRecommendationDrafts } from './finOpsAiResponseParser.js';
 import type { AiRecommendationDraft } from './finOpsAiTypes.js';
 import type { AiTraceRecorder } from './aiTraceRecorder.js';
@@ -72,12 +77,22 @@ export class FinOpsArtifactGenerator {
     let auditReport = await this.auditArtifact('recommendations', snapshot, undefined, tenantId, userId, drafts);
 
     if (auditReport.verdict === 'NEEDS_REVISION') {
-      const revisedRaw = await this.requestRecommendationRevision(systemPrompt, auditReport.requiredChanges);
+      const revisedRaw = await this.requestRecommendationRevision(
+        systemPrompt,
+        auditReport.repairInstructions ?? auditReport.requiredChanges,
+      );
       drafts = this.withTenant(parseRecommendationDrafts(revisedRaw, snapshot), tenantId);
       auditReport = await this.auditArtifact('recommendations', snapshot, undefined, tenantId, userId, drafts);
     }
 
-    return { drafts, auditReport, firstRawResponse };
+    return {
+      drafts,
+      auditReport: this.combineWithDeterministicQuality(
+        auditReport,
+        evaluateRecommendationDrafts(drafts, snapshot),
+      ),
+      firstRawResponse,
+    };
   }
 
   /**
@@ -107,7 +122,14 @@ export class FinOpsArtifactGenerator {
       auditReport = await this.auditArtifact('execution_plan', snapshot, recommendation, tenantId, userId, content);
     }
 
-    return { content, auditReport, firstRawResponse };
+    return {
+      content,
+      auditReport: this.combineWithDeterministicQuality(
+        auditReport,
+        evaluateExecutionPlan(content, snapshot),
+      ),
+      firstRawResponse,
+    };
   }
 
   /** Solicita al modelo principal la generación inicial de recomendaciones. */
@@ -120,7 +142,8 @@ export class FinOpsArtifactGenerator {
         { role: 'system', content: systemPrompt },
         {
           role: 'user',
-          content: 'Genera exactamente 3 recomendaciones FinOps priorizadas en español a partir de este contexto.',
+          content:
+            'Genera hasta 3 recomendaciones FinOps priorizadas en español usando solo los candidatos permitidos. Si solo hay candidatos VALIDATION_ONLY, genera recomendaciones de validacion tecnica previa.',
         },
       ],
     });
@@ -139,6 +162,7 @@ export class FinOpsArtifactGenerator {
           content: [
             'Corrige las recomendaciones usando exactamente estos cambios requeridos por auditoria.',
             'No agregues cuentas, proveedores ni recursos que no esten en el contexto.',
+            'Conserva evidence.candidateId, sourceFacts, assumptions y confidence en cada recomendacion.',
             JSON.stringify(requiredChanges, null, 2),
           ].join('\n'),
         },
@@ -242,5 +266,27 @@ export class FinOpsArtifactGenerator {
     }
 
     return parseAuditReport(rawResponse);
+  }
+
+  private combineWithDeterministicQuality(audit: AiAuditReport, quality: QualityReport): AiAuditReport {
+    const checks = [
+      ...audit.checks,
+      ...quality.checks.map((check) => ({
+        name: `deterministic:${check.name}`,
+        passed: check.passed,
+        notes: check.detail,
+      })),
+    ];
+    const failed = quality.checks.filter((check) => !check.passed).map((check) => check.detail);
+
+    return {
+      ...audit,
+      verdict: audit.verdict === 'APPROVED' && quality.passed ? 'APPROVED' : 'REJECTED',
+      score: Math.min(audit.score, quality.score),
+      checks,
+      blockingIssues: [...audit.blockingIssues, ...failed],
+      requiredChanges: [...audit.requiredChanges, ...failed],
+      deterministicReport: quality,
+    } as AiAuditReport;
   }
 }

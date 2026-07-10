@@ -52,7 +52,6 @@ export async function createAiContextTrace(
       ...(input.latencyMs !== undefined ? { latencyMs: input.latencyMs } : {}),
       ...(input.artifactIds !== undefined ? { artifactIds: [...input.artifactIds] } : {}),
       ...(input.memoryIds !== undefined ? { memoryIds: [...input.memoryIds] } : {}),
-      ...(input.knowledgeNodeIds !== undefined ? { knowledgeNodeIds: [...input.knowledgeNodeIds] } : {}),
       ...(input.tenantRuleIds !== undefined ? { tenantRuleIds: [...input.tenantRuleIds] } : {}),
       ...(input.conflicts !== undefined ? { conflicts: [...input.conflicts] } : {}),
       ...(input.errorMessage !== undefined ? { errorMessage: input.errorMessage } : {}),

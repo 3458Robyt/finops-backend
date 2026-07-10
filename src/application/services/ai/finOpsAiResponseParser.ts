@@ -144,6 +144,8 @@ export function parseAuditReport(rawResponse: string): AiAuditReport {
   const checks = Array.isArray(parsed['checks']) ? parsed['checks'] : [];
   const blockingIssues = readStringList(parsed['blockingIssues']);
   const requiredChanges = readStringList(parsed['requiredChanges']);
+  const repairInstructions = readStringList(parsed['repairInstructions']);
+  const recommendationIndexes = readNumberList(parsed['recommendationIndexes']);
 
   if (
     (verdict !== 'APPROVED' && verdict !== 'REJECTED' && verdict !== 'NEEDS_REVISION') ||
@@ -166,6 +168,8 @@ export function parseAuditReport(rawResponse: string): AiAuditReport {
       })),
     blockingIssues,
     requiredChanges,
+    ...(recommendationIndexes.length > 0 ? { recommendationIndexes } : {}),
+    ...(repairInstructions.length > 0 ? { repairInstructions } : {}),
   };
 }
 
@@ -275,4 +279,12 @@ function readEvidenceLevel(record: Record<string, unknown>): string | undefined 
   }
 
   return undefined;
+}
+
+function readNumberList(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is number => Number.isInteger(item) && item >= 0);
 }

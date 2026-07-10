@@ -218,13 +218,6 @@ async function processLearningSafely(
   try {
     const queued = await learningService.queueRecommendationDecision(input);
 
-    if (queued.eventId !== undefined) {
-      void learningService.processQueuedRecommendationDecision(queued.eventId)
-        .catch((error: unknown) => {
-          console.error('Background learning processing failed', error);
-        });
-    }
-
     return queued;
   } catch (error: unknown) {
     return {

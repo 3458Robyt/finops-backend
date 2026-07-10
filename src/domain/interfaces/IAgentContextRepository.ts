@@ -6,10 +6,8 @@ import type {
   AiContextTrace,
   ContextArtifact,
   ContextBuildRunStatus,
-  KnowledgeGraphContext,
   TenantAgentRule,
 } from '../models/AgentContext.js';
-import type { AgentMemoryScope } from '../models/AgentLearning.js';
 
 /**
  * Datos de entrada para activar un perfil de instrucciones del agente.
@@ -102,8 +100,6 @@ export interface CreateAiContextTraceInput {
   readonly artifactIds?: readonly string[];
   /** Identificadores de las memorias usadas. */
   readonly memoryIds?: readonly string[];
-  /** Identificadores de los nodos de conocimiento usados. */
-  readonly knowledgeNodeIds?: readonly string[];
   /** Identificadores de las reglas de tenant aplicadas. */
   readonly tenantRuleIds?: readonly string[];
   /** Conflictos detectados durante el ensamblado del contexto. */
@@ -132,48 +128,6 @@ export interface CompleteContextBuildRunInput {
   readonly status: Extract<ContextBuildRunStatus, 'SUCCESS' | 'FAILED'>;
   /** Mensaje de error cuando la ejecución falló; opcional. */
   readonly errorMessage?: string;
-  readonly metadata?: unknown;
-}
-
-/**
- * Datos de entrada para insertar o actualizar (upsert) un nodo del grafo de conocimiento.
- *
- * La deduplicación se basa en `dedupeKey` dentro del alcance indicado.
- */
-export interface UpsertKnowledgeNodeInput {
-  readonly tenantId: string;
-  /** Alcance del nodo (global o por tenant). */
-  readonly scope: AgentMemoryScope;
-  /** Tipo de nodo (e.g., recurso, servicio, recomendación). */
-  readonly nodeType: string;
-  /** Clave de deduplicación del nodo dentro del alcance. */
-  readonly dedupeKey: string;
-  /** Identificador externo del nodo en su sistema de origen; opcional. */
-  readonly externalId?: string;
-  /** Etiqueta legible del nodo. */
-  readonly label: string;
-  readonly metadata?: unknown;
-}
-
-/**
- * Datos de entrada para insertar o actualizar (upsert) una arista del grafo de conocimiento.
- *
- * Representa una relación dirigida entre dos nodos; se deduplica por `dedupeKey`.
- */
-export interface UpsertKnowledgeEdgeInput {
-  readonly tenantId: string;
-  /** Alcance de la arista (global o por tenant). */
-  readonly scope: AgentMemoryScope;
-  /** Nodo de origen de la relación. */
-  readonly sourceNodeId: string;
-  /** Nodo de destino de la relación. */
-  readonly targetNodeId: string;
-  /** Tipo de relación entre los nodos. */
-  readonly relationType: string;
-  /** Clave de deduplicación de la arista dentro del alcance. */
-  readonly dedupeKey: string;
-  /** Nivel de confianza de la relación. */
-  readonly confidence: number;
   readonly metadata?: unknown;
 }
 
@@ -211,7 +165,7 @@ export interface FocusResourcePeriodAggregate {
  * Puerto de dominio (DIP) cuya implementación concreta reside en la capa de
  * infraestructura. Centraliza la persistencia de perfiles de instrucciones,
  * reglas de tenant, resúmenes de contexto, trazas de IA, ejecuciones de
- * construcción y el grafo de conocimiento que nutre al motor de contexto.
+ * construcción que nutre al motor de contexto.
  */
 export interface IAgentContextRepository {
   /**
@@ -330,32 +284,4 @@ export interface IAgentContextRepository {
    */
   listFocusResourcePeriodAggregates(tenantId: string): Promise<FocusResourcePeriodAggregate[]>;
 
-  /**
-   * Inserta o actualiza un nodo del grafo de conocimiento.
-   *
-   * @param input - Datos del nodo a persistir.
-   * @returns Identificador del nodo resultante.
-   */
-  upsertKnowledgeNode(input: UpsertKnowledgeNodeInput): Promise<string>;
-
-  /**
-   * Inserta o actualiza una arista del grafo de conocimiento.
-   *
-   * @param input - Datos de la arista a persistir.
-   * @returns Identificador de la arista resultante.
-   */
-  upsertKnowledgeEdge(input: UpsertKnowledgeEdgeInput): Promise<string>;
-
-  /**
-   * Recupera un subgrafo de conocimiento alrededor de una recomendación o recurso.
-   *
-   * @param input - Tenant, semilla (recomendación o recurso) y profundidad de exploración.
-   * @returns El contexto del grafo de conocimiento recuperado.
-   */
-  getKnowledgeGraph(input: {
-    readonly tenantId: string;
-    readonly recommendationId?: string;
-    readonly resourceId?: string;
-    readonly depth: number;
-  }): Promise<KnowledgeGraphContext>;
 }

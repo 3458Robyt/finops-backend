@@ -29,10 +29,14 @@ import { ContextEngineService } from './application/services/ContextEngineServic
 import { ContextSummaryBuilderService } from './application/services/ContextSummaryBuilderService.js';
 import { CostAnalyticsService } from './application/services/CostAnalyticsService.js';
 import { DataIngestionService } from './application/services/DataIngestionService.js';
+import { EmailClient } from './application/services/EmailClient.js';
 import { FinOpsAiService } from './application/services/FinOpsAiService.js';
-import { KnowledgeGraphService } from './application/services/KnowledgeGraphService.js';
+import { MasterAdminService } from './application/services/MasterAdminService.js';
+import { OutboundMessageScheduler } from './application/services/OutboundMessageScheduler.js';
+import { OutboundMessageService } from './application/services/OutboundMessageService.js';
 import { SavingsReminderService } from './application/services/SavingsReminderService.js';
 import { TechnicalMetricsService } from './application/services/TechnicalMetricsService.js';
+import { TechnicalRecommendationEvidenceService } from './application/services/ai/TechnicalRecommendationEvidenceService.js';
 import { TelegramBotService } from './application/services/TelegramBotService.js';
 import { TelegramClient } from './application/services/TelegramClient.js';
 import { TelegramLinkService } from './application/services/TelegramLinkService.js';
@@ -52,11 +56,14 @@ import { PrismaAgentLearningRepository } from './infrastructure/repositories/Pri
 import { PrismaCloudConnectionRepository } from './infrastructure/repositories/PrismaCloudConnectionRepository.js';
 import { PrismaCostAnalyticsRepository } from './infrastructure/repositories/PrismaCostAnalyticsRepository.js';
 import { PrismaCostRepository } from './infrastructure/repositories/PrismaCostRepository.js';
+import { PrismaMasterAdminRepository } from './infrastructure/repositories/PrismaMasterAdminRepository.js';
 import { PrismaNotificationRepository } from './infrastructure/repositories/PrismaNotificationRepository.js';
+import { PrismaOutboundMessageRepository } from './infrastructure/repositories/PrismaOutboundMessageRepository.js';
 import { PrismaRecommendationRepository } from './infrastructure/repositories/PrismaRecommendationRepository.js';
 import { PrismaResourceMetricRepository } from './infrastructure/repositories/PrismaResourceMetricRepository.js';
 import { PrismaTelegramRepository } from './infrastructure/repositories/PrismaTelegramRepository.js';
 import { PrismaUserRepository } from './infrastructure/repositories/PrismaUserRepository.js';
+import { validateRuntimeConfig } from './infrastructure/config/runtimeConfig.js';
 import { Argon2PasswordHasher } from './infrastructure/security/Argon2PasswordHasher.js';
 import { CredentialCipher } from './infrastructure/security/CredentialCipher.js';
 import { JwtTokenService } from './infrastructure/security/JwtTokenService.js';
@@ -85,6 +92,8 @@ import { JwtTokenService } from './infrastructure/security/JwtTokenService.js';
  * @returns Promesa que se resuelve una vez el servidor HTTP queda escuchando.
  */
 async function bootstrap(): Promise<void> {
+  validateRuntimeConfig();
+
   console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
 ║   FinOps Inteligente — Optimizador de Costos en la Nube      ║
@@ -149,18 +158,22 @@ async function bootstrap(): Promise<void> {
   const costAnalyticsRepository = new PrismaCostAnalyticsRepository(prisma);
   const costRepository = new PrismaCostRepository(prisma);
   const recommendationRepository = new PrismaRecommendationRepository(prisma);
-  const resourceMetricRepository = new PrismaResourceMetricRepository(prisma);
-  const notificationRepository = new PrismaNotificationRepository(prisma);
-  const telegramRepository = new PrismaTelegramRepository(prisma);
+const resourceMetricRepository = new PrismaResourceMetricRepository(prisma);
+const notificationRepository = new PrismaNotificationRepository(prisma);
+const outboundMessageRepository = new PrismaOutboundMessageRepository(prisma);
+const telegramRepository = new PrismaTelegramRepository(prisma);
   const agentContextRepository = new PrismaAgentContextRepository(prisma);
   const agentLearningRepository = new PrismaAgentLearningRepository(prisma);
   const userRepository = new PrismaUserRepository(prisma);
+  const masterAdminRepository = new PrismaMasterAdminRepository(prisma);
   const passwordHasher = new Argon2PasswordHasher();
   const tokenService = new JwtTokenService();
   const authService = new AuthService(userRepository, passwordHasher, tokenService);
+  const masterAdminService = new MasterAdminService(masterAdminRepository, passwordHasher);
   const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository);
-  const technicalMetricsService = new TechnicalMetricsService(resourceMetricRepository);
-  const analyticsService = new CostAnalyticsService(costAnalyticsRepository);
+const technicalMetricsService = new TechnicalMetricsService(resourceMetricRepository);
+const technicalRecommendationEvidenceService = new TechnicalRecommendationEvidenceService(resourceMetricRepository);
+const analyticsService = new CostAnalyticsService(costAnalyticsRepository);
   const savingsReminderService = new SavingsReminderService(recommendationRepository, notificationRepository);
   const aiGateway = new OpenAiCompatibleAiGateway();
   const agentInstructionService = new AgentInstructionService(agentContextRepository);
@@ -176,30 +189,44 @@ async function bootstrap(): Promise<void> {
   );
   const aiObservabilityService = new AiObservabilityService(agentContextRepository);
   const contextSummaryBuilderService = new ContextSummaryBuilderService(agentContextRepository);
-  const knowledgeGraphService = new KnowledgeGraphService(agentContextRepository);
   const aiService = new FinOpsAiService(
     costAnalyticsRepository,
     recommendationRepository,
-    aiGateway,
-    learningService,
-    contextEngineService,
-    aiObservabilityService,
-  );
-  const telegramEnabled = process.env['TELEGRAM_ENABLED'] === 'true';
-  const telegramClient = new TelegramClient(process.env['TELEGRAM_BOT_TOKEN'], telegramEnabled);
-  const telegramMessageFormatter = new TelegramMessageFormatter();
-  const telegramLinkService = new TelegramLinkService(telegramRepository, telegramClient);
-  const telegramBotService = new TelegramBotService(
+aiGateway,
+learningService,
+contextEngineService,
+aiObservabilityService,
+technicalRecommendationEvidenceService,
+);
+const telegramEnabled = process.env['TELEGRAM_ENABLED'] === 'true';
+const telegramClient = new TelegramClient(process.env['TELEGRAM_BOT_TOKEN'], telegramEnabled);
+const telegramMessageFormatter = new TelegramMessageFormatter();
+const emailClient = new EmailClient();
+const telegramLinkService = new TelegramLinkService(telegramRepository, telegramClient);
+const telegramBotService = new TelegramBotService(
     telegramRepository,
     telegramClient,
     telegramMessageFormatter,
     aiService,
     savingsReminderService,
     recommendationRepository,
-    costAnalyticsRepository,
-    process.env['TELEGRAM_BOT_USERNAME'],
-  );
-  const ingestionService = new DataIngestionService(providerRegistry, costRepository);
+  costAnalyticsRepository,
+  process.env['TELEGRAM_BOT_USERNAME'],
+);
+const outboundMessageService = new OutboundMessageService(
+  outboundMessageRepository,
+  telegramRepository,
+  telegramClient,
+  emailClient,
+  savingsReminderService,
+  recommendationRepository,
+  {
+    telegramEnabled,
+    ...(process.env['TELEGRAM_BOT_USERNAME'] !== undefined ? { telegramBotUsername: process.env['TELEGRAM_BOT_USERNAME'] } : {}),
+    ...(process.env['TELEGRAM_WEBHOOK_SECRET'] !== undefined ? { telegramWebhookSecret: process.env['TELEGRAM_WEBHOOK_SECRET'] } : {}),
+  },
+);
+const ingestionService = new DataIngestionService(providerRegistry, costRepository);
   const ingestionWorker = process.env['INGESTION_WORKER_ENABLED'] === 'true'
     ? new CloudIngestionWorkerService(
       new PrismaCloudIngestionJobRepository(prisma, new CredentialCipher()),
@@ -213,7 +240,7 @@ async function bootstrap(): Promise<void> {
   // ── 4. Iniciar Servidor RESTful ───────────────────────────────────
 
   const { createExpressServer } = await import('./presentation/server.js');
-  const app = createExpressServer({
+const app = createExpressServer({
     authService,
     cloudConnectionService,
     technicalMetricsService,
@@ -222,21 +249,41 @@ async function bootstrap(): Promise<void> {
     agentInstructionService,
     agentContextRepository,
     contextSummaryBuilderService,
-    knowledgeGraphService,
     savingsReminderService,
+    outboundMessageService,
     telegramBotService,
     telegramLinkService,
+    masterAdminService,
     ...(process.env['TELEGRAM_WEBHOOK_SECRET'] !== undefined
       ? { telegramWebhookSecret: process.env['TELEGRAM_WEBHOOK_SECRET'] }
       : {}),
     telegramEnabled,
     learningService,
     costRepository,
-    recommendationRepository,
-    tokenService,
-  });
-  
-  const PORT = process.env['PORT'] || 3000;
+  recommendationRepository,
+  tokenService,
+});
+
+if (process.env['MESSAGE_SCHEDULER_ENABLED'] === 'true') {
+  const schedulerTenantId = process.env['MESSAGE_SCHEDULER_TENANT_ID'];
+  const schedulerUserId = process.env['MESSAGE_SCHEDULER_USER_ID'];
+  if (schedulerTenantId !== undefined && schedulerUserId !== undefined) {
+    const scheduler = new OutboundMessageScheduler(
+      outboundMessageService,
+      {
+        tenantId: schedulerTenantId,
+        userId: schedulerUserId,
+        email: 'scheduler@system.local',
+        role: 'MASTER_ADMIN',
+        jwtId: 'scheduler',
+      },
+      Number.parseInt(process.env['MESSAGE_SCHEDULER_INTERVAL_MINUTES'] ?? '1440', 10),
+    );
+    scheduler.start();
+  }
+}
+
+const PORT = process.env['PORT'] || 3000;
   
   app.listen(PORT, () => {
     console.log(`\n🚀 FinOps Backend API running on http://localhost:${PORT}`);
@@ -262,6 +309,29 @@ async function bootstrap(): Promise<void> {
       },
       onSkip: () => {
         console.warn('Ingestion worker iteration skipped because previous run is still active');
+      },
+    });
+  }
+
+  if (process.env['AGENT_LEARNING_WORKER_ENABLED'] !== 'false') {
+    const workerId = process.env['AGENT_LEARNING_WORKER_ID'] ?? `finops-learning-${process.pid}`;
+    const intervalMs = parsePositiveIntegerEnv('AGENT_LEARNING_WORKER_INTERVAL_MS', 5000);
+
+    console.log(`   Agent learning worker: enabled (${workerId}, ${intervalMs}ms)`);
+    startCloudIngestionWorkerLoop({
+      worker: {
+        runOnce: async (id) => {
+          const result = await learningService.processNextQueuedRecommendationDecision(id);
+          return { processed: result !== null };
+        },
+      },
+      workerId,
+      intervalMs,
+      onError: (error: unknown) => {
+        console.error('Agent learning worker iteration failed:', error);
+      },
+      onSkip: () => {
+        console.warn('Agent learning worker iteration skipped because previous run is still active');
       },
     });
   }

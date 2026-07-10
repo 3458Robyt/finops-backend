@@ -16,8 +16,6 @@ import type {
   AgentInstructionProfile,
   AiContextTrace,
   ContextArtifact,
-  KnowledgeGraphEdge,
-  KnowledgeGraphNode,
   TenantAgentRule,
 } from '../../../domain/models/AgentContext.js';
 import type { PrismaClient } from '../../../generated/prisma/client.js';
@@ -218,47 +216,3 @@ export function toFocusResourcePeriodAggregate(row: FocusAggregateRow): FocusRes
   };
 }
 
-/**
- * Mapea una fila de `agent_knowledge_nodes` (Prisma) al nodo del grafo de
- * conocimiento de dominio {@link KnowledgeGraphNode}.
- *
- * Casos borde: los campos anulables (`externalId`, `metadata`) solo se incluyen
- * cuando no son `null`; `metadata` se expone tal cual (JSON).
- *
- * @param node Fila del nodo de conocimiento de Prisma.
- * @returns Nodo del grafo de conocimiento de dominio.
- */
-export function toKnowledgeGraphNode(
-  node: Awaited<ReturnType<PrismaClient['agentKnowledgeNode']['findFirst']>> & {},
-): KnowledgeGraphNode {
-  return {
-    id: node.id,
-    nodeType: node.nodeType,
-    label: node.label,
-    ...(node.externalId !== null ? { externalId: node.externalId } : {}),
-    ...(node.metadata !== null ? { metadata: node.metadata } : {}),
-  };
-}
-
-/**
- * Mapea una fila de `agent_knowledge_edges` (Prisma) a la arista del grafo de
- * conocimiento de dominio {@link KnowledgeGraphEdge}.
- *
- * Casos borde: el campo anulable `metadata` solo se incluye cuando no es `null`
- * y se expone tal cual (JSON).
- *
- * @param edge Fila de la arista de conocimiento de Prisma.
- * @returns Arista del grafo de conocimiento de dominio.
- */
-export function toKnowledgeGraphEdge(
-  edge: Awaited<ReturnType<PrismaClient['agentKnowledgeEdge']['findFirst']>> & {},
-): KnowledgeGraphEdge {
-  return {
-    id: edge.id,
-    sourceNodeId: edge.sourceNodeId,
-    targetNodeId: edge.targetNodeId,
-    relationType: edge.relationType,
-    confidence: edge.confidence,
-    ...(edge.metadata !== null ? { metadata: edge.metadata } : {}),
-  };
-}

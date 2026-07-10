@@ -5,6 +5,8 @@ import type {
   CreateIngestionJobInput,
   DataQualityCheckItem,
   ICloudConnectionRepository,
+  IngestionJobRangeQuery,
+  IngestionJobWindowItem,
   IngestionReadinessSummary,
   IngestionJobHistoryItem,
   IngestionJobSummary,
@@ -334,6 +336,37 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     });
 
     return checks.map((check) => toDataQualityCheckItem(check));
+  }
+
+  public async listIngestionJobsForConnectionRange(
+    input: IngestionJobRangeQuery,
+  ): Promise<readonly IngestionJobWindowItem[]> {
+    const jobs = await this.prisma.ingestionJob.findMany({
+      where: {
+        tenantId: input.tenantId,
+        cloudConnectionId: input.cloudConnectionId,
+        sourceType: input.sourceType,
+        status: { in: ['PENDING', 'RUNNING', 'SUCCESS'] },
+        targetStart: { lt: input.targetEnd },
+        targetEnd: { gt: input.targetStart },
+      },
+      orderBy: { targetStart: 'asc' },
+      select: {
+        id: true,
+        sourceType: true,
+        status: true,
+        targetStart: true,
+        targetEnd: true,
+      },
+    });
+
+    return jobs.map((job) => ({
+      id: job.id,
+      sourceType: job.sourceType,
+      status: job.status,
+      targetStart: job.targetStart,
+      targetEnd: job.targetEnd,
+    }));
   }
 
   public async listIngestionReadinessForTenant(tenantId: string): Promise<IngestionReadinessSummary> {

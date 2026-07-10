@@ -46,6 +46,22 @@ export interface CreateIngestionJobInput {
   readonly maxAttempts?: number;
 }
 
+export interface IngestionJobRangeQuery {
+  readonly tenantId: string;
+  readonly cloudConnectionId: string;
+  readonly sourceType: IngestionSourceType;
+  readonly targetStart: Date;
+  readonly targetEnd: Date;
+}
+
+export interface IngestionJobWindowItem {
+  readonly id: string;
+  readonly sourceType: IngestionSourceType;
+  readonly status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED';
+  readonly targetStart: Date;
+  readonly targetEnd: Date;
+}
+
 /**
  * Resumen del estado de un trabajo de ingesta.
  */
@@ -230,6 +246,10 @@ export interface ICloudConnectionRepository {
    * @returns Resumen del trabajo de ingesta creado.
    */
   createIngestionJob(input: CreateIngestionJobInput): Promise<IngestionJobSummary>;
+
+  listIngestionJobsForConnectionRange(
+    input: IngestionJobRangeQuery,
+  ): Promise<readonly IngestionJobWindowItem[]>;
 
   /**
    * Obtiene un resumen de salud de la ingesta para una conexión cloud.

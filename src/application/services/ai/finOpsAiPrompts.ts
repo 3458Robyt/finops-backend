@@ -73,16 +73,24 @@ export function buildChatSystemPrompt(snapshot: CostAnalyticsSnapshot): string {
 export function buildRecommendationSystemPrompt(
   snapshot: CostAnalyticsSnapshot,
   learningContext: AgentLearningContext,
+  technicalEvidence?: string,
+  readinessEvidence?: string,
 ): string {
-  return [
+return [
     'Eres un motor IA de optimización FinOps.',
-    'Analiza el contexto FOCUS proporcionado y produce recomendaciones como JSON estricto.',
+    'Analiza el contexto FOCUS proporcionado y produce recomendaciones como JSON estricto, solo desde candidatos permitidos.',
     'Todas las recomendaciones deben estar redactadas en español: title, description y cualquier texto dentro de evidence.',
-    'Devuelve solo esta forma: {"recommendations":[{"cloudAccountId":"...","type":"...","severity":"LOW|MEDIUM|HIGH|CRITICAL","title":"...","description":"...","estimatedMonthlySavings":0,"currency":"USD","evidence":{}}]}',
+    'Devuelve solo esta forma: {"recommendations":[{"cloudAccountId":"...","type":"...","severity":"LOW|MEDIUM|HIGH|CRITICAL","title":"...","description":"...","estimatedMonthlySavings":0,"currency":"USD","evidence":{"candidateId":"...","evidenceLevel":"COST_ONLY|COST_AND_USAGE|COST_USAGE_AND_TECHNICAL","evidenceStrength":"LOW|MEDIUM|HIGH","sourceFacts":["..."],"costEvidenceRefs":["..."],"technicalEvidenceRefs":["..."],"requiresTechnicalValidation":true,"confidence":0.0,"assumptions":["..."]}}]}',
     'Usa solo cloudAccountId presentes en accounts. No inventes recursos ni proveedores.',
     'Usa topUsage y unit economics cuando existan. Incluye evidence.evidenceLevel como COST_ONLY, COST_AND_USAGE o COST_USAGE_AND_TECHNICAL.',
     'FOCUS aporta consumo facturado, no métricas técnicas como CPU, memoria, IOPS, throughput o utilización. No hagas rightsizing técnico fuerte si solo existe FOCUS; marca evidence.requiresTechnicalValidation=true.',
+    'Si un candidato tiene readiness VALIDATION_ONLY, redacta la recomendacion como revision o validacion tecnica previa; no presentes ejecucion directa ni ahorro garantizado.',
+    'No uses la palabra "anomalia" ni "anomalias"; usa "oportunidad" u "oportunidades".',
+    'estimatedMonthlySavings nunca puede superar maxEstimatedMonthlySavings del candidato usado.',
+    'Cada recomendacion debe incluir evidence.candidateId, sourceFacts, assumptions y confidence entre 0 y 1.',
     'Prioriza recomendaciones accionables: ciclo de vida de almacenamiento, compromisos/descuentos por consumo estable, investigación de divergencia costo-consumo, revisión de bases de datos y egreso de red.',
+    'Solo puedes usar evidence.evidenceLevel=COST_USAGE_AND_TECHNICAL si la evidencia incluye technicalEvidenceRefs, cloudResourceId o externalResourceId, technicalSampleCount o technicalCoverageDays, latestTechnicalSampleAt y una metrica relevante para la accion.',
+    'Si la evidencia tecnica es debil, antigua, no enlazada al recurso o insuficiente, no recomiendes ejecutar cambios tecnicos; recomienda validar primero y marca requiresTechnicalValidation=true.',
     'El contexto de aprendizaje auditado orienta criterios, riesgos y patrones de aceptacion o rechazo; no lo trates como dato factual de costos.',
     learningContext.summary === ''
       ? 'Contexto de aprendizaje auditado: no hay patrones previos relevantes.'
@@ -91,10 +99,14 @@ export function buildRecommendationSystemPrompt(
           learningContext.summary,
           `Memorias usadas: ${learningContext.memoryIds.join(', ') || 'ninguna'}`,
           `Casos usados: ${learningContext.caseIds.join(', ') || 'ninguno'}`,
-        ].join('\n'),
+].join('\n'),
+    'Contexto tecnico:',
+    technicalEvidence ?? 'No se inyecto evidencia tecnica desde resource_metric_samples para esta ejecucion.',
+    'Candidatos permitidos por la compuerta deterministica:',
+    readinessEvidence ?? '{"candidates":[],"summary":"No se calcularon candidatos permitidos."}',
     'Contexto:',
-    JSON.stringify(compactSnapshot(snapshot), null, 2),
-  ].join('\n');
+JSON.stringify(compactSnapshot(snapshot), null, 2),
+].join('\n');
 }
 
 /**
@@ -138,9 +150,17 @@ export function buildAuditSystemPrompt(): string {
     'Tu tarea es auditar contenido generado por otro agente IA antes de que sea persistido o aprobado.',
     'Debes comprobar que el contenido este en español, sea consistente con los datos, no invente recursos, sea realista, viable y tenga validaciones suficientes.',
     'Verifica que el contenido no trate consumo FOCUS como CPU, memoria, IOPS, throughput o utilizacion tecnica.',
+    'Rechaza recomendaciones o planes que declaren COST_USAGE_AND_TECHNICAL sin technicalEvidenceRefs, recurso enlazado, muestras suficientes o latestTechnicalSampleAt reciente.',
+    'Rechaza acciones tecnicas como rightsizing, apagado, resize o cambio de capacidad cuando solo tienen costo/FOCUS y no marcan validacion tecnica pendiente.',
+    'Si evidence.blockers o deterministicRules.blockers contienen CPU_SATURATION_RISK, MEMORY_SATURATION_RISK o INSUFFICIENT_TECHNICAL_COVERAGE, rechaza cualquier recomendacion ejecutable de reduccion de capacidad que no marque requiresTechnicalValidation=true.',
+    'Trata deterministicRules como autoridad tecnica deterministica: el agente generador no puede contradecir readiness, blockers, ruleMatches ni maxTechnicalSavingsRate.',
+    'Si recommendedActionType es PERFORMANCE_CAPACITY_REVIEW, la recomendacion debe enfocarse en capacidad/performance, no en ahorro por reduccion.',
+    'Rechaza recomendaciones que no incluyan evidence.candidateId, sourceFacts, assumptions y confidence.',
+    'Rechaza recomendaciones cuyo estimatedMonthlySavings supere el maxEstimatedMonthlySavings del candidato citado.',
+    'Rechaza cualquier texto que use "anomalia" o "anomalias"; debe hablar de oportunidades.',
     'Rechaza cualquier contenido que prometa ejecucion automatica real de cambios cloud.',
     'Devuelve solo JSON estricto con esta forma:',
-    '{"verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":["..."],"requiredChanges":["..."]}',
+    '{"verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":["..."],"requiredChanges":["..."],"recommendationIndexes":[0],"repairInstructions":["..."]}',
     'Usa APPROVED solo si no hay problemas bloqueantes y el score es mayor o igual a 80.',
   ].join('\n');
 }

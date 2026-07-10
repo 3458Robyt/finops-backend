@@ -43,6 +43,11 @@ export class CloudIngestionWorkerService {
       };
     }
 
+    const heartbeatMs = readPositiveIntegerEnv('INGESTION_JOB_HEARTBEAT_MS', 60_000);
+    const heartbeat = setInterval(() => {
+      void this.jobs.refreshJobLease(job.id, workerId).catch(() => undefined);
+    }, heartbeatMs);
+
     try {
       const result = await provider.collect(job);
       const summary = await this.jobs.completeJob(job, result, startedAt);
@@ -61,6 +66,13 @@ export class CloudIngestionWorkerService {
         providerCode: job.connection.providerCode,
         errorMessage: error instanceof Error ? error.message : 'Unknown ingestion worker error',
       };
+    } finally {
+      clearInterval(heartbeat);
     }
   }
+}
+
+function readPositiveIntegerEnv(key: string, defaultValue: number): number {
+  const parsed = Number.parseInt(process.env[key] ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
 }

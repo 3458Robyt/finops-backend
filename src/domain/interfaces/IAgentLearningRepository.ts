@@ -98,6 +98,10 @@ export interface QueuedAgentLearningEvent {
   readonly decision: 'APPROVED' | 'REJECTED';
   readonly reasonCode: RecommendationFeedbackReason;
   readonly reason?: string;
+  /** Intento actual, incrementado al reclamar el evento. */
+  readonly attempts: number;
+  /** Máximo de intentos antes de omitir un fallo externo. */
+  readonly maxAttempts: number;
 }
 
 /**
@@ -136,6 +140,20 @@ export interface IAgentLearningRepository {
    * @returns La vista del evento encolado; `null` si no existe o no está encolado.
    */
   findQueuedEventById(eventId: string): Promise<QueuedAgentLearningEvent | null>;
+
+  /** Reclama atómicamente el siguiente evento disponible para un worker. */
+  claimNextQueuedEvent(input: {
+    readonly workerId: string;
+    readonly leaseExpiredBefore: Date;
+  }): Promise<QueuedAgentLearningEvent | null>;
+
+  /** Libera un evento externo fallido para reintento o lo omite al agotar intentos. */
+  releaseEventForRetry(input: {
+    readonly eventId: string;
+    readonly workerId: string;
+    readonly errorMessage: string;
+    readonly nextAttemptAt: Date;
+  }): Promise<AgentLearningStatus>;
 
   /**
    * Marca un evento de aprendizaje como completado con su veredicto de auditoría.

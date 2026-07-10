@@ -1,0 +1,20 @@
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: finops-postgres-test
+    environment:
+      POSTGRES_USER: finops
+      POSTGRES_PASSWORD: finops
+      POSTGRES_DB: finops_test
+    ports:
+      - "55432:5432"
+    volumes:
+      - finops-postgres-test-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finops -d finops_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  finops-postgres-test-data:

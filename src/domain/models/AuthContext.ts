@@ -2,6 +2,7 @@
  * Roles de usuario del sistema, que determinan los permisos disponibles.
  *
  * - `ADMIN`: Administrador con acceso completo a la plataforma.
+ * - `MASTER_ADMIN`: Administrador maestro con acceso a todos los tenants activos.
  * - `VIEWER`: Usuario con acceso de solo lectura.
  * - `OPERATOR_ADMIN`: Administrador del operador (proveedor del servicio FinOps).
  * - `FINOPS_TECHNICIAN`: Técnico FinOps con permisos operativos.
@@ -10,6 +11,7 @@
  */
 export type UserRole =
   | 'ADMIN'
+  | 'MASTER_ADMIN'
   | 'VIEWER'
   | 'OPERATOR_ADMIN'
   | 'FINOPS_TECHNICIAN'

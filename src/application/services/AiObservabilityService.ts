@@ -6,7 +6,7 @@ import type { AiContextOperation } from '../../domain/models/AgentContext.js';
  * agente de IA (Context Engine). Su responsabilidad es registrar trazas
  * ("traces") de cada invocación al modelo para auditar qué contexto se usó,
  * qué modelo respondió, su latencia y los identificadores de evidencia
- * involucrados (artefactos, memorias, nodos de conocimiento, reglas de tenant).
+ * involucrados (artefactos, memorias y reglas de tenant).
  *
  * Colaborador inyectado:
  * - {@link IAgentContextRepository}: puerto de persistencia donde se almacenan
@@ -41,7 +41,6 @@ export class AiObservabilityService {
    * @param input.latencyMs - Latencia de la operación en milisegundos (opcional).
    * @param input.artifactIds - Identificadores de artefactos/resúmenes usados como evidencia (opcional).
    * @param input.memoryIds - Identificadores de memorias auditadas usadas (opcional).
-   * @param input.knowledgeNodeIds - Identificadores de nodos del grafo de conocimiento usados (opcional).
    * @param input.tenantRuleIds - Identificadores de reglas de tenant aplicadas (opcional).
    * @param input.conflicts - Conflictos detectados entre reglas de tenant y el perfil global (opcional).
    * @param input.errorMessage - Mensaje de error cuando el estado es 'ERROR' (opcional).
@@ -59,7 +58,6 @@ export class AiObservabilityService {
     readonly latencyMs?: number;
     readonly artifactIds?: readonly string[];
     readonly memoryIds?: readonly string[];
-    readonly knowledgeNodeIds?: readonly string[];
     readonly tenantRuleIds?: readonly string[];
     readonly conflicts?: readonly string[];
     readonly errorMessage?: string;
@@ -76,7 +74,6 @@ export class AiObservabilityService {
       ...(input.latencyMs !== undefined ? { latencyMs: input.latencyMs } : {}),
       ...(input.artifactIds !== undefined ? { artifactIds: input.artifactIds } : {}),
       ...(input.memoryIds !== undefined ? { memoryIds: input.memoryIds } : {}),
-      ...(input.knowledgeNodeIds !== undefined ? { knowledgeNodeIds: input.knowledgeNodeIds } : {}),
       ...(input.tenantRuleIds !== undefined ? { tenantRuleIds: input.tenantRuleIds } : {}),
       ...(input.conflicts !== undefined ? { conflicts: input.conflicts } : {}),
       ...(input.errorMessage !== undefined ? { errorMessage: input.errorMessage } : {}),

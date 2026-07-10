@@ -35,7 +35,9 @@ export interface CloudResourceItem {
  */
 export interface ResourceMetricSampleItem {
   readonly id: string;
+  readonly provider: string;
   readonly externalResourceId: string;
+  readonly cloudResourceId?: string;
   /** Nombre de la métrica técnica (p. ej. `cpu_utilization`, `memory_used`). */
   readonly metricName: string;
   /** Unidad de la métrica (p. ej. `Percent`, `Bytes`, `IOPS`), si se conoce. */
@@ -46,6 +48,116 @@ export interface ResourceMetricSampleItem {
   readonly sampledAt: Date;
   /** Granularidad de la muestra en segundos. */
   readonly granularitySeconds: number;
+}
+
+export interface TechnicalMetricSampleFilters {
+  readonly startDate?: Date;
+  readonly endDate?: Date;
+  readonly externalResourceId?: string;
+  readonly metricNames?: readonly string[];
+  readonly limit: number;
+}
+
+export type TechnicalMetricSeriesBucket = 'raw' | '30m' | 'hour' | 'day';
+
+export interface TechnicalMetricSeriesFilters {
+  readonly startDate?: Date;
+  readonly endDate?: Date;
+  readonly externalResourceId?: string;
+  readonly metricNames?: readonly string[];
+  readonly bucket: TechnicalMetricSeriesBucket;
+  readonly cursor?: string;
+  readonly pageSize: number;
+}
+
+export interface TechnicalMetricSeriesRepositoryPoint {
+  readonly bucketStart: Date;
+  readonly externalResourceId: string;
+  readonly metricName: string;
+  readonly metricUnit?: string;
+  readonly avg: number;
+  readonly min: number;
+  readonly max: number;
+  readonly latest: number;
+  readonly sampleCount: number;
+  readonly minSampledAt?: Date;
+  readonly maxSampledAt?: Date;
+  readonly latestSampledAt?: Date;
+}
+
+export interface TechnicalMetricSeriesRepositoryResult {
+  readonly points: readonly TechnicalMetricSeriesRepositoryPoint[];
+  readonly totalSamples: number;
+  readonly hasMore: boolean;
+  readonly nextCursor?: string;
+}
+
+export interface TechnicalMetricCoverageFilters {
+  readonly startDate?: Date;
+  readonly endDate?: Date;
+  readonly externalResourceId?: string;
+}
+
+export interface TechnicalMetricCoverageSampleItem {
+  readonly externalResourceId: string;
+  readonly metricName: string;
+  readonly sampledAt: Date;
+}
+
+export interface TechnicalMetricCoverageAggregate {
+  readonly totalSamples: number;
+  readonly metricCount: number;
+  readonly resourceCount: number;
+  readonly minSampledAt?: Date;
+  readonly maxSampledAt?: Date;
+  readonly metrics: readonly {
+    readonly metricName: string;
+    readonly sampleCount: number;
+    readonly daysWithData: number;
+    readonly minSampledAt?: Date;
+    readonly maxSampledAt?: Date;
+  }[];
+  readonly days: readonly {
+    readonly date: string;
+    readonly sampleCount: number;
+    readonly metricCount: number;
+  }[];
+}
+
+export interface TechnicalCostContextItem {
+  readonly externalResourceId: string;
+  readonly totalCost: number;
+  readonly currency: string;
+  readonly metricCount: number;
+}
+
+export interface TechnicalMetricSummaryFilters {
+  readonly startDate?: Date;
+  readonly endDate?: Date;
+  readonly externalResourceIds?: readonly string[];
+  readonly metricNames?: readonly string[];
+  readonly limit: number;
+}
+
+export interface TechnicalMetricSummaryItem {
+  readonly provider: string;
+  readonly externalResourceId: string;
+  readonly cloudResourceId?: string;
+  readonly resourceType?: string;
+  readonly serviceName?: string;
+  readonly metricName: string;
+  readonly metricUnit?: string;
+  readonly sampleCount: number;
+  readonly coverageDays: number;
+  readonly min: number;
+  readonly max: number;
+  readonly avg: number;
+  readonly p50: number;
+  readonly p95: number;
+  readonly p99: number;
+  readonly latest: number;
+  readonly firstSampledAt: Date;
+  readonly latestSampledAt: Date;
 }
 
 /**
@@ -79,4 +191,34 @@ export interface IResourceMetricRepository {
     tenantId: string,
     limit: number,
   ): Promise<readonly ResourceMetricSampleItem[]>;
+
+  listMetricSamplesForTenantByFilter(
+    tenantId: string,
+    filters: TechnicalMetricSampleFilters,
+  ): Promise<readonly ResourceMetricSampleItem[]>;
+
+  listMetricSeriesForTenant(
+    tenantId: string,
+    filters: TechnicalMetricSeriesFilters,
+  ): Promise<TechnicalMetricSeriesRepositoryResult>;
+
+  listMetricCoverageSamplesForTenant(
+    tenantId: string,
+    filters: TechnicalMetricCoverageFilters,
+  ): Promise<readonly TechnicalMetricCoverageSampleItem[]>;
+
+  getMetricCoverageForTenant?(
+    tenantId: string,
+    filters: TechnicalMetricCoverageFilters,
+  ): Promise<TechnicalMetricCoverageAggregate>;
+
+  listCostContextForResources(
+    tenantId: string,
+    externalResourceIds: readonly string[],
+  ): Promise<readonly TechnicalCostContextItem[]>;
+
+  listMetricSummariesForTenant(
+    tenantId: string,
+    filters: TechnicalMetricSummaryFilters,
+  ): Promise<readonly TechnicalMetricSummaryItem[]>;
 }

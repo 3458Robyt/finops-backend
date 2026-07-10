@@ -17,7 +17,7 @@ export interface CreateTelegramLinkInput {
 }
 
 /** Roles autorizados a administrar las vinculaciones de Telegram. */
-const adminRoles = new Set<AuthContext['role']>(['ADMIN', 'OPERATOR_ADMIN']);
+const adminRoles = new Set<AuthContext['role']>(['ADMIN', 'MASTER_ADMIN', 'OPERATOR_ADMIN']);
 
 /**
  * Servicio de aplicación que gestiona el ciclo de vida de las vinculaciones

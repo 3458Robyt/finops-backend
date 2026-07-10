@@ -13,6 +13,7 @@ import { AuthenticationError, ConfigurationError } from '../../domain/errors/err
  */
 const VALID_USER_ROLES: ReadonlySet<UserRole> = new Set<UserRole>([
   'ADMIN',
+  'MASTER_ADMIN',
   'VIEWER',
   'OPERATOR_ADMIN',
   'FINOPS_TECHNICIAN',

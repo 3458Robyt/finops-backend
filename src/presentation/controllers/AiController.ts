@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { FinOpsAiService } from '../../application/services/FinOpsAiService.js';
 import type { IAgentLearningService } from '../../domain/interfaces/IAgentLearningService.js';
-import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import { AiAuditRejectedError, FinOpsBaseError } from '../../domain/errors/errors.js';
 
 const chatSchema = z.object({
   message: z.string().min(1),
@@ -221,6 +221,17 @@ export class AiController {
    * - Error no controlado -> 500 con `fallbackMessage`.
    */
   private handleError(error: unknown, res: Response, fallbackMessage: string): void {
+    if (error instanceof AiAuditRejectedError) {
+      res.status(422).json({
+        success: false,
+        error: error.message,
+        code: error.code,
+        diagnosticId: error.diagnosticId,
+        audit: error.audit,
+      });
+      return;
+    }
+
     if (error instanceof FinOpsBaseError) {
       const status = error.code === 'VALIDATION_ERROR' ? 400 : 502;
       res.status(status).json({

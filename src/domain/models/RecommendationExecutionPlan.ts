@@ -35,6 +35,10 @@ export interface AiAuditReport {
   readonly blockingIssues: readonly string[];
   /** Cambios requeridos para que el plan pueda aprobarse. */
   readonly requiredChanges: readonly string[];
+  /** Índices de recomendaciones afectadas por problemas específicos, cuando aplica. */
+  readonly recommendationIndexes?: readonly number[];
+  /** Instrucciones concretas para reparar el artefacto en una ronda de revisión. */
+  readonly repairInstructions?: readonly string[];
 }
 
 /**

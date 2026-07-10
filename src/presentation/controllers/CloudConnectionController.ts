@@ -243,6 +243,31 @@ export class CloudConnectionController {
     }
   };
 
+  public queueTechnicalBackfill = async (req: Request, res: Response): Promise<void> => {
+    try {
+      if (req.auth === undefined) {
+        throw new FinOpsBaseError('Authentication is required', 'AUTHENTICATION_REQUIRED');
+      }
+
+      const body = this.requireObjectBody(req.body);
+      const cloudConnectionId = this.requireString(body['cloudConnectionId'], 'cloudConnectionId');
+      const lookbackDays = this.parseOptionalNumber(body['lookbackDays'], 'lookbackDays');
+      const windowHours = this.parseOptionalNumber(body['windowHours'], 'windowHours');
+
+      const backfill = await this.cloudConnectionService.queueTechnicalMetricBackfill({
+        tenantId: req.auth.tenantId,
+        userId: req.auth.userId,
+        cloudConnectionId,
+        ...(lookbackDays !== undefined ? { lookbackDays } : {}),
+        ...(windowHours !== undefined ? { windowHours } : {}),
+      });
+
+      res.status(202).json({ success: true, backfill });
+    } catch (error: unknown) {
+      this.respondWithError(res, error);
+    }
+  };
+
   /**
    * Devuelve el estado de salud de la ingesta de una conexión.
    *
@@ -487,6 +512,22 @@ export class CloudConnectionController {
 
     const parsed = Number.parseInt(raw, 10);
     return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  private parseOptionalNumber(
+    value: unknown,
+    fieldName: string,
+  ): number | undefined {
+    if (value === undefined || value === null || value === '') {
+      return undefined;
+    }
+
+    const parsed = typeof value === 'number' ? value : Number.parseInt(String(value), 10);
+    if (!Number.isFinite(parsed)) {
+      throw new FinOpsBaseError(`${fieldName} must be a number`, 'VALIDATION_ERROR');
+    }
+
+    return parsed;
   }
 
   /**

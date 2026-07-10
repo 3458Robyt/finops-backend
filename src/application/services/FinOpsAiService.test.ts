@@ -232,7 +232,11 @@ describe('FinOpsAiService', () => {
           description: 'EC2 domina el costo del periodo; revisar instancias con baja utilizacion.',
           estimatedMonthlySavings: 18.25,
           currency: 'USD',
-          evidence: { serviceName: 'Amazon Elastic Compute Cloud' },
+          evidence: {
+            serviceName: 'Amazon Elastic Compute Cloud',
+            evidenceLevel: 'COST_ONLY',
+            requiresTechnicalValidation: true,
+          },
         },
       ],
     });
@@ -290,7 +294,11 @@ describe('FinOpsAiService', () => {
           description: 'Validar metricas tecnicas antes del rightsizing de EC2.',
           estimatedMonthlySavings: 18.25,
           currency: 'USD',
-          evidence: { serviceName: 'Amazon Elastic Compute Cloud' },
+          evidence: {
+            serviceName: 'Amazon Elastic Compute Cloud',
+            evidenceLevel: 'COST_ONLY',
+            requiresTechnicalValidation: true,
+          },
         },
       ],
     });
@@ -341,7 +349,11 @@ describe('FinOpsAiService', () => {
             description: 'EC2 domina el costo del periodo; revisar instancias con baja utilizacion.',
             estimatedMonthlySavings: 18.25,
             currency: 'USD',
-            evidence: { serviceName: 'Amazon Elastic Compute Cloud' },
+            evidence: {
+              serviceName: 'Amazon Elastic Compute Cloud',
+              evidenceLevel: 'COST_ONLY',
+              requiresTechnicalValidation: true,
+            },
           },
         ],
       }),
@@ -368,6 +380,36 @@ describe('FinOpsAiService', () => {
     expect(recommendations.created).toHaveLength(0);
   });
 
+  test('rejects an auditor-approved recommendation when deterministic evidence is insufficient', async () => {
+    const gateway = new FakeAiGateway([
+      JSON.stringify({
+        recommendations: [{
+          cloudAccountId: 'account-focus-aws-prod',
+          type: 'RIGHTSIZING',
+          severity: 'HIGH',
+          title: 'Reducir EC2 sin evidencia',
+          description: 'Cambiar capacidad sin validacion tecnica previa.',
+          estimatedMonthlySavings: 18.25,
+          currency: 'USD',
+          evidence: { serviceName: 'Amazon Elastic Compute Cloud', evidenceLevel: 'COST_ONLY' },
+        }],
+      }),
+      JSON.stringify({
+        verdict: 'APPROVED',
+        score: 99,
+        checks: [],
+        blockingIssues: [],
+        requiredChanges: [],
+      }),
+    ]);
+    const recommendations = new FakeRecommendationRepository();
+    const service = new FinOpsAiService(new FakeCostAnalyticsRepository(), recommendations, gateway);
+
+    await expect(service.generateRecommendations({ tenantId: 'tenant-1', persist: true }))
+      .rejects.toThrow('AI audit rejected recommendation output');
+    expect(recommendations.created).toHaveLength(0);
+  });
+
   test('allows one AI recommendation revision when auditor requests changes', async () => {
     const gateway = new FakeAiGateway([
       JSON.stringify({
@@ -380,7 +422,11 @@ describe('FinOpsAiService', () => {
             description: 'Revisar EC2.',
             estimatedMonthlySavings: 18.25,
             currency: 'USD',
-            evidence: { serviceName: 'Amazon Elastic Compute Cloud' },
+            evidence: {
+              serviceName: 'Amazon Elastic Compute Cloud',
+              evidenceLevel: 'COST_ONLY',
+              requiresTechnicalValidation: true,
+            },
           },
         ],
       }),
@@ -401,7 +447,11 @@ describe('FinOpsAiService', () => {
             description: 'Revisar utilizacion antes del cambio y documentar rollback.',
             estimatedMonthlySavings: 18.25,
             currency: 'USD',
-            evidence: { serviceName: 'Amazon Elastic Compute Cloud' },
+            evidence: {
+              serviceName: 'Amazon Elastic Compute Cloud',
+              evidenceLevel: 'COST_ONLY',
+              requiresTechnicalValidation: true,
+            },
           },
         ],
       }),

@@ -1,9 +1,49 @@
 import { describe, expect, it } from 'vitest';
-import type { CloudIngestionJobContext } from '../../domain/interfaces/ICloudIngestionProvider.js';
+import type {
+  CloudIngestionJobContext,
+  CloudIngestionResult,
+  NormalizedFocusCostLineItem,
+} from '../../domain/interfaces/ICloudIngestionProvider.js';
 import { OciSdkIngestionProvider } from './OciSdkIngestionProvider.js';
 
 describe('OciSdkIngestionProvider', () => {
-  it('normalizes metric samples from OCI TypeScript SDK items response', async () => {
+it('collects compute inventory resources through the OCI SDK', async () => {
+const provider = new OciSdkIngestionProvider();
+Object.assign(provider as unknown as { createComputeClient: () => unknown }, {
+createComputeClient: () => ({
+listInstances: async () => ({
+items: [
+{
+id: 'ocid1.instance.oc1.test',
+displayName: 'api-prod',
+lifecycleState: 'RUNNING',
+shape: 'VM.Standard.E4.Flex',
+freeformTags: { environment: 'prod' },
+},
+],
+}),
+}),
+});
+
+const result = await provider.collect({
+...buildMetricJob(),
+sourceType: 'INVENTORY',
+});
+
+expect(result.resources).toEqual([
+expect.objectContaining({
+provider: 'OCI',
+externalResourceId: 'ocid1.instance.oc1.test',
+name: 'api-prod',
+resourceType: 'COMPUTE_INSTANCE',
+serviceName: 'Oracle Compute',
+status: 'ACTIVE',
+}),
+]);
+expect(result.coverage).toMatchObject({ inventorySource: 'oci_compute_sdk_with_metadata_fallback' });
+});
+
+it('normalizes metric samples from OCI TypeScript SDK items response', async () => {
     const provider = new OciSdkIngestionProvider();
     const requests: unknown[] = [];
 
@@ -69,11 +109,13 @@ describe('OciSdkIngestionProvider', () => {
     });
 
     const result = await provider.collect(buildOciFocusJob());
+    const focusRows = await collectFocusRows(result.focusBatches);
 
     expect(calls).toEqual(['listObjects', 'getObject']);
     expect(result.objectsProcessed).toBe(1);
-    expect(result.focusRows).toHaveLength(1);
-    expect(result.focusRows[0]).toMatchObject({
+    expect(result.focusRows).toHaveLength(0);
+    expect(focusRows).toHaveLength(1);
+    expect(focusRows[0]).toMatchObject({
       provider: 'OCI',
       serviceName: 'Compute',
       resourceId: 'ocid1.instance.oc1.test',
@@ -83,7 +125,7 @@ describe('OciSdkIngestionProvider', () => {
     });
     expect(result.coverage).toMatchObject({
       objectsDiscovered: 1,
-      rowsParsed: 1,
+      rowsParsed: 'streamed',
     });
     expect(result.warnings).toEqual([]);
   });
@@ -112,10 +154,11 @@ describe('OciSdkIngestionProvider', () => {
     });
 
     const result = await provider.collect(buildOciFocusJob());
+    const focusRows = await collectFocusRows(result.focusBatches);
 
     expect(result.objectsProcessed).toBe(1);
-    expect(result.focusRows).toHaveLength(1);
-    expect(result.focusRows[0]?.provider).toBe('OCI');
+    expect(focusRows).toHaveLength(1);
+    expect(focusRows[0]?.provider).toBe('OCI');
   });
 
   it('parses OCI FOCUS reports when Object Storage returns a value ReadableStream', async () => {
@@ -145,12 +188,28 @@ describe('OciSdkIngestionProvider', () => {
     });
 
     const result = await provider.collect(buildOciFocusJob());
+    const focusRows = await collectFocusRows(result.focusBatches);
 
     expect(result.objectsProcessed).toBe(1);
-    expect(result.focusRows).toHaveLength(1);
-    expect(result.focusRows[0]?.provider).toBe('OCI');
+    expect(focusRows).toHaveLength(1);
+    expect(focusRows[0]?.provider).toBe('OCI');
   });
 });
+
+async function collectFocusRows(
+  batches: CloudIngestionResult['focusBatches'],
+): Promise<NormalizedFocusCostLineItem[]> {
+  const rows: NormalizedFocusCostLineItem[] = [];
+  if (batches === undefined) {
+    return rows;
+  }
+
+  for await (const batch of batches) {
+    rows.push(...batch);
+  }
+
+  return rows;
+}
 
 function buildMetricJob(): CloudIngestionJobContext {
   return {

@@ -28,7 +28,7 @@ export interface BuildAiContextInput {
  * Contexto de IA ya ensamblado, listo para componer el prompt final.
  *
  * Incluye el texto a enviar al modelo junto con la trazabilidad de las fuentes
- * (artefactos, memorias, casos, nodos de conocimiento y reglas de tenant) utilizadas.
+ * (artefactos, memorias, casos y reglas de tenant) utilizadas.
  */
 export interface BuiltAiContext {
   /** Instrucciones de sistema (perfil del agente y reglas) que condicionan el comportamiento del modelo. */
@@ -41,8 +41,6 @@ export interface BuiltAiContext {
   readonly memoryIds: readonly string[];
   /** Identificadores de los casos de aprendizaje incorporados. */
   readonly caseIds: readonly string[];
-  /** Identificadores de los nodos del grafo de conocimiento incorporados. */
-  readonly knowledgeNodeIds: readonly string[];
   /** Identificadores de las reglas de tenant aplicadas. */
   readonly tenantRuleIds: readonly string[];
   /** Conflictos detectados entre reglas o fuentes durante el ensamblado. */

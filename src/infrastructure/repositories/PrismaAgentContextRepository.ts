@@ -7,14 +7,11 @@ import type {
   FocusResourcePeriodAggregate,
   IAgentContextRepository,
   UpsertContextSummaryInput,
-  UpsertKnowledgeEdgeInput,
-  UpsertKnowledgeNodeInput,
 } from '../../domain/interfaces/IAgentContextRepository.js';
 import type {
   AgentInstructionProfile,
   AiContextTrace,
   ContextArtifact,
-  KnowledgeGraphContext,
   TenantAgentRule,
 } from '../../domain/models/AgentContext.js';
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
@@ -24,7 +21,6 @@ import {
   toTenantRule,
 } from './mappers/agentContextMappers.js';
 import { queryFocusResourcePeriodAggregates } from './queries/agentContextFocusQueries.js';
-import { getKnowledgeGraph } from './queries/agentKnowledgeGraphQueries.js';
 import {
   findContextSummaries,
   upsertContextSummary,
@@ -35,10 +31,6 @@ import {
   createContextBuildRun,
   listAiContextTraces,
 } from './queries/agentContextObservabilityQueries.js';
-import {
-  upsertKnowledgeEdge,
-  upsertKnowledgeNode,
-} from './queries/agentContextGraphWrites.js';
 
 /**
  * Adaptador de infraestructura (Clean Architecture) que implementa el puerto de
@@ -50,9 +42,7 @@ import {
  * delega en colaboradores de consulta la caché de resúmenes
  * ({@link ./queries/contextSummaryQueries}), la observabilidad —trazas y build
  * runs— ({@link ./queries/agentContextObservabilityQueries}), las agregaciones
- * FOCUS ({@link ./queries/agentContextFocusQueries}) y el grafo de conocimiento
- * ({@link ./queries/agentContextGraphWrites} y
- * {@link ./queries/agentKnowledgeGraphQueries}). Las operaciones por tenant
+ * FOCUS ({@link ./queries/agentContextFocusQueries}). Las operaciones por tenant
  * aplican aislamiento multi-tenant.
  */
 export class PrismaAgentContextRepository implements IAgentContextRepository {
@@ -291,45 +281,4 @@ export class PrismaAgentContextRepository implements IAgentContextRepository {
     return rows.map(toFocusResourcePeriodAggregate);
   }
 
-  /**
-   * Inserta o actualiza (upsert) un nodo del grafo de conocimiento del agente.
-   * Delega en {@link upsertKnowledgeNode} (unicidad por tenant + dedupeKey).
-   *
-   * @returns El identificador del nodo creado o actualizado.
-   */
-  public async upsertKnowledgeNode(input: UpsertKnowledgeNodeInput): Promise<string> {
-    return upsertKnowledgeNode(this.prisma, input);
   }
-
-  /**
-   * Inserta o actualiza (upsert) una arista del grafo de conocimiento. Delega en
-   * {@link upsertKnowledgeEdge} (unicidad por tenant + dedupeKey).
-   *
-   * @returns El identificador de la arista creada o actualizada.
-   */
-  public async upsertKnowledgeEdge(input: UpsertKnowledgeEdgeInput): Promise<string> {
-    return upsertKnowledgeEdge(this.prisma, input);
-  }
-
-  /**
-   * Recupera un subgrafo del grafo de conocimiento del agente para un tenant
-   * (aislamiento multi-tenant).
-   *
-   * Delega en {@link getKnowledgeGraph}; allí se documenta el detalle de los dos
-   * modos (vista general acotada y recorrido BFS por niveles con profundidad
-   * acotada a 1..2).
-   *
-   * @param input Tenant, filtros opcionales por recomendación/recurso y
-   *   profundidad de expansión.
-   * @returns El subgrafo (nodos y aristas) en formato de dominio; vacío si no hay
-   *   nodos semilla en el modo dirigido.
-   */
-  public async getKnowledgeGraph(input: {
-    readonly tenantId: string;
-    readonly recommendationId?: string;
-    readonly resourceId?: string;
-    readonly depth: number;
-  }): Promise<KnowledgeGraphContext> {
-    return getKnowledgeGraph(this.prisma, input);
-  }
-}

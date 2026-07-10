@@ -432,7 +432,7 @@ function parseArgs(args: readonly string[]): ImportOptions {
   }
 
   if (password === undefined || password.trim() === '') {
-    throw new Error('Missing --password or OCI_FOCUS_IMPORT_PASSWORD for the demo user');
+    throw new Error('Missing --password or OCI_FOCUS_IMPORT_PASSWORD for the import user');
   }
 
   return {
@@ -444,8 +444,8 @@ function parseArgs(args: readonly string[]): ImportOptions {
     rootExternalId,
     tenantName: options.get('tenant-name') ?? 'OCI Personal Demo',
     tenantSlug: options.get('tenant-slug') ?? 'oci-personal-demo',
-    userEmail: options.get('user-email') ?? 'david.oci.demo@local.test',
-    userName: options.get('user-name') ?? 'David OCI Demo',
+    userEmail: options.get('user-email') ?? '[correo omitido]',
+    userName: options.get('user-name') ?? 'FinOps Operator',
   };
 }
 

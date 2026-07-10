@@ -1,4 +1,4 @@
-import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import { AiAuditRejectedError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { IAiGateway } from '../../domain/interfaces/IAiGateway.js';
 import type { ICostAnalyticsRepository } from '../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
@@ -13,6 +13,7 @@ import { applyAuditEvidence } from './ai/recommendationEvidence.js';
 import { FinOpsContextAssembler } from './ai/finOpsContextAssembler.js';
 import { AiTraceRecorder } from './ai/aiTraceRecorder.js';
 import { FinOpsArtifactGenerator } from './ai/finOpsArtifactGenerator.js';
+import type { TechnicalRecommendationEvidenceProvider } from './ai/TechnicalRecommendationEvidenceService.js';
 
 // Reexporta los contratos públicos para preservar la API del servicio.
 export type {
@@ -88,9 +89,13 @@ export class FinOpsAiService {
     learningContextProvider?: IAgentLearningContextProvider,
     contextEngine?: IContextEngineService,
     aiObservability?: AiObservabilityService,
+    technicalEvidenceProvider?: TechnicalRecommendationEvidenceProvider,
   ) {
-    this.mainModel = aiGateway.modelName ?? process.env['NVIDIA_MODEL'] ?? 'deepseek-ai/deepseek-v4-flash';
-    this.auditorModel = process.env['NVIDIA_AUDITOR_MODEL'] ?? this.mainModel;
+    this.mainModel = aiGateway.modelName ?? process.env['AI_MODEL'] ?? process.env['NVIDIA_MODEL'] ?? 'gpt-5.4-mini';
+    this.auditorModel = process.env['AI_AUDITOR_MODEL'] ?? process.env['NVIDIA_AUDITOR_MODEL'] ?? this.mainModel;
+    if (this.mainModel === this.auditorModel) {
+      console.warn('AI generator and auditor use the same model; deterministic quality gates remain required.');
+    }
     this.traceRecorder = new AiTraceRecorder(aiObservability);
     this.artifactGenerator = new FinOpsArtifactGenerator(
       aiGateway,
@@ -102,6 +107,7 @@ export class FinOpsAiService {
       this.mainModel,
       learningContextProvider,
       contextEngine,
+      technicalEvidenceProvider,
     );
   }
 
@@ -183,7 +189,8 @@ export class FinOpsAiService {
     input: GenerateAiRecommendationsInput,
   ): Promise<GenerateAiRecommendationsResponse> {
     const snapshot = await this.analyticsRepository.getLatestTenantSnapshot(input.tenantId);
-    const { builtContext, systemPrompt, learningContext } = await this.contextAssembler.assembleRecommendationContext({
+    const { builtContext, systemPrompt, learningContext, readinessReport } =
+      await this.contextAssembler.assembleRecommendationContext({
       tenantId: input.tenantId,
       ...(input.userId !== undefined ? { userId: input.userId } : {}),
       snapshot,
@@ -198,7 +205,22 @@ export class FinOpsAiService {
     );
 
     if (auditReport.verdict !== approvedAuditVerdict) {
-      throw new FinOpsBaseError('AI audit rejected recommendation output', 'AI_AUDIT_REJECTED');
+      throw new AiAuditRejectedError('AI audit rejected recommendation output', {
+        diagnosticId: this.buildAuditDiagnosticId(input.tenantId),
+        audit: {
+          ...auditReport,
+          readinessSummary: readinessReport.summary,
+          candidates: readinessReport.candidates.map((candidate) => ({
+            id: candidate.id,
+            readiness: candidate.readiness,
+            cloudAccountId: candidate.cloudAccountId,
+            serviceName: candidate.serviceName,
+            resourceId: candidate.resourceId,
+            maxEstimatedMonthlySavings: candidate.maxEstimatedMonthlySavings,
+            reasons: candidate.reasons,
+          })),
+        },
+      });
     }
 
     const auditedDrafts = drafts.map((draft) => applyAuditEvidence(draft, auditReport, learningContext));
@@ -304,5 +326,9 @@ export class FinOpsAiService {
       ...(responseText !== undefined ? { responseText } : {}),
       ...(error !== undefined ? { error } : {}),
     });
+  }
+
+  private buildAuditDiagnosticId(tenantId: string): string {
+    return `audit-${tenantId}-${Date.now().toString(36)}`;
   }
 }

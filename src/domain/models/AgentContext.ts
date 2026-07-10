@@ -187,60 +187,13 @@ export interface AiContextTrace {
 }
 
 /**
- * Nodo del grafo de conocimiento del agente, que representa una entidad
- * (recurso, servicio, cuenta, etc.) dentro del contexto.
- */
-export interface KnowledgeGraphNode {
-  /** Identificador único del nodo. */
-  readonly id: string;
-  /** Tipo de entidad representada por el nodo. */
-  readonly nodeType: string;
-  /** Etiqueta legible del nodo. */
-  readonly label: string;
-  /** Identificador externo de la entidad en el sistema de origen, si aplica. */
-  readonly externalId?: string | undefined;
-  /** Metadatos adicionales del nodo (estructura libre). */
-  readonly metadata?: unknown | undefined;
-}
-
-/**
- * Arista del grafo de conocimiento que representa una relación dirigida entre
- * dos {@link KnowledgeGraphNode}.
- */
-export interface KnowledgeGraphEdge {
-  /** Identificador único de la arista. */
-  readonly id: string;
-  /** Identificador del nodo de origen de la relación. */
-  readonly sourceNodeId: string;
-  /** Identificador del nodo de destino de la relación. */
-  readonly targetNodeId: string;
-  /** Tipo de relación entre los nodos. */
-  readonly relationType: string;
-  /** Confianza de la relación, normalmente en el rango [0, 1]. */
-  readonly confidence: number;
-  /** Metadatos adicionales de la arista (estructura libre). */
-  readonly metadata?: unknown | undefined;
-}
-
-/**
- * Vista del grafo de conocimiento que agrupa los nodos y aristas que componen
- * el contexto estructurado entregado al agente.
- */
-export interface KnowledgeGraphContext {
-  /** Conjunto de nodos del grafo. */
-  readonly nodes: readonly KnowledgeGraphNode[];
-  /** Conjunto de aristas (relaciones) del grafo. */
-  readonly edges: readonly KnowledgeGraphEdge[];
-}
-
-/**
  * Roles con permisos de administración del agente (gestión de perfiles y reglas).
  * Se usa para autorizar operaciones administrativas sobre el agente.
  */
-export const agentAdminRoles: readonly UserRole[] = ['ADMIN', 'OPERATOR_ADMIN'];
+export const agentAdminRoles: readonly UserRole[] = ['ADMIN', 'MASTER_ADMIN', 'OPERATOR_ADMIN'];
 
 /**
  * Roles con permisos técnicos sobre el agente (operaciones técnicas además de las
  * administrativas). Incluye al técnico FinOps junto a los roles administrativos.
  */
-export const agentTechnicalRoles: readonly UserRole[] = ['ADMIN', 'OPERATOR_ADMIN', 'FINOPS_TECHNICIAN'];
+export const agentTechnicalRoles: readonly UserRole[] = ['ADMIN', 'MASTER_ADMIN', 'OPERATOR_ADMIN', 'FINOPS_TECHNICIAN'];

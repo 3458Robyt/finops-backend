@@ -118,7 +118,6 @@ export class ContextEngineService implements IContextEngineService {
       artifactIds: summaries.map((summary) => summary.id),
       memoryIds: learningContext.memoryIds,
       caseIds: learningContext.caseIds,
-      knowledgeNodeIds: [],
       tenantRuleIds: acceptedRules.map((rule) => rule.id),
       conflicts,
       profileVersion: profile.version,

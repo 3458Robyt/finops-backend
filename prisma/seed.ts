@@ -42,7 +42,7 @@ async function main(): Promise<void> {
     where: { email: '[correo omitido]' },
     update: {
       passwordHash,
-      role: UserRole.ADMIN,
+      role: UserRole.MASTER_ADMIN,
       tenantId: tenant.id,
       status: 'ACTIVE',
     },
@@ -51,7 +51,7 @@ async function main(): Promise<void> {
       email: '[correo omitido]',
       name: 'FinOps Operator',
       passwordHash,
-      role: UserRole.ADMIN,
+      role: UserRole.MASTER_ADMIN,
     },
   });
 

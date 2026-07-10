@@ -6,6 +6,7 @@ describe('createIngestionRoutes', () => {
   it('registers tenant-level job creation under POST /jobs', () => {
     const controller = {
       queueTenantIngestion: vi.fn(),
+      queueTechnicalBackfill: vi.fn(),
       configureFocusSource: vi.fn(),
       listIngestionHistory: vi.fn(),
       listDataQuality: vi.fn(),
@@ -32,5 +33,9 @@ describe('createIngestionRoutes', () => {
     const focusSources = stack.find((layer) => layer.route?.path === '/focus-sources' && layer.route.methods['post']);
     expect(focusSources).toBeDefined();
     expect(focusSources?.route?.stack.at(-1)?.handle).toBe(controller.configureFocusSource);
+
+    const backfill = stack.find((layer) => layer.route?.path === '/backfill' && layer.route.methods['post']);
+    expect(backfill).toBeDefined();
+    expect(backfill?.route?.stack.at(-1)?.handle).toBe(controller.queueTechnicalBackfill);
   });
 });

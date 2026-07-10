@@ -46,7 +46,7 @@ export {
   type TelegramInteractionStatus,
   type TelegramLinkedUser,
 } from './Telegram.js';
-/** Contexto del agente de IA: perfiles de instrucciones, reglas y grafo de conocimiento. */
+/** Contexto del agente de IA: perfiles de instrucciones, reglas y trazas de contexto. */
 export {
   type AgentInstructionProfile,
   type AgentInstructionProfileStatus,
@@ -55,7 +55,6 @@ export {
   type AiContextOperation,
   type AiContextTrace,
   type ContextArtifact,
-  type KnowledgeGraphContext,
   type TenantAgentRule,
   type TenantAgentRuleStatus,
 } from './AgentContext.js';

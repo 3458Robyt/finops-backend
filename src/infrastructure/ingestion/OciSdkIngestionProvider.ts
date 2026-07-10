@@ -1,13 +1,13 @@
 import * as oci from 'oci-sdk';
-import { Readable } from 'node:stream';
 import type {
   CloudIngestionJobContext,
   CloudIngestionProvider,
   CloudIngestionResult,
+  NormalizedCloudResource,
   NormalizedFocusCostLineItem,
   NormalizedResourceMetricSample,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
-import { decodeMaybeGzip, parseFocusCsvToLineItems } from './focusCsvIngestion.js';
+import { parseFocusCsvStream, toAsyncByteChunks } from './focusCsvIngestion.js';
 import {
   getCredential,
   optionalString,
@@ -65,10 +65,10 @@ interface OciMonitoringClient {
 }
 
 interface OciObjectStorageClient {
-  getObject(request: unknown): Promise<{
-    readonly getObjectBody?: unknown;
-    readonly value?: unknown;
-  }>;
+getObject(request: unknown): Promise<{
+readonly getObjectBody?: unknown;
+readonly value?: unknown;
+}>;
   listObjects(request: unknown): Promise<{
     readonly listObjects?: {
       readonly objects?: readonly {
@@ -76,7 +76,24 @@ interface OciObjectStorageClient {
       }[];
       readonly nextStartWith?: string;
     };
-  }>;
+}>;
+}
+
+interface OciComputeClient {
+listInstances(request: unknown): Promise<{
+readonly items?: readonly OciComputeInstance[];
+readonly opcNextPage?: string;
+}>;
+}
+
+interface OciComputeInstance {
+readonly id?: string;
+readonly displayName?: string;
+readonly lifecycleState?: string;
+readonly region?: string;
+readonly shape?: string;
+readonly freeformTags?: Readonly<Record<string, unknown>>;
+readonly definedTags?: Readonly<Record<string, unknown>>;
 }
 
 export class OciSdkIngestionProvider implements CloudIngestionProvider {
@@ -87,13 +104,22 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
       return this.collectBillingExport(job);
     }
 
-    if (job.sourceType === 'INVENTORY') {
-      return this.emptyResult(0, [
-        'OCI inventory collection is pending; only Monitoring technical metrics are implemented in this worker slice.',
-      ], {
-        inventoryImplemented: false,
-      });
-    }
+if (job.sourceType === 'INVENTORY') {
+const inventory = await this.collectInventoryResources(job);
+return {
+apiCallCount: inventory.apiCallCount,
+objectsProcessed: inventory.resources.length,
+focusRows: [],
+resources: inventory.resources,
+metricSamples: [],
+warnings: inventory.warnings,
+coverage: {
+inventorySource: inventory.source,
+inventoryImplemented: true,
+resources: inventory.resources.length,
+},
+};
+}
 
     if (job.sourceType !== 'TECHNICAL_METRIC') {
       return this.emptyResult(0, [`Unsupported OCI ingestion source ${job.sourceType}`], {});
@@ -162,6 +188,10 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
       metricSamples: samples,
       warnings: samples.length === 0 ? ['OCI Monitoring returned no datapoints for the configured metric definitions.'] : [],
       coverage: {
+        requestedStart: job.targetStart.toISOString(),
+        requestedEnd: job.targetEnd.toISOString(),
+        granularitySeconds: 1800,
+        datapointsReturned: samples.length,
         metricDefinitions: definitions.length,
         samples: samples.length,
         memoryRequiresComputeAgent: true,
@@ -185,43 +215,59 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
       });
     }
 
-    const focusRows: NormalizedFocusCostLineItem[] = [];
     let apiCallCount = discovery.apiCallCount;
-
-    for (const object of objects) {
-      apiCallCount += 1;
-      const response = await this.withProviderRetry(() => client.getObject({
-        namespaceName: object.namespaceName,
-        bucketName: object.bucketName,
-        objectName: object.objectName,
-      }));
-      const bytes = await this.bodyToBytes(response.getObjectBody ?? response.value);
-      const csvText = decodeMaybeGzip(bytes, object.objectName);
-      focusRows.push(...parseFocusCsvToLineItems({
-        tenantId: job.tenantId,
-        cloudConnectionId: job.cloudConnectionId,
-        provider: 'OCI',
-        focusVersion: object.focusVersion,
-        csvText,
-      }));
-    }
+    apiCallCount += objects.length;
 
     return {
       apiCallCount,
       objectsProcessed: objects.length,
-      focusRows,
+      focusRows: [],
+      focusBatches: this.streamFocusObjects(job, client, objects),
       resources: [],
       metricSamples: [],
-      warnings: focusRows.length === 0 ? ['OCI FOCUS objects were read but no valid rows were parsed.'] : [],
+      warnings: [],
       coverage: {
         costSource: 'OCI Cost Reports FOCUS',
         expectedRefreshHours: 6,
         objectsConfigured: objects.length,
         objectsDiscovered: discovery.objects.length,
         prefixesConfigured: this.readFocusLocations(job).length,
-        rowsParsed: focusRows.length,
+        rowsParsed: 'streamed',
       },
     };
+  }
+
+  private async *streamFocusObjects(
+    job: CloudIngestionJobContext,
+    client: OciObjectStorageClient,
+    objects: readonly OciFocusReportObject[],
+  ): AsyncGenerator<readonly NormalizedFocusCostLineItem[]> {
+    const batch: NormalizedFocusCostLineItem[] = [];
+    for (const object of objects) {
+      const response = await this.withProviderRetry(() => client.getObject({
+        namespaceName: object.namespaceName,
+        bucketName: object.bucketName,
+        objectName: object.objectName,
+      }));
+      for await (const line of parseFocusCsvStream(
+        toAsyncByteChunks(response.getObjectBody ?? response.value),
+        {
+          tenantId: job.tenantId,
+          cloudConnectionId: job.cloudConnectionId,
+          provider: 'OCI',
+          focusVersion: object.focusVersion,
+        },
+        object.objectName,
+      )) {
+        batch.push(line);
+        if (batch.length >= 1000) {
+          yield batch.splice(0, batch.length);
+        }
+      }
+    }
+    if (batch.length > 0) {
+      yield batch;
+    }
   }
 
   private createMonitoringClient(job: CloudIngestionJobContext): OciMonitoringClient {
@@ -233,22 +279,32 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     return client as unknown as OciMonitoringClient;
   }
 
-  private createObjectStorageClient(job: CloudIngestionJobContext): OciObjectStorageClient {
-    const provider = this.createAuthProvider(job);
-    const client = new oci.objectstorage.ObjectStorageClient({
-      authenticationDetailsProvider: provider,
-    });
+private createObjectStorageClient(job: CloudIngestionJobContext): OciObjectStorageClient {
+const provider = this.createAuthProvider(job);
+const client = new oci.objectstorage.ObjectStorageClient({
+authenticationDetailsProvider: provider,
+});
 
-    return client as unknown as OciObjectStorageClient;
-  }
+return client as unknown as OciObjectStorageClient;
+}
+
+private createComputeClient(job: CloudIngestionJobContext): OciComputeClient {
+const provider = this.createAuthProvider(job);
+const client = new oci.core.ComputeClient({
+authenticationDetailsProvider: provider,
+});
+
+return client as unknown as OciComputeClient;
+}
 
   private createAuthProvider(job: CloudIngestionJobContext): oci.common.AuthenticationDetailsProvider {
-    const credential = getCredential(job.connection.credentials, [
-      'METRICS_READ',
-      'BILLING_EXPORT_READ',
-      'STORAGE_READ',
-      'OPERATIONAL',
-    ]);
+const credential = getCredential(job.connection.credentials, [
+'INVENTORY_READ',
+'METRICS_READ',
+'BILLING_EXPORT_READ',
+'STORAGE_READ',
+'OPERATIONAL',
+]);
     if (credential === undefined) {
       throw new Error('OCI METRICS_READ, BILLING_EXPORT_READ, STORAGE_READ or OPERATIONAL credential is required');
     }
@@ -283,8 +339,173 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     });
   }
 
-  private readFocusObjects(job: CloudIngestionJobContext): readonly OciFocusReportObject[] {
-    return readObjectArray(job.connection.metadata, 'ociFocusReportObjects').map((item) => ({
+private async collectInventoryResources(job: CloudIngestionJobContext): Promise<{
+readonly apiCallCount: number;
+readonly resources: readonly NormalizedCloudResource[];
+readonly warnings: readonly string[];
+readonly source: string;
+}> {
+const explicit = readObjectArray(job.connection.metadata, 'ociInventoryResources').map((item) => {
+      const regionId = optionalString(item['regionId']) ?? optionalString(item['region']) ?? job.connection.defaultRegion;
+      return {
+        tenantId: job.tenantId,
+        cloudConnectionId: job.cloudConnectionId,
+        provider: 'OCI' as const,
+        externalResourceId: requireString(item['externalResourceId'], 'ociInventoryResources.externalResourceId'),
+        name: optionalString(item['name'])
+          ?? optionalString(item['displayName'])
+          ?? requireString(item['externalResourceId'], 'ociInventoryResources.externalResourceId'),
+        resourceType: optionalString(item['resourceType']) ?? 'COMPUTE_INSTANCE',
+        serviceName: optionalString(item['serviceName']) ?? 'Oracle Compute',
+        ...(regionId !== undefined ? { regionId } : {}),
+        status: this.normalizeResourceStatus(optionalString(item['status'])),
+        rawResource: {
+          source: 'OCI_INVENTORY_METADATA',
+          ...item,
+        },
+      };
+    });
+
+    const inferred = this.readMetricDefinitions(job).map((definition) => ({
+      tenantId: job.tenantId,
+      cloudConnectionId: job.cloudConnectionId,
+      provider: 'OCI' as const,
+      externalResourceId: definition.resourceId,
+      name: definition.resourceId,
+      resourceType: 'COMPUTE_INSTANCE',
+      serviceName: 'Oracle Compute',
+      ...(job.connection.defaultRegion !== undefined ? { regionId: job.connection.defaultRegion } : {}),
+      status: 'UNKNOWN' as const,
+      rawResource: {
+        source: 'OCI_METRIC_DEFINITION',
+        namespace: definition.namespace,
+        compartmentId: definition.compartmentId,
+        metricName: definition.metricName,
+      },
+}));
+
+let sdkResources: readonly NormalizedCloudResource[] = [];
+let apiCallCount = 0;
+const warnings: string[] = [];
+
+try {
+const inventory = await this.collectComputeInventoryResources(job);
+sdkResources = inventory.resources;
+apiCallCount = inventory.apiCallCount;
+} catch (error) {
+warnings.push(`OCI inventory SDK skipped: ${error instanceof Error ? error.message : String(error)}`);
+}
+
+const resources = this.mergeInventoryResources([...inferred, ...explicit, ...sdkResources]);
+
+if (resources.length === 0) {
+warnings.push('No OCI inventory resources found from Compute SDK, metadata or metric definitions.');
+}
+
+return {
+apiCallCount,
+resources,
+warnings,
+source: sdkResources.length > 0 ? 'oci_compute_sdk_with_metadata_fallback' : 'metadata_and_metric_definitions',
+};
+}
+
+private async collectComputeInventoryResources(
+job: CloudIngestionJobContext,
+): Promise<{ readonly apiCallCount: number; readonly resources: readonly NormalizedCloudResource[] }> {
+const client = this.createComputeClient(job);
+const compartmentIds = this.readInventoryCompartments(job);
+const resources: NormalizedCloudResource[] = [];
+let apiCallCount = 0;
+
+for (const compartmentId of compartmentIds) {
+let page: string | undefined;
+
+do {
+apiCallCount += 1;
+const response = await this.withProviderRetry(() => client.listInstances({
+compartmentId,
+...(page !== undefined ? { page } : {}),
+}));
+
+for (const instance of response.items ?? []) {
+if (instance.id === undefined) continue;
+
+const tags = this.mergeTags(instance.freeformTags, instance.definedTags);
+resources.push({
+tenantId: job.tenantId,
+cloudConnectionId: job.cloudConnectionId,
+provider: 'OCI',
+externalResourceId: instance.id,
+name: instance.displayName ?? instance.id,
+resourceType: 'COMPUTE_INSTANCE',
+serviceName: 'Oracle Compute',
+...(job.connection.defaultRegion !== undefined ? { regionId: job.connection.defaultRegion } : {}),
+status: this.normalizeResourceStatus(instance.lifecycleState),
+tags,
+rawResource: {
+source: 'OCI_COMPUTE_SDK',
+compartmentId,
+shape: instance.shape,
+lifecycleState: instance.lifecycleState,
+},
+});
+}
+
+page = response.opcNextPage;
+} while (page !== undefined);
+}
+
+return { apiCallCount, resources };
+}
+
+  private mergeInventoryResources(resources: readonly NormalizedCloudResource[]): readonly NormalizedCloudResource[] {
+    const byExternalResourceId = new Map<string, NormalizedCloudResource>();
+    for (const resource of resources) {
+      const previous = byExternalResourceId.get(resource.externalResourceId);
+      if (previous === undefined || previous.rawResource?.['source'] === 'OCI_METRIC_DEFINITION') {
+        byExternalResourceId.set(resource.externalResourceId, resource);
+      }
+    }
+
+    return [...byExternalResourceId.values()];
+  }
+
+private normalizeResourceStatus(status: string | undefined): NormalizedCloudResource['status'] {
+const normalized = status?.toUpperCase();
+if (normalized === 'ACTIVE' || normalized === 'RUNNING' || normalized === 'AVAILABLE') {
+return 'ACTIVE';
+    }
+
+    if (normalized === 'STOPPED' || normalized === 'STOPPING') {
+      return 'STOPPED';
+    }
+
+    if (normalized === 'TERMINATED' || normalized === 'DELETED') {
+      return 'TERMINATED';
+    }
+
+return 'UNKNOWN';
+}
+
+private readInventoryCompartments(job: CloudIngestionJobContext): readonly string[] {
+const configured = readStringArray(job.connection.metadata?.['ociInventoryCompartments']);
+const metricCompartments = this.readMetricDefinitions(job).map((definition) => definition.compartmentId);
+return [...new Set([...configured, ...metricCompartments, job.connection.rootExternalId])];
+}
+
+private mergeTags(
+freeformTags: Readonly<Record<string, unknown>> | undefined,
+definedTags: Readonly<Record<string, unknown>> | undefined,
+): Readonly<Record<string, unknown>> {
+return {
+...(freeformTags ?? {}),
+...(definedTags !== undefined ? { definedTags } : {}),
+};
+}
+
+private readFocusObjects(job: CloudIngestionJobContext): readonly OciFocusReportObject[] {
+return readObjectArray(job.connection.metadata, 'ociFocusReportObjects').map((item) => ({
       namespaceName: requireString(item['namespaceName'], 'ociFocusReportObjects.namespaceName'),
       bucketName: requireString(item['bucketName'], 'ociFocusReportObjects.bucketName'),
       objectName: requireString(item['objectName'], 'ociFocusReportObjects.objectName'),
@@ -365,78 +586,6 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     };
   }
 
-  private async bodyToBytes(body: unknown): Promise<Uint8Array> {
-    if (body instanceof Uint8Array) {
-      return body;
-    }
-
-    if (hasArrayBufferMethod(body)) {
-      return new Uint8Array(await body.arrayBuffer());
-    }
-
-    if (body instanceof Readable) {
-      return this.asyncIterableToBytes(body);
-    }
-
-    if (isAsyncIterable(body)) {
-      return this.asyncIterableToBytes(body);
-    }
-
-    if (hasGetReaderMethod(body)) {
-      return this.readableStreamToBytes(body);
-    }
-
-    if (typeof body === 'string') {
-      return Buffer.from(body, 'utf8');
-    }
-
-    throw new Error('Unsupported OCI Object Storage body type');
-  }
-
-  private async readableStreamToBytes(body: { getReader(): ReadableStreamDefaultReader<unknown> }): Promise<Uint8Array> {
-    const reader = body.getReader();
-    const chunks: Buffer[] = [];
-
-    try {
-      while (true) {
-        const read = await reader.read();
-        if (read.done === true) {
-          break;
-        }
-
-        const value = read.value;
-        if (value instanceof Uint8Array) {
-          chunks.push(Buffer.from(value));
-        } else if (typeof value === 'string') {
-          chunks.push(Buffer.from(value, 'utf8'));
-        } else {
-          chunks.push(Buffer.from(value as ArrayBuffer));
-        }
-      }
-    } finally {
-      reader.releaseLock();
-    }
-
-    return Buffer.concat(chunks);
-  }
-
-  private async asyncIterableToBytes(body: AsyncIterable<unknown>): Promise<Uint8Array> {
-    const chunks: Buffer[] = [];
-    for await (const chunk of body) {
-      if (Buffer.isBuffer(chunk)) {
-        chunks.push(chunk);
-      } else if (chunk instanceof Uint8Array) {
-        chunks.push(Buffer.from(chunk));
-      } else if (typeof chunk === 'string') {
-        chunks.push(Buffer.from(chunk, 'utf8'));
-      } else {
-        chunks.push(Buffer.from(chunk as ArrayBuffer));
-      }
-    }
-
-    return Buffer.concat(chunks);
-  }
-
   private isFocusObjectName(name: string): boolean {
     const lower = name.toLowerCase();
     return lower.endsWith('.csv') || lower.endsWith('.csv.gz');
@@ -476,25 +625,4 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
       setTimeout(resolve, ms);
     });
   }
-}
-
-function hasArrayBufferMethod(value: unknown): value is { arrayBuffer(): Promise<ArrayBuffer> } {
-  return value !== null &&
-    typeof value === 'object' &&
-    'arrayBuffer' in value &&
-    typeof (value as { readonly arrayBuffer?: unknown }).arrayBuffer === 'function';
-}
-
-function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
-  return value !== null &&
-    typeof value === 'object' &&
-    Symbol.asyncIterator in value &&
-    typeof (value as { readonly [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function';
-}
-
-function hasGetReaderMethod(value: unknown): value is { getReader(): ReadableStreamDefaultReader<unknown> } {
-  return value !== null &&
-    typeof value === 'object' &&
-    'getReader' in value &&
-    typeof (value as { readonly getReader?: unknown }).getReader === 'function';
 }

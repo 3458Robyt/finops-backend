@@ -29,6 +29,7 @@ export function createIngestionRoutes(
   const router = Router();
 
   router.post('/jobs', requireAuth, cloudConnectionController.queueTenantIngestion);
+  router.post('/backfill', requireAuth, cloudConnectionController.queueTechnicalBackfill);
   router.post('/focus-sources', requireAuth, cloudConnectionController.configureFocusSource);
   router.get('/history', requireAuth, cloudConnectionController.listIngestionHistory);
   router.get('/data-quality', requireAuth, cloudConnectionController.listDataQuality);

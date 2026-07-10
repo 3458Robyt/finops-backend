@@ -24,10 +24,6 @@ import {
   countSimilarApprovedEventRows,
   queryRecommendationLearningContext,
 } from './queries/agentLearningSearchQueries.js';
-import {
-  linkMemoryToGraph,
-  upsertKnowledgeNode,
-} from './queries/agentKnowledgeGraphWrites.js';
 
 /**
  * Adaptador de infraestructura (Clean Architecture) que implementa el puerto de
@@ -36,7 +32,7 @@ import {
  * Responsabilidad: persistir y consultar el aprendizaje del agente IA. Gestiona
  * los eventos de aprendizaje (`agent_learning_events`), las memorias del agente
  * (`agent_memory`, con ámbito `LOCAL` por tenant o `GLOBAL` compartido) y las
- * relaciones derivadas en el grafo de conocimiento. Incluye consultas de texto
+ * consultas de texto completo. Incluye consultas de texto
  * completo (en español) sobre memorias y casos previos, y el conteo de patrones
  * de decisión similares. Las operaciones por tenant aplican aislamiento
  * multi-tenant, salvo las memorias `GLOBAL`, que se comparten entre tenants.
@@ -46,7 +42,7 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
 
   /**
    * Crea un evento de aprendizaje a partir de una decisión sobre una
-   * recomendación y registra el nodo de conocimiento asociado.
+   * recomendación.
    *
    * Persiste el evento en estado inicial `PENDING` (el procesamiento/auditoría
    * ocurre después) y luego asegura (idempotente) un nodo de conocimiento de tipo
@@ -77,18 +73,6 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
       },
     });
 
-    await upsertKnowledgeNode(this.prisma, {
-      tenantId: input.tenantId,
-      scope: 'LOCAL',
-      nodeType: 'recommendation',
-      externalId: input.recommendationId,
-      label: input.title,
-      metadata: {
-        recommendationType: input.recommendationType,
-        severity: input.severity,
-      },
-    });
-
     return toLearningEvent(row);
   }
 
@@ -112,7 +96,7 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
       return null;
     }
 
-    if (row.decision !== 'APPROVED' && row.decision !== 'REJECTED') {
+    if (row.status !== 'PENDING' || (row.decision !== 'APPROVED' && row.decision !== 'REJECTED')) {
       return null;
     }
 
@@ -122,10 +106,96 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
       recommendationId: row.recommendationId,
       decisionId: row.decisionId,
       userId: row.userId,
-      decision: row.decision,
+      decision: row.decision as 'APPROVED' | 'REJECTED',
       reasonCode: row.reasonCode,
+      attempts: row.attempts,
+      maxAttempts: row.maxAttempts,
       ...(row.reason !== null ? { reason: row.reason } : {}),
     };
+  }
+
+  public async claimNextQueuedEvent(input: {
+    readonly workerId: string;
+    readonly leaseExpiredBefore: Date;
+  }): Promise<QueuedAgentLearningEvent | null> {
+    const now = new Date();
+
+    return this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<readonly { readonly id: string }[]>`
+        SELECT id
+        FROM agent_learning_events
+        WHERE status = 'PENDING'
+          AND next_attempt_at <= ${now}
+          AND attempts < max_attempts
+          AND (locked_at IS NULL OR locked_at < ${input.leaseExpiredBefore})
+        ORDER BY next_attempt_at ASC, created_at ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+      `;
+      const claimed = rows[0];
+      if (claimed === undefined) {
+        return null;
+      }
+
+      const row = await tx.agentLearningEvent.update({
+        where: { id: claimed.id },
+        data: {
+          attempts: { increment: 1 },
+          lockedAt: now,
+          lockedBy: input.workerId,
+        },
+      });
+
+      return {
+        id: row.id,
+        tenantId: row.tenantId,
+        recommendationId: row.recommendationId,
+        decisionId: row.decisionId,
+        userId: row.userId,
+        decision: row.decision as 'APPROVED' | 'REJECTED',
+        reasonCode: row.reasonCode,
+        attempts: row.attempts,
+        maxAttempts: row.maxAttempts,
+        ...(row.reason !== null ? { reason: row.reason } : {}),
+      };
+    });
+  }
+
+  public async releaseEventForRetry(input: {
+    readonly eventId: string;
+    readonly workerId: string;
+    readonly errorMessage: string;
+    readonly nextAttemptAt: Date;
+  }): Promise<'PENDING' | 'SKIPPED'> {
+    return this.prisma.$transaction(async (tx) => {
+      const event = await tx.agentLearningEvent.findUnique({
+        where: { id: input.eventId },
+        select: { attempts: true, maxAttempts: true, decisionId: true, lockedBy: true },
+      });
+      if (event === null || event.lockedBy !== input.workerId) {
+        return 'SKIPPED';
+      }
+
+      const status = event.attempts >= event.maxAttempts ? 'SKIPPED' : 'PENDING';
+      await tx.agentLearningEvent.update({
+        where: { id: input.eventId },
+        data: {
+          status,
+          errorMessage: input.errorMessage,
+          ...(status === 'PENDING' ? { nextAttemptAt: input.nextAttemptAt } : {}),
+          lockedAt: null,
+          lockedBy: null,
+        },
+      });
+      await tx.recommendationDecision.update({
+        where: { id: event.decisionId },
+        data: {
+          learningStatus: status,
+          ...(status === 'SKIPPED' ? { learningProcessedAt: new Date() } : {}),
+        },
+      });
+      return status;
+    });
   }
 
   /**
@@ -152,6 +222,8 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
           ...(input.auditScore !== undefined ? { auditScore: input.auditScore } : {}),
           ...(input.auditReport !== undefined ? { auditReport: input.auditReport as Prisma.InputJsonValue } : {}),
           ...(input.errorMessage !== undefined ? { errorMessage: input.errorMessage } : {}),
+          lockedAt: null,
+          lockedBy: null,
         },
       });
 
@@ -170,7 +242,7 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
   }
 
   /**
-   * Crea una memoria del agente y la enlaza en el grafo de conocimiento, de forma
+   * Crea una memoria del agente, de forma
    * atómica.
    *
    * Dentro de una transacción: (1) crea la memoria (con su veredicto/score/reporte
@@ -185,8 +257,14 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
    */
   public async createMemory(input: CreateAgentMemoryInput): Promise<AgentMemory> {
     const row = await this.prisma.$transaction(async (tx) => {
-      const memory = await tx.agentMemory.create({
-        data: {
+      const memory = await tx.agentMemory.upsert({
+        where: {
+          sourceLearningEventId_scope: {
+            sourceLearningEventId: input.sourceLearningEventId,
+            scope: input.scope,
+          },
+        },
+        create: {
           ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
           scope: input.scope,
           memoryType: input.memoryType,
@@ -199,9 +277,8 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
           auditReport: input.auditReport as Prisma.InputJsonValue,
           fingerprint: input.fingerprint,
         },
+        update: {},
       });
-
-      await linkMemoryToGraph(tx, input, memory.id);
 
       return memory;
     });

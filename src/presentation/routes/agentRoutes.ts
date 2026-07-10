@@ -17,7 +17,6 @@ import { AgentController } from '../controllers/AgentController.js';
  * | POST   | /tenant-rules                | requireAuth | agentController.createTenantRule|
  * | PATCH  | /tenant-rules/:id/disable    | requireAuth | agentController.disableTenantRule|
  * | GET    | /context-traces              | requireAuth | agentController.listContextTraces|
- * | GET    | /knowledge-graph             | requireAuth | agentController.getKnowledgeGraph|
  * | POST   | /context/backfill            | requireAuth | agentController.backfillContext|
  *
  * @param agentController Controlador con los handlers del agente.
@@ -36,7 +35,6 @@ export function createAgentRoutes(
   router.post('/tenant-rules', requireAuth, agentController.createTenantRule);
   router.patch('/tenant-rules/:id/disable', requireAuth, agentController.disableTenantRule);
   router.get('/context-traces', requireAuth, agentController.listContextTraces);
-  router.get('/knowledge-graph', requireAuth, agentController.getKnowledgeGraph);
   router.post('/context/backfill', requireAuth, agentController.backfillContext);
 
   return router;

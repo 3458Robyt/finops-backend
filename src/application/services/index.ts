@@ -15,7 +15,6 @@ export { AgentLearningService } from './AgentLearningService.js';
 export { AiObservabilityService } from './AiObservabilityService.js';
 export { ContextEngineService } from './ContextEngineService.js';
 export { ContextSummaryBuilderService } from './ContextSummaryBuilderService.js';
-export { KnowledgeGraphService } from './KnowledgeGraphService.js';
 export {
   SavingsReminderService,
   type SavingsReminderQuery,

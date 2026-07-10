@@ -1,8 +1,55 @@
 import { describe, expect, it } from 'vitest';
-import type { CloudIngestionJobContext } from '../../domain/interfaces/ICloudIngestionProvider.js';
+import type {
+  CloudIngestionJobContext,
+  CloudIngestionResult,
+  NormalizedFocusCostLineItem,
+} from '../../domain/interfaces/ICloudIngestionProvider.js';
 import { AwsSdkIngestionProvider } from './AwsSdkIngestionProvider.js';
 
 describe('AwsSdkIngestionProvider', () => {
+  it('collects EC2 inventory resources through the AWS SDK', async () => {
+    const provider = new AwsSdkIngestionProvider();
+    Object.assign(provider as unknown as {
+      assumeRole: () => Promise<unknown>;
+      createEc2Client: () => unknown;
+    }, {
+      assumeRole: async () => ({ accessKeyId: 'test', secretAccessKey: 'test', sessionToken: 'test' }),
+      createEc2Client: () => ({
+        send: async () => ({
+          Reservations: [
+            {
+              Instances: [
+                {
+                  InstanceId: 'i-0123456789abcdef0',
+                  InstanceType: 't3.micro',
+                  State: { Name: 'running' },
+                  Tags: [{ Key: 'Name', Value: 'api-prod' }],
+                },
+              ],
+            },
+          ],
+        }),
+      }),
+    });
+
+    const result = await provider.collect({
+      ...buildMetricJob(),
+      sourceType: 'INVENTORY',
+    });
+
+    expect(result.resources).toEqual([
+      expect.objectContaining({
+        provider: 'AWS',
+        externalResourceId: 'i-0123456789abcdef0',
+        name: 'api-prod',
+        resourceType: 'COMPUTE_INSTANCE',
+        serviceName: 'Amazon EC2',
+        status: 'ACTIVE',
+      }),
+    ]);
+    expect(result.coverage).toMatchObject({ inventorySource: 'aws_ec2_sdk_with_metadata_fallback' });
+  });
+
   it('normalizes metric samples from CloudWatch GetMetricData results', async () => {
     const provider = new AwsSdkIngestionProvider();
     const requests: unknown[] = [];
@@ -83,11 +130,13 @@ describe('AwsSdkIngestionProvider', () => {
     });
 
     const result = await provider.collect(buildAwsFocusJob());
+    const focusRows = await collectFocusRows(result.focusBatches);
 
     expect(commands).toEqual(['ListObjectsV2Command', 'GetObjectCommand']);
     expect(result.objectsProcessed).toBe(1);
-    expect(result.focusRows).toHaveLength(1);
-    expect(result.focusRows[0]).toMatchObject({
+    expect(result.focusRows).toHaveLength(0);
+    expect(focusRows).toHaveLength(1);
+    expect(focusRows[0]).toMatchObject({
       provider: 'AWS',
       serviceName: 'AmazonEC2',
       resourceId: 'i-0123456789abcdef0',
@@ -97,11 +146,26 @@ describe('AwsSdkIngestionProvider', () => {
     });
     expect(result.coverage).toMatchObject({
       objectsDiscovered: 1,
-      rowsParsed: 1,
+      rowsParsed: 'streamed',
     });
     expect(result.warnings).toEqual([]);
   });
 });
+
+async function collectFocusRows(
+  batches: CloudIngestionResult['focusBatches'],
+): Promise<NormalizedFocusCostLineItem[]> {
+  const rows: NormalizedFocusCostLineItem[] = [];
+  if (batches === undefined) {
+    return rows;
+  }
+
+  for await (const batch of batches) {
+    rows.push(...batch);
+  }
+
+  return rows;
+}
 
 function buildMetricJob(): CloudIngestionJobContext {
   return {

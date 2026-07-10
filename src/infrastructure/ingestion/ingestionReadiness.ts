@@ -157,6 +157,7 @@ export function summarizeReadinessJobResult(resultSummary: unknown): Readonly<Re
     apiCallCount: resultSummary['apiCallCount'],
     objectsProcessed: resultSummary['objectsProcessed'],
     focusRows: resultSummary['focusRows'],
+    focusRowsInserted: resultSummary['focusRowsInserted'],
     costMetrics: resultSummary['costMetrics'],
     costMetricsInserted: resultSummary['costMetricsInserted'],
     metricSamples: resultSummary['metricSamples'],

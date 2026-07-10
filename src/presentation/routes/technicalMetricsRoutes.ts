@@ -14,6 +14,9 @@ import type { TechnicalMetricsController } from '../controllers/TechnicalMetrics
  * |--------|-------------|-------------|------------------------------------------|
  * | GET    | /resources  | requireAuth | technicalMetricsController.listResources |
  * | GET    | /samples    | requireAuth | technicalMetricsController.listSamples   |
+ * | GET    | /overview   | requireAuth | technicalMetricsController.getOverview   |
+ * | GET    | /series     | requireAuth | technicalMetricsController.getSeries     |
+ * | GET    | /coverage   | requireAuth | technicalMetricsController.getCoverage   |
  *
  * @param technicalMetricsController Controlador con los handlers de métricas técnicas.
  * @param requireAuth Middleware que valida el Bearer token y rellena `req.auth`.
@@ -27,6 +30,9 @@ export function createTechnicalMetricsRoutes(
 
   router.get('/resources', requireAuth, technicalMetricsController.listResources);
   router.get('/samples', requireAuth, technicalMetricsController.listSamples);
+  router.get('/overview', requireAuth, technicalMetricsController.getOverview);
+  router.get('/series', requireAuth, technicalMetricsController.getSeries);
+  router.get('/coverage', requireAuth, technicalMetricsController.getCoverage);
 
   return router;
 }

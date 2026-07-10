@@ -2,7 +2,6 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { AgentInstructionService } from '../../application/services/AgentInstructionService.js';
 import type { ContextSummaryBuilderService } from '../../application/services/ContextSummaryBuilderService.js';
-import type { KnowledgeGraphService } from '../../application/services/KnowledgeGraphService.js';
 import type { IAgentContextRepository } from '../../domain/interfaces/IAgentContextRepository.js';
 import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import { agentAdminRoles, agentTechnicalRoles } from '../../domain/models/AgentContext.js';
@@ -39,7 +38,6 @@ const tenantRuleSchema = z.object({
  * - {@link AgentInstructionService}: gestión del perfil activo y de las reglas tenant.
  * - {@link IAgentContextRepository}: lectura de trazas de contexto IA.
  * - {@link ContextSummaryBuilderService}: backfill de resúmenes de contexto del tenant.
- * - {@link KnowledgeGraphService}: grafo contextual y backfill del grafo.
  *
  * Todas las rutas requieren autenticación; varias operaciones exigen además rol
  * de administrador de agente o rol técnico de agente.
@@ -49,7 +47,6 @@ export class AgentController {
     private readonly instructionService: AgentInstructionService,
     private readonly contextRepository: IAgentContextRepository,
     private readonly summaryBuilder: ContextSummaryBuilderService,
-    private readonly knowledgeGraphService: KnowledgeGraphService,
   ) {}
 
   /**
@@ -131,7 +128,7 @@ export class AgentController {
   public listTenantRules = async (req: Request, res: Response): Promise<void> => {
     try {
       const auth = this.requireAuthenticated(req);
-      this.requireAgentAdmin(auth.role);
+      this.requireAgentTechnical(auth.role);
       const rules = await this.instructionService.listTenantRules(auth.tenantId);
       res.status(200).json({ success: true, rules });
     } catch (error: unknown) {
@@ -246,52 +243,14 @@ export class AgentController {
   };
 
   /**
-   * Devuelve el grafo de conocimiento contextual del tenant, opcionalmente
-   * centrado en una recomendación o un recurso concretos (profundidad fija 2).
-   *
-   * Sirve: GET /api/v1/agent/knowledge-graph
-   * Autenticación: requerida. Rol: técnico de agente ({@link agentTechnicalRoles}).
-   *
-   * Parámetros de consulta (opcionales):
-   * - `recommendationId` (`req.query.recommendationId`): centra el grafo en una recomendación.
-   * - `resourceId` (`req.query.resourceId`): centra el grafo en un recurso.
-   *
-   * Respuestas:
-   * - 200: `{ success: true, graph }`.
-   * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
-   * - 403: el rol del usuario no es técnico de agente.
-   * - 500: error inesperado al cargar el grafo.
-   */
-  public getKnowledgeGraph = async (req: Request, res: Response): Promise<void> => {
-    try {
-      const auth = this.requireAuthenticated(req);
-      this.requireAgentTechnical(auth.role);
-      const recommendationId = this.parseString(req.query['recommendationId']);
-      const resourceId = this.parseString(req.query['resourceId']);
-
-      const graph = await this.knowledgeGraphService.getContextualGraph({
-        tenantId: auth.tenantId,
-        ...(recommendationId !== undefined ? { recommendationId } : {}),
-        ...(resourceId !== undefined ? { resourceId } : {}),
-        depth: 2,
-      });
-
-      res.status(200).json({ success: true, graph });
-    } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible cargar el grafo contextual');
-    }
-  };
-
-  /**
-   * Ejecuta el backfill de contexto del tenant: reconstruye en paralelo los
-   * resúmenes de contexto y el grafo de conocimiento.
+   * Ejecuta el backfill de contexto del tenant reconstruyendo los resúmenes de contexto.
    *
    * Sirve: POST /api/v1/agent/context/backfill
    * Autenticación: requerida. Rol: administrador de agente ({@link agentAdminRoles}).
    * Usa `req.auth.tenantId` y `req.auth.userId` para acotar y registrar el proceso.
    *
    * Respuestas:
-   * - 200: `{ success: true, summaries, graph }` con los resultados del backfill.
+   * - 200: `{ success: true, summaries }` con los resultados del backfill.
    * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
    * - 403: el rol del usuario no es administrador de agente.
    * - 500: error inesperado durante el backfill.
@@ -300,21 +259,14 @@ export class AgentController {
     try {
       const auth = this.requireAuthenticated(req);
       this.requireAgentAdmin(auth.role);
-      const [summaries, graph] = await Promise.all([
-        this.summaryBuilder.backfillTenantContext({
-          tenantId: auth.tenantId,
-          userId: auth.userId,
-        }),
-        this.knowledgeGraphService.backfillTenantGraph({
-          tenantId: auth.tenantId,
-          userId: auth.userId,
-        }),
-      ]);
+      const summaries = await this.summaryBuilder.backfillTenantContext({
+        tenantId: auth.tenantId,
+        userId: auth.userId,
+      });
 
       res.status(200).json({
         success: true,
         summaries,
-        graph,
       });
     } catch (error: unknown) {
       this.handleError(error, res, 'No fue posible ejecutar backfill de contexto');

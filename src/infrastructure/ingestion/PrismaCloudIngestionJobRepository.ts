@@ -46,10 +46,13 @@ export interface IngestionJobExecutionSummary {
   readonly apiCallCount: number;
   readonly objectsProcessed: number;
   readonly focusRows: number;
+  readonly focusRowsInserted: number;
   readonly costMetrics: number;
   readonly costMetricsInserted: number;
   readonly resources: number;
+  readonly metricDerivedResources: number;
   readonly metricSamples: number;
+  readonly metricSamplesLinkedToResource: number;
   readonly warnings: readonly string[];
   readonly coverage: Readonly<Record<string, unknown>>;
 }
@@ -67,12 +70,28 @@ export class PrismaCloudIngestionJobRepository {
 
   public async claimNextPendingJob(workerId: string): Promise<CloudIngestionJobContext | null> {
     const now = new Date();
+    const leaseExpiredBefore = new Date(now.getTime() - readPositiveIntegerEnv('INGESTION_JOB_LEASE_MS', 300_000));
 
     return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        UPDATE ingestion_jobs
+        SET status = 'FAILED',
+            completed_at = ${now},
+            error_message = 'Ingestion job lease expired after exhausting retry attempts',
+            locked_at = NULL,
+            locked_by = NULL
+        WHERE status = 'RUNNING'
+          AND locked_at < ${leaseExpiredBefore}
+          AND attempts >= max_attempts
+      `;
       const rows = await tx.$queryRaw<ClaimedJobRow[]>`
         SELECT id
         FROM ingestion_jobs
-        WHERE status = 'PENDING'
+        WHERE attempts < max_attempts
+          AND (
+            status = 'PENDING'
+            OR (status = 'RUNNING' AND locked_at < ${leaseExpiredBefore})
+          )
         ORDER BY created_at ASC
         FOR UPDATE SKIP LOCKED
         LIMIT 1
@@ -100,15 +119,44 @@ export class PrismaCloudIngestionJobRepository {
     });
   }
 
+  public async refreshJobLease(jobId: string, workerId: string): Promise<boolean> {
+    const updated = await this.prisma.ingestionJob.updateMany({
+      where: { id: jobId, status: 'RUNNING', lockedBy: workerId },
+      data: { lockedAt: new Date() },
+    });
+    return updated.count === 1;
+  }
+
   public async completeJob(
     job: CloudIngestionJobContext,
     result: CloudIngestionResult,
     startedAt: Date,
   ): Promise<IngestionJobExecutionSummary> {
-    await this.upsertFocusRows(this.prisma, result.focusRows);
-    const costMetricProjection = await this.projectFocusRowsToCostMetrics(this.prisma, job, result.focusRows);
-    await this.upsertResources(this.prisma, result.resources);
-    await this.insertMetricSamples(this.prisma, result.metricSamples);
+    let focusRowsProcessed = result.focusRows.length;
+    let focusRowsInserted = await this.insertFocusRows(this.prisma, result.focusRows);
+    let costMetricProjection = await this.projectFocusRowsToCostMetrics(this.prisma, job, result.focusRows);
+
+    if (result.focusBatches !== undefined) {
+      for await (const batch of result.focusBatches) {
+        focusRowsProcessed += batch.length;
+        focusRowsInserted += await this.insertFocusRows(this.prisma, batch);
+        const batchProjection = await this.projectFocusRowsToCostMetrics(this.prisma, job, batch);
+        costMetricProjection = {
+          projected: costMetricProjection.projected + batchProjection.projected,
+          inserted: costMetricProjection.inserted + batchProjection.inserted,
+        };
+      }
+    }
+
+    const metricDerivedResources = this.buildMetricDerivedResources(job, result.metricSamples);
+    const resources = this.mergeResources([...result.resources, ...metricDerivedResources]);
+    const resourceIdsByExternalId = await this.upsertResources(this.prisma, resources);
+    const metricSamplesLinkedToResource = await this.insertMetricSamples(
+      this.prisma,
+      result.metricSamples,
+      resourceIdsByExternalId,
+    );
+    await this.reconcileMetricSampleResourceLinks(this.prisma, job.cloudConnectionId, resourceIdsByExternalId);
 
     const completedAt = new Date();
     const summary = this.buildSummary(
@@ -116,12 +164,27 @@ export class PrismaCloudIngestionJobRepository {
       result,
       completedAt.getTime() - startedAt.getTime(),
       costMetricProjection,
+      focusRowsInserted,
+      focusRowsProcessed,
+      resources.length,
+      metricDerivedResources.length,
+      metricSamplesLinkedToResource,
     );
 
     await this.prisma.$transaction(
       async (tx) => {
         await this.updateWatermark(tx, job);
-        await this.recordQualityCheck(tx, job, result, costMetricProjection);
+        await this.recordQualityCheck(
+          tx,
+          job,
+          result,
+          costMetricProjection,
+          focusRowsInserted,
+          focusRowsProcessed,
+          resources.length,
+          metricDerivedResources.length,
+          metricSamplesLinkedToResource,
+        );
 
         await tx.ingestionJob.update({
           where: { id: job.id },
@@ -254,23 +317,24 @@ export class PrismaCloudIngestionJobRepository {
     };
   }
 
-  private async upsertFocusRows(
+  private async insertFocusRows(
     tx: PrismaIngestionPersistenceClient,
     rows: readonly NormalizedFocusCostLineItem[],
-  ): Promise<void> {
-    for (const row of rows) {
-      await tx.focusCostLineItem.upsert({
-        where: {
-          cloudConnectionId_chargePeriodStart_lineItemHash: {
-            cloudConnectionId: row.cloudConnectionId,
-            chargePeriodStart: row.chargePeriodStart,
-            lineItemHash: row.lineItemHash,
-          },
-        },
-        update: this.focusRowData(row),
-        create: this.focusRowData(row),
-      });
+  ): Promise<number> {
+    if (rows.length === 0) {
+      return 0;
     }
+
+    let inserted = 0;
+    for (const chunk of chunkArray(rows, 1000)) {
+      const result = await tx.focusCostLineItem.createMany({
+        data: chunk.map((row) => this.focusRowData(row)),
+        skipDuplicates: true,
+      });
+      inserted += result.count;
+    }
+
+    return inserted;
   }
 
   private focusRowData(row: NormalizedFocusCostLineItem): Prisma.FocusCostLineItemUncheckedCreateInput {
@@ -307,7 +371,9 @@ export class PrismaCloudIngestionJobRepository {
   private async upsertResources(
     tx: PrismaIngestionPersistenceClient,
     resources: readonly NormalizedCloudResource[],
-  ): Promise<void> {
+  ): Promise<ReadonlyMap<string, string>> {
+    const resourceIdsByExternalId = new Map<string, string>();
+
     for (const resource of resources) {
       const updateData: Prisma.CloudResourceUncheckedUpdateInput = {
         resourceType: resource.resourceType,
@@ -337,7 +403,7 @@ export class PrismaCloudIngestionJobRepository {
           : {}),
       };
 
-      await tx.cloudResource.upsert({
+      const persisted = await tx.cloudResource.upsert({
         where: {
           cloudConnectionId_externalResourceId: {
             cloudConnectionId: resource.cloudConnectionId,
@@ -346,34 +412,53 @@ export class PrismaCloudIngestionJobRepository {
         },
         update: updateData,
         create: createData,
+        select: {
+          id: true,
+          externalResourceId: true,
+        },
       });
+      resourceIdsByExternalId.set(persisted.externalResourceId, persisted.id);
     }
+
+    return resourceIdsByExternalId;
   }
 
   private async insertMetricSamples(
     tx: PrismaIngestionPersistenceClient,
     samples: readonly NormalizedResourceMetricSample[],
-  ): Promise<void> {
+    resourceIdsByExternalId: ReadonlyMap<string, string>,
+  ): Promise<number> {
     if (samples.length === 0) {
-      return;
+      return 0;
     }
 
+    let linked = 0;
     await tx.resourceMetricSample.createMany({
-      data: samples.map((sample) => ({
-        tenantId: sample.tenantId,
-        cloudConnectionId: sample.cloudConnectionId,
-        provider: sample.provider,
-        externalResourceId: sample.externalResourceId,
-        metricName: sample.metricName,
-        value: new Prisma.Decimal(sample.value),
-        sampledAt: sample.sampledAt,
-        granularitySeconds: sample.granularitySeconds,
-        sourceType: 'TECHNICAL_METRIC',
-        ...(sample.metricUnit !== undefined ? { metricUnit: sample.metricUnit } : {}),
-        ...(sample.rawMetric !== undefined ? { rawMetric: sample.rawMetric as Prisma.InputJsonValue } : {}),
-      })),
+      data: samples.map((sample) => {
+        const cloudResourceId = resourceIdsByExternalId.get(sample.externalResourceId);
+        if (cloudResourceId !== undefined) {
+          linked += 1;
+        }
+
+        return {
+          tenantId: sample.tenantId,
+          cloudConnectionId: sample.cloudConnectionId,
+          provider: sample.provider,
+          externalResourceId: sample.externalResourceId,
+          metricName: sample.metricName,
+          value: new Prisma.Decimal(sample.value),
+          sampledAt: sample.sampledAt,
+          granularitySeconds: sample.granularitySeconds,
+          sourceType: 'TECHNICAL_METRIC',
+          ...(cloudResourceId !== undefined ? { cloudResourceId } : {}),
+          ...(sample.metricUnit !== undefined ? { metricUnit: sample.metricUnit } : {}),
+          ...(sample.rawMetric !== undefined ? { rawMetric: sample.rawMetric as Prisma.InputJsonValue } : {}),
+        };
+      }),
       skipDuplicates: true,
     });
+
+    return linked;
   }
 
   private async updateWatermark(
@@ -410,6 +495,11 @@ export class PrismaCloudIngestionJobRepository {
     job: CloudIngestionJobContext,
     result: CloudIngestionResult,
     costMetricProjection: FocusCostMetricProjectionResult,
+    focusRowsInserted: number,
+    focusRowsProcessed: number,
+    resourcesPersisted: number,
+    metricDerivedResources: number,
+    metricSamplesLinkedToResource: number,
   ): Promise<void> {
     await tx.dataQualityCheck.create({
       data: {
@@ -423,11 +513,14 @@ export class PrismaCloudIngestionJobRepository {
           jobId: job.id,
           apiCallCount: result.apiCallCount,
           objectsProcessed: result.objectsProcessed,
-          focusRows: result.focusRows.length,
+          focusRows: focusRowsProcessed,
+          focusRowsInserted,
           costMetrics: costMetricProjection.projected,
           costMetricsInserted: costMetricProjection.inserted,
-          resources: result.resources.length,
+          resources: resourcesPersisted,
+          metricDerivedResources,
           metricSamples: result.metricSamples.length,
+          metricSamplesLinkedToResource,
           warnings: result.warnings,
           coverage: result.coverage,
         } as Prisma.InputJsonValue,
@@ -440,6 +533,11 @@ export class PrismaCloudIngestionJobRepository {
     result: CloudIngestionResult,
     durationMs: number,
     costMetricProjection: FocusCostMetricProjectionResult,
+    focusRowsInserted: number,
+    focusRowsProcessed: number,
+    resourcesPersisted: number,
+    metricDerivedResources: number,
+    metricSamplesLinkedToResource: number,
   ): IngestionJobExecutionSummary {
     return {
       durationMs,
@@ -447,14 +545,136 @@ export class PrismaCloudIngestionJobRepository {
       sourceType: job.sourceType,
       apiCallCount: result.apiCallCount,
       objectsProcessed: result.objectsProcessed,
-      focusRows: result.focusRows.length,
+      focusRows: focusRowsProcessed,
+      focusRowsInserted,
       costMetrics: costMetricProjection.projected,
       costMetricsInserted: costMetricProjection.inserted,
-      resources: result.resources.length,
+      resources: resourcesPersisted,
+      metricDerivedResources,
       metricSamples: result.metricSamples.length,
+      metricSamplesLinkedToResource,
       warnings: result.warnings,
       coverage: result.coverage,
     };
+  }
+
+  private buildMetricDerivedResources(
+    job: CloudIngestionJobContext,
+    samples: readonly NormalizedResourceMetricSample[],
+  ): readonly NormalizedCloudResource[] {
+    const byExternalResourceId = new Map<string, {
+      sample: NormalizedResourceMetricSample;
+      metricNames: Set<string>;
+      sampleCount: number;
+    }>();
+
+    for (const sample of samples) {
+      const current = byExternalResourceId.get(sample.externalResourceId);
+      if (current === undefined) {
+        byExternalResourceId.set(sample.externalResourceId, {
+          sample,
+          metricNames: new Set([sample.metricName]),
+          sampleCount: 1,
+        });
+        continue;
+      }
+
+      current.metricNames.add(sample.metricName);
+      current.sampleCount += 1;
+    }
+
+    return [...byExternalResourceId.values()].map(({ sample, metricNames, sampleCount }) => {
+      const regionId = this.readRawMetricString(sample.rawMetric, 'region') ?? job.connection.defaultRegion;
+      return {
+        tenantId: job.tenantId,
+        cloudConnectionId: job.cloudConnectionId,
+        provider: sample.provider,
+        externalResourceId: sample.externalResourceId,
+        name: this.readRawMetricString(sample.rawMetric, 'resourceName') ?? sample.externalResourceId,
+        resourceType: this.inferResourceType(sample),
+        serviceName: this.inferServiceName(sample),
+        ...(regionId !== undefined ? { regionId } : {}),
+        status: 'UNKNOWN',
+        rawResource: {
+          source: 'METRIC_DERIVED',
+          metricNames: [...metricNames].sort(),
+          sampleCount,
+        },
+      };
+    });
+  }
+
+  private mergeResources(resources: readonly NormalizedCloudResource[]): readonly NormalizedCloudResource[] {
+    const byKey = new Map<string, NormalizedCloudResource>();
+
+    for (const resource of resources) {
+      const key = `${resource.cloudConnectionId}:${resource.externalResourceId}`;
+      const previous = byKey.get(key);
+      if (previous === undefined || previous.rawResource?.['source'] === 'METRIC_DERIVED') {
+        byKey.set(key, resource);
+      }
+    }
+
+    return [...byKey.values()];
+  }
+
+  private async reconcileMetricSampleResourceLinks(
+    tx: PrismaIngestionPersistenceClient,
+    cloudConnectionId: string,
+    resourceIdsByExternalId: ReadonlyMap<string, string>,
+  ): Promise<void> {
+    for (const [externalResourceId, cloudResourceId] of resourceIdsByExternalId) {
+      await tx.resourceMetricSample.updateMany({
+        where: {
+          cloudConnectionId,
+          externalResourceId,
+          cloudResourceId: null,
+        },
+        data: { cloudResourceId },
+      });
+    }
+  }
+
+  private inferResourceType(sample: NormalizedResourceMetricSample): string {
+    const namespace = this.readRawMetricString(sample.rawMetric, 'namespace')?.toLowerCase() ?? '';
+    if (namespace.includes('compute') || namespace.includes('ec2') || namespace.includes('vmi')) {
+      return 'COMPUTE_INSTANCE';
+    }
+
+    if (namespace.includes('block') || namespace.includes('volume') || namespace.includes('ebs')) {
+      return 'BLOCK_VOLUME';
+    }
+
+    return 'UNKNOWN';
+  }
+
+  private inferServiceName(sample: NormalizedResourceMetricSample): string {
+    const namespace = this.readRawMetricString(sample.rawMetric, 'namespace')?.toLowerCase() ?? '';
+    if (namespace.includes('aws/ec2')) {
+      return 'Amazon EC2';
+    }
+
+    if (namespace.includes('oci_compute') || namespace.includes('oci_computeagent') || namespace.includes('vmi')) {
+      return 'Oracle Compute';
+    }
+
+    if (namespace.includes('ebs')) {
+      return 'Amazon EBS';
+    }
+
+    return 'UNKNOWN';
+  }
+
+  private readRawMetricString(
+    rawMetric: Readonly<Record<string, unknown>> | undefined,
+    field: string,
+  ): string | undefined {
+    if (rawMetric === undefined) {
+      return undefined;
+    }
+
+    const value = rawMetric[field];
+    return typeof value === 'string' && value.trim() !== '' ? value : undefined;
   }
 
   private async projectFocusRowsToCostMetrics(
@@ -533,4 +753,18 @@ export class PrismaCloudIngestionJobRepository {
   private isJsonObject(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
   }
+}
+
+function readPositiveIntegerEnv(key: string, defaultValue: number): number {
+  const parsed = Number.parseInt(process.env[key] ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
+function chunkArray<T>(values: readonly T[], size: number): readonly (readonly T[])[] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+
+  return chunks;
 }

@@ -48,6 +48,30 @@ export interface QueueIngestionInput {
   readonly targetEnd: Date;
 }
 
+export interface QueueTechnicalBackfillInput {
+  readonly tenantId: string;
+  readonly userId: string;
+  readonly cloudConnectionId: string;
+  readonly lookbackDays?: number;
+  readonly windowHours?: number;
+}
+
+export interface TechnicalBackfillWindow {
+  readonly targetStart: Date;
+  readonly targetEnd: Date;
+}
+
+export interface TechnicalBackfillResult {
+  readonly cloudConnectionId: string;
+  readonly sourceType: 'TECHNICAL_METRIC';
+  readonly lookbackDays: number;
+  readonly windowHours: number;
+  readonly rangeStart: Date;
+  readonly rangeEnd: Date;
+  readonly createdJobs: readonly IngestionJobSummary[];
+  readonly skippedWindows: readonly TechnicalBackfillWindow[];
+}
+
 export interface ConfigureFocusSourceInput {
   readonly tenantId: string;
   readonly cloudConnectionId: string;
@@ -174,6 +198,70 @@ export class CloudConnectionService {
     return this.repository.createIngestionJob(jobInput);
   }
 
+  public async queueTechnicalMetricBackfill(
+    input: QueueTechnicalBackfillInput,
+  ): Promise<TechnicalBackfillResult> {
+    const connection = await this.repository.findCloudConnectionForTenant(
+      input.tenantId,
+      input.cloudConnectionId,
+    );
+
+    if (connection === null) {
+      throw new FinOpsBaseError('Cloud connection was not found for this tenant', 'NOT_FOUND');
+    }
+
+    const lookbackDays = this.resolveLookbackDays(input.lookbackDays);
+    const windowHours = this.resolveWindowHours(input.windowHours);
+    const rangeEnd = new Date();
+    const rangeStart = new Date(rangeEnd.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
+    const windows = buildBackfillWindows(rangeStart, rangeEnd, windowHours);
+    const existingJobs = [...await this.repository.listIngestionJobsForConnectionRange({
+      tenantId: input.tenantId,
+      cloudConnectionId: input.cloudConnectionId,
+      sourceType: 'TECHNICAL_METRIC',
+      targetStart: rangeStart,
+      targetEnd: rangeEnd,
+    })];
+
+    const createdJobs: IngestionJobSummary[] = [];
+    const skippedWindows: TechnicalBackfillWindow[] = [];
+
+    for (const window of windows) {
+      const covered = existingJobs.some((job) =>
+        job.targetStart.getTime() <= window.targetStart.getTime()
+        && job.targetEnd.getTime() >= window.targetEnd.getTime(),
+      );
+
+      if (covered) {
+        skippedWindows.push(window);
+        continue;
+      }
+
+      const job = await this.repository.createIngestionJob({
+        tenantId: input.tenantId,
+        cloudConnectionId: input.cloudConnectionId,
+        sourceType: 'TECHNICAL_METRIC',
+        requestedByUserId: input.userId,
+        targetStart: window.targetStart,
+        targetEnd: window.targetEnd,
+        maxAttempts: 1,
+      });
+      createdJobs.push(job);
+      existingJobs.push(job);
+    }
+
+    return {
+      cloudConnectionId: input.cloudConnectionId,
+      sourceType: 'TECHNICAL_METRIC',
+      lookbackDays,
+      windowHours,
+      rangeStart,
+      rangeEnd,
+      createdJobs,
+      skippedWindows,
+    };
+  }
+
   public async getHealth(
     tenantId: string,
     cloudConnectionId: string,
@@ -238,6 +326,32 @@ export class CloudConnectionService {
     return Math.min(200, Math.max(1, Math.floor(limit)));
   }
 
+  private resolveLookbackDays(value: number | undefined): number {
+    if (value === undefined || !Number.isFinite(value)) {
+      return 90;
+    }
+
+    const normalized = Math.floor(value);
+    if (normalized < 1 || normalized > 90) {
+      throw new FinOpsBaseError('lookbackDays must be between 1 and 90', 'VALIDATION_ERROR');
+    }
+
+    return normalized;
+  }
+
+  private resolveWindowHours(value: number | undefined): number {
+    if (value === undefined || !Number.isFinite(value)) {
+      return 24;
+    }
+
+    const normalized = Math.floor(value);
+    if (normalized < 1 || normalized > 24) {
+      throw new FinOpsBaseError('windowHours must be between 1 and 24', 'VALIDATION_ERROR');
+    }
+
+    return normalized;
+  }
+
   private requireNonEmpty(value: string, fieldName: string): string {
     const normalized = value.trim();
 
@@ -247,4 +361,23 @@ export class CloudConnectionService {
 
     return normalized;
   }
+}
+
+function buildBackfillWindows(
+  rangeStart: Date,
+  rangeEnd: Date,
+  windowHours: number,
+): readonly TechnicalBackfillWindow[] {
+  const windows: TechnicalBackfillWindow[] = [];
+  const windowMs = windowHours * 60 * 60 * 1000;
+  let cursor = new Date(rangeStart);
+
+  while (cursor.getTime() < rangeEnd.getTime()) {
+    const targetStart = new Date(cursor);
+    const targetEnd = new Date(Math.min(cursor.getTime() + windowMs, rangeEnd.getTime()));
+    windows.push({ targetStart, targetEnd });
+    cursor = targetEnd;
+  }
+
+  return windows;
 }

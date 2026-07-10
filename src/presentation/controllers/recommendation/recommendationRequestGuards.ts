@@ -46,7 +46,7 @@ export function requireAuth(req: Request, res: Response): AuthContext | undefine
  * caso contrario devuelve `true`.
  */
 export function requireAdminRole(res: Response, auth: AuthContext): boolean {
-  if (auth.role !== 'ADMIN') {
+  if (auth.role !== 'ADMIN' && auth.role !== 'MASTER_ADMIN') {
     const error = new AuthorizationError();
     res.status(403).json({
       success: false,

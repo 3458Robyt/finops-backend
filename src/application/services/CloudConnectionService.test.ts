@@ -7,6 +7,8 @@ import type {
   CreateIngestionJobInput,
   DataQualityCheckItem,
   ICloudConnectionRepository,
+  IngestionJobRangeQuery,
+  IngestionJobWindowItem,
   IngestionReadinessSummary,
   IngestionJobHistoryItem,
   IngestionJobSummary,
@@ -29,7 +31,10 @@ const awsProvider: ProviderCatalogEntry = {
 class FakeCloudConnectionRepository implements ICloudConnectionRepository {
   public createdConnectionInput: CreateCloudConnectionInput | null = null;
   public createdJobInput: CreateIngestionJobInput | null = null;
+  public createdJobInputs: CreateIngestionJobInput[] = [];
   public configuredFocusInput: ConfigureFocusSourceForConnectionInput | null = null;
+  public rangeQuery: IngestionJobRangeQuery | null = null;
+  public rangeJobs: readonly IngestionJobWindowItem[] = [];
   public ingestionHistoryQuery: { tenantId: string; limit: number } | null = null;
   public dataQualityQuery: { tenantId: string; limit: number } | null = null;
   public ingestionHistory: readonly IngestionJobHistoryItem[] = [
@@ -115,8 +120,9 @@ class FakeCloudConnectionRepository implements ICloudConnectionRepository {
 
   public async createIngestionJob(input: CreateIngestionJobInput): Promise<IngestionJobSummary> {
     this.createdJobInput = input;
+    this.createdJobInputs.push(input);
     return {
-      id: 'job-1',
+      id: `job-${this.createdJobInputs.length}`,
       tenantId: input.tenantId,
       cloudConnectionId: input.cloudConnectionId,
       sourceType: input.sourceType,
@@ -170,6 +176,13 @@ class FakeCloudConnectionRepository implements ICloudConnectionRepository {
       configuredCount: 1,
       replaced: input.replace,
     };
+  }
+
+  public async listIngestionJobsForConnectionRange(
+    input: IngestionJobRangeQuery,
+  ): Promise<readonly IngestionJobWindowItem[]> {
+    this.rangeQuery = input;
+    return this.rangeJobs;
   }
 }
 
@@ -311,5 +324,76 @@ describe('CloudConnectionService', () => {
         prefix: 'reports/focus/',
       },
     });
+  });
+
+  test('queues technical metric backfill in historical windows', async () => {
+    const repository = new FakeCloudConnectionRepository();
+    const service = new CloudConnectionService(repository);
+
+    const result = await service.queueTechnicalMetricBackfill({
+      tenantId: 'tenant-1',
+      userId: 'user-1',
+      cloudConnectionId: 'conn-1',
+      lookbackDays: 2,
+      windowHours: 24,
+    });
+
+    expect(result.sourceType).toBe('TECHNICAL_METRIC');
+    expect(result.lookbackDays).toBe(2);
+    expect(result.windowHours).toBe(24);
+    expect(result.createdJobs).toHaveLength(2);
+    expect(repository.createdJobInputs).toHaveLength(2);
+    expect(repository.createdJobInputs[0]).toMatchObject({
+      tenantId: 'tenant-1',
+      cloudConnectionId: 'conn-1',
+      sourceType: 'TECHNICAL_METRIC',
+      requestedByUserId: 'user-1',
+      maxAttempts: 1,
+    });
+    expect(repository.rangeQuery).toMatchObject({
+      tenantId: 'tenant-1',
+      cloudConnectionId: 'conn-1',
+      sourceType: 'TECHNICAL_METRIC',
+    });
+  });
+
+  test('does not duplicate technical backfill windows already covered by active jobs', async () => {
+    const repository = new FakeCloudConnectionRepository();
+    const service = new CloudConnectionService(repository);
+    const rangeEnd = new Date(Date.now() + 60 * 60 * 1000);
+    const coveredStart = new Date(Date.now() - 48 * 60 * 60 * 1000);
+
+    repository.rangeJobs = [{
+      id: 'existing-job',
+      sourceType: 'TECHNICAL_METRIC',
+      status: 'SUCCESS',
+      targetStart: coveredStart,
+      targetEnd: rangeEnd,
+    }];
+
+    const result = await service.queueTechnicalMetricBackfill({
+      tenantId: 'tenant-1',
+      userId: 'user-1',
+      cloudConnectionId: 'conn-1',
+      lookbackDays: 1,
+      windowHours: 24,
+    });
+
+    expect(result.createdJobs).toHaveLength(0);
+    expect(result.skippedWindows).toHaveLength(1);
+    expect(repository.createdJobInputs).toEqual([]);
+  });
+
+  test('rejects technical metric backfill beyond OCI metric retention window', async () => {
+    const repository = new FakeCloudConnectionRepository();
+    const service = new CloudConnectionService(repository);
+
+    await expect(service.queueTechnicalMetricBackfill({
+      tenantId: 'tenant-1',
+      userId: 'user-1',
+      cloudConnectionId: 'conn-1',
+      lookbackDays: 91,
+      windowHours: 24,
+    })).rejects.toThrow('lookbackDays must be between 1 and 90');
   });
 });

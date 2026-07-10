@@ -45,7 +45,7 @@ export class AiTraceRecorder {
    *
    * Captura modelo, operación, estado (SUCCESS/ERROR), latencia, estimación de
    * tokens del prompt y los identificadores de contexto usados (artefactos,
-   * memorias, nodos de conocimiento, reglas de tenant y conflictos). No lanza;
+   * memorias, reglas de tenant y conflictos). No lanza;
    * es un efecto secundario best-effort.
    */
   public async record(input: AiTraceInput): Promise<void> {
@@ -67,7 +67,6 @@ export class AiTraceRecorder {
       latencyMs: Date.now() - input.startedAt,
       ...(builtContext !== undefined ? { artifactIds: builtContext.artifactIds } : {}),
       ...(builtContext !== undefined ? { memoryIds: builtContext.memoryIds } : {}),
-      ...(builtContext !== undefined ? { knowledgeNodeIds: builtContext.knowledgeNodeIds } : {}),
       ...(builtContext !== undefined ? { tenantRuleIds: builtContext.tenantRuleIds } : {}),
       ...(builtContext !== undefined ? { conflicts: builtContext.conflicts } : {}),
       ...(error !== undefined

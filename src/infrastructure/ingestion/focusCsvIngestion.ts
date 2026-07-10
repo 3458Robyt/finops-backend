@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
-import { gunzipSync } from 'node:zlib';
-import { parse } from 'csv-parse/sync';
+import { createGunzip, gunzipSync } from 'node:zlib';
+import { Readable } from 'node:stream';
+import { parse as parseStream } from 'csv-parse';
+import { parse as parseSync } from 'csv-parse/sync';
 import type {
   NormalizedFocusCostLineItem,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
@@ -26,8 +28,57 @@ export function decodeMaybeGzip(buffer: Uint8Array, objectName: string): string 
     : bytes.toString('utf8');
 }
 
+export async function* toAsyncByteChunks(body: unknown): AsyncGenerator<Uint8Array | string> {
+  if (body instanceof Uint8Array) {
+    yield body;
+    return;
+  }
+
+  if (body instanceof Readable) {
+    for await (const chunk of body) {
+      yield Buffer.isBuffer(chunk) ? chunk : typeof chunk === 'string' ? chunk : new Uint8Array(chunk as ArrayBuffer);
+    }
+    return;
+  }
+
+  if (body !== null && typeof body === 'object' && Symbol.asyncIterator in body) {
+    for await (const chunk of body as AsyncIterable<unknown>) {
+      yield Buffer.isBuffer(chunk) ? chunk : typeof chunk === 'string' ? chunk : new Uint8Array(chunk as ArrayBuffer);
+    }
+    return;
+  }
+
+  if (body !== null && typeof body === 'object' && 'getReader' in body) {
+    const reader = (body as { getReader(): ReadableStreamDefaultReader<unknown> }).getReader();
+    try {
+      while (true) {
+        const next = await reader.read();
+        if (next.done === true) {
+          return;
+        }
+        const chunk = next.value;
+        yield Buffer.isBuffer(chunk) ? chunk : typeof chunk === 'string' ? chunk : new Uint8Array(chunk as ArrayBuffer);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  if (body !== null && typeof body === 'object' && 'arrayBuffer' in body) {
+    yield new Uint8Array(await (body as { arrayBuffer(): Promise<ArrayBuffer> }).arrayBuffer());
+    return;
+  }
+
+  if (typeof body === 'string') {
+    yield body;
+    return;
+  }
+
+  throw new Error('Unsupported object storage body type');
+}
+
 export function parseFocusCsvToLineItems(input: ParseFocusCsvInput): readonly NormalizedFocusCostLineItem[] {
-  const records = parse(input.csvText, {
+  const records = parseSync(input.csvText, {
     bom: true,
     columns: true,
     relax_column_count: true,
@@ -39,6 +90,31 @@ export function parseFocusCsvToLineItems(input: ParseFocusCsvInput): readonly No
     const line = toLineItem(input, row);
     return line === null ? [] : [line];
   });
+}
+
+export async function* parseFocusCsvStream(
+  chunks: AsyncIterable<Uint8Array | string>,
+  input: Omit<ParseFocusCsvInput, 'csvText'>,
+  objectName: string,
+): AsyncGenerator<NormalizedFocusCostLineItem> {
+  const source = Readable.from(chunks);
+  const decoded = objectName.toLowerCase().endsWith('.gz')
+    ? source.pipe(createGunzip())
+    : source;
+  const parser = decoded.pipe(parseStream({
+    bom: true,
+    columns: true,
+    relax_column_count: true,
+    skip_empty_lines: true,
+    trim: true,
+  }));
+
+  for await (const record of parser as AsyncIterable<RawFocusRow>) {
+    const line = toLineItem({ ...input, csvText: '' }, record);
+    if (line !== null) {
+      yield line;
+    }
+  }
 }
 
 function toLineItem(

@@ -122,6 +122,30 @@ export function evaluateRecommendationDrafts(
   ));
 
   checks.push(buildAllPass(
+    'technicalEvidenceStrength',
+    drafts,
+    (draft) => readEvidenceLevel(draft) !== 'COST_USAGE_AND_TECHNICAL' || hasStrongTechnicalEvidence(draft, snapshot),
+    'Las recomendaciones con evidencia tecnica tienen referencias, cobertura y frescura suficientes.',
+    'Hay recomendaciones COST_USAGE_AND_TECHNICAL sin evidencia tecnica suficiente.',
+  ));
+
+  checks.push(buildAllPass(
+    'technicalActionHonesty',
+    drafts,
+    (draft) => !isTechnicalAction(draft) || hasStrongTechnicalEvidence(draft, snapshot) || readRequiresTechnicalValidation(draft),
+    'Las acciones tecnicas sin evidencia fuerte quedan marcadas para validacion.',
+    'Hay acciones tecnicas presentadas sin evidencia fuerte ni validacion pendiente.',
+  ));
+
+  checks.push(buildAllPass(
+    'deterministicBlockers',
+    drafts,
+    (draft) => readBlockers(draft).length === 0 || readRequiresTechnicalValidation(draft),
+    'Las recomendaciones con bloqueos deterministas quedan como validacion tecnica.',
+    'Hay recomendaciones con bloqueos deterministas presentadas como accion ejecutable.',
+  ));
+
+  checks.push(buildAllPass(
     'savingsRealism',
     drafts,
     (draft) => isSavingsRealistic(draft.estimatedMonthlySavings, snapshot.totalCost),
@@ -210,6 +234,89 @@ function readEvidenceLevel(draft: AiRecommendationDraft): string | undefined {
 /** Lee `evidence.requiresTechnicalValidation === true` de forma segura. */
 function readRequiresTechnicalValidation(draft: AiRecommendationDraft): boolean {
   return isRecord(draft.evidence) && draft.evidence['requiresTechnicalValidation'] === true;
+}
+
+function readBlockers(draft: AiRecommendationDraft): readonly string[] {
+  if (!isRecord(draft.evidence)) {
+    return [];
+  }
+
+  const raw = draft.evidence['blockers'];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+}
+
+function hasStrongTechnicalEvidence(draft: AiRecommendationDraft, snapshot: CostAnalyticsSnapshot): boolean {
+  if (!isRecord(draft.evidence)) {
+    return false;
+  }
+
+  const evidenceRefs = readEvidenceRefs(draft.evidence);
+  const sampleCount = readNumericEvidence(draft.evidence, 'technicalSampleCount');
+  const coverageDays = readNumericEvidence(draft.evidence, 'technicalCoverageDays');
+  const latestSampleAt = readStringEvidence(draft.evidence, 'latestTechnicalSampleAt');
+  const hasResourceLink = readStringEvidence(draft.evidence, 'cloudResourceId') !== undefined ||
+    readStringEvidence(draft.evidence, 'externalResourceId') !== undefined;
+
+  return evidenceRefs.length > 0 &&
+    hasResourceLink &&
+    (sampleCount >= 48 || coverageDays >= 7) &&
+    isRecentTechnicalSample(latestSampleAt, snapshot);
+}
+
+function readEvidenceRefs(evidence: Record<string, unknown>): readonly string[] {
+  const raw = evidence['technicalEvidenceRefs'];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+}
+
+function readNumericEvidence(evidence: Record<string, unknown>, field: string): number {
+  const value = evidence[field];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function readStringEvidence(evidence: Record<string, unknown>, field: string): string | undefined {
+  const value = evidence[field];
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
+
+function isRecentTechnicalSample(latestSampleAt: string | undefined, snapshot: CostAnalyticsSnapshot): boolean {
+  if (latestSampleAt === undefined) {
+    return false;
+  }
+
+  const latest = new Date(latestSampleAt);
+  const reference = new Date(snapshot.periodEnd);
+  if (Number.isNaN(latest.getTime()) || Number.isNaN(reference.getTime())) {
+    return false;
+  }
+
+  const ageDays = (reference.getTime() - latest.getTime()) / (24 * 60 * 60 * 1000);
+  return ageDays >= 0 && ageDays <= 7;
+}
+
+function isTechnicalAction(draft: AiRecommendationDraft): boolean {
+  const text = `${draft.type} ${draft.title} ${draft.description}`.toLowerCase();
+  return [
+    'rightsizing',
+    'rightsize',
+    'redimension',
+    'cpu',
+    'memoria',
+    'iops',
+    'throughput',
+    'apagar',
+    'detener',
+    'shutdown',
+    'resize',
+    'capacidad',
+  ].some((keyword) => text.includes(keyword));
 }
 
 /** Determina si un ahorro estimado es realista respecto al costo total. */

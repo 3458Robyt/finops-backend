@@ -1,6 +1,9 @@
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { IAiGateway } from '../../domain/interfaces/IAiGateway.js';
-import type { IAgentLearningRepository } from '../../domain/interfaces/IAgentLearningRepository.js';
+import type {
+  IAgentLearningRepository,
+  QueuedAgentLearningEvent,
+} from '../../domain/interfaces/IAgentLearningRepository.js';
 import type {
   AgentLearningContext,
   AgentLearningContextQuery,
@@ -35,6 +38,9 @@ const approvedAuditVerdict = 'APPROVED';
  * Configurable vía `LEARNING_AUDIT_TIMEOUT_MS`; por defecto 15000 ms.
  */
 const learningAuditTimeoutMs = Number.parseInt(process.env['LEARNING_AUDIT_TIMEOUT_MS'] ?? '15000', 10);
+const learningWorkerLeaseMs = readPositiveIntegerEnv('AGENT_LEARNING_LEASE_MS', 60_000);
+const learningRetryBaseMs = 30_000;
+const learningRetryMaxMs = 5 * 60_000;
 
 /**
  * Servicio de aprendizaje del agente IA FinOps.
@@ -66,7 +72,7 @@ export class AgentLearningService implements IAgentLearningService {
    * @param aiGateway                - Pasarela hacia el proveedor IA.
    * @param contextBudgeter          - Utilidad de presupuesto de contexto (truncado).
    *
-   * El modelo auditor se toma de `NVIDIA_AUDITOR_MODEL`, o del modelo del
+   * El modelo auditor se toma de `AI_AUDITOR_MODEL`, o del modelo del
    * gateway, o de un valor por defecto, en ese orden de prioridad.
    */
   constructor(
@@ -75,7 +81,11 @@ export class AgentLearningService implements IAgentLearningService {
     private readonly aiGateway: IAiGateway,
     private readonly contextBudgeter = new ContextBudgeter(),
   ) {
-    this.auditorModel = process.env['NVIDIA_AUDITOR_MODEL'] ?? aiGateway.modelName ?? 'deepseek-ai/deepseek-v4-flash';
+    this.auditorModel =
+      process.env['AI_AUDITOR_MODEL'] ??
+      process.env['NVIDIA_AUDITOR_MODEL'] ??
+      aiGateway.modelName ??
+      'gpt-5.4-mini';
   }
 
   /** Función de truncado del budgeter, inyectada a las funciones puras de contenido. */
@@ -180,6 +190,26 @@ export class AgentLearningService implements IAgentLearningService {
       throw new FinOpsBaseError('Queued learning event not found', 'NOT_FOUND');
     }
 
+    return this.processEvent(event);
+  }
+
+  /** Reclama y procesa un único evento disponible para el worker persistente. */
+  public async processNextQueuedRecommendationDecision(workerId: string): Promise<RecommendationLearningResult | null> {
+    const event = await this.learningRepository.claimNextQueuedEvent({
+      workerId,
+      leaseExpiredBefore: new Date(Date.now() - learningWorkerLeaseMs),
+    });
+    if (event === null) {
+      return null;
+    }
+
+    return this.processEvent(event, workerId);
+  }
+
+  private async processEvent(
+    event: QueuedAgentLearningEvent,
+    workerId?: string,
+  ): Promise<RecommendationLearningResult> {
     const recommendation = await this.recommendationRepository.findById(
       event.tenantId,
       event.recommendationId,
@@ -187,14 +217,14 @@ export class AgentLearningService implements IAgentLearningService {
 
     if (recommendation === null) {
       await this.learningRepository.completeEvent({
-        eventId,
+        eventId: event.id,
         status: 'ERROR',
         errorMessage: 'Recommendation not found for queued learning',
       });
 
       return {
         status: 'ERROR',
-        eventId,
+        eventId: event.id,
         error: 'Recommendation not found for queued learning',
       };
     }
@@ -242,8 +272,20 @@ export class AgentLearningService implements IAgentLearningService {
         eventId: event.id,
       };
     } catch (error: unknown) {
-      const status = isExternalAiLearningFailure(error) ? 'SKIPPED' : 'ERROR';
+      const externalFailure = isExternalAiLearningFailure(error);
       const errorMessage = error instanceof Error ? error.message : 'Learning processing failed';
+
+      if (externalFailure && workerId !== undefined) {
+        const status = await this.learningRepository.releaseEventForRetry({
+          eventId: event.id,
+          workerId,
+          errorMessage,
+          nextAttemptAt: new Date(Date.now() + retryDelayMs(event.attempts)),
+        });
+        return { status, eventId: event.id, error: errorMessage };
+      }
+
+      const status = externalFailure ? 'SKIPPED' : 'ERROR';
 
       await this.learningRepository.completeEvent({
         eventId: event.id,
@@ -334,4 +376,13 @@ export class AgentLearningService implements IAgentLearningService {
       buildGlobalMemoryInput(input, recommendation, candidate, auditReport, eventId, count, this.truncate),
     );
   }
+}
+
+function retryDelayMs(attempt: number): number {
+  return Math.min(learningRetryMaxMs, learningRetryBaseMs * (2 ** Math.max(0, attempt - 1)));
+}
+
+function readPositiveIntegerEnv(key: string, defaultValue: number): number {
+  const parsed = Number.parseInt(process.env[key] ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
 }

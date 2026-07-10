@@ -13,3 +13,8 @@ docs/erd/
 .oci/
 .claude/
 analisis-proyecto-grado/
+.test-artifacts/
+test-results/
+playwright-report/
+graphify-out/
+.graphify-*/

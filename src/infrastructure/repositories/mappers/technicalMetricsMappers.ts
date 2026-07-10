@@ -56,7 +56,9 @@ export function toResourceMetricSampleItem(
 ): ResourceMetricSampleItem {
   return {
     id: sample.id,
+    provider: sample.provider,
     externalResourceId: sample.externalResourceId,
+    ...(sample.cloudResourceId !== null ? { cloudResourceId: sample.cloudResourceId } : {}),
     metricName: sample.metricName,
     ...(sample.metricUnit !== null ? { metricUnit: sample.metricUnit } : {}),
     value: Number(sample.value),

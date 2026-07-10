@@ -9,6 +9,14 @@ on:
 permissions:
   contents: read
 
+env:
+  DATABASE_URL: postgresql://finops:finops@127.0.0.1:55432/finops_test
+  JWT_SECRET: ci-finops-jwt-secret-with-at-least-thirty-two-chars
+  AI_API_KEY: ci-placeholder-key
+  AI_BASE_URL: http://127.0.0.1:9999/v1
+  INGESTION_WORKER_ENABLED: 'false'
+  AGENT_LEARNING_WORKER_ENABLED: 'false'
+
 jobs:
   verify:
     runs-on: ubuntu-latest

@@ -119,9 +119,9 @@ export class PrismaCloudIngestionJobRepository {
     });
   }
 
-  public async refreshJobLease(jobId: string, workerId: string): Promise<boolean> {
+  public async refreshJobLease(jobId: string, workerId: string, attempt: number): Promise<boolean> {
     const updated = await this.prisma.ingestionJob.updateMany({
-      where: { id: jobId, status: 'RUNNING', lockedBy: workerId },
+      where: { id: jobId, status: 'RUNNING', lockedBy: workerId, attempts: attempt },
       data: { lockedAt: new Date() },
     });
     return updated.count === 1;
@@ -131,7 +131,11 @@ export class PrismaCloudIngestionJobRepository {
     job: CloudIngestionJobContext,
     result: CloudIngestionResult,
     startedAt: Date,
+    workerId: string,
   ): Promise<IngestionJobExecutionSummary> {
+    if (!await this.refreshJobLease(job.id, workerId, job.attempt)) {
+      throw new Error('Ingestion job lease was lost before persistence');
+    }
     let focusRowsProcessed = result.focusRows.length;
     let focusRowsInserted = await this.insertFocusRows(this.prisma, result.focusRows);
     let costMetricProjection = await this.projectFocusRowsToCostMetrics(this.prisma, job, result.focusRows);
@@ -173,6 +177,21 @@ export class PrismaCloudIngestionJobRepository {
 
     await this.prisma.$transaction(
       async (tx) => {
+        const completed = await tx.ingestionJob.updateMany({
+          where: { id: job.id, status: 'RUNNING', lockedBy: workerId, attempts: job.attempt },
+          data: {
+            status: 'SUCCESS',
+            completedAt,
+            lockedAt: null,
+            lockedBy: null,
+            errorMessage: null,
+            resultSummary: summary as unknown as Prisma.InputJsonValue,
+          },
+        });
+        if (completed.count !== 1) {
+          throw new Error('Ingestion job lease was lost before completion');
+        }
+
         await this.updateWatermark(tx, job);
         await this.recordQualityCheck(
           tx,
@@ -186,17 +205,6 @@ export class PrismaCloudIngestionJobRepository {
           metricSamplesLinkedToResource,
         );
 
-        await tx.ingestionJob.update({
-          where: { id: job.id },
-          data: {
-            status: 'SUCCESS',
-            completedAt,
-            lockedAt: null,
-            lockedBy: null,
-            errorMessage: null,
-            resultSummary: summary as unknown as Prisma.InputJsonValue,
-          },
-        });
       },
       PrismaCloudIngestionJobRepository.COMPLETION_TRANSACTION_OPTIONS,
     );
@@ -208,17 +216,18 @@ export class PrismaCloudIngestionJobRepository {
     job: CloudIngestionJobContext,
     error: unknown,
     startedAt: Date,
+    workerId: string,
   ): Promise<void> {
     const completedAt = new Date();
     const message = error instanceof Error ? error.message : 'Unknown ingestion worker error';
-    const current = await this.prisma.ingestionJob.findUnique({
-      where: { id: job.id },
+    const current = await this.prisma.ingestionJob.findFirst({
+      where: { id: job.id, status: 'RUNNING', lockedBy: workerId, attempts: job.attempt },
       select: { attempts: true, maxAttempts: true },
     });
     const shouldRetry = current !== null && current.attempts < current.maxAttempts;
 
-    await this.prisma.ingestionJob.update({
-      where: { id: job.id },
+    const failed = await this.prisma.ingestionJob.updateMany({
+      where: { id: job.id, status: 'RUNNING', lockedBy: workerId, attempts: job.attempt },
       data: {
         status: shouldRetry ? 'PENDING' : 'FAILED',
         completedAt,
@@ -234,6 +243,9 @@ export class PrismaCloudIngestionJobRepository {
         } as Prisma.InputJsonValue,
       },
     });
+    if (failed.count !== 1) {
+      return;
+    }
 
     await this.prisma.dataQualityCheck.create({
       data: {
@@ -283,6 +295,7 @@ export class PrismaCloudIngestionJobRepository {
       sourceType: job.sourceType,
       targetStart: job.targetStart,
       targetEnd: job.targetEnd,
+      attempt: job.attempts,
       connection: {
         id: job.cloudConnection.id,
         tenantId: job.cloudConnection.tenantId,

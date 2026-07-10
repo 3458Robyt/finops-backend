@@ -30,6 +30,8 @@ export interface CloudIngestionJobContext {
   readonly sourceType: IngestionSourceType;
   readonly targetStart: Date;
   readonly targetEnd: Date;
+  /** Token de fencing: intento con el que el worker reclamó el job. */
+  readonly attempt: number;
   readonly connection: CloudIngestionConnection;
 }
 

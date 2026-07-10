@@ -34,7 +34,7 @@ export class CloudIngestionWorkerService {
 
     if (provider === undefined) {
       const error = new Error(`No ingestion provider registered for ${job.connection.providerCode}`);
-      await this.jobs.failJob(job, error, startedAt);
+      await this.jobs.failJob(job, error, startedAt, workerId);
       return {
         processed: true,
         jobId: job.id,
@@ -44,13 +44,24 @@ export class CloudIngestionWorkerService {
     }
 
     const heartbeatMs = readPositiveIntegerEnv('INGESTION_JOB_HEARTBEAT_MS', 60_000);
+    let leaseLost = false;
     const heartbeat = setInterval(() => {
-      void this.jobs.refreshJobLease(job.id, workerId).catch(() => undefined);
+      void this.jobs.refreshJobLease(job.id, workerId, job.attempt)
+        .then((renewed) => { leaseLost ||= !renewed; })
+        .catch(() => { leaseLost = true; });
     }, heartbeatMs);
 
     try {
       const result = await provider.collect(job);
-      const summary = await this.jobs.completeJob(job, result, startedAt);
+      if (leaseLost) {
+        return {
+          processed: true,
+          jobId: job.id,
+          providerCode: job.connection.providerCode,
+          errorMessage: 'Ingestion job lease was lost while collecting provider data',
+        };
+      }
+      const summary = await this.jobs.completeJob(job, result, startedAt, workerId);
 
       return {
         processed: true,
@@ -59,7 +70,7 @@ export class CloudIngestionWorkerService {
         summary,
       };
     } catch (error) {
-      await this.jobs.failJob(job, error, startedAt);
+      await this.jobs.failJob(job, error, startedAt, workerId);
       return {
         processed: true,
         jobId: job.id,

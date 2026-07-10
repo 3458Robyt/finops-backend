@@ -14,6 +14,7 @@ function createJob(providerCode = 'oci'): CloudIngestionJobContext {
     sourceType: 'TECHNICAL_METRIC',
     targetStart: new Date('2026-06-01T00:00:00.000Z'),
     targetEnd: new Date('2026-06-01T00:30:00.000Z'),
+    attempt: 1,
     connection: {
       id: 'connection-1',
       tenantId: 'tenant-1',
@@ -51,7 +52,7 @@ describe('CloudIngestionWorkerService', () => {
       providerCode: 'missing-provider',
       errorMessage: 'No ingestion provider registered for missing-provider',
     });
-    expect(failJob).toHaveBeenCalledWith(job, expect.any(Error), expect.any(Date));
+    expect(failJob).toHaveBeenCalledWith(job, expect.any(Error), expect.any(Date), 'worker-1');
   });
 
   it('completes a job using the registered provider result', async () => {
@@ -93,7 +94,7 @@ describe('CloudIngestionWorkerService', () => {
     const result = await service.runOnce('worker-1');
 
     expect(provider.collect).toHaveBeenCalledWith(job);
-    expect(completeJob).toHaveBeenCalledWith(job, expect.any(Object), expect.any(Date));
+    expect(completeJob).toHaveBeenCalledWith(job, expect.any(Object), expect.any(Date), 'worker-1');
     expect(result).toEqual({
       processed: true,
       jobId: 'job-1',

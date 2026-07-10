@@ -43,6 +43,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npx prisma generate
       - run: npm run test:integration:docker
       - run: npm run build
       - name: Create API smoke fixtures
@@ -64,4 +65,4 @@ jobs:
           npm run test:api:smoke
       - name: Print API log on failure
         if: failure()
-        run: cat backend-smoke.log
+        run: test -f backend-smoke.log && cat backend-smoke.log || true

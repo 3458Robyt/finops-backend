@@ -70,6 +70,23 @@ jobs:
           done
           test "$ready" = true
           npm run test:api:smoke
+      - name: Run frontend resource intelligence E2E against fixture API
+        uses: actions/checkout@v4
+        with:
+          repository: 3458Robyt/finops---front
+          path: finops-app
+      - name: Install frontend E2E dependencies
+        working-directory: finops-app
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Verify frontend resource intelligence flow
+        working-directory: finops-app
+        env:
+          CI: 'true'
+          VITE_API_BASE_URL: http://127.0.0.1:3000/api/v1
+          E2E_FIXTURE_FILE: ../.test-artifacts/e2e-fixtures.json
+        run: npx playwright test e2e/finops-app.spec.ts
       - name: Print API log on failure
         if: failure()
         run: test -f backend-smoke.log && cat backend-smoke.log || true

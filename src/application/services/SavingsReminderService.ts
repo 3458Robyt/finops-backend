@@ -168,7 +168,7 @@ export class SavingsReminderService {
       type: 'SAVINGS_REMINDER',
       status: 'UNREAD',
       title: 'Ahorro no capturado',
-      message: `Sabias que te podrias haber ahorrado ${recommendation.currency} ${missedSavingsAmount.toFixed(2)} desde que se genero esta recomendacion: "${recommendation.title}".`,
+      message: `¿Sabías que podrías haberte ahorrado ${recommendation.currency} ${missedSavingsAmount.toFixed(2)} desde que se generó esta oportunidad: "${recommendation.title}"?`,
       missedSavingsAmount,
       estimatedMonthlySavings,
       currency: recommendation.currency,

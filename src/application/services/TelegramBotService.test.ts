@@ -68,7 +68,7 @@ describe('TelegramBotService', () => {
     });
 
     expect(fixture.client.messages[0]?.text).toContain('Recordatorios de ahorro');
-    expect(fixture.client.messages[0]?.text).toContain('Sabias que te podrias haber ahorrado');
+    expect(fixture.client.messages[0]?.text).toContain('¿Sabías que podrías haberte ahorrado');
     expect(fixture.reminderCalls).toEqual([{ tenantId: 'tenant-1', userId: 'user-1' }]);
   });
 
@@ -197,7 +197,7 @@ function createFixture(): {
           type: 'SAVINGS_REMINDER',
           status: 'UNREAD',
           title: 'Ahorro no capturado',
-          message: 'Sabias que te podrias haber ahorrado USD 10.00 desde que se genero esta recomendacion.',
+          message: '¿Sabías que podrías haberte ahorrado USD 10.00 desde que se generó esta oportunidad?',
           missedSavingsAmount: 10,
           estimatedMonthlySavings: 30,
           currency: 'USD',

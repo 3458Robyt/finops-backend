@@ -475,6 +475,34 @@ describe('FinOpsAiService', () => {
     });
   });
 
+  test('compares generation with and without learning while preserving the same scoped facts', async () => {
+    const response = JSON.stringify({
+      recommendations: [{
+        cloudAccountId: 'account-focus-aws-prod', type: 'TECHNICAL_VALIDATION_REQUIRED', severity: 'LOW',
+        title: 'Validar la instancia solicitada', description: 'Validar métricas antes de cambiar capacidad.',
+        estimatedMonthlySavings: 0, currency: 'USD',
+        evidence: { externalResourceId: 'i-prod-001', evidenceLevel: 'COST_ONLY', requiresTechnicalValidation: true },
+      }],
+    });
+    const audit = JSON.stringify({ verdict: 'APPROVED', score: 90, checks: [], blockingIssues: [], requiredChanges: [] });
+    const baselineGateway = new FakeAiGateway([response, audit]);
+    const learnedGateway = new FakeAiGateway([response, audit]);
+    const baselineRepository = new FakeRecommendationRepository();
+    const learnedRepository = new FakeRecommendationRepository();
+
+    await new FinOpsAiService(new FakeCostAnalyticsRepository(), baselineRepository, baselineGateway)
+      .generateRecommendations({ tenantId: 'tenant-1', persist: true, externalResourceId: 'i-prod-001' });
+    await new FinOpsAiService(
+      new FakeCostAnalyticsRepository(), learnedRepository, learnedGateway, new FakeLearningContextProvider(),
+    ).generateRecommendations({ tenantId: 'tenant-1', persist: true, externalResourceId: 'i-prod-001' });
+
+    expect(baselineGateway.requests[0]?.messages[0]?.content).toContain('no hay patrones previos relevantes');
+    expect(learnedGateway.requests[0]?.messages[0]?.content).toContain('rechazaron recomendaciones sin evidencia');
+    expect((baselineRepository.created[0]?.evidence as { externalResourceId?: string }).externalResourceId).toBe('i-prod-001');
+    expect((learnedRepository.created[0]?.evidence as { externalResourceId?: string }).externalResourceId).toBe('i-prod-001');
+    expect(learnedRepository.created[0]?.evidence).toMatchObject({ aiLearning: { memoryIds: ['mem-1'] } });
+  });
+
   test('rejects AI recommendations when auditor finds blocking issues', async () => {
     const gateway = new FakeAiGateway([
       JSON.stringify({

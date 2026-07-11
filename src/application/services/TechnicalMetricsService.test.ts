@@ -168,6 +168,11 @@ describe('TechnicalMetricsService', () => {
     expect(summary?.resource.externalResourceId).toBe('i-0abc');
     expect(summary?.metrics).toHaveLength(1);
     expect(summary?.cost?.totalCost).toBe(42.25);
+    expect(summary?.evidence).toMatchObject({
+      strength: 'LOW',
+      readiness: 'VALIDATION_ONLY',
+      blockers: ['INSUFFICIENT_TECHNICAL_COVERAGE', 'MISSING_MEMORY_METRIC'],
+    });
   });
 
   test('does not return an unlisted resource', async () => {

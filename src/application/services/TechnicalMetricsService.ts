@@ -8,6 +8,9 @@ import type {
   TechnicalMetricSeriesBucket,
   TechnicalMetricSummaryItem,
 } from '../../domain/interfaces/IResourceMetricRepository.js';
+import { evaluateTechnicalOptimizationRules } from './ai/TechnicalOptimizationRuleEngine.js';
+import type { TechnicalEvidenceStrength } from './ai/TechnicalOptimizationRuleEngine.js';
+import type { RecommendationReadiness } from './ai/RecommendationReadinessGate.js';
 
 export type TechnicalMetricGroup = 'CPU' | 'MEMORY' | 'NETWORK' | 'DISK' | 'SYSTEM' | 'OTHER';
 export type TechnicalCostMatchLevel = 'EXACT' | 'SERVICE' | 'NONE';
@@ -163,6 +166,12 @@ export interface TechnicalResourceSummary {
   readonly resource: CloudResourceItem;
   readonly metrics: readonly TechnicalMetricSummaryItem[];
   readonly coverage: TechnicalMetricCoverage;
+  readonly evidence: {
+    readonly strength: TechnicalEvidenceStrength;
+    readonly readiness: RecommendationReadiness;
+    readonly blockers: readonly string[];
+    readonly ruleMatches: readonly string[];
+  };
   readonly cost?: TechnicalCostContextItem;
 }
 
@@ -207,11 +216,28 @@ export class TechnicalMetricsService {
       this.getCoverage(tenantId, { externalResourceId }),
       this.repository.listCostContextForResources(tenantId, [externalResourceId]),
     ]);
+    const evaluation = evaluateTechnicalOptimizationRules({
+      summaries: metrics,
+      referenceDate: new Date(),
+    }).find((item) => item.externalResourceId === externalResourceId);
 
     return {
       resource,
       metrics,
       coverage,
+      evidence: evaluation === undefined
+        ? {
+            strength: 'LOW',
+            readiness: 'VALIDATION_ONLY',
+            blockers: ['NO_TECHNICAL_EVIDENCE'],
+            ruleMatches: [],
+          }
+        : {
+            strength: evaluation.evidenceStrength,
+            readiness: evaluation.readiness,
+            blockers: evaluation.blockers,
+            ruleMatches: evaluation.ruleMatches,
+          },
       ...(costs[0] !== undefined ? { cost: costs[0] } : {}),
     };
   }

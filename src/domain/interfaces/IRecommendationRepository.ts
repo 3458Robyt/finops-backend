@@ -25,6 +25,8 @@ export interface RecommendationQuery {
 export interface CreateRecommendationInput {
   readonly tenantId: string;
   readonly cloudAccountId: string;
+  /** Huella estable de tenant/recurso/tipo/período para evitar duplicados de IA. */
+  readonly deduplicationKey?: string;
   /** Tipo de recomendación (e.g., rightsizing, eliminación de recursos ociosos). */
   readonly type: string;
   /** Severidad/prioridad de la recomendación. */

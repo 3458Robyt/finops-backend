@@ -270,6 +270,7 @@ describe('FinOpsAiService', () => {
     expect(response.recommendations[0]?.title).toBe('Reducir EC2 sobredimensionado');
     expect(recommendations.created).toHaveLength(1);
     expect(recommendations.created[0]?.tenantId).toBe('tenant-1');
+    expect(recommendations.created[0]?.deduplicationKey).toMatch(/^[a-f0-9]{64}$/);
     expect(recommendations.created[0]?.evidence).toMatchObject({
       source: 'nvidia-nim',
       aiAudit: {
@@ -591,7 +592,7 @@ describe('FinOpsAiService', () => {
     expect(gateway.requests[1]?.messages[0]?.content).toContain('agente auditor');
   });
 
-  test('persists and returns rejected execution plans so they can be inspected', async () => {
+  test('rejects an execution plan without persisting it when the auditor rejects it', async () => {
     const gateway = new FakeAiGateway([
       JSON.stringify({
         summary: 'Reducir capacidad EC2 despues de validar baja utilizacion.',
@@ -631,19 +632,12 @@ describe('FinOpsAiService', () => {
       gateway,
     );
 
-    const result = await service.generateExecutionPlan({
+    await expect(service.generateExecutionPlan({
       tenantId: 'tenant-1',
       userId: 'user-1',
       recommendationId: 'rec-1',
-    });
+    })).rejects.toThrow('AI audit rejected execution plan output');
 
-    expect(result.auditVerdict).toBe('REJECTED');
-    expect(result.auditScore).toBe(58);
-    expect(recommendations.executionPlans).toHaveLength(1);
-    expect(recommendations.executionPlans[0]).toMatchObject({
-      recommendationId: 'rec-1',
-      auditVerdict: 'REJECTED',
-      auditScore: 58,
-    });
+    expect(recommendations.executionPlans).toHaveLength(0);
   });
 });

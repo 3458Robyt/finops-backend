@@ -3,6 +3,7 @@ import type { CreateRecommendationInput } from '../../../domain/interfaces/IReco
 import type { AiAuditReport } from '../../../domain/models/RecommendationExecutionPlan.js';
 import type { AiRecommendationDraft } from './finOpsAiTypes.js';
 import { isRecord } from './jsonReadHelpers.js';
+import { createHash } from 'node:crypto';
 
 /**
  * Enriquecimiento de evidencia de los borradores de recomendación generados por IA.
@@ -45,4 +46,26 @@ export function applyAuditEvidence(
         : {}),
     },
   };
+}
+
+/**
+ * Construye una huella estable para que la misma oportunidad no se persista dos
+ * veces durante el mismo período factual. La clave no depende del texto que
+ * redacte el modelo, que puede variar entre llamadas equivalentes.
+ */
+export function buildRecommendationDeduplicationKey(
+  draft: AiRecommendationDraft & { tenantId: string },
+  periodStart: string,
+  periodEnd: string,
+): string {
+  const evidence = isRecord(draft.evidence) ? draft.evidence : {};
+  const scope = readString(evidence['externalResourceId'])
+    ?? readString(evidence['candidateId'])
+    ?? draft.cloudAccountId;
+  const value = [draft.tenantId, draft.cloudAccountId, scope, draft.type, periodStart, periodEnd].join('|');
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
 }

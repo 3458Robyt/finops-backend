@@ -208,7 +208,7 @@ describe('RecommendationController decisions', () => {
     });
   });
 
-  test('forbids non-admin users from deciding an execution plan', async () => {
+  test('forbids viewer users from deciding an execution plan', async () => {
     const repository = new FakeRecommendationRepository();
     const controller = new RecommendationController(repository);
     const response = createResponse();
@@ -230,6 +230,28 @@ describe('RecommendationController decisions', () => {
       code: 'AUTHORIZATION_FAILED',
     });
     expect(repository.decisionInput).toBeNull();
+  });
+
+  test('allows a client approver to approve an audited execution plan', async () => {
+    const repository = new FakeRecommendationRepository();
+    const learningService = new FakeAgentLearningService();
+    const controller = new RecommendationController(repository, undefined, learningService);
+    const response = createResponse();
+
+    await controller.createDecision(
+      createRequest({
+        auth: { role: 'CLIENT_APPROVER' },
+        body: {
+          executionPlanId: 'plan-1',
+          decision: 'APPROVED',
+          reasonCode: 'APPROVED_HIGH_CONFIDENCE',
+        },
+      }),
+      response as unknown as Response,
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(repository.decisionInput?.userId).toBe('admin-1');
   });
 
   test('requires a structured reason code when rejecting an execution plan', async () => {
@@ -331,7 +353,7 @@ describe('RecommendationController decisions', () => {
 });
 
 function createRequest(input: {
-  readonly auth?: { readonly role: 'ADMIN' | 'VIEWER' };
+  readonly auth?: { readonly role: 'ADMIN' | 'VIEWER' | 'OPERATOR_ADMIN' | 'FINOPS_TECHNICIAN' | 'CLIENT_APPROVER' | 'MASTER_ADMIN' };
   readonly body?: unknown;
   readonly query?: Record<string, string>;
 } = {}): Request {

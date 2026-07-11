@@ -39,14 +39,23 @@ export function requireAuth(req: Request, res: Response): AuthContext | undefine
 }
 
 /**
- * Garantiza que el usuario autenticado tiene rol `ADMIN`.
- *
- * Si el rol no es `ADMIN`, responde 403 con el código de {@link AuthorizationError}
- * (`AUTHORIZATION_FAILED`) y devuelve `false` para que el handler aborte; en
- * caso contrario devuelve `true`.
+ * Permite administrar la ejecución manual solo a roles operativos FinOps.
  */
-export function requireAdminRole(res: Response, auth: AuthContext): boolean {
-  if (auth.role !== 'ADMIN' && auth.role !== 'MASTER_ADMIN') {
+export function requireRecommendationExecutionRole(res: Response, auth: AuthContext): boolean {
+  return requireRecommendationRole(res, auth, ['ADMIN', 'MASTER_ADMIN', 'OPERATOR_ADMIN', 'FINOPS_TECHNICIAN']);
+}
+
+/** Permite aprobar o rechazar a los roles operativos y al aprobador del cliente. */
+export function requireRecommendationDecisionRole(res: Response, auth: AuthContext): boolean {
+  return requireRecommendationRole(res, auth, ['ADMIN', 'MASTER_ADMIN', 'OPERATOR_ADMIN', 'FINOPS_TECHNICIAN', 'CLIENT_APPROVER']);
+}
+
+function requireRecommendationRole(
+  res: Response,
+  auth: AuthContext,
+  allowedRoles: readonly AuthContext['role'][],
+): boolean {
+  if (!allowedRoles.includes(auth.role)) {
     const error = new AuthorizationError();
     res.status(403).json({
       success: false,

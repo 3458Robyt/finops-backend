@@ -801,6 +801,7 @@ model Recommendation {
   cloudAccountId           String                        @map("cloud_account_id")
   sourceChargePeriodStart  DateTime?                     @map("source_charge_period_start") @db.Timestamptz(6)
   sourceMetricIdentityHash String?                       @map("source_metric_identity_hash")
+  deduplicationKey         String?                       @map("deduplication_key")
   type                     String
   status                   RecommendationStatus          @default(PENDING)
   severity                 RecommendationSeverity        @default(MEDIUM)
@@ -823,6 +824,7 @@ model Recommendation {
   @@index([tenantId, status, createdAt])
   @@index([cloudAccountId, severity])
   @@index([sourceChargePeriodStart, sourceMetricIdentityHash])
+  @@unique([tenantId, deduplicationKey])
   @@map("recommendations")
 }
 

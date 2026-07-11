@@ -10,7 +10,11 @@ import {
   parseString,
   readBodyValue,
 } from './recommendationRequestParsers.js';
-import { requireAdminRole, requireAuth } from './recommendationRequestGuards.js';
+import {
+  requireAuth,
+  requireRecommendationDecisionRole,
+  requireRecommendationExecutionRole,
+} from './recommendationRequestGuards.js';
 import { respondWithRecommendationError } from './recommendationErrorResponse.js';
 
 /**
@@ -44,7 +48,7 @@ export async function handleCreateManualExecution(
   try {
     const auth = requireAuth(req, res);
     if (auth === undefined) return;
-    if (!requireAdminRole(res, auth)) return;
+    if (!requireRecommendationExecutionRole(res, auth)) return;
 
     const recommendationId = parseString(req.params['id']);
     const executionPlanId = parseString(readBodyValue(req.body, 'executionPlanId'));
@@ -111,7 +115,7 @@ export async function handleCreateDecision(
   try {
     const auth = requireAuth(req, res);
     if (auth === undefined) return;
-    if (!requireAdminRole(res, auth)) return;
+    if (!requireRecommendationDecisionRole(res, auth)) return;
 
     const recommendationId = parseString(req.params['id']);
     const executionPlanId = parseString(readBodyValue(req.body, 'executionPlanId'));

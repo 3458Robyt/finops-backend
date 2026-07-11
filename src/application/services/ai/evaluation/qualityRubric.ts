@@ -348,8 +348,19 @@ function matchesCanonicalTechnicalEvidence(
     ));
   const savingsWithinEvidence = draft.estimatedMonthlySavings === undefined || resource.cost === undefined ||
     draft.estimatedMonthlySavings <= resource.cost.totalCost * resource.ruleEvaluation.maxTechnicalSavingsRate + 0.01;
+  const allowedPercentages = referencedMetrics.flatMap((metric) => [
+    metric.min, metric.max, metric.avg, metric.p50, metric.p95, metric.p99, metric.latest, metric.highUtilizationRatio * 100,
+  ]);
+  const narrativePercentagesMatch = extractPercentages(`${draft.title} ${draft.description}`)
+    .every((claim) => allowedPercentages.some((value) => Math.abs(value - claim) <= 0.01));
 
-  return refsMatch && ruleAllowsAction && numbersMatch && savingsWithinEvidence;
+  return refsMatch && ruleAllowsAction && numbersMatch && savingsWithinEvidence && narrativePercentagesMatch;
+}
+
+function extractPercentages(value: string): readonly number[] {
+  return [...value.matchAll(/(\d+(?:[.,]\d+)?)\s*%/g)]
+    .map((match) => Number.parseFloat(match[1]!.replace(',', '.')))
+    .filter((number) => Number.isFinite(number));
 }
 
 function readEvidenceRefs(evidence: Record<string, unknown>): readonly string[] {

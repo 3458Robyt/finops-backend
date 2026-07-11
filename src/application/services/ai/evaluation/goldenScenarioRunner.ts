@@ -51,6 +51,7 @@ export function runScenarioOffline(scenario: GoldenScenario): ScenarioResult {
       scenario.snapshot,
       undefined,
       scenario.scopedExternalResourceId,
+      scenario.technicalEvidenceSnapshot,
     );
     outcome = rubric.passed ? 'PARSED_AND_PASSED' : 'PARSED_BUT_FAILED';
   } catch (error: unknown) {

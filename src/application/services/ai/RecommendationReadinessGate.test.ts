@@ -4,6 +4,8 @@ import {
   buildRecommendationReadinessReport,
   formatRecommendationReadinessForPrompt,
 } from './RecommendationReadinessGate.js';
+import type { RecommendationEvidenceSnapshot } from './RecommendationEvidenceSnapshot.js';
+import type { TechnicalResourceRuleEvaluation } from './TechnicalOptimizationRuleEngine.js';
 
 describe('RecommendationReadinessGate', () => {
   it('marks resource cost opportunities as validation-only when technical evidence is missing', () => {
@@ -20,8 +22,7 @@ describe('RecommendationReadinessGate', () => {
   it('allows technical recommendations only when a resource has technical evidence refs', () => {
     const report = buildRecommendationReadinessReport({
       snapshot: buildSnapshot(),
-      technicalEvidence:
-        '{"resources":[{"externalResourceId":"i-prod-1","technicalEvidenceRefs":["resource_metric_samples:i-prod-1:CPUUtilization:2026-06"]}]}',
+      technicalEvidenceSnapshot: buildEvidenceSnapshot(),
     });
 
     const resourceCandidate = report.candidates.find((candidate) => candidate.id === 'resource-1');
@@ -37,24 +38,13 @@ describe('RecommendationReadinessGate', () => {
   it('keeps a resource validation-only when deterministic rules report blockers', () => {
     const report = buildRecommendationReadinessReport({
       snapshot: buildSnapshot(),
-      technicalEvidence: [
-        'Evidencia tecnica real disponible:',
-        JSON.stringify({
-          deterministicRules: [
-            {
-              externalResourceId: 'i-prod-1',
-              readiness: 'VALIDATION_ONLY',
-              evidenceStrength: 'HIGH',
-              recommendedActionType: 'PERFORMANCE_CAPACITY_REVIEW',
-              ruleMatches: ['CPU_HIGH_UTILIZATION'],
-              blockers: ['CPU_SATURATION_RISK'],
-              sourceFacts: ['CPU cpu_utilization: avg=82, p95=88, p99=95, muestras=96, cobertura=14 dias.'],
-              technicalEvidenceRefs: ['resource_metric_samples:i-prod-1:CPUUtilization:2026-06'],
-              maxTechnicalSavingsRate: 0,
-            },
-          ],
-        }),
-      ].join('\n'),
+      technicalEvidenceSnapshot: buildEvidenceSnapshot({
+        readiness: 'VALIDATION_ONLY',
+        recommendedActionType: 'PERFORMANCE_CAPACITY_REVIEW',
+        ruleMatches: ['CPU_HIGH_UTILIZATION'],
+        blockers: ['CPU_SATURATION_RISK'],
+        maxTechnicalSavingsRate: 0,
+      }),
     });
 
     const resourceCandidate = report.candidates.find((candidate) => candidate.id === 'resource-1');
@@ -117,5 +107,59 @@ function buildSnapshot(): CostAnalyticsSnapshot {
         metricCount: 120,
       },
     ],
+  };
+}
+
+function buildEvidenceSnapshot(
+  overrides: Partial<TechnicalResourceRuleEvaluation> = {},
+): RecommendationEvidenceSnapshot {
+  const rule: TechnicalResourceRuleEvaluation = {
+    externalResourceId: 'i-prod-1',
+    provider: 'AWS',
+    readiness: 'GENERATABLE',
+    evidenceStrength: 'HIGH',
+    recommendedActionType: 'RIGHTSIZING',
+    ruleMatches: ['CPU_STRONG_UNDERUTILIZATION', 'MEMORY_LOW_UTILIZATION'],
+    blockers: [],
+    sourceFacts: ['CPU cpu_utilization: avg=8, p95=25, p99=35, muestras=96, cobertura=14 dias.'],
+    technicalEvidenceRefs: ['resource_metric_samples:i-prod-1:CPUUtilization:2026-06'],
+    metricSummary: [],
+    maxTechnicalSavingsRate: 0.25,
+    ...overrides,
+  };
+
+  return {
+    version: '1',
+    hash: 'test-hash',
+    tenantId: 'tenant-1',
+    periodStart: '2026-06-01T00:00:00.000Z',
+    periodEnd: '2026-06-30T00:00:00.000Z',
+    generatedAt: '2026-06-30T00:00:00.000Z',
+    availability: 'COST_USAGE_AND_TECHNICAL_AVAILABLE',
+    resources: [{
+      externalResourceId: 'i-prod-1',
+      provider: 'AWS',
+      linkQuality: 'COST_AND_TECHNICAL',
+      cost: { totalCost: 300, currency: 'USD', focusMetricCount: 80 },
+      usage: [],
+      metrics: [{
+        metricName: 'CPUUtilization',
+        metricUnit: 'Percent',
+        sampleCount: 96,
+        coverageDays: 14,
+        min: 1,
+        max: 35,
+        avg: 8,
+        p50: 8,
+        p95: 25,
+        p99: 35,
+        latest: 8,
+        firstSampledAt: '2026-06-16T00:00:00.000Z',
+        latestSampledAt: '2026-06-29T00:00:00.000Z',
+        evidenceRef: 'resource_metric_samples:i-prod-1:CPUUtilization:2026-06',
+      }],
+      ruleEvaluation: rule,
+    }],
+    deterministicRules: [rule],
   };
 }

@@ -2,6 +2,7 @@ import type { CostAnalyticsSnapshot } from '../../../../domain/interfaces/ICostA
 import type { FinOpsRecommendation } from '../../../../domain/models/FinOpsRecommendation.js';
 import type { AiRecommendationDraft } from '../finOpsAiTypes.js';
 import { isRecord } from '../jsonReadHelpers.js';
+import type { RecommendationEvidenceSnapshot } from '../RecommendationEvidenceSnapshot.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -77,6 +78,7 @@ export function evaluateRecommendationDrafts(
   snapshot: CostAnalyticsSnapshot,
   expectedCount?: number,
   scopedExternalResourceId?: string,
+  technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot,
 ): QualityReport {
   const allowedAccounts = new Set(snapshot.accounts.map((account) => account.cloudAccountId));
   const checks: QualityCheck[] = [];
@@ -135,10 +137,22 @@ export function evaluateRecommendationDrafts(
   checks.push(buildAllPass(
     'technicalEvidenceStrength',
     drafts,
-    (draft) => readEvidenceLevel(draft) !== 'COST_USAGE_AND_TECHNICAL' || hasStrongTechnicalEvidence(draft, snapshot),
+    (draft) => readEvidenceLevel(draft) !== 'COST_USAGE_AND_TECHNICAL' ||
+      hasStrongTechnicalEvidence(draft, snapshot, technicalEvidenceSnapshot),
     'Las recomendaciones con evidencia tecnica tienen referencias, cobertura y frescura suficientes.',
     'Hay recomendaciones COST_USAGE_AND_TECHNICAL sin evidencia tecnica suficiente.',
   ));
+
+  if (technicalEvidenceSnapshot !== undefined) {
+    checks.push(buildAllPass(
+      'canonicalTechnicalEvidence',
+      drafts,
+      (draft) => readEvidenceLevel(draft) !== 'COST_USAGE_AND_TECHNICAL' ||
+        matchesCanonicalTechnicalEvidence(draft, technicalEvidenceSnapshot),
+      'Las recomendaciones tecnicas citan exactamente el snapshot canónico.',
+      'Hay recomendaciones tecnicas con recurso, referencias o reglas que no coinciden con el snapshot canonico.',
+    ));
+  }
 
   checks.push(buildAllPass(
     'technicalActionHonesty',
@@ -269,7 +283,11 @@ function readBlockers(draft: AiRecommendationDraft): readonly string[] {
   return raw.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
 }
 
-function hasStrongTechnicalEvidence(draft: AiRecommendationDraft, snapshot: CostAnalyticsSnapshot): boolean {
+function hasStrongTechnicalEvidence(
+  draft: AiRecommendationDraft,
+  snapshot: CostAnalyticsSnapshot,
+  technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot,
+): boolean {
   if (!isRecord(draft.evidence)) {
     return false;
   }
@@ -281,10 +299,41 @@ function hasStrongTechnicalEvidence(draft: AiRecommendationDraft, snapshot: Cost
   const hasResourceLink = readStringEvidence(draft.evidence, 'cloudResourceId') !== undefined ||
     readStringEvidence(draft.evidence, 'externalResourceId') !== undefined;
 
-  return evidenceRefs.length > 0 &&
+  const legacyStrong = evidenceRefs.length > 0 &&
     hasResourceLink &&
     (sampleCount >= 48 || coverageDays >= 7) &&
     isRecentTechnicalSample(latestSampleAt, snapshot);
+
+  return technicalEvidenceSnapshot === undefined
+    ? legacyStrong
+    : legacyStrong && matchesCanonicalTechnicalEvidence(draft, technicalEvidenceSnapshot);
+}
+
+function matchesCanonicalTechnicalEvidence(
+  draft: AiRecommendationDraft,
+  snapshot: RecommendationEvidenceSnapshot,
+): boolean {
+  if (!isRecord(draft.evidence)) {
+    return false;
+  }
+
+  const externalResourceId = readStringEvidence(draft.evidence, 'externalResourceId');
+  if (externalResourceId === undefined) {
+    return false;
+  }
+
+  const resource = snapshot.resources.find((item) => item.externalResourceId === externalResourceId);
+  if (resource === undefined || resource.linkQuality !== 'COST_AND_TECHNICAL') {
+    return false;
+  }
+
+  const refs = readEvidenceRefs(draft.evidence);
+  const allowedRefs = new Set(resource.metrics.map((metric) => metric.evidenceRef));
+  const refsMatch = refs.length > 0 && refs.every((ref) => allowedRefs.has(ref));
+  const ruleAllowsAction = resource.ruleEvaluation.readiness === 'GENERATABLE' &&
+    resource.ruleEvaluation.blockers.length === 0;
+
+  return refsMatch && ruleAllowsAction;
 }
 
 function readEvidenceRefs(evidence: Record<string, unknown>): readonly string[] {

@@ -4,6 +4,7 @@ import type { AiRecommendationDraft } from '../finOpsAiTypes.js';
 import { goldenScenarios } from './goldenScenarios.js';
 import { runScenarioOffline } from './goldenScenarioRunner.js';
 import { evaluateExecutionPlan, evaluateRecommendationDrafts } from './qualityRubric.js';
+import type { RecommendationEvidenceSnapshot } from '../RecommendationEvidenceSnapshot.js';
 
 const snapshot: CostAnalyticsSnapshot = {
   tenantId: 'tenant-demo',
@@ -100,7 +101,99 @@ describe('qualityRubric — recommendations', () => {
 
     expect(report.checks.find((check) => check.name === 'resourceScoping')?.passed).toBe(true);
   });
+
+  test('requires a technical recommendation to cite the canonical snapshot exactly', () => {
+    const report = evaluateRecommendationDrafts([
+      draft({
+        type: 'RIGHTSIZING',
+        evidence: {
+          evidenceLevel: 'COST_USAGE_AND_TECHNICAL',
+          externalResourceId: 'i-requested',
+          cloudResourceId: 'resource-1',
+          technicalEvidenceRefs: ['resource_metric_samples:i-requested:CpuUtilization:2026-04-30T00:00:00.000Z'],
+          technicalSampleCount: 96,
+          technicalCoverageDays: 14,
+          latestTechnicalSampleAt: '2026-04-30T00:00:00.000Z',
+        },
+      }),
+    ], snapshot, undefined, undefined, buildCanonicalEvidenceSnapshot());
+
+    expect(report.passed).toBe(true);
+    expect(report.checks.find((check) => check.name === 'canonicalTechnicalEvidence')?.passed).toBe(true);
+  });
+
+  test('rejects an invented metric reference even when the auditor would approve it', () => {
+    const report = evaluateRecommendationDrafts([
+      draft({
+        type: 'RIGHTSIZING',
+        evidence: {
+          evidenceLevel: 'COST_USAGE_AND_TECHNICAL',
+          externalResourceId: 'i-requested',
+          cloudResourceId: 'resource-1',
+          technicalEvidenceRefs: ['resource_metric_samples:i-requested:MemoryUtilization:invented'],
+          technicalSampleCount: 96,
+          technicalCoverageDays: 14,
+          latestTechnicalSampleAt: '2026-04-30T00:00:00.000Z',
+        },
+      }),
+    ], snapshot, undefined, undefined, buildCanonicalEvidenceSnapshot());
+
+    expect(report.passed).toBe(false);
+    expect(report.checks.find((check) => check.name === 'canonicalTechnicalEvidence')?.passed).toBe(false);
+  });
 });
+
+function buildCanonicalEvidenceSnapshot(): RecommendationEvidenceSnapshot {
+  const rule = {
+    externalResourceId: 'i-requested',
+    cloudResourceId: 'resource-1',
+    provider: 'AWS',
+    readiness: 'GENERATABLE' as const,
+    evidenceStrength: 'HIGH' as const,
+    recommendedActionType: 'RIGHTSIZING' as const,
+    ruleMatches: ['CPU_STRONG_UNDERUTILIZATION', 'MEMORY_LOW_UTILIZATION'],
+    blockers: [],
+    sourceFacts: ['CPU baja y memoria baja con cobertura suficiente.'],
+    technicalEvidenceRefs: ['resource_metric_samples:i-requested:CpuUtilization:2026-04-30T00:00:00.000Z'],
+    metricSummary: [],
+    maxTechnicalSavingsRate: 0.25,
+  };
+  return {
+    version: '1',
+    hash: 'canonical-test-hash',
+    tenantId: 'tenant-demo',
+    periodStart: '2026-04-01',
+    periodEnd: '2026-05-01',
+    generatedAt: '2026-05-01T00:00:00.000Z',
+    availability: 'COST_USAGE_AND_TECHNICAL_AVAILABLE',
+    resources: [{
+      externalResourceId: 'i-requested',
+      cloudResourceId: 'resource-1',
+      provider: 'AWS',
+      linkQuality: 'COST_AND_TECHNICAL',
+      cost: { totalCost: 200, currency: 'USD', focusMetricCount: 40 },
+      usage: [],
+      metrics: [{
+        metricName: 'CpuUtilization',
+        metricUnit: 'Percent',
+        sampleCount: 96,
+        coverageDays: 14,
+        min: 1,
+        max: 25,
+        avg: 8,
+        p50: 8,
+        p95: 15,
+        p99: 25,
+        latest: 8,
+        firstSampledAt: '2026-04-16T00:00:00.000Z',
+        latestSampledAt: '2026-04-30T00:00:00.000Z',
+        evidenceRef: 'resource_metric_samples:i-requested:CpuUtilization:2026-04-30T00:00:00.000Z',
+      }],
+      ruleEvaluation: rule,
+    }],
+    deterministicRules: [rule],
+  };
+}
 
 describe('qualityRubric — execution plan', () => {
   const validPlan: Record<string, unknown> = {

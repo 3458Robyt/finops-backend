@@ -1,178 +1,163 @@
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type {
   IResourceMetricRepository,
-  ResourceMetricSampleItem,
   TechnicalCostContextItem,
+  TechnicalMetricSummaryItem,
 } from '../../../domain/interfaces/IResourceMetricRepository.js';
 import { evaluateTechnicalOptimizationRules } from './TechnicalOptimizationRuleEngine.js';
+import {
+  formatRecommendationEvidenceSnapshot,
+  hashRecommendationEvidenceSnapshot,
+  recommendationEvidenceSnapshotVersion,
+  type RecommendationEvidenceMetric,
+  type RecommendationEvidenceResource,
+  type RecommendationEvidenceSnapshot,
+} from './RecommendationEvidenceSnapshot.js';
 
 export interface TechnicalRecommendationEvidenceProvider {
-  buildRecommendationEvidence(input: {
+  buildRecommendationEvidenceSnapshot(input: {
     readonly tenantId: string;
     readonly snapshot: CostAnalyticsSnapshot;
-    /** Cuando existe, evita incluir evidencia de otros recursos del tenant. */
     readonly externalResourceId?: string;
-  }): Promise<string>;
+  }): Promise<RecommendationEvidenceSnapshot>;
 }
 
-interface ResourceEvidence {
-  readonly cloudResourceId?: string;
-  readonly externalResourceId: string;
-  readonly provider: string;
-  readonly cost?: {
-    readonly totalCost: number;
-    readonly currency: string;
-    readonly metricCount: number;
-  };
-  readonly technicalEvidenceRefs: readonly string[];
-  readonly metrics: readonly MetricEvidence[];
-}
-
-interface MetricEvidence {
-  readonly metricName: string;
-  readonly metricUnit?: string;
-  readonly sampleCount: number;
-  readonly coverageDays: number;
-  readonly min: number;
-  readonly max: number;
-  readonly avg: number;
-  readonly latest: number;
-  readonly latestSampleAt: string;
-  readonly evidenceRef: string;
-}
-
-const maxSamples = 5000;
 const maxResources = 12;
 const maxMetricsPerResource = 8;
 
 export class TechnicalRecommendationEvidenceService implements TechnicalRecommendationEvidenceProvider {
   public constructor(private readonly repository: IResourceMetricRepository) {}
 
+  public async buildRecommendationEvidenceSnapshot(input: {
+    readonly tenantId: string;
+    readonly snapshot: CostAnalyticsSnapshot;
+    readonly externalResourceId?: string;
+  }): Promise<RecommendationEvidenceSnapshot> {
+    const startDate = parseDate(input.snapshot.periodStart);
+    const endDate = parseDate(input.snapshot.periodEnd);
+    const summaries = await this.repository.listMetricSummariesForTenant(input.tenantId, {
+      ...(startDate !== undefined ? { startDate } : {}),
+      ...(endDate !== undefined ? { endDate } : {}),
+      ...(input.externalResourceId !== undefined ? { externalResourceIds: [input.externalResourceId] } : {}),
+      limit: 1000,
+    });
+    const deterministicRules = evaluateTechnicalOptimizationRules({
+      summaries,
+      referenceDate: endDate ?? new Date(),
+    });
+    const resourceIds = [...new Set(summaries.map((summary) => summary.externalResourceId))];
+    const costContext = await this.repository.listCostContextForResources(input.tenantId, resourceIds);
+    const resources = buildResources(input.snapshot, summaries, costContext, deterministicRules);
+    const availability = resources.length === 0
+      ? 'NO_TECHNICAL_EVIDENCE'
+      : 'COST_USAGE_AND_TECHNICAL_AVAILABLE';
+    const base = {
+      version: recommendationEvidenceSnapshotVersion,
+      tenantId: input.tenantId,
+      periodStart: input.snapshot.periodStart,
+      periodEnd: input.snapshot.periodEnd,
+      generatedAt: new Date().toISOString(),
+      availability,
+      resources,
+      deterministicRules,
+    } as const;
+
+    return { ...base, hash: hashRecommendationEvidenceSnapshot(base) };
+  }
+
+  /** Compatibilidad temporal para consumidores de prompts existentes. */
   public async buildRecommendationEvidence(input: {
     readonly tenantId: string;
     readonly snapshot: CostAnalyticsSnapshot;
     readonly externalResourceId?: string;
   }): Promise<string> {
-    const startDate = new Date(input.snapshot.periodStart);
-    const endDate = new Date(input.snapshot.periodEnd);
-    const boundedStartDate = Number.isNaN(startDate.getTime()) ? undefined : startDate;
-    const boundedEndDate = Number.isNaN(endDate.getTime()) ? undefined : endDate;
-
-    const samples = await this.repository.listMetricSamplesForTenantByFilter(input.tenantId, {
-      ...(boundedStartDate !== undefined ? { startDate: boundedStartDate } : {}),
-      ...(boundedEndDate !== undefined ? { endDate: boundedEndDate } : {}),
-      ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
-      limit: maxSamples,
-    });
-
-    if (samples.length === 0) {
-      return [
-        'Evidencia tecnica real disponible:',
-        JSON.stringify({
-          evidenceLevel: 'NO_TECHNICAL_EVIDENCE',
-          guidance:
-            'No hay muestras tecnicas en resource_metric_samples para este periodo. No generes recomendaciones tecnicas fuertes; marca requiresTechnicalValidation=true.',
-        }),
-      ].join('\n');
-    }
-
-    const resourceIds = [...new Set(samples.map((sample) => sample.externalResourceId))];
-    const costContext = await this.repository.listCostContextForResources(input.tenantId, resourceIds);
-    const technicalSummaries = await this.repository.listMetricSummariesForTenant(input.tenantId, {
-      ...(boundedStartDate !== undefined ? { startDate: boundedStartDate } : {}),
-      ...(boundedEndDate !== undefined ? { endDate: boundedEndDate } : {}),
-      externalResourceIds: resourceIds,
-      limit: 1000,
-    });
-    const deterministicRules = evaluateTechnicalOptimizationRules({
-      summaries: technicalSummaries,
-      referenceDate: boundedEndDate ?? new Date(),
-    });
-    const resources = buildResourceEvidence(samples, costContext);
-
-    return [
-      'Evidencia tecnica real disponible:',
-      JSON.stringify({
-        evidenceLevel: 'COST_USAGE_AND_TECHNICAL_AVAILABLE',
-      rules: [
-        'Solo usa COST_USAGE_AND_TECHNICAL para acciones tecnicas si citas technicalEvidenceRefs existentes en este bloque.',
-        'Si el recurso no aparece aqui o la cobertura/frescura es debil, marca requiresTechnicalValidation=true.',
-        'No inventes metricas tecnicas fuera de este bloque.',
-        'Respeta deterministicRules: si hay blockers, no conviertas validacion en accion ejecutable.',
-      ],
-      deterministicRules,
-      resources,
-    }),
-    ].join('\n');
+    return formatRecommendationEvidenceSnapshot(await this.buildRecommendationEvidenceSnapshot(input));
   }
 }
 
-function buildResourceEvidence(
-  samples: readonly ResourceMetricSampleItem[],
+function buildResources(
+  snapshot: CostAnalyticsSnapshot,
+  summaries: readonly TechnicalMetricSummaryItem[],
   costContext: readonly TechnicalCostContextItem[],
-): readonly ResourceEvidence[] {
+  deterministicRules: readonly ReturnType<typeof evaluateTechnicalOptimizationRules>[number][],
+): readonly RecommendationEvidenceResource[] {
+  const byResource = groupBy(summaries, (summary) => summary.externalResourceId);
   const costByResource = new Map(costContext.map((item) => [item.externalResourceId, item]));
-  const byResource = groupBy(samples, (sample) => sample.externalResourceId);
+  const ruleByResource = new Map(deterministicRules.map((rule) => [rule.externalResourceId, rule]));
 
   return [...byResource.entries()]
-    .map(([externalResourceId, resourceSamples]) => {
-      const first = resourceSamples[0];
+    .map(([externalResourceId, resourceSummaries]) => {
+      const first = resourceSummaries[0]!;
       const cost = costByResource.get(externalResourceId);
-      const metrics = buildMetricEvidence(externalResourceId, resourceSamples).slice(0, maxMetricsPerResource);
+      const ruleEvaluation = ruleByResource.get(externalResourceId);
+      if (ruleEvaluation === undefined) {
+        return undefined;
+      }
       return {
-        ...(first?.cloudResourceId !== undefined ? { cloudResourceId: first.cloudResourceId } : {}),
         externalResourceId,
-        provider: first?.provider ?? 'UNKNOWN',
-        ...(cost !== undefined
-          ? {
-              cost: {
-                totalCost: round(cost.totalCost),
-                currency: cost.currency,
-                metricCount: cost.metricCount,
-              },
-            }
-          : {}),
-        technicalEvidenceRefs: metrics.map((metric) => metric.evidenceRef),
-        metrics,
-      };
+        ...(first.cloudResourceId !== undefined ? { cloudResourceId: first.cloudResourceId } : {}),
+        provider: first.provider,
+        ...(first.resourceType !== undefined ? { resourceType: first.resourceType } : {}),
+        ...(first.serviceName !== undefined ? { serviceName: first.serviceName } : {}),
+        linkQuality: cost === undefined ? 'TECHNICAL_ONLY' : 'COST_AND_TECHNICAL',
+        ...(cost !== undefined ? { cost: toCost(cost) } : {}),
+        usage: (snapshot.topUsage ?? [])
+          .filter((usage) => usage.provider === first.provider && usage.serviceName === first.serviceName)
+          .map((usage) => ({
+            serviceName: usage.serviceName,
+            consumedQuantity: round(usage.consumedQuantity),
+            consumedUnit: usage.consumedUnit,
+            totalCost: round(usage.totalCost),
+            currency: usage.currency,
+          })),
+        metrics: resourceSummaries
+          .map(toMetric)
+          .sort((left, right) => right.sampleCount - left.sampleCount)
+          .slice(0, maxMetricsPerResource),
+        ruleEvaluation,
+      } as RecommendationEvidenceResource;
     })
+    .filter((resource): resource is RecommendationEvidenceResource => resource !== undefined)
     .sort((left, right) => (right.cost?.totalCost ?? 0) - (left.cost?.totalCost ?? 0))
     .slice(0, maxResources);
 }
 
-function buildMetricEvidence(
-  externalResourceId: string,
-  samples: readonly ResourceMetricSampleItem[],
-): readonly MetricEvidence[] {
-  return [...groupBy(samples, (sample) => sample.metricName).entries()]
-    .map(([metricName, metricSamples]) => {
-      const values = metricSamples.map((sample) => sample.value);
-      const latestSample = [...metricSamples].sort(
-        (left, right) => right.sampledAt.getTime() - left.sampledAt.getTime(),
-      )[0]!;
-      const uniqueDays = new Set(metricSamples.map((sample) => sample.sampledAt.toISOString().slice(0, 10)));
+function toCost(cost: TechnicalCostContextItem): NonNullable<RecommendationEvidenceResource['cost']> {
+  return {
+    totalCost: round(cost.totalCost),
+    currency: cost.currency,
+    focusMetricCount: cost.metricCount,
+  };
+}
 
-      return {
-        metricName,
-        ...(latestSample.metricUnit !== undefined ? { metricUnit: latestSample.metricUnit } : {}),
-        sampleCount: metricSamples.length,
-        coverageDays: uniqueDays.size,
-        min: round(Math.min(...values)),
-        max: round(Math.max(...values)),
-        avg: round(values.reduce((sum, value) => sum + value, 0) / values.length),
-        latest: round(latestSample.value),
-        latestSampleAt: latestSample.sampledAt.toISOString(),
-        evidenceRef: `resource_metric_samples:${externalResourceId}:${metricName}:${latestSample.sampledAt.toISOString()}`,
-      };
-    })
-    .sort((left, right) => right.sampleCount - left.sampleCount);
+function toMetric(summary: TechnicalMetricSummaryItem): RecommendationEvidenceMetric {
+  return {
+    metricName: summary.metricName,
+    ...(summary.metricUnit !== undefined ? { metricUnit: summary.metricUnit } : {}),
+    sampleCount: summary.sampleCount,
+    coverageDays: summary.coverageDays,
+    min: round(summary.min),
+    max: round(summary.max),
+    avg: round(summary.avg),
+    p50: round(summary.p50),
+    p95: round(summary.p95),
+    p99: round(summary.p99),
+    latest: round(summary.latest),
+    firstSampledAt: summary.firstSampledAt.toISOString(),
+    latestSampledAt: summary.latestSampledAt.toISOString(),
+    evidenceRef: `resource_metric_samples:${summary.externalResourceId}:${summary.metricName}:${summary.latestSampledAt.toISOString()}`,
+  };
+}
+
+function parseDate(value: string): Date | undefined {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 }
 
 function groupBy<T>(items: readonly T[], keyFn: (item: T) => string): Map<string, T[]> {
-  const grouped = new Map<string, T[]>();
+  const grouped = new Map<string, T[]>;
   for (const item of items) {
-    const key = keyFn(item);
-    grouped.set(key, [...(grouped.get(key) ?? []), item]);
+    grouped.set(keyFn(item), [...(grouped.get(keyFn(item)) ?? []), item]);
   }
   return grouped;
 }

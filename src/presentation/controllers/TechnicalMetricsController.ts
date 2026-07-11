@@ -47,6 +47,38 @@ export class TechnicalMetricsController {
     }
   };
 
+  public getResource = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const resource = await this.technicalMetricsService.getResource(
+        this.requireTenant(req),
+        this.requireParam(req, 'externalResourceId'),
+      );
+      if (resource === undefined) {
+        res.status(404).json({ success: false, error: 'Recurso no encontrado.', code: 'NOT_FOUND' });
+        return;
+      }
+      res.status(200).json({ success: true, resource });
+    } catch (error: unknown) {
+      this.respondWithError(res, error);
+    }
+  };
+
+  public getResourceSummary = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const summary = await this.technicalMetricsService.getResourceSummary(
+        this.requireTenant(req),
+        this.requireParam(req, 'externalResourceId'),
+      );
+      if (summary === undefined) {
+        res.status(404).json({ success: false, error: 'Recurso no encontrado.', code: 'NOT_FOUND' });
+        return;
+      }
+      res.status(200).json({ success: true, summary });
+    } catch (error: unknown) {
+      this.respondWithError(res, error);
+    }
+  };
+
   /**
    * Lista las muestras de métricas técnicas del tenant autenticado.
    *
@@ -199,6 +231,15 @@ export class TechnicalMetricsController {
 
     const trimmed = raw.trim();
     return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  private requireParam(req: Request, key: string): string {
+    const raw = req.params[key];
+    const value = (Array.isArray(raw) ? raw[0] : raw)?.trim();
+    if (value === undefined || value === '') {
+      throw new FinOpsBaseError(`${key} is required`, 'VALIDATION_ERROR');
+    }
+    return value;
   }
 
   private parseStringList(value: unknown): readonly string[] | undefined {

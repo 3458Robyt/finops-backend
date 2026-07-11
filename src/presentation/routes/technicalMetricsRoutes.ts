@@ -29,6 +29,8 @@ export function createTechnicalMetricsRoutes(
   const router = Router();
 
   router.get('/resources', requireAuth, technicalMetricsController.listResources);
+  router.get('/resources/:externalResourceId/summary', requireAuth, technicalMetricsController.getResourceSummary);
+  router.get('/resources/:externalResourceId', requireAuth, technicalMetricsController.getResource);
   router.get('/samples', requireAuth, technicalMetricsController.listSamples);
   router.get('/overview', requireAuth, technicalMetricsController.getOverview);
   router.get('/series', requireAuth, technicalMetricsController.getSeries);

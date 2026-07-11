@@ -36,7 +36,16 @@ await check('costs', '/costs', token);
 await check('recommendations', '/recommendations', token);
 await check('recommendation detail', `/recommendations/${encodeURIComponent(manifest.recommendationIds[0] ?? '')}`, token);
 await check('recommendation timeline', `/recommendations/${encodeURIComponent(manifest.recommendationIds[0] ?? '')}/timeline`, token);
-await check('technical resources', '/technical-metrics/resources', token);
+const technicalResources = await request('/technical-metrics/resources', { token });
+assertOk(technicalResources, 'technical resources');
+const technicalResourcesBody = await technicalResources.response.json() as {
+  readonly resources: readonly { readonly externalResourceId: string }[];
+};
+const smokeResourceId = technicalResourcesBody.resources[0]?.externalResourceId;
+if (smokeResourceId === undefined) {
+  throw new Error('Technical resources did not return a usable resource identifier.');
+}
+await check('technical resource summary', `/technical-metrics/resources/${encodeURIComponent(smokeResourceId)}/summary`, token);
 const technicalOverview = await request('/technical-metrics/overview', { token });
 assertOk(technicalOverview, 'technical overview');
 const technicalOverviewBody = await technicalOverview.response.json() as {

@@ -6,6 +6,7 @@ import type {
   TechnicalCostContextItem,
   TechnicalMetricCoverageSampleItem,
   TechnicalMetricSeriesBucket,
+  TechnicalMetricSummaryItem,
 } from '../../domain/interfaces/IResourceMetricRepository.js';
 
 export type TechnicalMetricGroup = 'CPU' | 'MEMORY' | 'NETWORK' | 'DISK' | 'SYSTEM' | 'OTHER';
@@ -158,6 +159,13 @@ export interface TechnicalMetricSeriesResult {
   readonly meta: TechnicalMetricSeriesMeta;
 }
 
+export interface TechnicalResourceSummary {
+  readonly resource: CloudResourceItem;
+  readonly metrics: readonly TechnicalMetricSummaryItem[];
+  readonly coverage: TechnicalMetricCoverage;
+  readonly cost?: TechnicalCostContextItem;
+}
+
 const maxOverviewSamples = 5000;
 const defaultSeriesPageSize = 1000;
 const maxSeriesPageSize = 5000;
@@ -175,6 +183,37 @@ export class TechnicalMetricsService {
 
   public listResources(tenantId: string, limit?: number): Promise<readonly CloudResourceItem[]> {
     return this.repository.listResourcesForTenant(tenantId, this.clampLimit(limit));
+  }
+
+  public async getResource(tenantId: string, externalResourceId: string): Promise<CloudResourceItem | undefined> {
+    const resources = await this.repository.listResourcesForTenant(tenantId, 200);
+    return resources.find((resource) => resource.externalResourceId === externalResourceId);
+  }
+
+  public async getResourceSummary(
+    tenantId: string,
+    externalResourceId: string,
+  ): Promise<TechnicalResourceSummary | undefined> {
+    const resource = await this.getResource(tenantId, externalResourceId);
+    if (resource === undefined) {
+      return undefined;
+    }
+
+    const [metrics, coverage, costs] = await Promise.all([
+      this.repository.listMetricSummariesForTenant(tenantId, {
+        externalResourceIds: [externalResourceId],
+        limit: 100,
+      }),
+      this.getCoverage(tenantId, { externalResourceId }),
+      this.repository.listCostContextForResources(tenantId, [externalResourceId]),
+    ]);
+
+    return {
+      resource,
+      metrics,
+      coverage,
+      ...(costs[0] !== undefined ? { cost: costs[0] } : {}),
+    };
   }
 
   public listMetricSamples(

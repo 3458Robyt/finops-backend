@@ -57,6 +57,8 @@ export interface GenerateAiRecommendationsInput {
   readonly userId?: string;
   /** Si es `true`, las recomendaciones aprobadas se persisten; si no, son efímeras (preview). */
   readonly persist?: boolean;
+  /** Limita la generación a un recurso que exista en el snapshot factual del tenant. */
+  readonly externalResourceId?: string;
 }
 
 /**

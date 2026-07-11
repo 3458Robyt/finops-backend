@@ -34,7 +34,7 @@ describe('SavingsReminderService', () => {
       missedSavingsAmount: 300,
       title: 'Ahorro no capturado',
     });
-    expect(result.notifications[0]?.message).toContain('Sabias que te podrias haber ahorrado USD 300.00');
+    expect(result.notifications[0]?.message).toContain('¿Sabías que podrías haberte ahorrado USD 300.00');
     expect(notificationRepository.created).toHaveLength(0);
   });
 

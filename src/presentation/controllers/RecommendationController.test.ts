@@ -51,6 +51,7 @@ class FakeAgentLearningService implements IAgentLearningService {
 
 class FakeRecommendationRepository implements IRecommendationRepository {
   public decisionInput: CreateRecommendationDecisionInput | null = null;
+  public tenantQuery: RecommendationQuery | null = null;
   public latestExecutionPlanQuery: { tenantId: string; recommendationId: string } | null = null;
   public latestExecutionPlan: RecommendationExecutionPlan | null = {
     id: 'plan-latest',
@@ -65,7 +66,8 @@ class FakeRecommendationRepository implements IRecommendationRepository {
     createdAt: new Date('2026-04-29T13:00:00.000Z'),
   };
 
-  public async findByTenant(_query: RecommendationQuery): Promise<FinOpsRecommendation[]> {
+  public async findByTenant(query: RecommendationQuery): Promise<FinOpsRecommendation[]> {
+    this.tenantQuery = query;
     return [];
   }
 
@@ -147,6 +149,23 @@ class FakeRecommendationRepository implements IRecommendationRepository {
 }
 
 describe('RecommendationController decisions', () => {
+  test('filters recommendations by exact resource id within the authenticated tenant', async () => {
+    const repository = new FakeRecommendationRepository();
+    const controller = new RecommendationController(repository);
+    const response = createResponse();
+
+    await controller.getRecommendations(
+      createRequest({ query: { externalResourceId: 'ocid1.instance.demo' } }),
+      response as unknown as Response,
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(repository.tenantQuery).toEqual({
+      tenantId: 'tenant-1',
+      externalResourceId: 'ocid1.instance.demo',
+    });
+  });
+
   test('returns the latest execution plan scoped to the authenticated tenant and recommendation', async () => {
     const repository = new FakeRecommendationRepository();
     const controller = new RecommendationController(repository);
@@ -314,6 +333,7 @@ describe('RecommendationController decisions', () => {
 function createRequest(input: {
   readonly auth?: { readonly role: 'ADMIN' | 'VIEWER' };
   readonly body?: unknown;
+  readonly query?: Record<string, string>;
 } = {}): Request {
   return {
     auth: {
@@ -323,6 +343,7 @@ function createRequest(input: {
       role: input.auth?.role ?? 'ADMIN',
       jwtId: 'jwt-1',
     },
+    query: input.query ?? {},
     params: {
       id: 'rec-1',
     },

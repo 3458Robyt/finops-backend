@@ -10,6 +10,8 @@ export interface TechnicalRecommendationEvidenceProvider {
   buildRecommendationEvidence(input: {
     readonly tenantId: string;
     readonly snapshot: CostAnalyticsSnapshot;
+    /** Cuando existe, evita incluir evidencia de otros recursos del tenant. */
+    readonly externalResourceId?: string;
   }): Promise<string>;
 }
 
@@ -49,6 +51,7 @@ export class TechnicalRecommendationEvidenceService implements TechnicalRecommen
   public async buildRecommendationEvidence(input: {
     readonly tenantId: string;
     readonly snapshot: CostAnalyticsSnapshot;
+    readonly externalResourceId?: string;
   }): Promise<string> {
     const startDate = new Date(input.snapshot.periodStart);
     const endDate = new Date(input.snapshot.periodEnd);
@@ -58,6 +61,7 @@ export class TechnicalRecommendationEvidenceService implements TechnicalRecommen
     const samples = await this.repository.listMetricSamplesForTenantByFilter(input.tenantId, {
       ...(boundedStartDate !== undefined ? { startDate: boundedStartDate } : {}),
       ...(boundedEndDate !== undefined ? { endDate: boundedEndDate } : {}),
+      ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
       limit: maxSamples,
     });
 

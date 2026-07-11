@@ -46,7 +46,12 @@ export function runScenarioOffline(scenario: GoldenScenario): ScenarioResult {
 
   try {
     const drafts = parseRecommendationDrafts(scenario.scriptedRecommendationResponse, scenario.snapshot);
-    rubric = evaluateRecommendationDrafts(drafts, scenario.snapshot);
+    rubric = evaluateRecommendationDrafts(
+      drafts,
+      scenario.snapshot,
+      undefined,
+      scenario.scopedExternalResourceId,
+    );
     outcome = rubric.passed ? 'PARSED_AND_PASSED' : 'PARSED_BUT_FAILED';
   } catch (error: unknown) {
     if (error instanceof FinOpsBaseError && error.code === 'AI_RESPONSE_ERROR') {

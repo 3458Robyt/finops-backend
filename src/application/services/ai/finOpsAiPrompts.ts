@@ -75,6 +75,7 @@ export function buildRecommendationSystemPrompt(
   learningContext: AgentLearningContext,
   technicalEvidence?: string,
   readinessEvidence?: string,
+  scopedExternalResourceId?: string,
 ): string {
 return [
     'Eres un motor IA de optimización FinOps.',
@@ -88,6 +89,9 @@ return [
     'No uses la palabra "anomalia" ni "anomalias"; usa "oportunidad" u "oportunidades".',
     'estimatedMonthlySavings nunca puede superar maxEstimatedMonthlySavings del candidato usado.',
     'Cada recomendacion debe incluir evidence.candidateId, sourceFacts, assumptions y confidence entre 0 y 1.',
+    ...(scopedExternalResourceId === undefined
+      ? []
+      : [`Este análisis está limitado al recurso ${scopedExternalResourceId}. Incluye exactamente evidence.externalResourceId="${scopedExternalResourceId}" en cada recomendación; no menciones ni propongas otros recursos.`]),
     'Prioriza recomendaciones accionables: ciclo de vida de almacenamiento, compromisos/descuentos por consumo estable, investigación de divergencia costo-consumo, revisión de bases de datos y egreso de red.',
     'Solo puedes usar evidence.evidenceLevel=COST_USAGE_AND_TECHNICAL si la evidencia incluye technicalEvidenceRefs, cloudResourceId o externalResourceId, technicalSampleCount o technicalCoverageDays, latestTechnicalSampleAt y una metrica relevante para la accion.',
     'Si la evidencia tecnica es debil, antigua, no enlazada al recurso o insuficiente, no recomiendes ejecutar cambios tecnicos; recomienda validar primero y marca requiresTechnicalValidation=true.',

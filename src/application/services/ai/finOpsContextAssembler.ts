@@ -110,21 +110,32 @@ private readonly technicalEvidenceProvider?: TechnicalRecommendationEvidenceProv
     readonly tenantId: string;
     readonly userId?: string;
     readonly snapshot: CostAnalyticsSnapshot;
+    /** Recurso exacto para un análisis aislado; no mezcla contexto de otros recursos. */
+    readonly externalResourceId?: string;
 }): Promise<AssembledRecommendationContext> {
-    const learningContext = await this.getRecommendationLearningContext(input.tenantId, input.snapshot);
-    const technicalEvidence = await this.getRecommendationTechnicalEvidence(input.tenantId, input.snapshot);
+    const scoped = input.externalResourceId !== undefined;
+    const learningContext = scoped
+      ? { memoryIds: [], caseIds: [], summary: '' }
+      : await this.getRecommendationLearningContext(input.tenantId, input.snapshot);
+    const technicalEvidence = await this.getRecommendationTechnicalEvidence(
+      input.tenantId,
+      input.snapshot,
+      input.externalResourceId,
+    );
     const readinessReport = buildRecommendationReadinessReport({
       snapshot: input.snapshot,
       ...(technicalEvidence !== undefined ? { technicalEvidence } : {}),
     });
-    const builtContext = await this.buildOptionalContext({
-tenantId: input.tenantId,
-      ...(input.userId !== undefined ? { userId: input.userId } : {}),
-      operation: 'RECOMMENDATION',
-      queryText: buildSnapshotQueryText(input.snapshot),
-      snapshot: input.snapshot,
-      model: this.mainModel,
-    });
+    const builtContext = scoped
+      ? undefined
+      : await this.buildOptionalContext({
+          tenantId: input.tenantId,
+          ...(input.userId !== undefined ? { userId: input.userId } : {}),
+          operation: 'RECOMMENDATION',
+          queryText: buildSnapshotQueryText(input.snapshot),
+          snapshot: input.snapshot,
+          model: this.mainModel,
+        });
 
 return {
       builtContext,
@@ -134,6 +145,7 @@ return {
           learningContext,
           technicalEvidence,
           formatRecommendationReadinessForPrompt(readinessReport),
+          input.externalResourceId,
         ),
         builtContext,
       ),
@@ -224,11 +236,16 @@ limit: 5,
 private async getRecommendationTechnicalEvidence(
 tenantId: string,
 snapshot: CostAnalyticsSnapshot,
+externalResourceId?: string,
 ): Promise<string | undefined> {
 if (this.technicalEvidenceProvider === undefined) {
 return undefined;
 }
 
-return this.technicalEvidenceProvider.buildRecommendationEvidence({ tenantId, snapshot });
+return this.technicalEvidenceProvider.buildRecommendationEvidence({
+  tenantId,
+  snapshot,
+  ...(externalResourceId !== undefined ? { externalResourceId } : {}),
+});
 }
 }

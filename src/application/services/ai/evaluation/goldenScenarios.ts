@@ -38,6 +38,8 @@ export interface GoldenScenario {
   readonly snapshot: CostAnalyticsSnapshot;
   /** Respuesta cruda del modelo (texto JSON, como la devolvería el LLM). */
   readonly scriptedRecommendationResponse: string;
+  /** Recurso de un análisis aislado; activa la comprobación exacta de evidencia. */
+  readonly scopedExternalResourceId?: string;
   /** Resultado esperado del pipeline offline. */
   readonly expectedOutcome: GoldenOutcome;
 }
@@ -137,6 +139,42 @@ export const goldenScenarios: readonly GoldenScenario[] = [
       },
     ]),
     expectedOutcome: 'PARSED_AND_PASSED',
+  },
+  {
+    name: 'recomendacion-recurso-aislado-correcto',
+    snapshot,
+    scopedExternalResourceId: 'bucket-logs',
+    scriptedRecommendationResponse: scriptResponse([
+      {
+        cloudAccountId: 'acc-prod-aws',
+        type: 'STORAGE_LIFECYCLE',
+        severity: 'MEDIUM',
+        title: 'Aplicar ciclo de vida al bucket de logs',
+        description: 'Revisar el ciclo de vida del recurso solicitado antes de mover objetos.',
+        estimatedMonthlySavings: 80,
+        currency: 'USD',
+        evidence: { evidenceLevel: 'COST_AND_USAGE', externalResourceId: 'bucket-logs' },
+      },
+    ]),
+    expectedOutcome: 'PARSED_AND_PASSED',
+  },
+  {
+    name: 'recomendacion-recurso-de-otro-tenant-rechazada',
+    snapshot,
+    scopedExternalResourceId: 'bucket-logs',
+    scriptedRecommendationResponse: scriptResponse([
+      {
+        cloudAccountId: 'acc-prod-aws',
+        type: 'STORAGE_LIFECYCLE',
+        severity: 'MEDIUM',
+        title: 'Optimizar un recurso ajeno',
+        description: 'No debe recomendarse un recurso que no fue solicitado.',
+        estimatedMonthlySavings: 80,
+        currency: 'USD',
+        evidence: { evidenceLevel: 'COST_AND_USAGE', externalResourceId: 'bucket-other-tenant' },
+      },
+    ]),
+    expectedOutcome: 'PARSED_BUT_FAILED',
   },
   {
     name: 'recomendacion-cuenta-inventada-rechazada',

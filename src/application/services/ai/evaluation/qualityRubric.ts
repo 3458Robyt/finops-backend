@@ -76,6 +76,7 @@ export function evaluateRecommendationDrafts(
   drafts: readonly AiRecommendationDraft[],
   snapshot: CostAnalyticsSnapshot,
   expectedCount?: number,
+  scopedExternalResourceId?: string,
 ): QualityReport {
   const allowedAccounts = new Set(snapshot.accounts.map((account) => account.cloudAccountId));
   const checks: QualityCheck[] = [];
@@ -96,6 +97,16 @@ export function evaluateRecommendationDrafts(
     'Todas las cuentas existen en el snapshot.',
     'Hay recomendaciones con cloudAccountId inexistente en el snapshot.',
   ));
+
+  if (scopedExternalResourceId !== undefined) {
+    checks.push(buildAllPass(
+      'resourceScoping',
+      drafts,
+      (draft) => readExternalResourceId(draft) === scopedExternalResourceId,
+      'Todas las recomendaciones apuntan al recurso solicitado.',
+      'Hay recomendaciones que no apuntan exactamente al recurso solicitado.',
+    ));
+  }
 
   checks.push(buildAllPass(
     'severityValid',
@@ -234,6 +245,15 @@ function readEvidenceLevel(draft: AiRecommendationDraft): string | undefined {
 /** Lee `evidence.requiresTechnicalValidation === true` de forma segura. */
 function readRequiresTechnicalValidation(draft: AiRecommendationDraft): boolean {
   return isRecord(draft.evidence) && draft.evidence['requiresTechnicalValidation'] === true;
+}
+
+function readExternalResourceId(draft: AiRecommendationDraft): string | undefined {
+  if (!isRecord(draft.evidence)) {
+    return undefined;
+  }
+
+  const value = draft.evidence['externalResourceId'];
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
 }
 
 function readBlockers(draft: AiRecommendationDraft): readonly string[] {

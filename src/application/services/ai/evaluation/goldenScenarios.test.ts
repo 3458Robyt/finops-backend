@@ -77,6 +77,29 @@ describe('qualityRubric — recommendations', () => {
     const report = evaluateRecommendationDrafts([draft({ estimatedMonthlySavings: 999999 })], snapshot);
     expect(report.checks.find((check) => check.name === 'savingsRealism')?.passed).toBe(false);
   });
+
+  test('rejects a recommendation that targets a different resource in a scoped analysis', () => {
+    const report = evaluateRecommendationDrafts(
+      [draft({ evidence: { evidenceLevel: 'COST_AND_USAGE', externalResourceId: 'i-other' } })],
+      snapshot,
+      undefined,
+      'i-requested',
+    );
+
+    expect(report.passed).toBe(false);
+    expect(report.checks.find((check) => check.name === 'resourceScoping')?.passed).toBe(false);
+  });
+
+  test('accepts a recommendation that targets exactly the scoped resource', () => {
+    const report = evaluateRecommendationDrafts(
+      [draft({ evidence: { evidenceLevel: 'COST_AND_USAGE', externalResourceId: 'i-requested' } })],
+      snapshot,
+      undefined,
+      'i-requested',
+    );
+
+    expect(report.checks.find((check) => check.name === 'resourceScoping')?.passed).toBe(true);
+  });
 });
 
 describe('qualityRubric — execution plan', () => {

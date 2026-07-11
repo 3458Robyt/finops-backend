@@ -305,10 +305,12 @@ export class RecommendationController {
 
       const status = parseStatus(req.query['status']);
       const cloudAccountId = parseString(req.query['cloudAccountId']);
+      const externalResourceId = parseString(req.query['externalResourceId']);
       const recommendations = await this.recommendationRepository.findByTenant({
         tenantId: auth.tenantId,
         ...(status !== undefined ? { status } : {}),
         ...(cloudAccountId !== undefined ? { cloudAccountId } : {}),
+        ...(externalResourceId !== undefined ? { externalResourceId } : {}),
       });
 
       res.status(200).json({
@@ -319,6 +321,7 @@ export class RecommendationController {
           count: recommendations.length,
           ...(status !== undefined ? { status } : {}),
           ...(cloudAccountId !== undefined ? { cloudAccountId } : {}),
+          ...(externalResourceId !== undefined ? { externalResourceId } : {}),
         },
       });
     } catch (error: unknown) {

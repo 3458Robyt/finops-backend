@@ -20,6 +20,7 @@ class FakeResourceMetricRepository implements IResourceMetricRepository {
   public samples: readonly ResourceMetricSampleItem[] = [];
   public costContext: readonly TechnicalCostContextItem[] = [];
   public summaries: readonly TechnicalMetricSummaryItem[] = [];
+  public sampleFilters: TechnicalMetricSampleFilters | undefined;
 
   public async listResourcesForTenant(): Promise<readonly CloudResourceItem[]> {
     return [];
@@ -31,9 +32,12 @@ class FakeResourceMetricRepository implements IResourceMetricRepository {
 
   public async listMetricSamplesForTenantByFilter(
     _tenantId: string,
-    _filters: TechnicalMetricSampleFilters,
+    filters: TechnicalMetricSampleFilters,
   ): Promise<readonly ResourceMetricSampleItem[]> {
-    return this.samples;
+    this.sampleFilters = filters;
+    return this.samples.filter((sample) => (
+      filters.externalResourceId === undefined || sample.externalResourceId === filters.externalResourceId
+    ));
   }
 
   public async listMetricSeriesForTenant(
@@ -104,6 +108,25 @@ describe('TechnicalRecommendationEvidenceService', () => {
 
     expect(evidence).toContain('NO_TECHNICAL_EVIDENCE');
     expect(evidence).toContain('requiresTechnicalValidation=true');
+  });
+
+  test('limits technical evidence to the requested resource', async () => {
+    const repository = new FakeResourceMetricRepository();
+    repository.samples = [
+      sample('s1', 8, '2026-06-20T00:00:00.000Z'),
+      { ...sample('s2', 55, '2026-06-20T00:00:00.000Z'), externalResourceId: 'ocid1.instance.other' },
+    ];
+    const service = new TechnicalRecommendationEvidenceService(repository);
+
+    const evidence = await service.buildRecommendationEvidence({
+      tenantId: 'tenant-1',
+      snapshot,
+      externalResourceId: 'ocid1.instance.oc1.test',
+    });
+
+    expect(repository.sampleFilters?.externalResourceId).toBe('ocid1.instance.oc1.test');
+    expect(evidence).toContain('ocid1.instance.oc1.test');
+    expect(evidence).not.toContain('ocid1.instance.other');
   });
 });
 

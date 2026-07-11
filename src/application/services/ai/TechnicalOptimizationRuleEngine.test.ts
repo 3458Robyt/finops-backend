@@ -19,6 +19,20 @@ describe('TechnicalOptimizationRuleEngine', () => {
     expect(result?.blockers).toContain('CPU_SATURATION_RISK');
   });
 
+  it('blocks downsizing when at least one fifth of CPU samples exceed the threshold', () => {
+    const [result] = evaluateTechnicalOptimizationRules({
+      referenceDate,
+      summaries: [
+        summary('cpu_utilization', { avg: 35, p95: 70, p99: 75, highUtilizationSampleCount: 24, highUtilizationRatio: 0.25 }),
+        summary('memory_utilization', { avg: 40, p95: 60, p99: 70 }),
+      ],
+    });
+
+    expect(result?.blockers).toContain('CPU_SATURATION_RISK');
+    expect(result?.readiness).toBe('VALIDATION_ONLY');
+    expect(result?.metricSummary[0]?.highUtilizationRatio).toBe(0.25);
+  });
+
   it('allows strong rightsizing only when CPU and memory are both low', () => {
     const [result] = evaluateTechnicalOptimizationRules({
       referenceDate,

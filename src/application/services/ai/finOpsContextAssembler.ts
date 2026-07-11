@@ -18,6 +18,10 @@ import {
 } from './finOpsAiPrompts.js';
 import type { TechnicalRecommendationEvidenceProvider } from './TechnicalRecommendationEvidenceService.js';
 import {
+  formatRecommendationEvidenceSnapshot,
+  type RecommendationEvidenceSnapshot,
+} from './RecommendationEvidenceSnapshot.js';
+import {
   buildRecommendationReadinessReport,
   formatRecommendationReadinessForPrompt,
   type RecommendationReadinessReport,
@@ -52,6 +56,7 @@ export interface AssembledRecommendationContext {
   readonly systemPrompt: string;
   readonly learningContext: AgentLearningContext;
   readonly readinessReport: RecommendationReadinessReport;
+  readonly technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot;
 }
 
 /** Contexto y prompt ensamblados para un plan de ejecución. */
@@ -114,17 +119,18 @@ private readonly technicalEvidenceProvider?: TechnicalRecommendationEvidenceProv
     readonly externalResourceId?: string;
 }): Promise<AssembledRecommendationContext> {
     const scoped = input.externalResourceId !== undefined;
-    const learningContext = scoped
-      ? { memoryIds: [], caseIds: [], summary: '' }
-      : await this.getRecommendationLearningContext(input.tenantId, input.snapshot);
-    const technicalEvidence = await this.getRecommendationTechnicalEvidence(
+    const learningContext = await this.getRecommendationLearningContext(input.tenantId, input.snapshot);
+    const technicalEvidenceSnapshot = await this.getRecommendationTechnicalEvidenceSnapshot(
       input.tenantId,
       input.snapshot,
       input.externalResourceId,
     );
+    const technicalEvidence = technicalEvidenceSnapshot === undefined
+      ? undefined
+      : formatRecommendationEvidenceSnapshot(technicalEvidenceSnapshot);
     const readinessReport = buildRecommendationReadinessReport({
       snapshot: input.snapshot,
-      ...(technicalEvidence !== undefined ? { technicalEvidence } : {}),
+      ...(technicalEvidenceSnapshot !== undefined ? { technicalEvidenceSnapshot } : {}),
     });
     const builtContext = scoped
       ? undefined
@@ -151,6 +157,7 @@ return {
       ),
       learningContext,
       readinessReport,
+      ...(technicalEvidenceSnapshot !== undefined ? { technicalEvidenceSnapshot } : {}),
     };
   }
 
@@ -233,16 +240,16 @@ limit: 5,
 });
 }
 
-private async getRecommendationTechnicalEvidence(
+private async getRecommendationTechnicalEvidenceSnapshot(
 tenantId: string,
 snapshot: CostAnalyticsSnapshot,
 externalResourceId?: string,
-): Promise<string | undefined> {
+): Promise<RecommendationEvidenceSnapshot | undefined> {
 if (this.technicalEvidenceProvider === undefined) {
 return undefined;
 }
 
-return this.technicalEvidenceProvider.buildRecommendationEvidence({
+return this.technicalEvidenceProvider.buildRecommendationEvidenceSnapshot({
   tenantId,
   snapshot,
   ...(externalResourceId !== undefined ? { externalResourceId } : {}),

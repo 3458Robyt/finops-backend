@@ -36,7 +36,9 @@ checks.push({
   detail: chatAnswer.slice(0, 300),
 });
 
+const recommendationStartedAt = Date.now();
 const generatedResult = await postMaybe('/ai/recommendations/generate', { persist: false });
+const recommendationLatencyMs = Date.now() - recommendationStartedAt;
 checks.push({
   name: 'endpoint_recomendaciones_responde',
   passed: generatedResult.ok,
@@ -55,6 +57,23 @@ checks.push({
   detail: JSON.stringify(recommendations.map((recommendation) => recommendation['evidence']).slice(0, 2)),
 });
 checks.push({
+  name: 'recomendaciones_guardan_snapshot_y_auditoria',
+  passed: recommendations.every((recommendation) => {
+    const evidence = asRecord(recommendation['evidence']);
+    const technicalSnapshot = asRecord(evidence?.['recommendationEvidenceSnapshot']);
+    const audit = asRecord(evidence?.['aiAudit']);
+    return technicalSnapshot === undefined ||
+      (typeof technicalSnapshot['hash'] === 'string' && audit?.['verdict'] === 'APPROVED');
+  }),
+  detail: JSON.stringify(recommendations.map((recommendation) => {
+    const evidence = asRecord(recommendation['evidence']);
+    return {
+      snapshotHash: asRecord(evidence?.['recommendationEvidenceSnapshot'])?.['hash'],
+      auditorVerdict: asRecord(evidence?.['aiAudit'])?.['verdict'],
+    };
+  })),
+});
+checks.push({
   name: 'no_inventa_ahorro_negativo',
   passed: recommendations.every((recommendation) => {
     const savings = recommendation['estimatedMonthlySavings'];
@@ -71,11 +90,22 @@ checks.push({
   detail: JSON.stringify(traces.slice(0, 3)),
 });
 
+const tokenEstimate = traces.reduce((total, trace) => (
+  total + readNonNegativeNumber(trace['promptTokenEstimate']) + readNonNegativeNumber(trace['responseTokenEstimate'])
+), 0);
+const traceLatencyMs = traces.reduce((total, trace) => total + readNonNegativeNumber(trace['latencyMs']), 0);
+
 const passed = checks.every((check) => check.passed);
 const output = {
   success: passed,
   generatedAt: new Date().toISOString(),
   apiBaseUrl,
+  metrics: {
+    recommendationLatencyMs,
+    traceLatencyMs,
+    tokenEstimate,
+    recommendationCount: recommendations.length,
+  },
   checks,
 };
 await mkdir(resolve('.test-artifacts/ai-audit'), { recursive: true });
@@ -157,4 +187,14 @@ function readJsonPath(value: Record<string, unknown>, path: readonly string[]): 
 function containsSpanishSignal(text: string): boolean {
   const normalized = text.toLowerCase();
   return ['costo', 'ahorro', 'oportunidad', 'recomendacion', 'recomendación', 'segun', 'según'].some((word) => normalized.includes(word));
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function readNonNegativeNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
 }

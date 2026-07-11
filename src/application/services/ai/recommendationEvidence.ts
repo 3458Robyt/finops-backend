@@ -2,6 +2,7 @@ import type { AgentLearningContext } from '../../../domain/interfaces/IAgentLear
 import type { CreateRecommendationInput } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { AiAuditReport } from '../../../domain/models/RecommendationExecutionPlan.js';
 import type { AiRecommendationDraft } from './finOpsAiTypes.js';
+import type { RecommendationEvidenceSnapshot } from './RecommendationEvidenceSnapshot.js';
 import { isRecord } from './jsonReadHelpers.js';
 import { createHash } from 'node:crypto';
 
@@ -29,12 +30,14 @@ export function applyAuditEvidence(
   draft: AiRecommendationDraft & { tenantId: string },
   auditReport: AiAuditReport,
   learningContext: AgentLearningContext,
+  technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot,
 ): CreateRecommendationInput {
   return {
     ...draft,
     evidence: {
       ...(isRecord(draft.evidence) ? draft.evidence : {}),
       aiAudit: auditReport,
+      ...(technicalEvidenceSnapshot !== undefined ? { recommendationEvidenceSnapshot: technicalEvidenceSnapshot } : {}),
       ...(learningContext.summary !== ''
         ? {
             aiLearning: {

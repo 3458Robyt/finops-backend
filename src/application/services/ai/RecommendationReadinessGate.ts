@@ -1,4 +1,8 @@
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
+import type {
+  RecommendationEvidenceResource,
+  RecommendationEvidenceSnapshot,
+} from './RecommendationEvidenceSnapshot.js';
 
 export type RecommendationReadiness = 'GENERATABLE' | 'VALIDATION_ONLY' | 'BLOCKED_NO_EVIDENCE';
 
@@ -35,30 +39,18 @@ const costSavingsRate = 0.18;
 const usageSavingsRate = 0.12;
 const technicalSavingsRate = 0.25;
 
-interface DeterministicRuleEvaluation {
-  readonly readiness: RecommendationReadiness;
-  readonly evidenceStrength?: 'LOW' | 'MEDIUM' | 'HIGH';
-  readonly recommendedActionType?: string;
-  readonly ruleMatches?: readonly string[];
-  readonly blockers?: readonly string[];
-  readonly sourceFacts?: readonly string[];
-  readonly technicalEvidenceRefs?: readonly string[];
-  readonly metricSummary?: unknown;
-  readonly maxTechnicalSavingsRate?: number;
-}
-
 export function buildRecommendationReadinessReport(input: {
   readonly snapshot: CostAnalyticsSnapshot;
-  readonly technicalEvidence?: string;
+  readonly technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot;
 }): RecommendationReadinessReport {
   const accountById = new Map(input.snapshot.accounts.map((account) => [account.cloudAccountId, account]));
-  const technicalRefs = extractTechnicalEvidenceRefs(input.technicalEvidence);
-  const deterministicRules = extractDeterministicRules(input.technicalEvidence);
-  const hasStrongTechnicalEvidence = technicalRefs.length > 0;
+  const evidenceByResource = new Map(
+    (input.technicalEvidenceSnapshot?.resources ?? []).map((resource) => [resource.externalResourceId, resource]),
+  );
 
   const candidates = [
     ...buildUsageCandidates(input.snapshot, accountById),
-    ...buildResourceCandidates(input.snapshot, accountById, technicalRefs, deterministicRules, hasStrongTechnicalEvidence),
+    ...buildResourceCandidates(input.snapshot, accountById, evidenceByResource),
     ...buildServiceCandidates(input.snapshot, accountById),
   ]
     .sort((left, right) => right.maxEstimatedMonthlySavings - left.maxEstimatedMonthlySavings)
@@ -128,17 +120,15 @@ function buildUsageCandidates(
 function buildResourceCandidates(
   snapshot: CostAnalyticsSnapshot,
   accountById: ReadonlyMap<string, { readonly cloudAccountId: string; readonly provider: string }>,
-  technicalRefs: readonly string[],
-  deterministicRules: ReadonlyMap<string, DeterministicRuleEvaluation>,
-  hasStrongTechnicalEvidence: boolean,
+  evidenceByResource: ReadonlyMap<string, RecommendationEvidenceResource>,
 ): RecommendationOpportunityCandidate[] {
   return snapshot.topResources.slice(0, 4).map((resource, index) => {
     const account = pickAccountForProvider(snapshot, accountById, resource.provider);
-    const refsForResource = technicalRefs.filter((ref) => ref.includes(resource.resourceId));
-    const ruleEvaluation = deterministicRules.get(resource.resourceId);
+    const evidenceResource = evidenceByResource.get(resource.resourceId);
+    const ruleEvaluation = evidenceResource?.ruleEvaluation;
+    const refsForResource = evidenceResource?.metrics.map((metric) => metric.evidenceRef) ?? [];
     const hasResourceTechnicalEvidence =
-      ruleEvaluation?.readiness === 'GENERATABLE' ||
-      (hasStrongTechnicalEvidence && refsForResource.length > 0);
+      evidenceResource?.linkQuality === 'COST_AND_TECHNICAL' && refsForResource.length > 0;
     const readiness = ruleEvaluation?.readiness ?? (hasResourceTechnicalEvidence ? 'GENERATABLE' : 'VALIDATION_ONLY');
     const maxSavingsRate = ruleEvaluation?.maxTechnicalSavingsRate ?? (hasResourceTechnicalEvidence ? technicalSavingsRate : costSavingsRate);
 
@@ -221,100 +211,6 @@ function pickAccountForProvider(
     snapshot.accounts.find((account) => account.provider === provider) ??
     [...accountById.values()][0] ?? { cloudAccountId: 'unknown-account', provider }
   );
-}
-
-function extractTechnicalEvidenceRefs(technicalEvidence: string | undefined): string[] {
-  if (technicalEvidence === undefined || technicalEvidence.trim() === '') {
-    return [];
-  }
-
-  const refs = new Set<string>();
-  for (const match of technicalEvidence.matchAll(/resource_metric_samples:[^"',\]\s]+/g)) {
-    refs.add(match[0]);
-  }
-
-  return [...refs];
-}
-
-function extractDeterministicRules(
-  technicalEvidence: string | undefined,
-): ReadonlyMap<string, DeterministicRuleEvaluation> {
-  if (technicalEvidence === undefined || technicalEvidence.trim() === '') {
-    return new Map();
-  }
-
-  const jsonStart = technicalEvidence.indexOf('{');
-  if (jsonStart < 0) {
-    return new Map();
-  }
-
-  try {
-    const parsed = JSON.parse(technicalEvidence.slice(jsonStart)) as unknown;
-    if (!isRecord(parsed) || !Array.isArray(parsed['deterministicRules'])) {
-      return new Map();
-    }
-
-    const entries = parsed['deterministicRules']
-      .filter((item): item is Record<string, unknown> => isRecord(item))
-      .map((item): readonly [string, DeterministicRuleEvaluation] | null => {
-        const externalResourceId = readString(item, 'externalResourceId');
-        const readiness = readReadiness(item['readiness']);
-        if (externalResourceId === undefined || readiness === undefined) {
-          return null;
-        }
-
-        const evidenceStrength = readEvidenceStrength(item['evidenceStrength']);
-        const recommendedActionType = readString(item, 'recommendedActionType');
-
-        return [
-          externalResourceId,
-          {
-            readiness,
-            ...(evidenceStrength !== undefined ? { evidenceStrength } : {}),
-            ...(recommendedActionType !== undefined ? { recommendedActionType } : {}),
-            ruleMatches: readStringArray(item['ruleMatches']),
-            blockers: readStringArray(item['blockers']),
-            sourceFacts: readStringArray(item['sourceFacts']),
-            technicalEvidenceRefs: readStringArray(item['technicalEvidenceRefs']),
-            ...(item['metricSummary'] !== undefined ? { metricSummary: item['metricSummary'] } : {}),
-            ...(typeof item['maxTechnicalSavingsRate'] === 'number'
-              ? { maxTechnicalSavingsRate: item['maxTechnicalSavingsRate'] }
-              : {}),
-          },
-        ];
-      })
-      .filter((entry): entry is readonly [string, DeterministicRuleEvaluation] => entry !== null);
-
-    return new Map(entries);
-  } catch {
-    return new Map();
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function readString(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
-}
-
-function readStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
-}
-
-function readReadiness(value: unknown): RecommendationReadiness | undefined {
-  return value === 'GENERATABLE' || value === 'VALIDATION_ONLY' || value === 'BLOCKED_NO_EVIDENCE'
-    ? value
-    : undefined;
-}
-
-function readEvidenceStrength(value: unknown): 'LOW' | 'MEDIUM' | 'HIGH' | undefined {
-  return value === 'LOW' || value === 'MEDIUM' || value === 'HIGH' ? value : undefined;
 }
 
 function round(value: number): number {

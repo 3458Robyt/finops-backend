@@ -16,6 +16,8 @@ import type {
   AgentLearningContext,
   IAgentLearningContextProvider,
 } from '../../domain/interfaces/IAgentLearningService.js';
+import type { TechnicalRecommendationEvidenceProvider } from './ai/TechnicalRecommendationEvidenceService.js';
+import type { RecommendationEvidenceSnapshot } from './ai/RecommendationEvidenceSnapshot.js';
 
 class FakeAiGateway implements IAiGateway {
   public readonly modelName = 'fake-model';
@@ -195,6 +197,51 @@ class FakeLearningContextProvider implements IAgentLearningContextProvider {
   }
 }
 
+class FakeTechnicalEvidenceProvider implements TechnicalRecommendationEvidenceProvider {
+  public async buildRecommendationEvidenceSnapshot(): Promise<RecommendationEvidenceSnapshot> {
+    const rule = {
+      externalResourceId: 'i-prod-001',
+      cloudResourceId: 'resource-1',
+      provider: 'AWS',
+      readiness: 'GENERATABLE' as const,
+      evidenceStrength: 'HIGH' as const,
+      recommendedActionType: 'RIGHTSIZING' as const,
+      ruleMatches: ['CPU_STRONG_UNDERUTILIZATION', 'MEMORY_LOW_UTILIZATION'],
+      blockers: [],
+      sourceFacts: ['CPU y memoria bajos con cobertura suficiente.'],
+      technicalEvidenceRefs: ['resource_metric_samples:i-prod-001:CpuUtilization:2024-09-30T00:00:00.000Z'],
+      metricSummary: [],
+      maxTechnicalSavingsRate: 0.25,
+    };
+    return {
+      version: '1',
+      hash: 'technical-snapshot-hash',
+      tenantId: 'tenant-1',
+      periodStart: '2024-09-01',
+      periodEnd: '2024-10-01',
+      generatedAt: '2024-10-01T00:00:00.000Z',
+      availability: 'COST_USAGE_AND_TECHNICAL_AVAILABLE',
+      resources: [{
+        externalResourceId: 'i-prod-001',
+        cloudResourceId: 'resource-1',
+        provider: 'AWS',
+        serviceName: 'Amazon Elastic Compute Cloud',
+        linkQuality: 'COST_AND_TECHNICAL',
+        cost: { totalCost: 14.9, currency: 'USD', focusMetricCount: 40 },
+        usage: [],
+        metrics: [{
+          metricName: 'CpuUtilization', metricUnit: 'Percent', sampleCount: 96, coverageDays: 14,
+          min: 1, max: 25, avg: 8, p50: 8, p95: 15, p99: 25, latest: 8,
+          firstSampledAt: '2024-09-16T00:00:00.000Z', latestSampledAt: '2024-09-30T00:00:00.000Z',
+          evidenceRef: 'resource_metric_samples:i-prod-001:CpuUtilization:2024-09-30T00:00:00.000Z',
+        }],
+        ruleEvaluation: rule,
+      }],
+      deterministicRules: [rule],
+    };
+  }
+}
+
 describe('FinOpsAiService', () => {
   test('answers chat using a compact FinOps cost snapshot', async () => {
     const gateway = new FakeAiGateway('EC2 concentra el mayor gasto del periodo.');
@@ -338,6 +385,124 @@ describe('FinOpsAiService', () => {
     });
   });
 
+  test('persists and audits the same canonical technical evidence snapshot', async () => {
+    const gateway = new FakeAiGateway([
+      JSON.stringify({
+        recommendations: [{
+          cloudAccountId: 'account-focus-aws-prod',
+          type: 'RIGHTSIZING',
+          severity: 'MEDIUM',
+          title: 'Reducir capacidad de la instancia',
+          description: 'La instancia presenta CPU y memoria bajas con cobertura técnica suficiente.',
+          estimatedMonthlySavings: 3.7,
+          currency: 'USD',
+          evidence: {
+            candidateId: 'resource-1',
+            externalResourceId: 'i-prod-001',
+            cloudResourceId: 'resource-1',
+            evidenceLevel: 'COST_USAGE_AND_TECHNICAL',
+            technicalEvidenceRefs: ['resource_metric_samples:i-prod-001:CpuUtilization:2024-09-30T00:00:00.000Z'],
+            technicalSampleCount: 96,
+            technicalCoverageDays: 14,
+            latestTechnicalSampleAt: '2024-09-30T00:00:00.000Z',
+          },
+        }],
+      }),
+      JSON.stringify({ verdict: 'APPROVED', score: 95, checks: [], blockingIssues: [], requiredChanges: [] }),
+    ]);
+    const recommendations = new FakeRecommendationRepository();
+    const service = new FinOpsAiService(
+      new FakeCostAnalyticsRepository(),
+      recommendations,
+      gateway,
+      undefined,
+      undefined,
+      undefined,
+      new FakeTechnicalEvidenceProvider(),
+    );
+
+    await service.generateRecommendations({ tenantId: 'tenant-1', persist: true, externalResourceId: 'i-prod-001' });
+
+    expect(gateway.requests[0]?.messages[0]?.content).toContain('technical-snapshot-hash');
+    expect(gateway.requests[1]?.messages.at(-1)?.content).toContain('Evidencia tecnica canonica');
+    expect(recommendations.created[0]?.evidence).toMatchObject({
+      recommendationEvidenceSnapshot: { hash: 'technical-snapshot-hash' },
+      aiAudit: { verdict: 'APPROVED' },
+    });
+  });
+
+  test('uses audited learning context for a resource-scoped recommendation without broadening factual scope', async () => {
+    const gateway = new FakeAiGateway([
+      JSON.stringify({
+        recommendations: [{
+          cloudAccountId: 'account-focus-aws-prod',
+          type: 'TECHNICAL_VALIDATION_REQUIRED',
+          severity: 'MEDIUM',
+          title: 'Validar la instancia solicitada',
+          description: 'Validar métricas técnicas antes de cambiar la capacidad del recurso.',
+          estimatedMonthlySavings: 0,
+          currency: 'USD',
+          evidence: {
+            candidateId: 'resource-1',
+            externalResourceId: 'i-prod-001',
+            evidenceLevel: 'COST_ONLY',
+            requiresTechnicalValidation: true,
+          },
+        }],
+      }),
+      JSON.stringify({ verdict: 'APPROVED', score: 92, checks: [], blockingIssues: [], requiredChanges: [] }),
+    ]);
+    const recommendations = new FakeRecommendationRepository();
+    const learningContextProvider = new FakeLearningContextProvider();
+    const service = new FinOpsAiService(
+      new FakeCostAnalyticsRepository(),
+      recommendations,
+      gateway,
+      learningContextProvider,
+    );
+
+    await service.generateRecommendations({
+      tenantId: 'tenant-1',
+      persist: true,
+      externalResourceId: 'i-prod-001',
+    });
+
+    expect(learningContextProvider.query?.tenantId).toBe('tenant-1');
+    expect(gateway.requests[0]?.messages[0]?.content).toContain('rechazaron recomendaciones sin evidencia');
+    expect(gateway.requests[0]?.messages[0]?.content).toContain('i-prod-001');
+    expect(recommendations.created[0]?.evidence).toMatchObject({
+      aiLearning: { memoryIds: ['mem-1'], caseIds: ['decision-1'] },
+    });
+  });
+
+  test('compares generation with and without learning while preserving the same scoped facts', async () => {
+    const response = JSON.stringify({
+      recommendations: [{
+        cloudAccountId: 'account-focus-aws-prod', type: 'TECHNICAL_VALIDATION_REQUIRED', severity: 'LOW',
+        title: 'Validar la instancia solicitada', description: 'Validar métricas antes de cambiar capacidad.',
+        estimatedMonthlySavings: 0, currency: 'USD',
+        evidence: { externalResourceId: 'i-prod-001', evidenceLevel: 'COST_ONLY', requiresTechnicalValidation: true },
+      }],
+    });
+    const audit = JSON.stringify({ verdict: 'APPROVED', score: 90, checks: [], blockingIssues: [], requiredChanges: [] });
+    const baselineGateway = new FakeAiGateway([response, audit]);
+    const learnedGateway = new FakeAiGateway([response, audit]);
+    const baselineRepository = new FakeRecommendationRepository();
+    const learnedRepository = new FakeRecommendationRepository();
+
+    await new FinOpsAiService(new FakeCostAnalyticsRepository(), baselineRepository, baselineGateway)
+      .generateRecommendations({ tenantId: 'tenant-1', persist: true, externalResourceId: 'i-prod-001' });
+    await new FinOpsAiService(
+      new FakeCostAnalyticsRepository(), learnedRepository, learnedGateway, new FakeLearningContextProvider(),
+    ).generateRecommendations({ tenantId: 'tenant-1', persist: true, externalResourceId: 'i-prod-001' });
+
+    expect(baselineGateway.requests[0]?.messages[0]?.content).toContain('no hay patrones previos relevantes');
+    expect(learnedGateway.requests[0]?.messages[0]?.content).toContain('rechazaron recomendaciones sin evidencia');
+    expect((baselineRepository.created[0]?.evidence as { externalResourceId?: string }).externalResourceId).toBe('i-prod-001');
+    expect((learnedRepository.created[0]?.evidence as { externalResourceId?: string }).externalResourceId).toBe('i-prod-001');
+    expect(learnedRepository.created[0]?.evidence).toMatchObject({ aiLearning: { memoryIds: ['mem-1'] } });
+  });
+
   test('rejects AI recommendations when auditor finds blocking issues', async () => {
     const gateway = new FakeAiGateway([
       JSON.stringify({
@@ -459,7 +624,7 @@ describe('FinOpsAiService', () => {
       tenantId: 'tenant-1',
       persist: true,
       externalResourceId: 'i-prod-001',
-    })).rejects.toThrow('AI did not return valid recommendations');
+    })).rejects.toThrow('AI audit rejected recommendation output');
 
     expect(recommendations.created).toHaveLength(0);
     expect(gateway.requests[0]?.messages[0]?.content).toContain('evidence.externalResourceId="i-prod-001"');

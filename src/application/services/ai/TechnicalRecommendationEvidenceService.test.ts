@@ -21,6 +21,7 @@ class FakeResourceMetricRepository implements IResourceMetricRepository {
   public costContext: readonly TechnicalCostContextItem[] = [];
   public summaries: readonly TechnicalMetricSummaryItem[] = [];
   public sampleFilters: TechnicalMetricSampleFilters | undefined;
+  public summaryFilters: TechnicalMetricSummaryFilters | undefined;
 
   public async listResourcesForTenant(): Promise<readonly CloudResourceItem[]> {
     return [];
@@ -63,9 +64,12 @@ class FakeResourceMetricRepository implements IResourceMetricRepository {
 
   public async listMetricSummariesForTenant(
     _tenantId: string,
-    _filters: TechnicalMetricSummaryFilters,
+    filters: TechnicalMetricSummaryFilters,
   ): Promise<readonly TechnicalMetricSummaryItem[]> {
-    return this.summaries;
+    this.summaryFilters = filters;
+    return this.summaries.filter((summary) => (
+      filters.externalResourceIds === undefined || filters.externalResourceIds.includes(summary.externalResourceId)
+    ));
   }
 }
 
@@ -96,6 +100,7 @@ describe('TechnicalRecommendationEvidenceService', () => {
     expect(evidence).toContain('"deterministicRules"');
     expect(evidence).toContain('CPU_STRONG_UNDERUTILIZATION');
     expect(evidence).toContain('"totalCost":42');
+    expect(evidence).toContain('"hash"');
   });
 
   test('warns the model when no technical samples exist', async () => {
@@ -116,6 +121,10 @@ describe('TechnicalRecommendationEvidenceService', () => {
       sample('s1', 8, '2026-06-20T00:00:00.000Z'),
       { ...sample('s2', 55, '2026-06-20T00:00:00.000Z'), externalResourceId: 'ocid1.instance.other' },
     ];
+    repository.summaries = [
+      metricSummary('CpuUtilization', 8, 25),
+      { ...metricSummary('CpuUtilization', 55, 90), externalResourceId: 'ocid1.instance.other' },
+    ];
     const service = new TechnicalRecommendationEvidenceService(repository);
 
     const evidence = await service.buildRecommendationEvidence({
@@ -124,7 +133,7 @@ describe('TechnicalRecommendationEvidenceService', () => {
       externalResourceId: 'ocid1.instance.oc1.test',
     });
 
-    expect(repository.sampleFilters?.externalResourceId).toBe('ocid1.instance.oc1.test');
+    expect(repository.summaryFilters?.externalResourceIds).toEqual(['ocid1.instance.oc1.test']);
     expect(evidence).toContain('ocid1.instance.oc1.test');
     expect(evidence).not.toContain('ocid1.instance.other');
   });

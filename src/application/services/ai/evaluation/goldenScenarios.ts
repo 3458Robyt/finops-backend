@@ -1,4 +1,5 @@
 import type { CostAnalyticsSnapshot } from '../../../../domain/interfaces/ICostAnalyticsRepository.js';
+import type { RecommendationEvidenceSnapshot } from '../RecommendationEvidenceSnapshot.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -40,6 +41,8 @@ export interface GoldenScenario {
   readonly scriptedRecommendationResponse: string;
   /** Recurso de un análisis aislado; activa la comprobación exacta de evidencia. */
   readonly scopedExternalResourceId?: string;
+  /** Evidencia técnica canónica; cuando existe, la rúbrica exige referencias exactas. */
+  readonly technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot;
   /** Resultado esperado del pipeline offline. */
   readonly expectedOutcome: GoldenOutcome;
 }
@@ -98,6 +101,56 @@ const snapshot = buildSyntheticSnapshot();
 /** Serializa una respuesta de recomendaciones como lo haría el modelo. */
 function scriptResponse(recommendations: readonly Record<string, unknown>[]): string {
   return JSON.stringify({ recommendations });
+}
+
+function buildCanonicalTechnicalEvidence(input: {
+  readonly readiness?: 'GENERATABLE' | 'VALIDATION_ONLY';
+  readonly blockers?: readonly string[];
+  readonly ruleMatches?: readonly string[];
+  readonly latestSampledAt?: string;
+  readonly sampleCount?: number;
+  readonly coverageDays?: number;
+} = {}): RecommendationEvidenceSnapshot {
+  const latestSampledAt = input.latestSampledAt ?? '2026-04-30T23:30:00.000Z';
+  const rule = {
+    externalResourceId: 'i-abc123',
+    cloudResourceId: 'cloud-resource-demo-1',
+    provider: 'AWS',
+    readiness: input.readiness ?? 'GENERATABLE',
+    evidenceStrength: 'HIGH' as const,
+    recommendedActionType: input.readiness === 'VALIDATION_ONLY' ? 'PERFORMANCE_CAPACITY_REVIEW' as const : 'RIGHTSIZING' as const,
+    ruleMatches: input.ruleMatches ?? ['CPU_STRONG_UNDERUTILIZATION', 'MEMORY_LOW_UTILIZATION'],
+    blockers: input.blockers ?? [],
+    sourceFacts: ['Métricas técnicas canónicas de CPU, memoria, red y disco.'],
+    technicalEvidenceRefs: [`resource_metric_samples:i-abc123:CpuUtilization:${latestSampledAt}`],
+    metricSummary: [],
+    maxTechnicalSavingsRate: input.readiness === 'VALIDATION_ONLY' ? 0 : 0.25,
+  };
+  return {
+    version: '1',
+    hash: `golden-${latestSampledAt}`,
+    tenantId: 'tenant-demo',
+    periodStart: '2026-04-01',
+    periodEnd: '2026-05-01',
+    generatedAt: '2026-05-01T00:00:00.000Z',
+    availability: 'COST_USAGE_AND_TECHNICAL_AVAILABLE',
+    resources: [{
+      externalResourceId: 'i-abc123',
+      cloudResourceId: 'cloud-resource-demo-1',
+      provider: 'AWS',
+      linkQuality: 'COST_AND_TECHNICAL',
+      cost: { totalCost: 160, currency: 'USD', focusMetricCount: 96 },
+      usage: [],
+      metrics: [
+        { metricName: 'CpuUtilization', metricUnit: 'Percent', sampleCount: input.sampleCount ?? 96, coverageDays: input.coverageDays ?? 14, min: 1, max: 28, avg: 8, p50: 8, p95: 15, p99: 28, latest: 8, highUtilizationSampleCount: 0, highUtilizationRatio: 0, firstSampledAt: '2026-04-16T00:00:00.000Z', latestSampledAt, evidenceRef: `resource_metric_samples:i-abc123:CpuUtilization:${latestSampledAt}` },
+        { metricName: 'MemoryUtilization', metricUnit: 'Percent', sampleCount: input.sampleCount ?? 96, coverageDays: input.coverageDays ?? 14, min: 10, max: 45, avg: 22, p50: 22, p95: 40, p99: 45, latest: 22, highUtilizationSampleCount: 0, highUtilizationRatio: 0, firstSampledAt: '2026-04-16T00:00:00.000Z', latestSampledAt, evidenceRef: `resource_metric_samples:i-abc123:MemoryUtilization:${latestSampledAt}` },
+        { metricName: 'NetworkUtilization', metricUnit: 'Percent', sampleCount: input.sampleCount ?? 96, coverageDays: input.coverageDays ?? 14, min: 1, max: 35, avg: 9, p50: 9, p95: 20, p99: 35, latest: 9, highUtilizationSampleCount: 0, highUtilizationRatio: 0, firstSampledAt: '2026-04-16T00:00:00.000Z', latestSampledAt, evidenceRef: `resource_metric_samples:i-abc123:NetworkUtilization:${latestSampledAt}` },
+        { metricName: 'DiskUtilization', metricUnit: 'Percent', sampleCount: input.sampleCount ?? 96, coverageDays: input.coverageDays ?? 14, min: 5, max: 48, avg: 20, p50: 20, p95: 40, p99: 48, latest: 20, highUtilizationSampleCount: 0, highUtilizationRatio: 0, firstSampledAt: '2026-04-16T00:00:00.000Z', latestSampledAt, evidenceRef: `resource_metric_samples:i-abc123:DiskUtilization:${latestSampledAt}` },
+      ],
+      ruleEvaluation: rule,
+    }],
+    deterministicRules: [rule],
+  };
 }
 
 /**
@@ -339,5 +392,98 @@ export const goldenScenarios: readonly GoldenScenario[] = [
       },
     ]),
     expectedOutcome: 'PARSED_AND_PASSED',
+  },
+  {
+    name: 'rightsizing-canonico-cpu-memoria-red-disco-verificable',
+    snapshot,
+    technicalEvidenceSnapshot: buildCanonicalTechnicalEvidence(),
+    scriptedRecommendationResponse: scriptResponse([{
+      cloudAccountId: 'acc-prod-aws',
+      type: 'RIGHTSIZING',
+      severity: 'MEDIUM',
+      title: 'Reducir capacidad con métricas técnicas verificadas',
+      description: 'CPU, memoria, red y disco permanecen dentro de rangos bajos durante el período observado.',
+      estimatedMonthlySavings: 40,
+      currency: 'USD',
+      evidence: {
+        evidenceLevel: 'COST_USAGE_AND_TECHNICAL',
+        cloudResourceId: 'cloud-resource-demo-1',
+        externalResourceId: 'i-abc123',
+        technicalEvidenceRefs: ['resource_metric_samples:i-abc123:CpuUtilization:2026-04-30T23:30:00.000Z'],
+        technicalSampleCount: 96,
+        technicalCoverageDays: 14,
+        latestTechnicalSampleAt: '2026-04-30T23:30:00.000Z',
+      },
+    }]),
+    expectedOutcome: 'PARSED_AND_PASSED',
+  },
+  {
+    name: 'rightsizing-bloqueado-por-red-y-disco',
+    snapshot,
+    technicalEvidenceSnapshot: buildCanonicalTechnicalEvidence({
+      readiness: 'VALIDATION_ONLY',
+      blockers: ['NETWORK_SATURATION_RISK', 'DISK_SATURATION_RISK'],
+      ruleMatches: ['NETWORK_HIGH_UTILIZATION', 'DISK_HIGH_UTILIZATION'],
+    }),
+    scriptedRecommendationResponse: scriptResponse([{
+      cloudAccountId: 'acc-prod-aws', type: 'RIGHTSIZING', severity: 'HIGH',
+      title: 'Reducir capacidad pese a saturación de red y disco',
+      description: 'Propone reducir capacidad ignorando señales técnicas contradictorias.',
+      estimatedMonthlySavings: 40, currency: 'USD',
+      evidence: {
+        evidenceLevel: 'COST_USAGE_AND_TECHNICAL', cloudResourceId: 'cloud-resource-demo-1', externalResourceId: 'i-abc123',
+        technicalEvidenceRefs: ['resource_metric_samples:i-abc123:CpuUtilization:2026-04-30T23:30:00.000Z'],
+        technicalSampleCount: 96, technicalCoverageDays: 14, latestTechnicalSampleAt: '2026-04-30T23:30:00.000Z',
+      },
+    }]),
+    expectedOutcome: 'PARSED_BUT_FAILED',
+  },
+  {
+    name: 'rightsizing-canonico-con-evidencia-obsoleta',
+    snapshot,
+    technicalEvidenceSnapshot: buildCanonicalTechnicalEvidence({ latestSampledAt: '2026-03-01T00:00:00.000Z' }),
+    scriptedRecommendationResponse: scriptResponse([{
+      cloudAccountId: 'acc-prod-aws', type: 'RIGHTSIZING', severity: 'MEDIUM',
+      title: 'Reducir capacidad con evidencia antigua', description: 'Usa métricas que ya no son recientes.',
+      estimatedMonthlySavings: 40, currency: 'USD',
+      evidence: {
+        evidenceLevel: 'COST_USAGE_AND_TECHNICAL', cloudResourceId: 'cloud-resource-demo-1', externalResourceId: 'i-abc123',
+        technicalEvidenceRefs: ['resource_metric_samples:i-abc123:CpuUtilization:2026-03-01T00:00:00.000Z'],
+        technicalSampleCount: 96, technicalCoverageDays: 14, latestTechnicalSampleAt: '2026-03-01T00:00:00.000Z',
+      },
+    }]),
+    expectedOutcome: 'PARSED_BUT_FAILED',
+  },
+  {
+    name: 'rightsizing-canonico-con-cobertura-insuficiente',
+    snapshot,
+    technicalEvidenceSnapshot: buildCanonicalTechnicalEvidence({ sampleCount: 4, coverageDays: 2 }),
+    scriptedRecommendationResponse: scriptResponse([{
+      cloudAccountId: 'acc-prod-aws', type: 'RIGHTSIZING', severity: 'MEDIUM',
+      title: 'Reducir capacidad con cuatro muestras', description: 'Afirma una conclusión técnica con cobertura insuficiente.',
+      estimatedMonthlySavings: 40, currency: 'USD',
+      evidence: {
+        evidenceLevel: 'COST_USAGE_AND_TECHNICAL', cloudResourceId: 'cloud-resource-demo-1', externalResourceId: 'i-abc123',
+        technicalEvidenceRefs: ['resource_metric_samples:i-abc123:CpuUtilization:2026-04-30T23:30:00.000Z'],
+        technicalSampleCount: 4, technicalCoverageDays: 2, latestTechnicalSampleAt: '2026-04-30T23:30:00.000Z',
+      },
+    }]),
+    expectedOutcome: 'PARSED_BUT_FAILED',
+  },
+  {
+    name: 'rightsizing-canonico-con-metrica-inventada',
+    snapshot,
+    technicalEvidenceSnapshot: buildCanonicalTechnicalEvidence(),
+    scriptedRecommendationResponse: scriptResponse([{
+      cloudAccountId: 'acc-prod-aws', type: 'RIGHTSIZING', severity: 'MEDIUM',
+      title: 'Reducir capacidad con métrica inexistente', description: 'Cita una métrica que no existe en la evidencia.',
+      estimatedMonthlySavings: 40, currency: 'USD',
+      evidence: {
+        evidenceLevel: 'COST_USAGE_AND_TECHNICAL', cloudResourceId: 'cloud-resource-demo-1', externalResourceId: 'i-abc123',
+        technicalEvidenceRefs: ['resource_metric_samples:i-abc123:InventedMetric:2026-04-30T23:30:00.000Z'],
+        technicalSampleCount: 96, technicalCoverageDays: 14, latestTechnicalSampleAt: '2026-04-30T23:30:00.000Z',
+      },
+    }]),
+    expectedOutcome: 'PARSED_BUT_FAILED',
   },
 ];

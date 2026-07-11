@@ -192,7 +192,7 @@ export class FinOpsAiService {
     const snapshot = input.externalResourceId === undefined
       ? tenantSnapshot
       : scopeSnapshotToResource(tenantSnapshot, input.externalResourceId);
-    const { builtContext, systemPrompt, learningContext, readinessReport } =
+    const { builtContext, systemPrompt, learningContext, readinessReport, technicalEvidenceSnapshot } =
       await this.contextAssembler.assembleRecommendationContext({
       tenantId: input.tenantId,
       ...(input.userId !== undefined ? { userId: input.userId } : {}),
@@ -207,6 +207,7 @@ export class FinOpsAiService {
       snapshot,
       systemPrompt,
       input.externalResourceId,
+      technicalEvidenceSnapshot,
     );
 
     if (auditReport.verdict !== approvedAuditVerdict) {
@@ -229,7 +230,7 @@ export class FinOpsAiService {
     }
 
     const auditedDrafts = drafts.map((draft) => ({
-      ...applyAuditEvidence(draft, auditReport, learningContext),
+      ...applyAuditEvidence(draft, auditReport, learningContext, technicalEvidenceSnapshot),
       deduplicationKey: buildRecommendationDeduplicationKey(
         draft,
         snapshot.periodStart,
@@ -368,10 +369,15 @@ function scopeSnapshotToResource(
     ...base,
     totalCost,
     metricCount,
-    providers: [],
-    accounts: [],
-    services: [],
+    providers: snapshot.providers.filter((provider) => provider.provider === topResources[0]!.provider),
+    accounts: snapshot.accounts.filter((account) => account.provider === topResources[0]!.provider),
+    services: snapshot.services.filter((service) => (
+      service.provider === topResources[0]!.provider && service.serviceName === topResources[0]!.serviceName
+    )),
     environments: [],
     topResources,
+    topUsage: (snapshot.topUsage ?? []).filter((usage) => (
+      usage.provider === topResources[0]!.provider && usage.serviceName === topResources[0]!.serviceName
+    )),
   };
 }

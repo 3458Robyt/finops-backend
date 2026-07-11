@@ -410,6 +410,60 @@ describe('FinOpsAiService', () => {
     expect(recommendations.created).toHaveLength(0);
   });
 
+  test('rejects a scoped analysis before calling the LLM when the resource is absent from the tenant snapshot', async () => {
+    const gateway = new FakeAiGateway('not used');
+    const service = new FinOpsAiService(
+      new FakeCostAnalyticsRepository(),
+      new FakeRecommendationRepository(),
+      gateway,
+    );
+
+    await expect(service.generateRecommendations({
+      tenantId: 'tenant-1',
+      persist: false,
+      externalResourceId: 'i-other-tenant',
+    })).rejects.toThrow('No existe evidencia de costo para el recurso solicitado');
+
+    expect(gateway.requests).toHaveLength(0);
+  });
+
+  test('rejects an auditor-approved scoped output that points to another resource', async () => {
+    const gateway = new FakeAiGateway([
+      JSON.stringify({
+        recommendations: [{
+          cloudAccountId: 'account-focus-aws-prod',
+          type: 'RIGHTSIZING',
+          severity: 'LOW',
+          title: 'Validar instancia distinta',
+          description: 'Revisar métricas antes de cambiar capacidad.',
+          estimatedMonthlySavings: 0,
+          currency: 'USD',
+          evidence: {
+            candidateId: 'resource-i-prod-001',
+            evidenceLevel: 'COST_ONLY',
+            requiresTechnicalValidation: true,
+            externalResourceId: 'i-other-resource',
+            sourceFacts: ['El recurso solicitado debe validarse antes de cambiar capacidad.'],
+            assumptions: ['No se aplicará cambio automático.'],
+            confidence: 0.4,
+          },
+        }],
+      }),
+      JSON.stringify({ verdict: 'APPROVED', score: 99, checks: [], blockingIssues: [], requiredChanges: [] }),
+    ]);
+    const recommendations = new FakeRecommendationRepository();
+    const service = new FinOpsAiService(new FakeCostAnalyticsRepository(), recommendations, gateway);
+
+    await expect(service.generateRecommendations({
+      tenantId: 'tenant-1',
+      persist: true,
+      externalResourceId: 'i-prod-001',
+    })).rejects.toThrow('AI did not return valid recommendations');
+
+    expect(recommendations.created).toHaveLength(0);
+    expect(gateway.requests[0]?.messages[0]?.content).toContain('evidence.externalResourceId="i-prod-001"');
+  });
+
   test('allows one AI recommendation revision when auditor requests changes', async () => {
     const gateway = new FakeAiGateway([
       JSON.stringify({

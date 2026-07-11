@@ -71,6 +71,7 @@ export class FinOpsArtifactGenerator {
     userId: string | undefined,
     snapshot: CostAnalyticsSnapshot,
     systemPrompt: string,
+    externalResourceId?: string,
   ): Promise<AuditedDraftsResult> {
     const firstRawResponse = await this.requestRecommendations(systemPrompt);
     let drafts = this.withTenant(parseRecommendationDrafts(firstRawResponse, snapshot), tenantId);
@@ -89,7 +90,7 @@ export class FinOpsArtifactGenerator {
       drafts,
       auditReport: this.combineWithDeterministicQuality(
         auditReport,
-        evaluateRecommendationDrafts(drafts, snapshot),
+        evaluateRecommendationDrafts(drafts, snapshot, undefined, externalResourceId),
       ),
       firstRawResponse,
     };

@@ -81,6 +81,9 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
       where: {
         tenantId: query.tenantId,
         ...(query.cloudAccountId !== undefined ? { cloudAccountId: query.cloudAccountId } : {}),
+        ...(query.externalResourceId !== undefined
+          ? { evidence: { path: ['externalResourceId'], equals: query.externalResourceId } }
+          : {}),
         ...(query.status !== undefined ? { status: query.status } : {}),
       },
       orderBy: [

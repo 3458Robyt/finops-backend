@@ -13,6 +13,8 @@ export interface RecommendationQuery {
   readonly tenantId: string;
   /** Filtra por cuenta cloud; opcional. */
   readonly cloudAccountId?: string;
+  /** Filtra por el identificador exacto de recurso registrado en evidence. */
+  readonly externalResourceId?: string;
   /** Filtra por estado de la recomendación; opcional. */
   readonly status?: FinOpsRecommendation['status'];
 }

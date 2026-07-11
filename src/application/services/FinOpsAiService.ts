@@ -197,6 +197,7 @@ export class FinOpsAiService {
       tenantId: input.tenantId,
       ...(input.userId !== undefined ? { userId: input.userId } : {}),
       snapshot,
+      ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
     });
     const startedAt = Date.now();
 
@@ -205,6 +206,7 @@ export class FinOpsAiService {
       input.userId,
       snapshot,
       systemPrompt,
+      input.externalResourceId,
     );
 
     if (auditReport.verdict !== approvedAuditVerdict) {

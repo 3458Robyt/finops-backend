@@ -46,6 +46,17 @@ if (smokeResourceId === undefined) {
   throw new Error('Technical resources did not return a usable resource identifier.');
 }
 await check('technical resource summary', `/technical-metrics/resources/${encodeURIComponent(smokeResourceId)}/summary`, token);
+const relatedRecommendations = await request(
+  `/recommendations?${new URLSearchParams({ externalResourceId: smokeResourceId }).toString()}`,
+  { token },
+);
+assertOk(relatedRecommendations, 'resource related recommendations');
+const relatedRecommendationsBody = await relatedRecommendations.response.json() as {
+  readonly recommendations: readonly { readonly evidence: { readonly externalResourceId?: string } }[];
+};
+if (relatedRecommendationsBody.recommendations.some((recommendation) => recommendation.evidence.externalResourceId !== smokeResourceId)) {
+  throw new Error('Related recommendations included a different resource.');
+}
 const technicalOverview = await request('/technical-metrics/overview', { token });
 assertOk(technicalOverview, 'technical overview');
 const technicalOverviewBody = await technicalOverview.response.json() as {

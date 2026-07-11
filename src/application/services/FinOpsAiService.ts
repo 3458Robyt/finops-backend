@@ -9,7 +9,7 @@ import type { AiContextOperation } from '../../domain/models/AgentContext.js';
 import type { AiObservabilityService } from './AiObservabilityService.js';
 import { normalizeHistory } from './ai/finOpsAiPrompts.js';
 import { toEphemeralRecommendation } from './ai/finOpsAiResponseParser.js';
-import { applyAuditEvidence } from './ai/recommendationEvidence.js';
+import { applyAuditEvidence, buildRecommendationDeduplicationKey } from './ai/recommendationEvidence.js';
 import { FinOpsContextAssembler } from './ai/finOpsContextAssembler.js';
 import { AiTraceRecorder } from './ai/aiTraceRecorder.js';
 import { FinOpsArtifactGenerator } from './ai/finOpsArtifactGenerator.js';
@@ -228,7 +228,14 @@ export class FinOpsAiService {
       });
     }
 
-    const auditedDrafts = drafts.map((draft) => applyAuditEvidence(draft, auditReport, learningContext));
+    const auditedDrafts = drafts.map((draft) => ({
+      ...applyAuditEvidence(draft, auditReport, learningContext),
+      deduplicationKey: buildRecommendationDeduplicationKey(
+        draft,
+        snapshot.periodStart,
+        snapshot.periodEnd,
+      ),
+    }));
 
     const persisted = input.persist === true;
     const recommendations = persisted
@@ -287,6 +294,21 @@ export class FinOpsAiService {
       systemPrompt,
     );
 
+    await this.recordTrace(
+      { tenantId: input.tenantId, userId: input.userId },
+      'EXECUTION_PLAN',
+      builtContext,
+      startedAt,
+      firstRawResponse,
+    );
+
+    if (auditReport.verdict !== approvedAuditVerdict) {
+      throw new AiAuditRejectedError('AI audit rejected execution plan output', {
+        diagnosticId: this.buildAuditDiagnosticId(input.tenantId),
+        audit: auditReport,
+      });
+    }
+
     const plan = await this.recommendationRepository.createExecutionPlan({
       recommendationId: recommendation.id,
       generatedByUserId: input.userId,
@@ -297,14 +319,6 @@ export class FinOpsAiService {
       auditVerdict: auditReport.verdict,
       auditScore: auditReport.score,
     });
-
-    await this.recordTrace(
-      { tenantId: input.tenantId, userId: input.userId },
-      'EXECUTION_PLAN',
-      builtContext,
-      startedAt,
-      firstRawResponse,
-    );
 
     return plan;
   }

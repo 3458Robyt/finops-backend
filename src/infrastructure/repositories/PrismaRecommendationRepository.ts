@@ -97,10 +97,11 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
   /**
    * Crea múltiples recomendaciones, una por cada entrada del lote.
    *
-   * Cada recomendación se inicializa con estado `PENDING`. Las inserciones se
-   * lanzan en paralelo con `Promise.all`. El campo `evidence` se serializa como
-   * JSON de Prisma y `estimatedMonthlySavings` (en la divisa `currency`) solo se
-   * incluye cuando está definido.
+   * Cada recomendación se inicializa con estado `PENDING`. Cuando recibe una
+   * huella de deduplicación, reutiliza el registro existente del mismo tenant;
+   * de este modo dos generaciones equivalentes no duplican oportunidades. El
+   * campo `evidence` se serializa como JSON de Prisma y `estimatedMonthlySavings`
+   * solo se incluye cuando está definido.
    *
    * @param input Lote de recomendaciones a crear.
    * @returns Las recomendaciones creadas en formato de dominio; arreglo vacío si
@@ -111,24 +112,36 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
       return [];
     }
 
-    const rows = await Promise.all(input.map((item) => (
-      this.prisma.recommendation.create({
-        data: {
-          tenantId: item.tenantId,
-          cloudAccountId: item.cloudAccountId,
-          type: item.type,
-          severity: item.severity,
-          status: 'PENDING',
-          title: item.title,
-          description: item.description,
-          evidence: item.evidence as Prisma.InputJsonValue,
-          ...(item.estimatedMonthlySavings !== undefined
-            ? { estimatedMonthlySavings: item.estimatedMonthlySavings }
-            : {}),
-          currency: item.currency,
-        },
-      })
-    )));
+    const rows = await Promise.all(input.map((item) => {
+      const data = {
+        tenantId: item.tenantId,
+        cloudAccountId: item.cloudAccountId,
+        type: item.type,
+        severity: item.severity,
+        status: 'PENDING' as const,
+        title: item.title,
+        description: item.description,
+        evidence: item.evidence as Prisma.InputJsonValue,
+        ...(item.deduplicationKey !== undefined ? { deduplicationKey: item.deduplicationKey } : {}),
+        ...(item.estimatedMonthlySavings !== undefined
+          ? { estimatedMonthlySavings: item.estimatedMonthlySavings }
+          : {}),
+        currency: item.currency,
+      };
+
+      return item.deduplicationKey === undefined
+        ? this.prisma.recommendation.create({ data })
+        : this.prisma.recommendation.upsert({
+          where: {
+            tenantId_deduplicationKey: {
+              tenantId: item.tenantId,
+              deduplicationKey: item.deduplicationKey,
+            },
+          },
+          create: data,
+          update: {},
+        });
+    }));
 
     return rows.map((row) => toDomain(row));
   }
@@ -191,8 +204,9 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
   }
 
   /**
-   * Obtiene el plan de ejecución más reciente de una recomendación dentro de un
-   * tenant.
+   * Obtiene el último plan aprobado por auditoría de una recomendación dentro
+   * de un tenant. Los planes rechazados nunca se reutilizan ni se exponen como
+   * plan operativo.
    *
    * Filtra por recomendación y por la relación `recommendation.tenantId`
    * (aislamiento multi-tenant), ordenando por fecha de creación descendente.
@@ -211,6 +225,7 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
         recommendation: {
           tenantId,
         },
+        auditVerdict: 'APPROVED',
       },
       orderBy: {
         createdAt: 'desc',

@@ -9,6 +9,7 @@ import {
 } from './recommendation/recommendationRequestParsers.js';
 import {
   requireAuth,
+  requireRecommendationExecutionRole,
   requireRecommendationId,
 } from './recommendation/recommendationRequestGuards.js';
 import { respondWithRecommendationError } from './recommendation/recommendationErrorResponse.js';
@@ -72,6 +73,7 @@ export class RecommendationController {
     try {
       const auth = requireAuth(req, res);
       if (auth === undefined) return;
+      if (!requireRecommendationExecutionRole(res, auth)) return;
 
       if (this.aiService === undefined) {
         res.status(503).json({

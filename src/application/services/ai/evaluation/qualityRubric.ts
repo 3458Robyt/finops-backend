@@ -328,12 +328,28 @@ function matchesCanonicalTechnicalEvidence(
   }
 
   const refs = readEvidenceRefs(draft.evidence);
-  const allowedRefs = new Set(resource.metrics.map((metric) => metric.evidenceRef));
+  const metricsByRef = new Map(resource.metrics.map((metric) => [metric.evidenceRef, metric]));
+  const allowedRefs = new Set(metricsByRef.keys());
   const refsMatch = refs.length > 0 && refs.every((ref) => allowedRefs.has(ref));
   const ruleAllowsAction = resource.ruleEvaluation.readiness === 'GENERATABLE' &&
     resource.ruleEvaluation.blockers.length === 0;
+  const referencedMetrics = refs.flatMap((ref) => {
+    const metric = metricsByRef.get(ref);
+    return metric === undefined ? [] : [metric];
+  });
+  const sampleCount = readNumericEvidence(draft.evidence, 'technicalSampleCount');
+  const coverageDays = readNumericEvidence(draft.evidence, 'technicalCoverageDays');
+  const latestSampleAt = readStringEvidence(draft.evidence, 'latestTechnicalSampleAt');
+  const numbersMatch = referencedMetrics.length > 0 &&
+    referencedMetrics.some((metric) => (
+      metric.sampleCount === sampleCount &&
+      metric.coverageDays === coverageDays &&
+      metric.latestSampledAt === latestSampleAt
+    ));
+  const savingsWithinEvidence = draft.estimatedMonthlySavings === undefined || resource.cost === undefined ||
+    draft.estimatedMonthlySavings <= resource.cost.totalCost * resource.ruleEvaluation.maxTechnicalSavingsRate + 0.01;
 
-  return refsMatch && ruleAllowsAction;
+  return refsMatch && ruleAllowsAction && numbersMatch && savingsWithinEvidence;
 }
 
 function readEvidenceRefs(evidence: Record<string, unknown>): readonly string[] {

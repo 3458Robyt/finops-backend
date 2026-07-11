@@ -188,7 +188,10 @@ export class FinOpsAiService {
   public async generateRecommendations(
     input: GenerateAiRecommendationsInput,
   ): Promise<GenerateAiRecommendationsResponse> {
-    const snapshot = await this.analyticsRepository.getLatestTenantSnapshot(input.tenantId);
+    const tenantSnapshot = await this.analyticsRepository.getLatestTenantSnapshot(input.tenantId);
+    const snapshot = input.externalResourceId === undefined
+      ? tenantSnapshot
+      : scopeSnapshotToResource(tenantSnapshot, input.externalResourceId);
     const { builtContext, systemPrompt, learningContext, readinessReport } =
       await this.contextAssembler.assembleRecommendationContext({
       tenantId: input.tenantId,
@@ -331,4 +334,28 @@ export class FinOpsAiService {
   private buildAuditDiagnosticId(tenantId: string): string {
     return `audit-${tenantId}-${Date.now().toString(36)}`;
   }
+}
+
+function scopeSnapshotToResource(
+  snapshot: import('../../domain/interfaces/ICostAnalyticsRepository.js').CostAnalyticsSnapshot,
+  externalResourceId: string,
+): import('../../domain/interfaces/ICostAnalyticsRepository.js').CostAnalyticsSnapshot {
+  const topResources = snapshot.topResources.filter((resource) => resource.resourceId === externalResourceId);
+  if (topResources.length === 0) {
+    throw new FinOpsBaseError('No existe evidencia de costo para el recurso solicitado', 'VALIDATION_ERROR');
+  }
+
+  const totalCost = topResources.reduce((sum, resource) => sum + resource.totalCost, 0);
+  const metricCount = topResources.reduce((sum, resource) => sum + resource.metricCount, 0);
+  const { topUsage: _topUsage, usageInsights: _usageInsights, anomalies: _anomalies, forecasts: _forecasts, ...base } = snapshot;
+  return {
+    ...base,
+    totalCost,
+    metricCount,
+    providers: [],
+    accounts: [],
+    services: [],
+    environments: [],
+    topResources,
+  };
 }

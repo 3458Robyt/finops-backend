@@ -154,6 +154,27 @@ class FakeResourceMetricRepository implements IResourceMetricRepository {
 }
 
 describe('TechnicalMetricsService', () => {
+  test('returns a resource summary scoped to its tenant resource', async () => {
+    const repository = new FakeResourceMetricRepository();
+    repository.summaries = [{
+      provider: 'AWS', externalResourceId: 'i-0abc', metricName: 'cpu_utilization', sampleCount: 2,
+      coverageDays: 1, min: 10, max: 12.5, avg: 11.25, p50: 11.25, p95: 12.5, p99: 12.5,
+      latest: 10, firstSampledAt: new Date('2026-04-30T00:00:00.000Z'), latestSampledAt: new Date('2026-04-30T00:30:00.000Z'),
+    }];
+    const service = new TechnicalMetricsService(repository);
+
+    const summary = await service.getResourceSummary('tenant-a', 'i-0abc');
+
+    expect(summary?.resource.externalResourceId).toBe('i-0abc');
+    expect(summary?.metrics).toHaveLength(1);
+    expect(summary?.cost?.totalCost).toBe(42.25);
+  });
+
+  test('does not return an unlisted resource', async () => {
+    const service = new TechnicalMetricsService(new FakeResourceMetricRepository());
+
+    await expect(service.getResourceSummary('tenant-a', 'i-not-owned')).resolves.toBeUndefined();
+  });
   test('lists cloud resources scoped to the tenant with the default limit', async () => {
     const repository = new FakeResourceMetricRepository();
     const service = new TechnicalMetricsService(repository);

@@ -20,6 +20,8 @@ export interface RecommendationEvidenceMetric {
   readonly p95: number;
   readonly p99: number;
   readonly latest: number;
+  readonly highUtilizationSampleCount: number;
+  readonly highUtilizationRatio: number;
   readonly firstSampledAt: string;
   readonly latestSampledAt: string;
   readonly evidenceRef: string;

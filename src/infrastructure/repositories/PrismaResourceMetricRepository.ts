@@ -391,6 +391,8 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
         percentile_cont(0.50) WITHIN GROUP (ORDER BY rms.value)::float8 AS p50_value,
         percentile_cont(0.95) WITHIN GROUP (ORDER BY rms.value)::float8 AS p95_value,
         percentile_cont(0.99) WITHIN GROUP (ORDER BY rms.value)::float8 AS p99_value,
+        count(*) FILTER (WHERE rms.value >= 80)::int AS high_utilization_sample_count,
+        (count(*) FILTER (WHERE rms.value >= 80)::float8 / nullif(count(*)::float8, 0)) AS high_utilization_ratio,
         min(rms.sampled_at) AS first_sampled_at,
         max(rms.sampled_at) AS latest_sampled_at,
         max(latest.latest_value)::float8 AS latest_value
@@ -423,6 +425,8 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
       p95: row.p95_value,
       p99: row.p99_value,
       latest: row.latest_value,
+      ...(row.high_utilization_sample_count !== null ? { highUtilizationSampleCount: row.high_utilization_sample_count } : {}),
+      ...(row.high_utilization_ratio !== null ? { highUtilizationRatio: row.high_utilization_ratio } : {}),
       firstSampledAt: row.first_sampled_at,
       latestSampledAt: row.latest_sampled_at,
     }));
@@ -475,6 +479,8 @@ interface RawMetricSummaryRow {
   readonly p95_value: number;
   readonly p99_value: number;
   readonly latest_value: number;
+  readonly high_utilization_sample_count: number | null;
+  readonly high_utilization_ratio: number | null;
   readonly first_sampled_at: Date;
   readonly latest_sampled_at: Date;
 }

@@ -143,6 +143,8 @@ function toMetric(summary: TechnicalMetricSummaryItem): RecommendationEvidenceMe
     p95: round(summary.p95),
     p99: round(summary.p99),
     latest: round(summary.latest),
+    highUtilizationSampleCount: summary.highUtilizationSampleCount ?? 0,
+    highUtilizationRatio: round(summary.highUtilizationRatio ?? 0),
     firstSampledAt: summary.firstSampledAt.toISOString(),
     latestSampledAt: summary.latestSampledAt.toISOString(),
     evidenceRef: `resource_metric_samples:${summary.externalResourceId}:${summary.metricName}:${summary.latestSampledAt.toISOString()}`,

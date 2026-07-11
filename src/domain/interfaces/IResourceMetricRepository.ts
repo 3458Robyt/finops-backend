@@ -156,6 +156,10 @@ export interface TechnicalMetricSummaryItem {
   readonly p95: number;
   readonly p99: number;
   readonly latest: number;
+  /** Muestras que alcanzaron el umbral técnico de 80 unidades (normalmente 80%). */
+  readonly highUtilizationSampleCount?: number;
+  /** Proporción de muestras que alcanzaron el umbral técnico, calculada en PostgreSQL. */
+  readonly highUtilizationRatio?: number;
   readonly firstSampledAt: Date;
   readonly latestSampledAt: Date;
 }

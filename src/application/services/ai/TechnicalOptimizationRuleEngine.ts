@@ -38,6 +38,8 @@ export interface TechnicalMetricRuleSummary {
   readonly p95: number;
   readonly p99: number;
   readonly latest: number;
+  readonly highUtilizationSampleCount: number;
+  readonly highUtilizationRatio: number;
   readonly firstSampledAt: string;
   readonly latestSampledAt: string;
 }
@@ -45,6 +47,7 @@ export interface TechnicalMetricRuleSummary {
 const minimumSamples = 48;
 const minimumCoverageDays = 7;
 const recentSampleMaxAgeDays = 7;
+const sustainedHighUtilizationRatio = 0.2;
 
 export function evaluateTechnicalOptimizationRules(input: {
   readonly summaries: readonly TechnicalMetricSummaryItem[];
@@ -81,7 +84,7 @@ function evaluateResource(
     blockers.push('MISSING_CPU_METRIC');
   } else {
     sourceFacts.push(metricFact('CPU', cpu));
-    if (cpu.p95 >= 80 || cpu.p99 >= 90) {
+    if (cpu.p95 >= 80 || cpu.p99 >= 90 || (cpu.highUtilizationRatio ?? 0) >= sustainedHighUtilizationRatio) {
       blockers.push('CPU_SATURATION_RISK');
       ruleMatches.push('CPU_HIGH_UTILIZATION');
     } else if (cpu.avg <= 5 && cpu.p95 <= 10) {
@@ -97,7 +100,7 @@ function evaluateResource(
     blockers.push('MISSING_MEMORY_METRIC');
   } else {
     sourceFacts.push(metricFact('Memoria', memory));
-    if (memory.p95 >= 80) {
+    if (memory.p95 >= 80 || (memory.highUtilizationRatio ?? 0) >= sustainedHighUtilizationRatio) {
       blockers.push('MEMORY_SATURATION_RISK');
       ruleMatches.push('MEMORY_HIGH_UTILIZATION');
     } else if (memory.avg <= 30 && memory.p95 <= 50) {
@@ -114,7 +117,7 @@ function evaluateResource(
       continue;
     }
     sourceFacts.push(metricFact(label, summary));
-    if (isPercentMetric(summary) && summary.p95 >= 80) {
+    if (isPercentMetric(summary) && (summary.p95 >= 80 || (summary.highUtilizationRatio ?? 0) >= sustainedHighUtilizationRatio)) {
       blockers.push(`${label.toUpperCase()}_SATURATION_RISK`);
       ruleMatches.push(`${label.toUpperCase()}_HIGH_UTILIZATION`);
     }
@@ -211,7 +214,7 @@ function isPercentMetric(summary: TechnicalMetricSummaryItem): boolean {
 function metricFact(label: string, summary: TechnicalMetricSummaryItem): string {
   return `${label} ${summary.metricName}: avg=${round(summary.avg)}, p95=${round(summary.p95)}, p99=${round(
     summary.p99,
-  )}, muestras=${summary.sampleCount}, cobertura=${summary.coverageDays} dias.`;
+  )}, sobre80=${round(summary.highUtilizationRatio ?? 0) * 100}%, muestras=${summary.sampleCount}, cobertura=${summary.coverageDays} dias.`;
 }
 
 function toMetricRuleSummary(summary: TechnicalMetricSummaryItem): TechnicalMetricRuleSummary {
@@ -227,6 +230,8 @@ function toMetricRuleSummary(summary: TechnicalMetricSummaryItem): TechnicalMetr
     p95: round(summary.p95),
     p99: round(summary.p99),
     latest: round(summary.latest),
+    highUtilizationSampleCount: summary.highUtilizationSampleCount ?? 0,
+    highUtilizationRatio: round(summary.highUtilizationRatio ?? 0),
     firstSampledAt: summary.firstSampledAt.toISOString(),
     latestSampledAt: summary.latestSampledAt.toISOString(),
   };

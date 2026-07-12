@@ -40,6 +40,15 @@ const createdBudget = await request('/budgets', {
 });
 assertOk(createdBudget, 'create budget');
 const budgetBody = await createdBudget.response.json() as { readonly budget: { readonly id: string } };
+const duplicateBudget = await request('/budgets', {
+  method: 'POST',
+  token,
+  body: JSON.stringify({ scope: 'TENANT', period: '2026-05', amount: 100, currency: 'USD' }),
+});
+if (duplicateBudget.response.status !== 400) {
+  throw new Error(`Expected duplicate budget to return 400, got ${duplicateBudget.response.status}.`);
+}
+results.push({ name: 'duplicate budget rejected', status: duplicateBudget.response.status, ok: true, ms: duplicateBudget.ms });
 await check('budget performance', `/budgets/${encodeURIComponent(budgetBody.budget.id)}/performance`, token);
 const firstEvaluation = await request('/budgets/evaluate', { method: 'POST', token, body: JSON.stringify({ budgetId: budgetBody.budget.id }) });
 assertOk(firstEvaluation, 'evaluate budget');

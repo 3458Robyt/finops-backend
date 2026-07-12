@@ -33,6 +33,24 @@ await check('health', `${apiBaseUrl.replace(/\/api\/v1$/, '')}/health`);
 await check('auth tenants', '/auth/tenants', token);
 await check('kpis savings', '/kpis/savings', token);
 await check('costs', '/costs', token);
+const createdBudget = await request('/budgets', {
+  method: 'POST',
+  token,
+  body: JSON.stringify({ scope: 'TENANT', period: '2026-05', amount: 100, currency: 'USD' }),
+});
+assertOk(createdBudget, 'create budget');
+const budgetBody = await createdBudget.response.json() as { readonly budget: { readonly id: string } };
+await check('budget performance', `/budgets/${encodeURIComponent(budgetBody.budget.id)}/performance`, token);
+const firstEvaluation = await request('/budgets/evaluate', { method: 'POST', token, body: JSON.stringify({ budgetId: budgetBody.budget.id }) });
+assertOk(firstEvaluation, 'evaluate budget');
+const repeatedEvaluation = await request('/budgets/evaluate', { method: 'POST', token, body: JSON.stringify({ budgetId: budgetBody.budget.id }) });
+assertOk(repeatedEvaluation, 'repeat budget evaluation');
+const budgetAlerts = await request(`/budgets/${encodeURIComponent(budgetBody.budget.id)}/alerts`, { token });
+assertOk(budgetAlerts, 'budget alerts');
+const budgetAlertsBody = await budgetAlerts.response.json() as { readonly alerts: readonly unknown[] };
+if (budgetAlertsBody.alerts.length !== 3) {
+  throw new Error(`Expected three idempotent budget alerts, got ${budgetAlertsBody.alerts.length}.`);
+}
 await check('recommendations', '/recommendations', token);
 await check('recommendation detail', `/recommendations/${encodeURIComponent(manifest.recommendationIds[0] ?? '')}`, token);
 await check('recommendation timeline', `/recommendations/${encodeURIComponent(manifest.recommendationIds[0] ?? '')}/timeline`, token);

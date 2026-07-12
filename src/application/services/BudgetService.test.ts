@@ -12,7 +12,7 @@ describe('BudgetService', () => {
     const repository = new FakeBudgetRepository(buildBudget());
     const notifications = new FakeNotifications();
     const outbound = new FakeOutbound();
-    const service = new BudgetService(repository as unknown as IBudgetRepository, notifications as unknown as INotificationRepository, outbound as unknown as IOutboundMessageRepository);
+    const service = new BudgetService(repository as unknown as IBudgetRepository, notifications as unknown as INotificationRepository, outbound as unknown as IOutboundMessageRepository, new FakeTelegram() as any);
 
     await service.evaluate(actor, 'budget-1');
     await service.evaluate(actor, 'budget-1');
@@ -25,7 +25,7 @@ describe('BudgetService', () => {
   it('does not fabricate a forecast and only uses matching-currency cost', async () => {
     const repository = new FakeBudgetRepository(buildBudget());
     repository.actualCost = 85;
-    const service = new BudgetService(repository as unknown as IBudgetRepository, new FakeNotifications() as unknown as INotificationRepository, new FakeOutbound() as unknown as IOutboundMessageRepository);
+    const service = new BudgetService(repository as unknown as IBudgetRepository, new FakeNotifications() as unknown as INotificationRepository, new FakeOutbound() as unknown as IOutboundMessageRepository, new FakeTelegram() as any);
 
     const result = await service.getPerformance(actor, 'budget-1', new Date('2026-07-15T00:00:00.000Z'));
 
@@ -36,7 +36,7 @@ describe('BudgetService', () => {
 
   it('allows a viewer to read but not create a budget', async () => {
     const repository = new FakeBudgetRepository(buildBudget());
-    const service = new BudgetService(repository as unknown as IBudgetRepository, new FakeNotifications() as unknown as INotificationRepository, new FakeOutbound() as unknown as IOutboundMessageRepository);
+    const service = new BudgetService(repository as unknown as IBudgetRepository, new FakeNotifications() as unknown as INotificationRepository, new FakeOutbound() as unknown as IOutboundMessageRepository, new FakeTelegram() as any);
     const viewer = { ...actor, role: 'CLIENT_VIEWER' as const };
 
     await expect(service.getPerformance(viewer, 'budget-1')).resolves.toMatchObject({ actualCost: 95 });
@@ -61,4 +61,5 @@ class FakeBudgetRepository {
 }
 class FakeNotifications { public readonly created: unknown[] = []; public async create(input: unknown): Promise<any> { this.created.push(input); return input; } }
 class FakeOutbound { public readonly created: unknown[] = []; public async findTenantUsers() { return [{ id: 'recipient-1', email: 'recipient@example.com', name: 'Recipient', status: 'ACTIVE' as const }]; } public async create(input: unknown): Promise<any> { this.created.push(input); return input; } }
+class FakeTelegram { public async findLinksByTenant() { return []; } }
 function buildBudget(): Budget { const now = new Date('2026-07-01T00:00:00.000Z'); return { id: 'budget-1', tenantId: 'tenant-1', scope: 'TENANT', scopeKey: '__tenant__', periodStart: now, amount: 100, currency: 'USD', warningThreshold: 0.8, criticalThreshold: 0.9, exceededThreshold: 1, status: 'ACTIVE', createdByUserId: 'user-1', createdAt: now, updatedAt: now }; }

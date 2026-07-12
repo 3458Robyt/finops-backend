@@ -67,19 +67,26 @@ export class PrismaBudgetRepository implements IBudgetRepository {
   }
 
   public async getForecastCost(budget: Budget): Promise<number | undefined> {
-    const rows = await this.prisma.costForecast.findMany({
-      where: {
-        tenantId: budget.tenantId,
-        forecastMonth: budget.periodStart,
-        currency: budget.currency,
-        ...(budget.scope === 'CLOUD_ACCOUNT' ? { cloudAccountId: budget.scopeKey } : {}),
-        ...(budget.scope === 'SERVICE' ? { serviceName: budget.scopeKey } : {}),
-        ...(budget.scope === 'TENANT' ? { groupBy: 'total' } : {}),
-      },
-      orderBy: { generatedAt: 'desc' },
-      take: 1,
-    });
-    return rows[0] === undefined ? undefined : Number(rows[0].predictedCost);
+    const groupings = budget.scope === 'TENANT'
+      ? ['total', 'service', 'account']
+      : budget.scope === 'CLOUD_ACCOUNT'
+        ? ['service', 'account']
+        : ['service'];
+    for (const groupBy of groupings) {
+      const rows = await this.prisma.costForecast.findMany({
+        where: {
+          tenantId: budget.tenantId,
+          forecastMonth: budget.periodStart,
+          currency: budget.currency,
+          groupBy,
+          ...(budget.scope === 'CLOUD_ACCOUNT' ? { cloudAccountId: budget.scopeKey } : {}),
+          ...(budget.scope === 'SERVICE' ? { serviceName: budget.scopeKey } : {}),
+        },
+        select: { predictedCost: true },
+      });
+      if (rows.length > 0) return rows.reduce((total, row) => total + Number(row.predictedCost), 0);
+    }
+    return undefined;
   }
 
   public async createAlertIfAbsent(input: Omit<BudgetAlert, 'id' | 'createdAt'>): Promise<BudgetAlert | null> {

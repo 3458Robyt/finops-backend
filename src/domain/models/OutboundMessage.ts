@@ -5,7 +5,8 @@ export type OutboundMessageType =
   | 'SAVINGS_REMINDER'
   | 'AI_CHAT_RESPONSE'
   | 'RECOMMENDATION_SUMMARY'
-  | 'EXECUTION_PLAN_READY';
+  | 'EXECUTION_PLAN_READY'
+  | 'BUDGET_ALERT';
 
 export type OutboundMessageStatus = 'PENDING' | 'SENT' | 'FAILED' | 'SKIPPED';
 

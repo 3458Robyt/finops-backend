@@ -315,6 +315,24 @@ async function seedTenantData(
   await prisma.costMetric.createMany({
     data: buildCostMetrics(input, account.id, periodStart),
   });
+  await prisma.costForecast.create({
+    data: {
+      tenantId: input.tenantId,
+      cloudAccountId: account.id,
+      provider: input.provider,
+      serviceName: input.serviceName,
+      groupBy: 'service',
+      groupKey: input.serviceName,
+      forecastMonth: periodStart,
+      predictedCost: new Prisma.Decimal(180),
+      lowerBound: new Prisma.Decimal(160),
+      upperBound: new Prisma.Decimal(200),
+      method: 'e2e-fixture',
+      confidence: new Prisma.Decimal(0.8),
+      currency: 'USD',
+      evidence: { e2eRunId: input.runId },
+    },
+  });
   await prisma.resourceMetricSample.createMany({
     data: buildMetricSamples(input, connection.id, resource.id, periodStart),
   });

@@ -1,0 +1,3 @@
+import { Router, type RequestHandler } from 'express';
+import { BudgetController } from '../controllers/BudgetController.js';
+export function createBudgetRoutes(controller: BudgetController, requireAuth: RequestHandler): Router { const router = Router(); router.use(requireAuth); router.get('/', controller.list); router.post('/', controller.create); router.post('/evaluate', controller.evaluate); router.get('/:id/performance', controller.performance); router.get('/:id/alerts', controller.alerts); router.patch('/:id', controller.update); router.post('/:id/archive', controller.archive); return router; }

@@ -21,6 +21,7 @@ import 'dotenv/config';
 
 import type { ICloudProvider } from './domain/interfaces/ICloudProvider.js';
 import { AuthService } from './application/services/AuthService.js';
+import { BudgetService } from './application/services/BudgetService.js';
 import { AgentInstructionService } from './application/services/AgentInstructionService.js';
 import { AgentLearningService } from './application/services/AgentLearningService.js';
 import { AiObservabilityService } from './application/services/AiObservabilityService.js';
@@ -52,6 +53,7 @@ import { OciSdkIngestionProvider } from './infrastructure/ingestion/OciSdkIngest
 import { PrismaCloudIngestionJobRepository } from './infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
 import { runPrismaIngestionJobScheduler } from './infrastructure/ingestion/PrismaIngestionJobScheduler.js';
 import { PrismaAgentContextRepository } from './infrastructure/repositories/PrismaAgentContextRepository.js';
+import { PrismaBudgetRepository } from './infrastructure/repositories/PrismaBudgetRepository.js';
 import { PrismaAgentLearningRepository } from './infrastructure/repositories/PrismaAgentLearningRepository.js';
 import { PrismaCloudConnectionRepository } from './infrastructure/repositories/PrismaCloudConnectionRepository.js';
 import { PrismaCostAnalyticsRepository } from './infrastructure/repositories/PrismaCostAnalyticsRepository.js';
@@ -157,6 +159,7 @@ async function bootstrap(): Promise<void> {
   const cloudConnectionRepository = new PrismaCloudConnectionRepository(prisma);
   const costAnalyticsRepository = new PrismaCostAnalyticsRepository(prisma);
   const costRepository = new PrismaCostRepository(prisma);
+  const budgetRepository = new PrismaBudgetRepository(prisma);
   const recommendationRepository = new PrismaRecommendationRepository(prisma);
 const resourceMetricRepository = new PrismaResourceMetricRepository(prisma);
 const notificationRepository = new PrismaNotificationRepository(prisma);
@@ -174,6 +177,7 @@ const telegramRepository = new PrismaTelegramRepository(prisma);
 const technicalMetricsService = new TechnicalMetricsService(resourceMetricRepository);
 const technicalRecommendationEvidenceService = new TechnicalRecommendationEvidenceService(resourceMetricRepository);
 const analyticsService = new CostAnalyticsService(costAnalyticsRepository);
+  const budgetService = new BudgetService(budgetRepository, notificationRepository, outboundMessageRepository);
   const savingsReminderService = new SavingsReminderService(recommendationRepository, notificationRepository);
   const aiGateway = new OpenAiCompatibleAiGateway();
   const agentInstructionService = new AgentInstructionService(agentContextRepository);
@@ -245,6 +249,7 @@ const app = createExpressServer({
     cloudConnectionService,
     technicalMetricsService,
     analyticsService,
+    budgetService,
     aiService,
     agentInstructionService,
     agentContextRepository,

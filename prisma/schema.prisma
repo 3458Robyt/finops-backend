@@ -186,6 +186,24 @@ enum CostAnomalyStatus {
 
 enum InAppNotificationType {
   SAVINGS_REMINDER
+  BUDGET_ALERT
+}
+
+enum BudgetScope {
+  TENANT
+  CLOUD_ACCOUNT
+  SERVICE
+}
+
+enum BudgetStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum BudgetAlertLevel {
+  WARNING
+  CRITICAL
+  EXCEEDED
 }
 
 enum InAppNotificationStatus {
@@ -243,6 +261,7 @@ enum OutboundMessageType {
   AI_CHAT_RESPONSE
   RECOMMENDATION_SUMMARY
   EXECUTION_PLAN_READY
+  BUDGET_ALERT
 }
 
 enum OutboundMessageStatus {
@@ -299,6 +318,8 @@ model Tenant {
   manualExecutions         RecommendationManualExecution[]
   inAppNotifications       InAppNotification[]
   outboundMessageDeliveries OutboundMessageDelivery[]
+  budgets                  Budget[]
+  budgetAlerts             BudgetAlert[]
 
   @@index([operatorOrganizationId, status])
   @@map("tenants")
@@ -338,6 +359,7 @@ model User {
   linkedTelegramChatLinks           TelegramChatLink[]           @relation("TelegramChatLinkLinkedBy")
   telegramInteractionLogs           TelegramInteractionLog[]
   outboundMessageDeliveries         OutboundMessageDelivery[]
+  createdBudgets                    Budget[]                 @relation("BudgetCreatedBy")
 
   @@index([operatorOrganizationId, role])
   @@index([tenantId, role])
@@ -513,6 +535,7 @@ model CloudAccount {
   recommendations   Recommendation[]
   costAnomalies     CostAnomaly[]
   costForecasts     CostForecast[]
+  budgets           Budget[]
 
   @@unique([tenantId, provider, externalAccountId])
   @@index([tenantId, status])
@@ -955,6 +978,54 @@ model CostForecast {
   @@index([tenantId, groupBy, generatedAt])
   @@index([cloudAccountId, forecastMonth])
   @@map("cost_forecasts")
+}
+
+model Budget {
+  id                 String       @id @default(cuid())
+  tenantId           String       @map("tenant_id")
+  cloudAccountId     String?      @map("cloud_account_id")
+  scope              BudgetScope
+  scopeKey           String       @map("scope_key")
+  serviceName        String?      @map("service_name")
+  periodStart        DateTime     @map("period_start") @db.Date
+  amount             Decimal      @db.Decimal(18, 6)
+  currency           String       @db.VarChar(3)
+  warningThreshold   Decimal      @default(0.8) @map("warning_threshold") @db.Decimal(5, 4)
+  criticalThreshold  Decimal      @default(0.9) @map("critical_threshold") @db.Decimal(5, 4)
+  exceededThreshold  Decimal      @default(1) @map("exceeded_threshold") @db.Decimal(5, 4)
+  status             BudgetStatus @default(ACTIVE)
+  createdByUserId    String       @map("created_by_user_id")
+  archivedAt         DateTime?    @map("archived_at") @db.Timestamptz(6)
+  createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant             Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cloudAccount       CloudAccount? @relation(fields: [cloudAccountId], references: [id], onDelete: SetNull)
+  createdBy          User         @relation("BudgetCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  alerts             BudgetAlert[]
+
+  @@index([tenantId, status, periodStart])
+  @@index([tenantId, cloudAccountId, periodStart])
+  @@map("budgets")
+}
+
+model BudgetAlert {
+  id               String           @id @default(cuid())
+  tenantId         String           @map("tenant_id")
+  budgetId         String           @map("budget_id")
+  level            BudgetAlertLevel
+  threshold        Decimal          @db.Decimal(5, 4)
+  periodStart      DateTime         @map("period_start") @db.Date
+  actualCost       Decimal          @map("actual_cost") @db.Decimal(18, 6)
+  forecastCost     Decimal?         @map("forecast_cost") @db.Decimal(18, 6)
+  currency         String           @db.VarChar(3)
+  idempotencyKey   String           @unique @map("idempotency_key")
+  metadata         Json?
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  budget           Budget           @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, budgetId, periodStart])
+  @@map("budget_alerts")
 }
 
 model RecommendationManualExecution {

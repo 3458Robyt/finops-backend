@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import type { AuthService } from '../application/services/AuthService.js';
 import type { BudgetService } from '../application/services/BudgetService.js';
+import type { CostAllocationService } from '../application/services/CostAllocationService.js';
 import type { CloudConnectionService } from '../application/services/CloudConnectionService.js';
 import type { CostAnalyticsService } from '../application/services/CostAnalyticsService.js';
 import type { FinOpsAiService } from '../application/services/FinOpsAiService.js';
@@ -23,6 +24,7 @@ import type { IRecommendationRepository } from '../domain/interfaces/IRecommenda
 import type { ITokenService } from '../domain/interfaces/ITokenService.js';
 import { AgentController } from './controllers/AgentController.js';
 import { BudgetController } from './controllers/BudgetController.js';
+import { CostAllocationController } from './controllers/CostAllocationController.js';
 import { AiController } from './controllers/AiController.js';
 import { AnalyticsController } from './controllers/AnalyticsController.js';
 import { AuthController } from './controllers/AuthController.js';
@@ -38,6 +40,7 @@ import { TelegramController } from './controllers/TelegramController.js';
 import { createAuthMiddleware } from './middleware/authMiddleware.js';
 import { createAgentRoutes } from './routes/agentRoutes.js';
 import { createBudgetRoutes } from './routes/budgetRoutes.js';
+import { createCostAllocationRoutes } from './routes/costAllocationRoutes.js';
 import { createAiRoutes } from './routes/aiRoutes.js';
 import { createAnalyticsRoutes } from './routes/analyticsRoutes.js';
 import { createAuthRoutes } from './routes/authRoutes.js';
@@ -64,6 +67,7 @@ interface ServerDependencies {
   /** Servicio de autenticación (login, emisión de credenciales). */
   readonly authService: AuthService;
   readonly budgetService: BudgetService;
+  readonly costAllocationService: CostAllocationService;
   /** Servicio de gestión de conexiones a proveedores de nube. */
   readonly cloudConnectionService: CloudConnectionService;
   /** Servicio de métricas técnicas de recursos cloud (CPU, memoria, IOPS, etc.). */
@@ -196,6 +200,7 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
 
   const aiController = new AiController(dependencies.aiService, dependencies.learningService);
   const budgetController = new BudgetController(dependencies.budgetService);
+  const costAllocationController = new CostAllocationController(dependencies.costAllocationService);
   const agentController = new AgentController(
     dependencies.agentInstructionService,
     dependencies.agentContextRepository,
@@ -237,6 +242,7 @@ const telegramController = new TelegramController(
   app.use('/api/v1/ai', createAiRoutes(aiController, requireAuth));
   app.use('/api/v1/analytics', createAnalyticsRoutes(analyticsController, requireAuth));
   app.use('/api/v1/budgets', createBudgetRoutes(budgetController, requireAuth));
+  app.use('/api/v1/cost-allocation', createCostAllocationRoutes(costAllocationController, requireAuth));
   app.use('/api/v1/auth', createAuthRoutes(authController, requireAuth));
   app.use('/api/v1/cloud-connections', createCloudConnectionRoutes(cloudConnectionController, requireAuth));
   app.use('/api/v1/costs', createCostRoutes(costController, requireAuth));

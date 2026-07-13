@@ -206,6 +206,12 @@ enum BudgetAlertLevel {
   EXCEEDED
 }
 
+enum CostAllocationRuleStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
 enum InAppNotificationStatus {
   UNREAD
   READ
@@ -320,6 +326,7 @@ model Tenant {
   outboundMessageDeliveries OutboundMessageDelivery[]
   budgets                  Budget[]
   budgetAlerts             BudgetAlert[]
+  costAllocationRules      CostAllocationRule[]
 
   @@index([operatorOrganizationId, status])
   @@map("tenants")
@@ -360,6 +367,7 @@ model User {
   telegramInteractionLogs           TelegramInteractionLog[]
   outboundMessageDeliveries         OutboundMessageDelivery[]
   createdBudgets                    Budget[]                 @relation("BudgetCreatedBy")
+  createdCostAllocationRules        CostAllocationRule[]     @relation("CostAllocationRuleCreatedBy")
 
   @@index([operatorOrganizationId, role])
   @@index([tenantId, role])
@@ -1026,6 +1034,39 @@ model BudgetAlert {
 
   @@index([tenantId, budgetId, periodStart])
   @@map("budget_alerts")
+}
+
+model CostAllocationRule {
+  id                String                   @id @default(cuid())
+  tenantId          String                   @map("tenant_id")
+  name              String
+  description       String?                  @db.Text
+  priority          Int                      @default(100)
+  status            CostAllocationRuleStatus @default(DRAFT)
+  cloudAccountId    String?                  @map("cloud_account_id")
+  provider          CloudProvider?
+  serviceName       String?                  @map("service_name")
+  regionId          String?                  @map("region_id")
+  resourceId        String?                  @map("resource_id")
+  tagKey            String?                  @map("tag_key")
+  tagValue          String?                  @map("tag_value")
+  costCenter        String?                  @map("cost_center")
+  businessUnit      String?                  @map("business_unit")
+  project           String?                  @map("project")
+  team              String?                  @map("team")
+  environment       String?                  @map("environment")
+  effectiveFrom     DateTime?                @map("effective_from") @db.Timestamptz(6)
+  effectiveTo       DateTime?                @map("effective_to") @db.Timestamptz(6)
+  createdByUserId   String                   @map("created_by_user_id")
+  archivedAt        DateTime?                @map("archived_at") @db.Timestamptz(6)
+  createdAt         DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant            Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy         User                     @relation("CostAllocationRuleCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, status, priority])
+  @@index([tenantId, cloudAccountId, serviceName])
+  @@map("cost_allocation_rules")
 }
 
 model RecommendationManualExecution {

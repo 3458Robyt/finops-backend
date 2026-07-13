@@ -21,18 +21,30 @@ describe('CostAllocationService', () => {
     await expect(service.summary(viewer, { period: '2026-05' })).resolves.toEqual([]);
     await expect(service.createRule(viewer, ruleInput)).rejects.toMatchObject({ code: 'AUTHORIZATION_FAILED' });
   });
+
+  it('keeps preview read-only and never resolves a rule from another tenant', async () => {
+    const repository = new FakeRepository();
+    const service = new CostAllocationService(repository as unknown as ICostAllocationRepository);
+    const created = await service.createRule(actor, ruleInput);
+    await service.preview(actor, ruleInput, '2026-05');
+    expect(repository.rules).toHaveLength(1);
+    await expect(service.updateRule({ ...actor, tenantId: 'tenant-2' }, created.id, { priority: 1 })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(repository.lastPreviewTenantId).toBe('tenant-1');
+  });
 });
 
 class FakeRepository {
   public readonly auditActions: string[] = [];
-  private readonly rules: CostAllocationRule[] = [];
+  public readonly rules: CostAllocationRule[] = [];
+  public lastPreviewTenantId: string | undefined;
   public async listRules(): Promise<readonly CostAllocationRule[]> { return this.rules; }
-  public async findRule(_tenantId: string, id: string): Promise<CostAllocationRule | null> { return this.rules.find((rule) => rule.id === id) ?? null; }
+  public async findRule(tenantId: string, id: string): Promise<CostAllocationRule | null> { return this.rules.find((rule) => rule.id === id && rule.tenantId === tenantId) ?? null; }
   public async createRule(tenantId: string, userId: string, input: typeof ruleInput): Promise<CostAllocationRule> { const now = new Date(); const rule: CostAllocationRule = { id: `rule-${this.rules.length + 1}`, tenantId, createdByUserId: userId, createdAt: now, updatedAt: now, ...input }; this.rules.push(rule); return rule; }
   public async updateRule(): Promise<CostAllocationRule | null> { return this.rules[0] ?? null; }
   public async archiveRule(): Promise<CostAllocationRule | null> { return this.rules[0] ?? null; }
   public async summarize() { return []; }
-  public async preview() { return []; }
+  public async preview(tenantId: string) { this.lastPreviewTenantId = tenantId; return { summary: [], metricCount: 0, resourceCount: 0, examples: [] }; }
+  public async resourceSummary() { return []; }
   public async unallocated() { return []; }
   public async writeAudit(_tenantId: string, _userId: string, action: string): Promise<void> { this.auditActions.push(action); }
 }

@@ -146,7 +146,7 @@ function evaluateSource(
       maxAttempts: options.maxAttempts,
       reason: sourceType === 'TECHNICAL_METRIC'
         ? 'Metricas tecnicas configuradas y sin job reciente.'
-        : 'Export FOCUS configurado y sin job reciente.',
+        : 'Facturación configurada y sin job reciente.',
     },
   };
 }
@@ -188,13 +188,20 @@ function hasMetadataForSource(
     return hasArrayItems(metadata['awsMetricDefinitions']);
   }
   if (providerCode === 'oci' && sourceType === 'BILLING_EXPORT') {
+    if (billingSourceMode(metadata) !== 'FOCUS') return true;
     return hasArrayItems(metadata['ociFocusReportObjects']) || hasArrayItems(metadata['ociFocusReportLocations']);
   }
   if (providerCode === 'aws' && sourceType === 'BILLING_EXPORT') {
+    if (billingSourceMode(metadata) !== 'FOCUS') return true;
     return hasArrayItems(metadata['awsFocusExportObjects']) || hasArrayItems(metadata['awsFocusExportLocations']);
   }
 
   return false;
+}
+
+function billingSourceMode(metadata: Record<string, unknown>): 'AUTO' | 'FOCUS' | 'PROVIDER_API' {
+  const value = metadata['billingSourceMode'];
+  return value === 'FOCUS' || value === 'PROVIDER_API' ? value : 'AUTO';
 }
 
 function normalizeProviderCode(providerCode: string): 'aws' | 'oci' | null {

@@ -28,7 +28,7 @@ describe('buildIngestionSchedulePlan', () => {
     }));
   });
 
-  it('schedules billing exports only when FOCUS metadata exists', () => {
+  it('schedules a FOCUS billing export when FOCUS metadata exists', () => {
     const plan = buildIngestionSchedulePlan([
       buildAwsConnection({
         metadata: {
@@ -92,7 +92,7 @@ describe('buildIngestionSchedulePlan', () => {
     }));
   });
 
-  it('skips sources without configured metadata instead of inventing jobs', () => {
+  it('uses the provider API for billing in AUTO mode when no FOCUS export is configured', () => {
     const plan = buildIngestionSchedulePlan([
       buildAwsConnection({
         metadata: {},
@@ -100,14 +100,15 @@ describe('buildIngestionSchedulePlan', () => {
       }),
     ], defaultOptions);
 
-    expect(plan.jobs).toEqual([]);
+    expect(plan.jobs).toEqual([
+      expect.objectContaining({
+        sourceType: 'BILLING_EXPORT',
+        providerCode: 'aws',
+      }),
+    ]);
     expect(plan.skipped).toEqual([
       expect.objectContaining({
         sourceType: 'TECHNICAL_METRIC',
-        reason: 'No hay metadata configurada para programar esta fuente sin inventar datos.',
-      }),
-      expect.objectContaining({
-        sourceType: 'BILLING_EXPORT',
         reason: 'No hay metadata configurada para programar esta fuente sin inventar datos.',
       }),
     ]);

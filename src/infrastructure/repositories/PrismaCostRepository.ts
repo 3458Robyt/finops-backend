@@ -1,6 +1,5 @@
-import { createHash } from 'node:crypto';
 import type {
-  CostMetricBatchContext,
+  CostDataOptions,
   CostMetricQuery,
   ICostRepository,
 } from '../../domain/interfaces/ICostRepository.js';
@@ -20,71 +19,6 @@ import { CloudProvider } from '../../generated/prisma/client.js';
  */
 export class PrismaCostRepository implements ICostRepository {
   constructor(private readonly prisma: PrismaClient) {}
-
-  /**
-   * Inserta un lote de métricas de coste de forma idempotente.
-   *
-   * Detalles relevantes del mapeo dominio -> fila Prisma:
-   * - El periodo de cargo se deriva del `timestamp` de la métrica:
-   *   `chargePeriodStart = timestamp` y `chargePeriodEnd = timestamp + 1 día`
-   *   (granularidad diaria).
-   * - `billingAccountId`/`subAccountId` se resuelven desde las etiquetas (tags)
-   *   con respaldo (fallback) entre claves; si no hay valor, quedan en `null`.
-   * - `billedCost` y `effectiveCost` se inicializan con el mismo importe; la
-   *   divisa de facturación y de tarificación se fijan a `metric.currency`.
-   * - `metricIdentityHash` permite deduplicar: junto con `skipDuplicates: true`
-   *   evita insertar filas repetidas en reintentos de ingesta.
-   *
-   * @param context Contexto del lote (tenant, cuenta cloud, proveedor, run de
-   *   ingesta opcional) que aplica a todas las métricas.
-   * @param metrics Métricas internas a persistir.
-   * @returns Número de filas efectivamente insertadas (excluye duplicados
-   *   omitidos); 0 si el lote viene vacío.
-   */
-  public async insertBatch(
-    context: CostMetricBatchContext,
-    metrics: readonly InternalCostMetric[],
-  ): Promise<number> {
-    if (metrics.length === 0) {
-      return 0;
-    }
-
-    const provider = this.toCloudProvider(context.providerName);
-
-    const result = await this.prisma.costMetric.createMany({
-      data: metrics.map((metric) => {
-        const chargePeriodStart = metric.timestamp;
-        const chargePeriodEnd = this.addDays(chargePeriodStart, 1);
-
-        const billingAccountId = this.getTag(metric, 'accountId') ?? this.getTag(metric, 'tenantId') ?? null;
-        const subAccountId = this.getTag(metric, 'accountId') ?? this.getTag(metric, 'compartmentId') ?? null;
-
-        return {
-          tenantId: context.tenantId,
-          cloudAccountId: context.cloudAccountId,
-          ...(context.ingestionRunId !== undefined ? { ingestionRunId: context.ingestionRunId } : {}),
-          provider,
-          billingAccountId,
-          subAccountId,
-          serviceName: metric.service,
-          resourceId: metric.resourceId,
-          chargePeriodStart,
-          chargePeriodEnd,
-          billedCost: metric.amount,
-          effectiveCost: metric.amount,
-          billingCurrency: metric.currency,
-          pricingCurrency: metric.currency,
-          ...(metric.usage !== undefined ? { consumedQuantity: metric.usage } : {}),
-          ...(metric.usageUnit !== undefined ? { consumedUnit: metric.usageUnit } : {}),
-          metricIdentityHash: this.buildMetricIdentityHash(context, metric),
-          tags: metric.tags,
-        };
-      }),
-      skipDuplicates: true,
-    });
-
-    return result.count;
-  }
 
   /**
    * Recupera métricas de coste de un tenant dentro de un rango de fechas,
@@ -128,6 +62,36 @@ export class PrismaCostRepository implements ICostRepository {
     }));
   }
 
+  public async getDataOptions(tenantId: string, period?: string): Promise<CostDataOptions> {
+    const periodRows = await this.prisma.$queryRaw<readonly { period: Date; metric_count: bigint }[]>`
+      SELECT date_trunc('month', charge_period_start) AS period, COUNT(*)::bigint AS metric_count
+      FROM cost_metrics
+      WHERE tenant_id = ${tenantId}
+      GROUP BY date_trunc('month', charge_period_start)
+      ORDER BY period DESC
+    `;
+    const periods = periodRows.map((row) => ({ period: row.period.toISOString().slice(0, 7), metricCount: Number(row.metric_count) }));
+    const selectedPeriod = period ?? periods[0]?.period;
+    if (selectedPeriod === undefined) return { periods, cloudAccounts: [], services: [], regions: [], currencies: [] };
+    const [year, month] = selectedPeriod.split('-').map(Number);
+    const start = new Date(Date.UTC(year!, month! - 1, 1));
+    const end = new Date(Date.UTC(year!, month!, 1));
+    const where = { tenantId, chargePeriodStart: { gte: start, lt: end } };
+    const [dimensions, accounts] = await Promise.all([
+      this.prisma.costMetric.findMany({ where, select: { cloudAccountId: true, serviceName: true, regionId: true, billingCurrency: true }, distinct: ['cloudAccountId', 'serviceName', 'regionId', 'billingCurrency'] }),
+      this.prisma.cloudAccount.findMany({ where: { tenantId }, select: { id: true, name: true, provider: true } }),
+    ]);
+    const accountIds = new Set(dimensions.map((row) => row.cloudAccountId));
+    return {
+      periods,
+      ...(periods[0] === undefined ? {} : { latestPeriod: periods[0].period }),
+      cloudAccounts: accounts.filter((account) => accountIds.has(account.id)).map((account) => ({ ...account, provider: String(account.provider) })),
+      services: [...new Set(dimensions.map((row) => row.serviceName))].sort(),
+      regions: [...new Set(dimensions.map((row) => row.regionId).filter((region): region is string => region !== null))].sort(),
+      currencies: [...new Set(dimensions.map((row) => row.billingCurrency))].sort(),
+    };
+  }
+
   /**
    * Normaliza y valida el nombre de proveedor recibido convirtiéndolo al enum
    * de Prisma {@link CloudProvider}.
@@ -147,46 +111,6 @@ export class PrismaCostRepository implements ICostRepository {
     }
 
     throw new Error(`Unsupported cloud provider for persistence: ${providerName}`);
-  }
-
-  /**
-   * Construye un hash de identidad determinista (SHA-256) que identifica de
-   * forma única una métrica de coste.
-   *
-   * Combina tenant, cuenta cloud, proveedor, timestamp (ISO), servicio, recurso
-   * y divisa. Sirve como clave de deduplicación: dos ingestas de la misma
-   * métrica producen el mismo hash, evitando duplicados en `insertBatch`.
-   *
-   * @param context Contexto del lote (tenant, cuenta, proveedor).
-   * @param metric Métrica cuyos atributos identitarios se hashean.
-   * @returns Hash hexadecimal SHA-256 de la identidad de la métrica.
-   */
-  private buildMetricIdentityHash(
-    context: CostMetricBatchContext,
-    metric: InternalCostMetric,
-  ): string {
-    const identity = [
-      context.tenantId,
-      context.cloudAccountId,
-      context.providerName,
-      metric.timestamp.toISOString(),
-      metric.service,
-      metric.resourceId,
-      metric.currency,
-    ];
-
-    return createHash('sha256').update(JSON.stringify(identity)).digest('hex');
-  }
-
-  /**
-   * Obtiene el valor de una etiqueta (tag) de la métrica por su clave.
-   *
-   * @param metric Métrica de la que se leen las etiquetas.
-   * @param key Clave de la etiqueta buscada.
-   * @returns El valor de la etiqueta, o `undefined` si no existe.
-   */
-  private getTag(metric: InternalCostMetric, key: string): string | undefined {
-    return metric.tags[key];
   }
 
   /**
@@ -216,19 +140,4 @@ export class PrismaCostRepository implements ICostRepository {
     return output;
   }
 
-  /**
-   * Suma un número de días a una fecha en UTC, sin mutar la fecha original.
-   *
-   * Opera sobre la componente de día en UTC para evitar desfases por zona
-   * horaria al calcular el fin del periodo de cargo.
-   *
-   * @param date Fecha base.
-   * @param days Número de días a sumar.
-   * @returns Nueva instancia de `Date` desplazada en UTC.
-   */
-  private addDays(date: Date, days: number): Date {
-    const result = new Date(date);
-    result.setUTCDate(result.getUTCDate() + days);
-    return result;
-  }
 }

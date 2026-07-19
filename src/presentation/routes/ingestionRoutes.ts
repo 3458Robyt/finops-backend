@@ -25,12 +25,13 @@ import type { CloudConnectionController } from '../controllers/CloudConnectionCo
 export function createIngestionRoutes(
   cloudConnectionController: CloudConnectionController,
   requireAuth: RequestHandler,
+  requireManager: RequestHandler,
 ): Router {
   const router = Router();
 
-  router.post('/jobs', requireAuth, cloudConnectionController.queueTenantIngestion);
-  router.post('/backfill', requireAuth, cloudConnectionController.queueTechnicalBackfill);
-  router.post('/focus-sources', requireAuth, cloudConnectionController.configureFocusSource);
+  router.post('/jobs', requireAuth, requireManager, cloudConnectionController.queueTenantIngestion);
+  router.post('/backfill', requireAuth, requireManager, cloudConnectionController.queueTechnicalBackfill);
+  router.post('/focus-sources', requireAuth, requireManager, cloudConnectionController.configureFocusSource);
   router.get('/history', requireAuth, cloudConnectionController.listIngestionHistory);
   router.get('/data-quality', requireAuth, cloudConnectionController.listDataQuality);
   router.get('/readiness', requireAuth, cloudConnectionController.getIngestionReadiness);

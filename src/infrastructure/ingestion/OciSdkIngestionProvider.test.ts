@@ -7,6 +7,17 @@ import type {
 import { OciSdkIngestionProvider } from './OciSdkIngestionProvider.js';
 
 describe('OciSdkIngestionProvider', () => {
+it('reports every capability as not configured without exposing credentials', async () => {
+const result = await new OciSdkIngestionProvider().validate({
+id: 'connection_1', tenantId: 'tenant_1', providerCode: 'oci',
+rootExternalId: 'ocid1.tenancy.oc1.test', defaultRegion: 'sa-bogota-1', credentials: [],
+});
+
+expect(result.capabilities).toHaveLength(5);
+expect(result.capabilities.every((item) => item.status === 'NOT_CONFIGURED')).toBe(true);
+expect(JSON.stringify(result)).not.toMatch(/privateKey|passphrase|fingerprint/i);
+});
+
 it('collects compute inventory resources through the OCI SDK', async () => {
 const provider = new OciSdkIngestionProvider();
 Object.assign(provider as unknown as { createComputeClient: () => unknown }, {

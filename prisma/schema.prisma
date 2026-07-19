@@ -212,6 +212,13 @@ enum CostAllocationRuleStatus {
   ARCHIVED
 }
 
+enum CostBillingSource {
+  FOCUS
+  PROVIDER_API
+  LEGACY
+  UNKNOWN
+}
+
 enum InAppNotificationStatus {
   UNREAD
   READ
@@ -442,6 +449,7 @@ model CloudConnection {
   focusCostLineItems    FocusCostLineItem[]
   cloudResources        CloudResource[]
   resourceMetricSamples ResourceMetricSample[]
+  costMetrics           CostMetric[]
   agentInstallations    AgentInstallation[]
   dataQualityChecks     DataQualityCheck[]
 
@@ -778,8 +786,10 @@ model DataQualityCheck {
 model CostMetric {
   tenantId           String        @map("tenant_id")
   cloudAccountId     String        @map("cloud_account_id")
+  cloudConnectionId  String?       @map("cloud_connection_id")
   ingestionRunId     String?       @map("ingestion_run_id")
   provider           CloudProvider
+  billingSource      CostBillingSource @default(UNKNOWN) @map("billing_source")
   billingAccountId   String?       @map("billing_account_id")
   billingAccountName String?       @map("billing_account_name")
   subAccountId       String?       @map("sub_account_id")
@@ -816,12 +826,14 @@ model CostMetric {
   createdAt          DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   tenant             Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   cloudAccount       CloudAccount  @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
+  cloudConnection    CloudConnection? @relation(fields: [cloudConnectionId], references: [id], onDelete: SetNull)
   ingestionRun       IngestionRun? @relation(fields: [ingestionRunId], references: [id], onDelete: SetNull)
 
   @@id([chargePeriodStart, metricIdentityHash])
   @@index([tenantId, cloudAccountId, chargePeriodStart])
   @@index([tenantId, serviceName, chargePeriodStart])
   @@index([tenantId, provider, chargePeriodStart])
+  @@index([tenantId, cloudConnectionId, billingSource, chargePeriodStart])
   @@index([resourceId])
   @@map("cost_metrics")
 }

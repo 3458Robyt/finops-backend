@@ -23,6 +23,41 @@ export interface CloudIngestionCredential {
   readonly externalPrincipalId?: string;
 }
 
+export type CloudCapability = 'IDENTITY' | 'INVENTORY' | 'COSTS' | 'METRICS' | 'STORAGE';
+
+export interface CloudCapabilityValidation {
+  readonly capability: CloudCapability;
+  readonly status: 'AVAILABLE' | 'NOT_CONFIGURED' | 'DENIED' | 'ERROR';
+  readonly message: string;
+  readonly checkedAt: Date;
+  readonly metadata?: Readonly<Record<string, string | number | boolean>>;
+}
+
+export interface CloudConnectionValidationResult {
+  readonly providerCode: ProviderCode;
+  readonly capabilities: readonly CloudCapabilityValidation[];
+}
+
+export interface FocusSourcePreviewResult {
+  readonly providerCode: ProviderCode;
+  readonly configuredLocations: number;
+  readonly configuredObjects: number;
+  readonly discoveredObjects: number;
+  readonly approximateBytes: number;
+  readonly sizedObjects: number;
+  readonly supportedFormats: readonly ['csv', 'csv.gz'];
+  readonly errors: readonly string[];
+  readonly earliestObjectAt?: Date;
+  readonly latestObjectAt?: Date;
+  readonly objects: readonly {
+    readonly name: string;
+    readonly location: string;
+    readonly source: 'configured' | 'discovered';
+    readonly sizeBytes?: number;
+    readonly lastModified?: Date;
+  }[];
+}
+
 export interface CloudIngestionJobContext {
   readonly id: string;
   readonly tenantId: string;
@@ -62,6 +97,26 @@ export interface NormalizedFocusCostLineItem {
   readonly lineItemHash: string;
 }
 
+/** Cost returned by a provider API rather than a FOCUS export. */
+export interface NormalizedProviderCostLineItem {
+  readonly tenantId: string;
+  readonly cloudConnectionId: string;
+  readonly provider: CloudProvider;
+  readonly chargePeriodStart: Date;
+  readonly chargePeriodEnd: Date;
+  readonly billingAccountId?: string;
+  readonly serviceName: string;
+  readonly resourceId: string;
+  readonly regionId?: string;
+  readonly billedCost: number;
+  readonly billingCurrency: string;
+  readonly consumedQuantity?: number;
+  readonly consumedUnit?: string;
+  readonly sourceMetric: string;
+  readonly rawRow: Readonly<Record<string, unknown>>;
+  readonly lineItemHash: string;
+}
+
 export interface NormalizedCloudResource {
   readonly tenantId: string;
   readonly cloudConnectionId: string;
@@ -95,6 +150,8 @@ export interface CloudIngestionResult {
   readonly focusRows: readonly NormalizedFocusCostLineItem[];
   /** Optional streaming path for large FOCUS exports; consumed once by the worker. */
   readonly focusBatches?: AsyncIterable<readonly NormalizedFocusCostLineItem[]>;
+  /** Direct billing API rows; never persisted to focus_cost_line_items. */
+  readonly providerCostRows?: readonly NormalizedProviderCostLineItem[];
   readonly resources: readonly NormalizedCloudResource[];
   readonly metricSamples: readonly NormalizedResourceMetricSample[];
   readonly warnings: readonly string[];
@@ -103,5 +160,7 @@ export interface CloudIngestionResult {
 
 export interface CloudIngestionProvider {
   readonly providerCode: ProviderCode;
+  validate(connection: CloudIngestionConnection): Promise<CloudConnectionValidationResult>;
+  previewFocus?(connection: CloudIngestionConnection, limit: number): Promise<FocusSourcePreviewResult>;
   collect(job: CloudIngestionJobContext): Promise<CloudIngestionResult>;
 }

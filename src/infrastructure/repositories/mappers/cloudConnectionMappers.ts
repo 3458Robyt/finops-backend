@@ -35,6 +35,36 @@ type PrismaDataQualityCheck = Awaited<
   ReturnType<PrismaClient['dataQualityCheck']['findUnique']>
 >;
 
+const PUBLIC_CONNECTION_METADATA_KEYS = new Set([
+  'billingSourceMode',
+  'capabilityValidation',
+  'awsFocusExportObjects',
+  'awsFocusExportLocations',
+  'ociFocusReportObjects',
+  'ociFocusReportLocations',
+  'awsMetricDefinitions',
+  'ociMetricDefinitions',
+  'awsInventoryRegions',
+  'ociInventoryCompartments',
+]);
+
+const SENSITIVE_METADATA_KEYS = new Set([
+  'accesskey',
+  'accesskeyid',
+  'apikey',
+  'encryptedpayload',
+  'encryptionauthtag',
+  'encryptioniv',
+  'externalid',
+  'passphrase',
+  'password',
+  'privatekey',
+  'secret',
+  'secretaccesskey',
+  'sessiontoken',
+  'token',
+]);
+
 /**
  * Mapea una fila del catálogo de proveedores al modelo de dominio
  * {@link ProviderCatalogEntry}.
@@ -73,6 +103,10 @@ export function mapProvider(provider: NonNullable<PrismaProviderCatalog>): Provi
 export function mapCloudConnection(
   connection: NonNullable<PrismaCloudConnection>,
 ): CloudConnectionSummary {
+  const metadata = isJsonObject(connection.metadata)
+    ? sanitizePublicConnectionMetadata(connection.metadata as Record<string, unknown>)
+    : undefined;
+
   return {
     id: connection.id,
     tenantId: connection.tenantId,
@@ -81,13 +115,44 @@ export function mapCloudConnection(
     name: connection.name,
     status: connection.status,
     ...(connection.defaultRegion !== null ? { defaultRegion: connection.defaultRegion } : {}),
-    ...(isJsonObject(connection.metadata)
-      ? { metadata: connection.metadata as Record<string, unknown> }
-      : {}),
+    ...(metadata !== undefined ? { metadata } : {}),
     ...(connection.lastValidatedAt !== null ? { lastValidatedAt: connection.lastValidatedAt } : {}),
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
   };
+}
+
+/**
+ * Proyecta únicamente configuración operativa no sensible. La lista positiva
+ * evita que metadata histórica o escrita fuera del onboarding llegue a la API;
+ * el filtrado recursivo protege además estructuras anidadas heredadas.
+ */
+export function sanitizePublicConnectionMetadata(
+  metadata: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> | undefined {
+  const result: Record<string, unknown> = {};
+  for (const key of PUBLIC_CONNECTION_METADATA_KEYS) {
+    if (!(key in metadata)) continue;
+    const value = sanitizeMetadataValue(metadata[key]);
+    if (value !== undefined) result[key] = value;
+  }
+  return Object.keys(result).length === 0 ? undefined : result;
+}
+
+function sanitizeMetadataValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeMetadataValue).filter((item) => item !== undefined);
+  }
+  if (value === null || typeof value !== 'object') return value;
+
+  const result: Record<string, unknown> = {};
+  for (const [key, nestedValue] of Object.entries(value)) {
+    const normalizedKey = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    if (SENSITIVE_METADATA_KEYS.has(normalizedKey)) continue;
+    const sanitized = sanitizeMetadataValue(nestedValue);
+    if (sanitized !== undefined) result[key] = sanitized;
+  }
+  return result;
 }
 
 /**

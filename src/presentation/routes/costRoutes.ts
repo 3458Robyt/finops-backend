@@ -27,6 +27,7 @@ export function createCostRoutes(
   const router = Router();
 
   // Endpoint: /api/v1/costs?provider=oci&accountId=xyz&date=2026-03-14
+  router.get('/options', requireAuth, costController.getDataOptions);
   router.get('/', requireAuth, costController.getDailyCosts);
 
   return router;

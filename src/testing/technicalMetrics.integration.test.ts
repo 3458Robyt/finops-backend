@@ -21,6 +21,10 @@ describe('technical metrics PostgreSQL integration', () => {
       const tenantB = fixtures.tenants[1];
       expect(tenantA).toBeDefined();
       expect(tenantB).toBeDefined();
+      const fixtureResource = await prisma.cloudResource.findUniqueOrThrow({
+        where: { id: fixtures.resourceIds[0] },
+        select: { externalResourceId: true },
+      });
 
       const filters = {
         startDate: new Date('2026-05-01T00:00:00.000Z'),
@@ -31,7 +35,7 @@ describe('technical metrics PostgreSQL integration', () => {
       const raw = await repository.listMetricSeriesForTenant(tenantA!.id, { ...filters, bucket: 'raw' });
       expect(raw.points).toHaveLength(10);
       expect(raw.points.every((point) => point.avg === point.min && point.avg === point.max)).toBe(true);
-      expect(raw.points.every((point) => point.externalResourceId === fixtures.resourceIds[0])).toBe(true);
+      expect(raw.points.every((point) => point.externalResourceId === fixtureResource.externalResourceId)).toBe(true);
       expect(raw.hasMore).toBe(true);
       expect(raw.nextCursor).toBeDefined();
 
@@ -49,7 +53,7 @@ describe('technical metrics PostgreSQL integration', () => {
 
       const otherTenant = await repository.listMetricSeriesForTenant(tenantB!.id, { ...filters, bucket: 'raw' });
       expect(otherTenant.points).toHaveLength(10);
-      expect(otherTenant.points.every((point) => point.externalResourceId !== fixtures.resourceIds[0])).toBe(true);
+      expect(otherTenant.points.every((point) => point.externalResourceId !== fixtureResource.externalResourceId)).toBe(true);
     } finally {
       await cleanupE2eFixtures(prisma, runId);
       await prisma.$disconnect();

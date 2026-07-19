@@ -6,6 +6,7 @@ import type {
   TechnicalMetricsService,
 } from '../../application/services/TechnicalMetricsService.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import { resolveFinOpsError } from '../http/finOpsErrorResponse.js';
 
 /**
  * Controlador de la capa de presentación para las métricas técnicas de recursos
@@ -271,24 +272,7 @@ export class TechnicalMetricsController {
    * código -> 500. Error no controlado -> 500 con mensaje genérico.
    */
   private respondWithError(res: Response, error: unknown): void {
-    if (error instanceof FinOpsBaseError) {
-      const status = error.code === 'AUTHENTICATION_REQUIRED'
-        ? 401
-        : error.code === 'VALIDATION_ERROR'
-          ? 400
-          : 500;
-
-      res.status(status).json({
-        success: false,
-        error: error.message,
-        code: error.code,
-      });
-      return;
-    }
-
-    res.status(500).json({
-      success: false,
-      error: 'An unexpected error occurred processing technical metrics',
-    });
+    const response = resolveFinOpsError(error, 'An unexpected error occurred processing technical metrics');
+    res.status(response.status).json({ success: false, error: response.error, ...(response.code === undefined ? {} : { code: response.code }) });
   }
 }

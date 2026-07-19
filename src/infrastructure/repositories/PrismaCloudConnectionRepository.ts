@@ -1,7 +1,13 @@
 import type {
+  ConfigureBillingSourceForConnectionInput,
+  ConfigureBillingSourceForConnectionResult,
+  CloudCredentialSummary,
+  CreateCloudAuditEventInput,
   CreateCloudConnectionInput,
   ConfigureFocusSourceForConnectionInput,
   ConfigureFocusSourceForConnectionResult,
+  ConfigureMetricDefinitionsForConnectionInput,
+  ConfigureMetricDefinitionsForConnectionResult,
   CreateIngestionJobInput,
   DataQualityCheckItem,
   ICloudConnectionRepository,
@@ -10,7 +16,10 @@ import type {
   IngestionReadinessSummary,
   IngestionJobHistoryItem,
   IngestionJobSummary,
+  StoreCloudCredentialInput,
+  UpdateCloudConnectionInput,
 } from '../../domain/interfaces/ICloudConnectionRepository.js';
+import type { CloudIngestionConnection } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import type {
   CloudConnectionSummary,
   DataQualityStatus,
@@ -29,6 +38,8 @@ import {
 } from './mappers/cloudConnectionMappers.js';
 import { buildIngestionReadinessSummary } from '../ingestion/ingestionReadiness.js';
 import { configureFocusSourceMetadata } from '../ingestion/focusSourceMetadata.js';
+import { CredentialCipher } from '../security/CredentialCipher.js';
+import { ConfigurationError } from '../../domain/errors/errors.js';
 
 /**
  * Adaptador de infraestructura (Clean Architecture) que implementa el puerto de
@@ -41,7 +52,10 @@ import { configureFocusSourceMetadata } from '../ingestion/focusSourceMetadata.j
  * conexiones filtran por `tenantId` para garantizar el aislamiento multi-tenant.
  */
 export class PrismaCloudConnectionRepository implements ICloudConnectionRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly credentialCipher?: CredentialCipher,
+  ) {}
 
   /**
    * Lista el catálogo de proveedores cloud habilitados, ordenados por código.
@@ -75,11 +89,11 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
   /**
    * Crea una nueva conexión cloud para un tenant.
    *
-   * Los campos opcionales (`defaultRegion`, `metadata`) solo se incluyen cuando
-   * están definidos; `metadata` se serializa como JSON de Prisma.
+   * La metadata operativa se configura después mediante operaciones tipadas;
+   * el alta no acepta un objeto arbitrario que pudiera contener secretos.
    *
    * @param input Datos de la conexión (tenant, proveedor, identificador raíz,
-   *   nombre y metadatos opcionales).
+   *   nombre y región opcional).
    * @returns Resumen de la conexión creada en formato de dominio.
    */
   public async createCloudConnection(
@@ -92,11 +106,25 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
         rootExternalId: input.rootExternalId,
         name: input.name,
         ...(input.defaultRegion !== undefined ? { defaultRegion: input.defaultRegion } : {}),
-        ...(input.metadata !== undefined ? { metadata: input.metadata as Prisma.InputJsonValue } : {}),
       },
     });
 
     return mapCloudConnection(connection);
+  }
+
+  public async updateCloudConnection(
+    input: UpdateCloudConnectionInput,
+  ): Promise<CloudConnectionSummary | null> {
+    const updated = await this.prisma.cloudConnection.updateMany({
+      where: { id: input.cloudConnectionId, tenantId: input.tenantId },
+      data: {
+        name: input.name,
+        defaultRegion: input.defaultRegion ?? null,
+      },
+    });
+    if (updated.count === 0) return null;
+    const connection = await this.prisma.cloudConnection.findUnique({ where: { id: input.cloudConnectionId } });
+    return connection === null ? null : mapCloudConnection(connection);
   }
 
   /**
@@ -143,6 +171,197 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     return connections.map((connection) => mapCloudConnection(connection));
   }
 
+  public async setCloudConnectionStatus(
+    tenantId: string,
+    cloudConnectionId: string,
+    status: 'ACTIVE' | 'DISABLED',
+  ): Promise<CloudConnectionSummary | null> {
+    const result = await this.prisma.cloudConnection.updateMany({
+      where: { id: cloudConnectionId, tenantId },
+      data: { status },
+    });
+    if (result.count === 0) return null;
+    const connection = await this.prisma.cloudConnection.findUnique({ where: { id: cloudConnectionId } });
+    return connection === null ? null : mapCloudConnection(connection);
+  }
+
+  public async listCredentialSummaries(
+    tenantId: string,
+    cloudConnectionId: string,
+  ): Promise<readonly CloudCredentialSummary[] | null> {
+    const connection = await this.prisma.cloudConnection.findFirst({
+      where: { id: cloudConnectionId, tenantId },
+      select: {
+        credentials: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            purpose: true,
+            status: true,
+            label: true,
+            externalPrincipalId: true,
+            createdAt: true,
+            disabledAt: true,
+            revokedAt: true,
+          },
+        },
+      },
+    });
+
+    return connection === null
+      ? null
+      : connection.credentials
+        .filter((credential) => credential.purpose !== 'TEMPORARY_ADMIN' && credential.purpose !== 'STORAGE_WRITE')
+        .map(mapCredentialSummary);
+  }
+
+  public async storeCredential(
+    input: StoreCloudCredentialInput,
+  ): Promise<CloudCredentialSummary | null> {
+    const encrypted = this.requireCredentialCipher().encrypt(input.payload);
+
+    return this.prisma.$transaction(async (tx) => {
+      const connection = await tx.cloudConnection.findFirst({
+        where: { id: input.cloudConnectionId, tenantId: input.tenantId },
+        select: { id: true },
+      });
+      if (connection === null) return null;
+
+      await tx.cloudConnectionCredential.updateMany({
+        where: {
+          cloudConnectionId: connection.id,
+          purpose: input.purpose,
+          status: 'ACTIVE',
+        },
+        data: { status: 'DISABLED', disabledAt: new Date() },
+      });
+
+      const credential = await tx.cloudConnectionCredential.create({
+        data: {
+          cloudConnectionId: connection.id,
+          purpose: input.purpose,
+          label: input.label,
+          ...encrypted,
+          ...(input.externalPrincipalId !== undefined
+            ? { externalPrincipalId: input.externalPrincipalId }
+            : {}),
+        },
+      });
+
+      return mapCredentialSummary(credential);
+    });
+  }
+
+  public async revokeCredential(
+    tenantId: string,
+    cloudConnectionId: string,
+    credentialId: string,
+  ): Promise<CloudCredentialSummary | null> {
+    const credential = await this.prisma.cloudConnectionCredential.findFirst({
+      where: {
+        id: credentialId,
+        cloudConnectionId,
+        cloudConnection: { tenantId },
+      },
+    });
+    if (credential === null) return null;
+
+    return mapCredentialSummary(await this.prisma.cloudConnectionCredential.update({
+      where: { id: credential.id },
+      data: { status: 'REVOKED', revokedAt: new Date() },
+    }));
+  }
+
+  public async getIngestionConnectionForTenant(
+    tenantId: string,
+    cloudConnectionId: string,
+  ): Promise<CloudIngestionConnection | null> {
+    const connection = await this.prisma.cloudConnection.findFirst({
+      where: { id: cloudConnectionId, tenantId, status: 'ACTIVE' },
+      include: {
+        credentials: {
+          where: {
+            status: 'ACTIVE',
+            purpose: { notIn: ['TEMPORARY_ADMIN', 'STORAGE_WRITE'] },
+          },
+        },
+      },
+    });
+    if (connection === null) return null;
+
+    return {
+      id: connection.id,
+      tenantId: connection.tenantId,
+      providerCode: connection.providerCode,
+      rootExternalId: connection.rootExternalId,
+      ...(connection.defaultRegion !== null ? { defaultRegion: connection.defaultRegion } : {}),
+      ...(isJsonObject(connection.metadata)
+        ? { metadata: connection.metadata as Record<string, unknown> }
+        : {}),
+      credentials: connection.credentials.map((credential) => ({
+        purpose: credential.purpose as CloudIngestionConnection['credentials'][number]['purpose'],
+        payload: this.requireCredentialCipher().decrypt({
+          encryptedPayload: credential.encryptedPayload,
+          encryptionIv: credential.encryptionIv,
+          encryptionAuthTag: credential.encryptionAuthTag,
+          encryptionAlgorithm: 'aes-256-gcm',
+          encryptionKeyVersion: credential.encryptionKeyVersion,
+        }),
+        ...(credential.externalPrincipalId !== null
+          ? { externalPrincipalId: credential.externalPrincipalId }
+          : {}),
+      })),
+    };
+  }
+
+  public async saveConnectionValidation(
+    tenantId: string,
+    cloudConnectionId: string,
+    validation: Readonly<Record<string, unknown>>,
+    validatedAt: Date,
+  ): Promise<CloudConnectionSummary | null> {
+    const connection = await this.prisma.cloudConnection.findFirst({
+      where: { id: cloudConnectionId, tenantId },
+      select: { id: true, metadata: true },
+    });
+    if (connection === null) return null;
+
+    const metadata = {
+      ...(isJsonObject(connection.metadata) ? connection.metadata as Record<string, unknown> : {}),
+      capabilityValidation: validation,
+    };
+    const updated = await this.prisma.cloudConnection.update({
+      where: { id: connection.id },
+      data: {
+        metadata: metadata as Prisma.InputJsonValue,
+        lastValidatedAt: validatedAt,
+      },
+    });
+
+    return mapCloudConnection(updated);
+  }
+
+  public async createCloudAuditEvent(input: CreateCloudAuditEventInput): Promise<void> {
+    await this.prisma.auditEvent.create({
+      data: {
+        tenantId: input.tenantId,
+        actorUserId: input.actorUserId,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
+        ...(input.metadata !== undefined ? { metadata: input.metadata as Prisma.InputJsonValue } : {}),
+      },
+    });
+  }
+
+  private requireCredentialCipher(): CredentialCipher {
+    if (this.credentialCipher === undefined) {
+      throw new ConfigurationError('CREDENTIAL_ENCRYPTION_KEY is required to manage cloud credentials');
+    }
+
+    return this.credentialCipher;
+  }
+
   /**
    * Marca una conexión cloud como validada en una fecha dada (actualiza
    * `lastValidatedAt`).
@@ -174,33 +393,35 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
    * @returns Resumen del trabajo de ingesta creado.
    */
   public async createIngestionJob(input: CreateIngestionJobInput): Promise<IngestionJobSummary> {
-    const job = await this.prisma.ingestionJob.create({
-      data: {
-        tenantId: input.tenantId,
-        cloudConnectionId: input.cloudConnectionId,
-        sourceType: input.sourceType,
-        targetStart: input.targetStart,
-        targetEnd: input.targetEnd,
-        ...(input.requestedByUserId !== undefined
-          ? { requestedByUserId: input.requestedByUserId }
-          : {}),
-        ...(input.maxAttempts !== undefined ? { maxAttempts: input.maxAttempts } : {}),
-      },
-    });
-
-    return {
-      id: job.id,
-      tenantId: job.tenantId,
-      cloudConnectionId: job.cloudConnectionId,
-      sourceType: job.sourceType,
-      status: job.status,
-      targetStart: job.targetStart,
-      targetEnd: job.targetEnd,
-      attempts: job.attempts,
-      maxAttempts: job.maxAttempts,
-      createdAt: job.createdAt,
-      updatedAt: job.updatedAt,
-    };
+    try {
+      return toIngestionJobSummary(await this.prisma.ingestionJob.create({
+        data: {
+          tenantId: input.tenantId,
+          cloudConnectionId: input.cloudConnectionId,
+          sourceType: input.sourceType,
+          targetStart: input.targetStart,
+          targetEnd: input.targetEnd,
+          ...(input.requestedByUserId !== undefined
+            ? { requestedByUserId: input.requestedByUserId }
+            : {}),
+          ...(input.maxAttempts !== undefined ? { maxAttempts: input.maxAttempts } : {}),
+        },
+      }));
+    } catch (error: unknown) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') throw error;
+      const existing = await this.prisma.ingestionJob.findFirst({
+        where: {
+          tenantId: input.tenantId,
+          cloudConnectionId: input.cloudConnectionId,
+          sourceType: input.sourceType,
+          targetStart: input.targetStart,
+          targetEnd: input.targetEnd,
+          status: { in: ['PENDING', 'RUNNING'] },
+        },
+      });
+      if (existing === null) throw error;
+      return toIngestionJobSummary(existing);
+    }
   }
 
   /**
@@ -369,6 +590,43 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     }));
   }
 
+  public async listFailedIngestionJobsForConnection(
+    tenantId: string,
+    cloudConnectionId: string,
+    sourceType?: IngestionSourceType,
+  ): Promise<readonly IngestionJobWindowItem[]> {
+    const jobs = await this.prisma.ingestionJob.findMany({
+      where: {
+        tenantId,
+        cloudConnectionId,
+        status: 'FAILED',
+        ...(sourceType !== undefined ? { sourceType } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+      select: { id: true, sourceType: true, status: true, targetStart: true, targetEnd: true },
+    });
+    return jobs.map((job) => ({
+      id: job.id,
+      sourceType: job.sourceType,
+      status: job.status,
+      targetStart: job.targetStart,
+      targetEnd: job.targetEnd,
+    }));
+  }
+
+  public async cancelPendingIngestionJobs(
+    tenantId: string,
+    cloudConnectionId: string,
+    sourceType: IngestionSourceType,
+  ): Promise<number> {
+    const result = await this.prisma.ingestionJob.updateMany({
+      where: { tenantId, cloudConnectionId, sourceType, status: 'PENDING' },
+      data: { status: 'CANCELLED', completedAt: new Date(), errorMessage: 'Cancelado por el usuario.' },
+    });
+    return result.count;
+  }
+
   public async listIngestionReadinessForTenant(tenantId: string): Promise<IngestionReadinessSummary> {
     const connections = await this.prisma.cloudConnection.findMany({
       where: {
@@ -382,6 +640,7 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
         name: true,
         providerCode: true,
         defaultRegion: true,
+        lastValidatedAt: true,
         metadata: true,
         credentials: {
           where: { status: 'ACTIVE' },
@@ -412,6 +671,7 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
         name: connection.name,
         providerCode: connection.providerCode,
         defaultRegion: connection.defaultRegion,
+        lastValidatedAt: connection.lastValidatedAt,
         metadata: connection.metadata,
         credentialPurposes: connection.credentials.map((credential) => credential.purpose),
         recentJobs: connection.ingestionJobs.map((job) => ({
@@ -470,4 +730,117 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
       replaced: input.replace,
     };
   }
+
+  public async configureBillingSourceForConnection(
+    input: ConfigureBillingSourceForConnectionInput,
+  ): Promise<ConfigureBillingSourceForConnectionResult | null> {
+    const connection = await this.prisma.cloudConnection.findFirst({
+      where: {
+        id: input.cloudConnectionId,
+        tenantId: input.tenantId,
+        status: 'ACTIVE',
+      },
+      select: { id: true, providerCode: true, metadata: true },
+    });
+
+    if (connection === null) return null;
+
+    const metadata = isJsonObject(connection.metadata)
+      ? { ...(connection.metadata as Record<string, unknown>), billingSourceMode: input.mode }
+      : { billingSourceMode: input.mode };
+
+    await this.prisma.cloudConnection.update({
+      where: { id: connection.id },
+      data: { metadata: metadata as Prisma.InputJsonValue },
+    });
+
+    return {
+      cloudConnectionId: connection.id,
+      providerCode: connection.providerCode,
+      mode: input.mode,
+    };
+  }
+
+  public async configureMetricDefinitionsForConnection(
+    input: ConfigureMetricDefinitionsForConnectionInput,
+  ): Promise<ConfigureMetricDefinitionsForConnectionResult | null> {
+    const connection = await this.prisma.cloudConnection.findFirst({
+      where: { id: input.cloudConnectionId, tenantId: input.tenantId, status: 'ACTIVE' },
+      select: { id: true, providerCode: true, metadata: true },
+    });
+    if (connection === null || (connection.providerCode !== 'aws' && connection.providerCode !== 'oci')) return null;
+
+    const updatedKey = connection.providerCode === 'aws' ? 'awsMetricDefinitions' : 'ociMetricDefinitions';
+    const metadata = isJsonObject(connection.metadata)
+      ? { ...(connection.metadata as Record<string, unknown>) }
+      : {};
+    const existing = !input.replace && Array.isArray(metadata[updatedKey]) ? metadata[updatedKey] : [];
+    const definitions = [...new Map(
+      [...existing, ...input.definitions].map((definition) => [JSON.stringify(definition), definition]),
+    ).values()];
+    metadata[updatedKey] = definitions;
+    await this.prisma.cloudConnection.update({
+      where: { id: connection.id },
+      data: { metadata: metadata as Prisma.InputJsonValue },
+    });
+    return {
+      cloudConnectionId: connection.id,
+      providerCode: connection.providerCode,
+      updatedKey,
+      configuredCount: definitions.length,
+      replaced: input.replace,
+    };
+  }
+}
+
+function toIngestionJobSummary(job: {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly cloudConnectionId: string;
+  readonly sourceType: IngestionSourceType;
+  readonly status: IngestionJobSummary['status'];
+  readonly targetStart: Date;
+  readonly targetEnd: Date;
+  readonly attempts: number;
+  readonly maxAttempts: number;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+}): IngestionJobSummary {
+  return {
+    id: job.id,
+    tenantId: job.tenantId,
+    cloudConnectionId: job.cloudConnectionId,
+    sourceType: job.sourceType,
+    status: job.status,
+    targetStart: job.targetStart,
+    targetEnd: job.targetEnd,
+    attempts: job.attempts,
+    maxAttempts: job.maxAttempts,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+  };
+}
+
+function mapCredentialSummary(credential: {
+  readonly id: string;
+  readonly purpose: string;
+  readonly status: string;
+  readonly label: string;
+  readonly externalPrincipalId: string | null;
+  readonly createdAt: Date;
+  readonly disabledAt: Date | null;
+  readonly revokedAt: Date | null;
+}): CloudCredentialSummary {
+  return {
+    id: credential.id,
+    purpose: credential.purpose as CloudCredentialSummary['purpose'],
+    status: credential.status as CloudCredentialSummary['status'],
+    label: credential.label,
+    ...(credential.externalPrincipalId !== null
+      ? { externalPrincipalId: credential.externalPrincipalId }
+      : {}),
+    createdAt: credential.createdAt,
+    ...(credential.disabledAt !== null ? { disabledAt: credential.disabledAt } : {}),
+    ...(credential.revokedAt !== null ? { revokedAt: credential.revokedAt } : {}),
+  };
 }

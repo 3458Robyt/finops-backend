@@ -7,6 +7,17 @@ import type {
 import { AwsSdkIngestionProvider } from './AwsSdkIngestionProvider.js';
 
 describe('AwsSdkIngestionProvider', () => {
+  it('reports every capability as not configured without exposing credentials', async () => {
+    const result = await new AwsSdkIngestionProvider().validate({
+      id: 'connection_1', tenantId: 'tenant_1', providerCode: 'aws',
+      rootExternalId: '123456789012', defaultRegion: 'us-east-1', credentials: [],
+    });
+
+    expect(result.capabilities).toHaveLength(5);
+    expect(result.capabilities.every((item) => item.status === 'NOT_CONFIGURED')).toBe(true);
+    expect(JSON.stringify(result)).not.toMatch(/secret|privateKey|externalId/i);
+  });
+
   it('collects EC2 inventory resources through the AWS SDK', async () => {
     const provider = new AwsSdkIngestionProvider();
     Object.assign(provider as unknown as {

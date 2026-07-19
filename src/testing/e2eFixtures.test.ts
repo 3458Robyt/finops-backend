@@ -1,9 +1,25 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   cleanupE2eFixtures,
   createE2eFixtures,
   createTestingPrismaClient,
 } from './e2eFixtures.js';
+
+afterEach(() => vi.unstubAllEnvs());
+
+test('solo permite bases o esquemas de prueba explícitos', async () => {
+  vi.stubEnv('ALLOW_DESTRUCTIVE_TEST_DATABASE', 'true');
+  vi.stubEnv('DATABASE_URL', 'postgresql://user:password@localhost/postgres');
+  vi.stubEnv('TEST_DATABASE_URL', 'postgresql://user:password@localhost/postgres');
+  expect(() => createTestingPrismaClient()).toThrow(/must not equal/i);
+
+  vi.stubEnv('TEST_DATABASE_URL', 'postgresql://user:password@localhost/postgres?schema=public');
+  expect(() => createTestingPrismaClient()).toThrow(/isolated finops_e2e/i);
+
+  vi.stubEnv('TEST_DATABASE_URL', 'postgresql://user:password@localhost/postgres?schema=finops_e2e_fixture');
+  const prisma = createTestingPrismaClient();
+  await prisma.$disconnect();
+});
 
 describe('e2e fixture utilities', () => {
   test('create and cleanup isolated tenants in the configured database', async () => {

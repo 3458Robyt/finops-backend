@@ -6,6 +6,7 @@ import type {
   ProviderCatalogEntry,
   ProviderCode,
 } from '../models/CloudConnection.js';
+import type { CloudIngestionConnection } from './ICloudIngestionProvider.js';
 
 /**
  * Datos de entrada para crear una conexión cloud de un tenant.
@@ -22,8 +23,6 @@ export interface CreateCloudConnectionInput {
   readonly name: string;
   /** Región por defecto usada para operaciones que la requieran; opcional. */
   readonly defaultRegion?: string;
-  /** Metadatos arbitrarios específicos del proveedor; opcional. */
-  readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -133,8 +132,13 @@ export interface DataQualityCheckItem {
 
 export interface IngestionReadinessIssue {
   readonly provider: ProviderCode | 'global';
+  readonly connectionId?: string;
   readonly severity: 'INFO' | 'WARNING' | 'BLOCKER';
+  readonly capability: 'CONNECTION' | 'CREDENTIALS' | 'INVENTORY' | 'COSTS' | 'METRICS' | 'STORAGE' | 'JOBS';
   readonly message: string;
+  readonly affectedData: readonly string[];
+  readonly action: string;
+  readonly actionCode: 'CREATE_CONNECTION' | 'CONFIGURE_CREDENTIALS' | 'VALIDATE_ACCESS' | 'CONFIGURE_METRICS' | 'CONFIGURE_FOCUS' | 'RETRY_FAILED_JOBS';
 }
 
 export interface IngestionReadinessConnectionSummary {
@@ -142,7 +146,15 @@ export interface IngestionReadinessConnectionSummary {
   readonly name: string;
   readonly providerCode: ProviderCode;
   readonly defaultRegion?: string;
+  readonly lastValidatedAt?: Date;
+  readonly onboardingStatus: 'NO_CREDENTIAL' | 'REQUIRES_VALIDATION' | 'SYNCING' | 'PARTIAL' | 'READY' | 'REQUIRES_ATTENTION';
   readonly credentialPurposes: readonly string[];
+  readonly capabilities: readonly {
+    readonly capability: string;
+    readonly status: 'AVAILABLE' | 'NOT_CONFIGURED' | 'DENIED' | 'ERROR';
+    readonly message: string;
+    readonly checkedAt?: Date;
+  }[];
   readonly metadataCounts: Readonly<Record<string, number>>;
   readonly recentJobs: readonly {
     readonly id: string;
@@ -180,6 +192,78 @@ export interface ConfigureFocusSourceForConnectionResult {
   readonly replaced: boolean;
 }
 
+export interface UpdateCloudConnectionInput {
+  readonly tenantId: string;
+  readonly cloudConnectionId: string;
+  readonly name: string;
+  readonly defaultRegion?: string;
+}
+
+export type BillingSourceMode = 'AUTO' | 'FOCUS' | 'PROVIDER_API';
+
+export type CloudCredentialPurpose =
+  | 'OPERATIONAL'
+  | 'BILLING_EXPORT_READ'
+  | 'INVENTORY_READ'
+  | 'METRICS_READ'
+  | 'STORAGE_READ';
+
+export interface StoreCloudCredentialInput {
+  readonly tenantId: string;
+  readonly cloudConnectionId: string;
+  readonly purpose: CloudCredentialPurpose;
+  readonly label: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly externalPrincipalId?: string;
+}
+
+export interface CloudCredentialSummary {
+  readonly id: string;
+  readonly purpose: CloudCredentialPurpose;
+  readonly status: 'ACTIVE' | 'DISABLED' | 'REVOKED' | 'EXPIRED';
+  readonly label: string;
+  readonly externalPrincipalId?: string;
+  readonly createdAt: Date;
+  readonly disabledAt?: Date;
+  readonly revokedAt?: Date;
+}
+
+export interface CreateCloudAuditEventInput {
+  readonly tenantId: string;
+  readonly actorUserId: string;
+  readonly action: string;
+  readonly entityType: 'CLOUD_CONNECTION' | 'CLOUD_CREDENTIAL';
+  readonly entityId: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+export interface ConfigureBillingSourceForConnectionInput {
+  readonly tenantId: string;
+  readonly cloudConnectionId: string;
+  readonly mode: BillingSourceMode;
+}
+
+export interface ConfigureBillingSourceForConnectionResult {
+  readonly cloudConnectionId: string;
+  readonly providerCode: ProviderCode;
+  readonly mode: BillingSourceMode;
+}
+
+export interface ConfigureMetricDefinitionsForConnectionInput {
+  readonly tenantId: string;
+  readonly cloudConnectionId: string;
+  readonly definitions: readonly Readonly<Record<string, unknown>>[];
+  readonly replace: boolean;
+}
+
+export interface ConfigureMetricDefinitionsForConnectionResult {
+  readonly cloudConnectionId: string;
+  readonly providerCode: ProviderCode;
+  readonly updatedKey: 'awsMetricDefinitions' | 'ociMetricDefinitions';
+  readonly configuredCount: number;
+  readonly replaced: boolean;
+}
+
 /**
  * Contrato de repositorio para conexiones cloud y trabajos de ingesta.
  *
@@ -211,6 +295,8 @@ export interface ICloudConnectionRepository {
    */
   createCloudConnection(input: CreateCloudConnectionInput): Promise<CloudConnectionSummary>;
 
+  updateCloudConnection(input: UpdateCloudConnectionInput): Promise<CloudConnectionSummary | null>;
+
   /**
    * Busca una conexión cloud concreta perteneciente a un tenant.
    *
@@ -231,6 +317,39 @@ export interface ICloudConnectionRepository {
    */
   listCloudConnectionsForTenant(tenantId: string): Promise<readonly CloudConnectionSummary[]>;
 
+  setCloudConnectionStatus(
+    tenantId: string,
+    cloudConnectionId: string,
+    status: 'ACTIVE' | 'DISABLED',
+  ): Promise<CloudConnectionSummary | null>;
+
+  listCredentialSummaries(
+    tenantId: string,
+    cloudConnectionId: string,
+  ): Promise<readonly CloudCredentialSummary[] | null>;
+
+  storeCredential(input: StoreCloudCredentialInput): Promise<CloudCredentialSummary | null>;
+
+  revokeCredential(
+    tenantId: string,
+    cloudConnectionId: string,
+    credentialId: string,
+  ): Promise<CloudCredentialSummary | null>;
+
+  getIngestionConnectionForTenant(
+    tenantId: string,
+    cloudConnectionId: string,
+  ): Promise<CloudIngestionConnection | null>;
+
+  saveConnectionValidation(
+    tenantId: string,
+    cloudConnectionId: string,
+    validation: Readonly<Record<string, unknown>>,
+    validatedAt: Date,
+  ): Promise<CloudConnectionSummary | null>;
+
+  createCloudAuditEvent(input: CreateCloudAuditEventInput): Promise<void>;
+
   /**
    * Marca una conexión cloud como validada en un instante dado.
    *
@@ -250,6 +369,18 @@ export interface ICloudConnectionRepository {
   listIngestionJobsForConnectionRange(
     input: IngestionJobRangeQuery,
   ): Promise<readonly IngestionJobWindowItem[]>;
+
+  listFailedIngestionJobsForConnection(
+    tenantId: string,
+    cloudConnectionId: string,
+    sourceType?: IngestionSourceType,
+  ): Promise<readonly IngestionJobWindowItem[]>;
+
+  cancelPendingIngestionJobs(
+    tenantId: string,
+    cloudConnectionId: string,
+    sourceType: IngestionSourceType,
+  ): Promise<number>;
 
   /**
    * Obtiene un resumen de salud de la ingesta para una conexión cloud.
@@ -294,4 +425,10 @@ export interface ICloudConnectionRepository {
   configureFocusSourceForConnection(
     input: ConfigureFocusSourceForConnectionInput,
   ): Promise<ConfigureFocusSourceForConnectionResult | null>;
+  configureBillingSourceForConnection(
+    input: ConfigureBillingSourceForConnectionInput,
+  ): Promise<ConfigureBillingSourceForConnectionResult | null>;
+  configureMetricDefinitionsForConnection(
+    input: ConfigureMetricDefinitionsForConnectionInput,
+  ): Promise<ConfigureMetricDefinitionsForConnectionResult | null>;
 }

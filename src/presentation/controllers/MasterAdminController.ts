@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import { resolveFinOpsError } from '../http/finOpsErrorResponse.js';
 import type { MasterAdminService } from '../../application/services/MasterAdminService.js';
 import type { TenantAccessRole, TenantStatus, UserRole } from '../../generated/prisma/client.js';
 
@@ -177,26 +178,7 @@ export class MasterAdminController {
   }
 
   private respondWithError(res: Response, error: unknown): void {
-    if (error instanceof FinOpsBaseError) {
-      const status = error.code === 'NOT_FOUND'
-        ? 404
-        : error.code === 'VALIDATION_ERROR'
-          ? 400
-          : error.code === 'AUTHENTICATION_REQUIRED'
-            ? 401
-            : error.code === 'AUTHORIZATION_FAILED'
-              ? 403
-              : error.code === 'CONFLICT'
-                ? 409
-                : 500;
-
-      res.status(status).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-
-    res.status(500).json({
-      success: false,
-      error: 'An unexpected error occurred processing master administration',
-    });
+    const response = resolveFinOpsError(error, 'An unexpected error occurred processing master administration');
+    res.status(response.status).json({ success: false, error: response.error, ...(response.code === undefined ? {} : { code: response.code }) });
   }
 }

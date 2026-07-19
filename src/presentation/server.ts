@@ -37,7 +37,7 @@ import { OutboundMessageController } from './controllers/OutboundMessageControll
 import { RecommendationController } from './controllers/RecommendationController.js';
 import { TechnicalMetricsController } from './controllers/TechnicalMetricsController.js';
 import { TelegramController } from './controllers/TelegramController.js';
-import { createAuthMiddleware } from './middleware/authMiddleware.js';
+import { createAuthMiddleware, requireRole } from './middleware/authMiddleware.js';
 import { createAgentRoutes } from './routes/agentRoutes.js';
 import { createBudgetRoutes } from './routes/budgetRoutes.js';
 import { createCostAllocationRoutes } from './routes/costAllocationRoutes.js';
@@ -231,6 +231,12 @@ const telegramController = new TelegramController(
   );
   const masterAdminController = new MasterAdminController(dependencies.masterAdminService);
   const requireAuth = createAuthMiddleware(dependencies.tokenService);
+  const requireCloudManager = requireRole([
+    'ADMIN',
+    'MASTER_ADMIN',
+    'OPERATOR_ADMIN',
+    'FINOPS_TECHNICIAN',
+  ]);
 
   // Limitadores específicos montados ANTES de sus routers para ejecutarse primero.
   app.use('/api/v1', globalApiLimiter);
@@ -244,9 +250,9 @@ const telegramController = new TelegramController(
   app.use('/api/v1/budgets', createBudgetRoutes(budgetController, requireAuth));
   app.use('/api/v1/cost-allocation', createCostAllocationRoutes(costAllocationController, requireAuth));
   app.use('/api/v1/auth', createAuthRoutes(authController, requireAuth));
-  app.use('/api/v1/cloud-connections', createCloudConnectionRoutes(cloudConnectionController, requireAuth));
+  app.use('/api/v1/cloud-connections', createCloudConnectionRoutes(cloudConnectionController, requireAuth, requireCloudManager));
   app.use('/api/v1/costs', createCostRoutes(costController, requireAuth));
-  app.use('/api/v1/ingestion', createIngestionRoutes(cloudConnectionController, requireAuth));
+  app.use('/api/v1/ingestion', createIngestionRoutes(cloudConnectionController, requireAuth, requireCloudManager));
   app.use('/api/v1/technical-metrics', createTechnicalMetricsRoutes(technicalMetricsController, requireAuth));
   app.use('/api/v1/kpis', createKpiRoutes(kpiController, requireAuth));
 app.use('/api/v1/master-admin', createMasterAdminRoutes(masterAdminController, requireAuth));
@@ -286,6 +292,7 @@ function createRequestLogger() {
   return (req: Request, res: Response, next: NextFunction): void => {
     const requestId = req.header('x-request-id') ?? randomUUID();
     const startedAt = Date.now();
+    res.locals.requestId = requestId;
     res.setHeader('x-request-id', requestId);
 
     res.on('finish', () => {

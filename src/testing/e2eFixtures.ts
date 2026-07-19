@@ -44,13 +44,22 @@ export function createTestingPrismaClient(): PrismaClient {
     throw new Error('TEST_DATABASE_URL must not equal DATABASE_URL.');
   }
 
-  const databaseName = new URL(connectionString).pathname.replace(/^\//, '');
-  if (!databaseName.endsWith('_test')) {
-    throw new Error('TEST_DATABASE_URL must point to a database ending in _test.');
+  const parsedUrl = new URL(connectionString);
+  const databaseName = parsedUrl.pathname.replace(/^\//, '');
+  const schema = parsedUrl.searchParams.get('schema') ?? undefined;
+  const isolatedSchema = schema !== undefined && /^finops_e2e_[a-z0-9_]+$/.test(schema);
+  if (!databaseName.endsWith('_test') && !isolatedSchema) {
+    throw new Error('TEST_DATABASE_URL must point to a database ending in _test or an isolated finops_e2e_* schema.');
   }
 
   return new PrismaClient({
-    adapter: new PrismaPg({ connectionString }),
+    adapter: new PrismaPg(
+      {
+        connectionString,
+        ...(schema === undefined ? {} : { options: `-c search_path=${schema}` }),
+      },
+      schema === undefined ? undefined : { schema },
+    ),
   });
 }
 

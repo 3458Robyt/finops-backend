@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import type { ICostRepository } from '../../domain/interfaces/ICostRepository.js';
 import type { InternalCostMetric } from '../../domain/models/InternalCostMetric.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import { resolveFinOpsError } from '../http/finOpsErrorResponse.js';
 
 interface ServiceBreakdownItem {
   cost: number;
@@ -81,22 +82,33 @@ export class CostController {
           count: metrics.length,
         },
       });
-    } catch (error: unknown) {
-      if (error instanceof FinOpsBaseError) {
-        res.status(500).json({
-          success: false,
-          error: error.message,
-          code: error.code,
-        });
+    } catch (error: unknown) { this.respondWithError(res, error, 'No fue posible consultar los costos.'); }
+  };
+
+  public getDataOptions = async (req: Request, res: Response): Promise<void> => {
+    try {
+      if (req.auth === undefined) {
+        res.status(401).json({ success: false, error: 'Autenticación requerida.', code: 'AUTHENTICATION_REQUIRED' });
         return;
       }
-
-      res.status(500).json({
-        success: false,
-        error: 'An unexpected error occurred processing costs',
-      });
-    }
+      const period = this.parsePeriod(req.query['period']);
+      const options = await this.costRepository.getDataOptions(req.auth.tenantId, period);
+      res.status(200).json({ success: true, options });
+    } catch (error: unknown) { this.respondWithError(res, error, 'No fue posible cargar las opciones de costos.'); }
   };
+
+  private parsePeriod(value: unknown): string | undefined {
+    if (typeof value !== 'string' || value.trim() === '') return undefined;
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) throw new FinOpsBaseError('El período debe tener formato YYYY-MM.', 'VALIDATION_ERROR');
+    return value;
+  }
+
+  private respondWithError(res: Response, error: unknown, fallback: string): void {
+    const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : undefined;
+    const response = resolveFinOpsError(error, fallback);
+    if (response.code === undefined) console.error(JSON.stringify({ level: 'error', event: 'cost_operation_failed', diagnosticId: requestId, error: error instanceof Error ? error.message : String(error) }));
+    res.status(response.status).json({ success: false, code: response.code ?? 'INTERNAL_ERROR', error: response.error, ...(requestId === undefined ? {} : { diagnosticId: requestId }) });
+  }
 
   /**
    * Resuelve el rango de fechas de la consulta a partir de `req.query.startDate`

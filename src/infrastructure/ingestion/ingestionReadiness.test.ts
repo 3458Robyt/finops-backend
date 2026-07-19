@@ -58,9 +58,10 @@ describe('ingestionReadiness', () => {
       ],
     });
 
-    expect(summary.ok).toBe(true);
+    expect(summary.ok).toBe(false);
     expect(summary.connections[0]).toMatchObject({
       id: 'oci-1',
+      onboardingStatus: 'REQUIRES_VALIDATION',
       credentialPurposes: ['OPERATIONAL'],
       metadataCounts: {
         ociMetricDefinitions: 1,
@@ -72,16 +73,16 @@ describe('ingestionReadiness', () => {
       metricSamples: 11,
       apiCallCount: 11,
     });
-    expect(summary.issues).toContainEqual({
+    expect(summary.issues).toContainEqual(expect.objectContaining({
       provider: 'oci',
       severity: 'WARNING',
-      message: 'Missing OCI FOCUS object/prefix metadata for billing exports.',
-    });
-    expect(summary.issues).toContainEqual({
-      provider: 'aws',
-      severity: 'WARNING',
-      message: 'No active AWS cloud connection found for this tenant.',
-    });
+      message: 'FOCUS OCI no está configurado; AUTO puede usar la API directa.',
+      actionCode: 'CONFIGURE_FOCUS',
+    }));
+    expect(summary.issues).toContainEqual(expect.objectContaining({
+      connectionId: 'oci-1',
+      actionCode: 'VALIDATE_ACCESS',
+    }));
   });
 
   it('marks readiness as blocked when credentials are missing', () => {
@@ -103,11 +104,13 @@ describe('ingestionReadiness', () => {
     });
 
     expect(summary.ok).toBe(false);
-    expect(summary.issues).toContainEqual({
+    expect(summary.issues).toContainEqual(expect.objectContaining({
       provider: 'aws',
       severity: 'BLOCKER',
-      message: 'No active operational/read credential is stored for this provider.',
-    });
+      message: 'No hay una credencial operativa o de lectura activa para esta conexión.',
+      actionCode: 'CONFIGURE_CREDENTIALS',
+    }));
+    expect(summary.connections[0]?.onboardingStatus).toBe('NO_CREDENTIAL');
   });
 
   it('summarizes only safe job result fields', () => {

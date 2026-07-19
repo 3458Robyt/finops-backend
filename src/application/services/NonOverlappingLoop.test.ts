@@ -1,20 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
-import { startCloudIngestionSchedulerLoop } from './CloudIngestionSchedulerLoop.js';
+import { startNonOverlappingLoop } from './NonOverlappingLoop.js';
 
-describe('startCloudIngestionSchedulerLoop', () => {
+describe('startNonOverlappingLoop', () => {
   it('runs immediately and schedules future iterations', () => {
-    const runOnce = vi.fn(async () => ({ plannedJobs: [] }));
+    const run = vi.fn(async () => ({ processed: false }));
     const setIntervalFn = vi.fn(() => 123 as unknown as NodeJS.Timeout);
     const clearIntervalFn = vi.fn();
 
-    const handle = startCloudIngestionSchedulerLoop({
-      scheduler: { runOnce },
+    const handle = startNonOverlappingLoop({
+      run,
       intervalMs: 5000,
+      fallbackIntervalMs: 30000,
       setIntervalFn,
       clearIntervalFn,
     });
 
-    expect(runOnce).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
     expect(setIntervalFn).toHaveBeenCalledWith(expect.any(Function), 5000);
 
     handle.stop();
@@ -23,15 +24,16 @@ describe('startCloudIngestionSchedulerLoop', () => {
 
   it('skips overlapping iterations while a previous run is still active', async () => {
     let release!: () => void;
-    const runOnce = vi.fn(() => new Promise((resolve) => {
-      release = () => resolve({ plannedJobs: [] });
+    const run = vi.fn(() => new Promise<{ readonly processed: boolean }>((resolve) => {
+      release = () => resolve({ processed: false });
     }));
     const onSkip = vi.fn();
     let scheduled!: () => void;
 
-    startCloudIngestionSchedulerLoop({
-      scheduler: { runOnce },
+    startNonOverlappingLoop({
+      run,
       intervalMs: 1000,
+      fallbackIntervalMs: 30000,
       setIntervalFn: ((callback: () => void) => {
         scheduled = callback;
         return 123 as unknown as NodeJS.Timeout;
@@ -42,7 +44,7 @@ describe('startCloudIngestionSchedulerLoop', () => {
 
     scheduled();
 
-    expect(runOnce).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
     expect(onSkip).toHaveBeenCalledTimes(1);
 
     release();
@@ -50,19 +52,20 @@ describe('startCloudIngestionSchedulerLoop', () => {
     await Promise.resolve();
 
     scheduled();
-    expect(runOnce).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenCalledTimes(2);
   });
 
   it('reports errors and continues future iterations', async () => {
     const onError = vi.fn();
-    const runOnce = vi.fn()
+    const run = vi.fn()
       .mockRejectedValueOnce(new Error('temporary failure'))
-      .mockResolvedValueOnce({ plannedJobs: [] });
+      .mockResolvedValueOnce({ processed: false });
     let scheduled!: () => void;
 
-    startCloudIngestionSchedulerLoop({
-      scheduler: { runOnce },
+    startNonOverlappingLoop({
+      run,
       intervalMs: 1000,
+      fallbackIntervalMs: 30000,
       setIntervalFn: ((callback: () => void) => {
         scheduled = callback;
         return 123 as unknown as NodeJS.Timeout;
@@ -77,6 +80,6 @@ describe('startCloudIngestionSchedulerLoop', () => {
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
 
     scheduled();
-    expect(runOnce).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenCalledTimes(2);
   });
 });

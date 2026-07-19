@@ -29,7 +29,17 @@ export function getPrismaClient(): PrismaClient {
     throw new ConfigurationError('DATABASE_URL must be configured before using Prisma');
   }
 
-  const adapter = new PrismaPg({ connectionString });
+  const schema = new URL(connectionString).searchParams.get('schema') ?? undefined;
+  if (schema !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
+    throw new ConfigurationError('DATABASE_URL schema must be a valid PostgreSQL identifier');
+  }
+  const adapter = new PrismaPg(
+    {
+      connectionString,
+      ...(schema === undefined ? {} : { options: `-c search_path=${schema}` }),
+    },
+    schema === undefined ? undefined : { schema },
+  );
   prismaClient = new PrismaClient({ adapter });
 
   return prismaClient;

@@ -5,11 +5,12 @@ import type {
   CloudIngestionResult,
   NormalizedCloudResource,
   NormalizedFocusCostLineItem,
+  NormalizedProviderCostLineItem,
   NormalizedResourceMetricSample,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import type { IngestionSourceType } from '../../domain/models/CloudConnection.js';
 import type { PrismaClient } from '../../generated/prisma/client.js';
-import { Prisma } from '../../generated/prisma/client.js';
+import { CostBillingSource, Prisma } from '../../generated/prisma/client.js';
 import { CredentialCipher, type EncryptedCredentialPayload } from '../security/CredentialCipher.js';
 import {
   buildFocusCostMetricRows,
@@ -139,6 +140,11 @@ export class PrismaCloudIngestionJobRepository {
     let focusRowsProcessed = result.focusRows.length;
     let focusRowsInserted = await this.insertFocusRows(this.prisma, result.focusRows);
     let costMetricProjection = await this.projectFocusRowsToCostMetrics(this.prisma, job, result.focusRows);
+    const providerProjection = await this.projectProviderCostsToCostMetrics(this.prisma, job, result.providerCostRows ?? []);
+    costMetricProjection = {
+      projected: costMetricProjection.projected + providerProjection.projected,
+      inserted: costMetricProjection.inserted + providerProjection.inserted,
+    };
 
     if (result.focusBatches !== undefined) {
       for await (const batch of result.focusBatches) {
@@ -690,6 +696,42 @@ export class PrismaCloudIngestionJobRepository {
     return typeof value === 'string' && value.trim() !== '' ? value : undefined;
   }
 
+  private async projectProviderCostsToCostMetrics(
+    tx: PrismaIngestionPersistenceClient,
+    job: CloudIngestionJobContext,
+    rows: readonly NormalizedProviderCostLineItem[],
+  ): Promise<FocusCostMetricProjectionResult> {
+    if (rows.length === 0) return { projected: 0, inserted: 0 };
+    const account = await tx.cloudAccount.upsert({
+      where: { tenantId_provider_externalAccountId: { tenantId: job.tenantId, provider: rows[0]!.provider, externalAccountId: job.connection.rootExternalId } },
+      update: { name: job.connection.rootExternalId, status: 'ACTIVE' },
+      create: { tenantId: job.tenantId, provider: rows[0]!.provider, externalAccountId: job.connection.rootExternalId, name: job.connection.rootExternalId },
+      select: { id: true },
+    });
+    await tx.costMetric.deleteMany({ where: { cloudConnectionId: job.cloudConnectionId, chargePeriodStart: { gte: job.targetStart, lt: job.targetEnd }, billingSource: CostBillingSource.FOCUS } });
+    const result = await tx.costMetric.createMany({
+      data: rows.map((row) => ({
+        tenantId: row.tenantId, cloudAccountId: account.id, cloudConnectionId: row.cloudConnectionId,
+        provider: row.provider, billingSource: CostBillingSource.PROVIDER_API,
+        ...(row.billingAccountId === undefined ? {} : { billingAccountId: row.billingAccountId }),
+        serviceName: row.serviceName, resourceId: row.resourceId,
+        ...(row.regionId === undefined ? {} : { regionId: row.regionId }),
+        chargePeriodStart: row.chargePeriodStart, chargePeriodEnd: row.chargePeriodEnd,
+        billedCost: row.billedCost, billingCurrency: row.billingCurrency, pricingCurrency: row.billingCurrency,
+        ...(row.consumedQuantity === undefined ? {} : { consumedQuantity: row.consumedQuantity }),
+        ...(row.consumedUnit === undefined ? {} : { consumedUnit: row.consumedUnit }),
+        sourceMetric: row.sourceMetric, metricIdentityHash: row.lineItemHash,
+        providerRaw: {
+          source: 'PROVIDER_API',
+          cloudConnectionId: row.cloudConnectionId,
+          raw: row.rawRow,
+        } as Prisma.InputJsonValue,
+      })),
+      skipDuplicates: true,
+    });
+    return { projected: rows.length, inserted: result.count };
+  }
+
   private async projectFocusRowsToCostMetrics(
     tx: PrismaIngestionPersistenceClient,
     job: CloudIngestionJobContext,
@@ -700,6 +742,7 @@ export class PrismaCloudIngestionJobRepository {
     }
 
     const accountIdsByExternalId = await this.upsertFocusCloudAccounts(tx, job, rows);
+    await tx.costMetric.deleteMany({ where: { cloudConnectionId: job.cloudConnectionId, chargePeriodStart: { gte: job.targetStart, lt: job.targetEnd }, billingSource: CostBillingSource.PROVIDER_API } });
     const result = await tx.costMetric.createMany({
       data: buildFocusCostMetricRows({
         job,

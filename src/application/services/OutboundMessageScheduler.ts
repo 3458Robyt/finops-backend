@@ -1,8 +1,9 @@
 import type { AuthContext } from '../../domain/models/AuthContext.js';
 import type { OutboundMessageService } from './OutboundMessageService.js';
+import { startNonOverlappingLoop, type NonOverlappingLoopHandle } from './NonOverlappingLoop.js';
 
 export class OutboundMessageScheduler {
-  private timer: NodeJS.Timeout | undefined;
+  private loop: NonOverlappingLoopHandle | undefined;
 
   constructor(
     private readonly outboundMessageService: OutboundMessageService,
@@ -11,21 +12,25 @@ export class OutboundMessageScheduler {
   ) {}
 
   public start(): void {
-    if (this.systemActor === undefined || this.timer !== undefined) {
+    if (this.systemActor === undefined || this.loop !== undefined) {
       return;
     }
 
     const intervalMs = Math.max(5, this.intervalMinutes) * 60 * 1000;
-    this.timer = setInterval(() => {
-      void this.outboundMessageService.sendSavingsReminders(this.systemActor as AuthContext);
-    }, intervalMs);
-    this.timer.unref();
+    this.loop = startNonOverlappingLoop({
+      run: () => this.outboundMessageService.sendSavingsReminders(this.systemActor as AuthContext),
+      intervalMs,
+      fallbackIntervalMs: 5 * 60 * 1000,
+      runImmediately: false,
+      unref: true,
+      onError: (error) => console.error('Outbound message scheduler iteration failed:', error),
+    });
   }
 
   public stop(): void {
-    if (this.timer !== undefined) {
-      clearInterval(this.timer);
-      this.timer = undefined;
+    if (this.loop !== undefined) {
+      this.loop.stop();
+      this.loop = undefined;
     }
   }
 }

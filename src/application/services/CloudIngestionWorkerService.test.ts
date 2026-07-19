@@ -59,6 +59,7 @@ describe('CloudIngestionWorkerService', () => {
     const job = createJob('oci');
     const provider: CloudIngestionProvider = {
       providerCode: 'oci',
+      validate: vi.fn(async () => ({ providerCode: 'oci', capabilities: [] })),
       collect: vi.fn(async () => ({
         apiCallCount: 1,
         objectsProcessed: 0,

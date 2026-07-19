@@ -12,7 +12,8 @@ describe('createIngestionRoutes', () => {
       listDataQuality: vi.fn(),
       getIngestionReadiness: vi.fn(),
     } as unknown as CloudConnectionController;
-    const router = createIngestionRoutes(controller, (_req, _res, next) => next());
+    const allow = (_req: unknown, _res: unknown, next: () => void) => next();
+    const router = createIngestionRoutes(controller, allow as never, allow as never);
     const stack = router.stack as readonly {
       readonly route?: {
         readonly path: string;

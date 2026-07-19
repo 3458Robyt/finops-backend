@@ -19,7 +19,6 @@
 
 import 'dotenv/config';
 
-import type { ICloudProvider } from './domain/interfaces/ICloudProvider.js';
 import { AuthService } from './application/services/AuthService.js';
 import { BudgetService } from './application/services/BudgetService.js';
 import { CostAllocationService } from './application/services/CostAllocationService.js';
@@ -30,7 +29,6 @@ import { CloudConnectionService } from './application/services/CloudConnectionSe
 import { ContextEngineService } from './application/services/ContextEngineService.js';
 import { ContextSummaryBuilderService } from './application/services/ContextSummaryBuilderService.js';
 import { CostAnalyticsService } from './application/services/CostAnalyticsService.js';
-import { DataIngestionService } from './application/services/DataIngestionService.js';
 import { EmailClient } from './application/services/EmailClient.js';
 import { FinOpsAiService } from './application/services/FinOpsAiService.js';
 import { MasterAdminService } from './application/services/MasterAdminService.js';
@@ -44,9 +42,7 @@ import { TelegramClient } from './application/services/TelegramClient.js';
 import { TelegramLinkService } from './application/services/TelegramLinkService.js';
 import { TelegramMessageFormatter } from './application/services/TelegramMessageFormatter.js';
 import { CloudIngestionWorkerService } from './application/services/CloudIngestionWorkerService.js';
-import { startCloudIngestionWorkerLoop } from './application/services/CloudIngestionWorkerLoop.js';
-import { startCloudIngestionSchedulerLoop } from './application/services/CloudIngestionSchedulerLoop.js';
-import { AWSProvider } from './infrastructure/providers/aws/AWSProvider.js';
+import { startNonOverlappingLoop } from './application/services/NonOverlappingLoop.js';
 import { getPrismaClient } from './infrastructure/database/prisma.js';
 import { OpenAiCompatibleAiGateway } from './infrastructure/ai/OpenAiCompatibleAiGateway.js';
 import { AwsSdkIngestionProvider } from './infrastructure/ingestion/AwsSdkIngestionProvider.js';
@@ -106,59 +102,11 @@ async function bootstrap(): Promise<void> {
 ╚═══════════════════════════════════════════════════════════════╝
   `);
 
-  // ── 1. Instanciar Adaptadores ─────────────────────────────────
-  //
-  // Cada proveedor se inicializa dentro de un try/catch para que
-  // la app no muera si un proveedor no tiene credenciales configuradas.
-  // Los proveedores que fallen se registran como warning y se omiten.
-
-  const providerRegistry = new Map<string, ICloudProvider>();
-
-  /**
-   * AWS Provider
-   * Las credenciales se resuelven automáticamente vía:
-   *   - Variables de entorno: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
-   *   - Shared credentials file: ~/.aws/credentials
-   *   - IAM Role (EC2/ECS)
-   */
-  try {
-    const awsProvider = new AWSProvider({
-      region: process.env['AWS_REGION'] ?? 'us-east-1',
-    });
-    providerRegistry.set(awsProvider.providerName, awsProvider);
-    console.log('  ✓ AWS Provider initialized');
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.warn(`  ⚠ AWS Provider skipped (init failed): ${msg}`);
-  }
-
-  /**
-   * Oracle Cloud Provider
-   * Credenciales leídas desde ~/.oci/config (formato estándar OCI CLI).
-   * El tenancyId se obtiene automáticamente del auth provider.
-   *
-   * En producción, usar Instance Principals o Resource Principals.
-   */
-  try {
-    if (process.env['ENABLE_OCI_PROVIDER'] === 'true') {
-      const { OCIProvider } = await import('./infrastructure/providers/oci/OCIProvider.js');
-      const ociProvider = new OCIProvider();
-      providerRegistry.set(ociProvider.providerName, ociProvider);
-      console.log('  ✓ OCI Provider initialized');
-    } else {
-      console.log('  ℹ OCI Provider disabled (set ENABLE_OCI_PROVIDER=true to enable)');
-    }
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.warn(`  ⚠ OCI Provider skipped (init failed): ${msg}`);
-  }
-
-  // ── 2. Registrar Proveedores (Dependency Injection) ───────────
-
-  // ── 3. Instanciar Servicio de Ingesta ─────────────────────────
-
   const prisma = getPrismaClient();
-  const cloudConnectionRepository = new PrismaCloudConnectionRepository(prisma);
+  const credentialCipher = process.env['CREDENTIAL_ENCRYPTION_KEY']?.trim()
+    ? new CredentialCipher()
+    : undefined;
+  const cloudConnectionRepository = new PrismaCloudConnectionRepository(prisma, credentialCipher);
   const costAnalyticsRepository = new PrismaCostAnalyticsRepository(prisma);
   const costRepository = new PrismaCostRepository(prisma);
   const budgetRepository = new PrismaBudgetRepository(prisma);
@@ -176,7 +124,8 @@ const telegramRepository = new PrismaTelegramRepository(prisma);
   const tokenService = new JwtTokenService();
   const authService = new AuthService(userRepository, passwordHasher, tokenService);
   const masterAdminService = new MasterAdminService(masterAdminRepository, passwordHasher);
-  const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository);
+  const ingestionProviders = [new AwsSdkIngestionProvider(), new OciSdkIngestionProvider()];
+  const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository, ingestionProviders);
 const technicalMetricsService = new TechnicalMetricsService(resourceMetricRepository);
 const technicalRecommendationEvidenceService = new TechnicalRecommendationEvidenceService(resourceMetricRepository);
 const analyticsService = new CostAnalyticsService(costAnalyticsRepository);
@@ -234,14 +183,10 @@ const outboundMessageService = new OutboundMessageService(
     ...(process.env['TELEGRAM_WEBHOOK_SECRET'] !== undefined ? { telegramWebhookSecret: process.env['TELEGRAM_WEBHOOK_SECRET'] } : {}),
   },
 );
-const ingestionService = new DataIngestionService(providerRegistry, costRepository);
   const ingestionWorker = process.env['INGESTION_WORKER_ENABLED'] === 'true'
     ? new CloudIngestionWorkerService(
-      new PrismaCloudIngestionJobRepository(prisma, new CredentialCipher()),
-      [
-        new AwsSdkIngestionProvider(),
-        new OciSdkIngestionProvider(),
-      ],
+      new PrismaCloudIngestionJobRepository(prisma, credentialCipher ?? new CredentialCipher()),
+      ingestionProviders,
     )
     : null;
 
@@ -297,7 +242,7 @@ const PORT = process.env['PORT'] || 3000;
   
   app.listen(PORT, () => {
     console.log(`\n🚀 FinOps Backend API running on http://localhost:${PORT}`);
-    console.log(`   Registered providers: [${ingestionService.getRegisteredProviders().join(', ')}]`);
+    console.log('   Ingestion providers: AWS SDK + OCI SDK');
     console.log(`   Auth: POST http://localhost:${PORT}/api/v1/auth/login`);
     console.log(`   Cloud Connections: GET http://localhost:${PORT}/api/v1/cloud-connections`);
     console.log(`   Costs: GET http://localhost:${PORT}/api/v1/costs?provider=oci&startDate=...&endDate=...`);
@@ -310,10 +255,10 @@ const PORT = process.env['PORT'] || 3000;
 
     console.log(`   Ingestion worker: enabled (${workerId}, ${intervalMs}ms)`);
 
-    startCloudIngestionWorkerLoop({
-      worker: ingestionWorker,
-      workerId,
+    startNonOverlappingLoop({
+      run: () => ingestionWorker.runOnce(workerId),
       intervalMs,
+      fallbackIntervalMs: 30000,
       onError: (error: unknown) => {
         console.error('Ingestion worker iteration failed:', error);
       },
@@ -328,15 +273,12 @@ const PORT = process.env['PORT'] || 3000;
     const intervalMs = parsePositiveIntegerEnv('AGENT_LEARNING_WORKER_INTERVAL_MS', 5000);
 
     console.log(`   Agent learning worker: enabled (${workerId}, ${intervalMs}ms)`);
-    startCloudIngestionWorkerLoop({
-      worker: {
-        runOnce: async (id) => {
-          const result = await learningService.processNextQueuedRecommendationDecision(id);
-          return { processed: result !== null };
-        },
+    startNonOverlappingLoop({
+      run: async () => {
+        await learningService.processNextQueuedRecommendationDecision(workerId);
       },
-      workerId,
       intervalMs,
+      fallbackIntervalMs: 5000,
       onError: (error: unknown) => {
         console.error('Agent learning worker iteration failed:', error);
       },
@@ -358,26 +300,24 @@ const PORT = process.env['PORT'] || 3000;
 
     console.log(`   Ingestion scheduler: enabled (${intervalMs}ms)`);
 
-    startCloudIngestionSchedulerLoop({
+    startNonOverlappingLoop({
       intervalMs,
-      scheduler: {
-        runOnce: async () => {
-          const result = await runPrismaIngestionJobScheduler(prisma, {
-            apply: true,
-            schedule: {
-              now: new Date(),
-              metricWindowMinutes,
-              metricCooldownMinutes,
-              billingWindowHours,
-              billingCooldownHours,
-              maxAttempts,
-            },
-            ...(providerCode !== undefined ? { providerCode } : {}),
-            ...(connectionId !== undefined ? { connectionId } : {}),
-          });
-          console.log(`Ingestion scheduler planned ${result.plannedJobs.length} job(s), created ${result.createdJobs.length}.`);
-          return result;
-        },
+      fallbackIntervalMs: 300000,
+      run: async () => {
+        const result = await runPrismaIngestionJobScheduler(prisma, {
+          apply: true,
+          schedule: {
+            now: new Date(),
+            metricWindowMinutes,
+            metricCooldownMinutes,
+            billingWindowHours,
+            billingCooldownHours,
+            maxAttempts,
+          },
+          ...(providerCode !== undefined ? { providerCode } : {}),
+          ...(connectionId !== undefined ? { connectionId } : {}),
+        });
+        console.log(`Ingestion scheduler planned ${result.plannedJobs.length} job(s), created ${result.createdJobs.length}.`);
       },
       onError: (error: unknown) => {
         console.error('Ingestion scheduler iteration failed:', error);

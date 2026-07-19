@@ -4,6 +4,7 @@ import type {
   NormalizedFocusCostLineItem,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import type { Prisma } from '../../generated/prisma/client.js';
+import { CostBillingSource } from '../../generated/prisma/client.js';
 
 export function getFocusCloudAccountExternalId(
   job: CloudIngestionJobContext,
@@ -50,7 +51,9 @@ export function buildFocusCostMetricRows(input: {
     return {
       tenantId: row.tenantId,
       cloudAccountId,
+      cloudConnectionId: row.cloudConnectionId,
       provider: row.provider,
+      billingSource: CostBillingSource.FOCUS,
       ...(row.billingAccountId !== undefined ? { billingAccountId: row.billingAccountId } : {}),
       ...(billingAccountName !== undefined ? { billingAccountName } : {}),
       ...(row.subAccountId !== undefined ? { subAccountId: row.subAccountId } : {}),

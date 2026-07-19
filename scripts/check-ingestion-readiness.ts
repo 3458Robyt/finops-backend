@@ -74,13 +74,17 @@ async function main(): Promise<void> {
 function buildGlobalIssues(): readonly IngestionReadinessIssue[] {
   const issues: IngestionReadinessIssue[] = [];
   if (!isConfigured(process.env['DATABASE_URL'])) {
-    issues.push({ provider: 'global', severity: 'BLOCKER', message: 'DATABASE_URL is not configured.' });
+    issues.push({ provider: 'global', severity: 'BLOCKER', capability: 'CONNECTION', message: 'DATABASE_URL is not configured.', affectedData: ['Persistencia FinOps'], action: 'Configura DATABASE_URL y vuelve a ejecutar el diagnóstico.', actionCode: 'CREATE_CONNECTION' });
   }
   if (!isValidCredentialEncryptionKey(process.env['CREDENTIAL_ENCRYPTION_KEY'])) {
     issues.push({
       provider: 'global',
       severity: 'BLOCKER',
+      capability: 'CREDENTIALS',
       message: 'CREDENTIAL_ENCRYPTION_KEY is missing or is not a 32-byte base64 key.',
+      affectedData: ['Credenciales cloud'],
+      action: 'Configura una clave base64 de 32 bytes antes de gestionar credenciales.',
+      actionCode: 'CONFIGURE_CREDENTIALS',
     });
   }
 

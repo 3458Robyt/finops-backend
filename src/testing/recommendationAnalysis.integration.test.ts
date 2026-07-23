@@ -118,6 +118,30 @@ describe('recommendation analysis PostgreSQL integration', () => {
         trigger: 'RETRY',
         retriedFromRunId: second.run.id,
       });
+      await repository.cancelPending(tenantB.id, retried.id);
+
+      const stale = await repository.queue({
+        tenantId: tenantA.id,
+        requestedByUserId: user.id,
+        trigger: 'MANUAL',
+        scope: 'RESOURCE',
+        externalResourceId: 'resource-from-stopped-worker',
+      });
+      await prisma.recommendationAnalysisRun.update({
+        where: { id: stale.run.id },
+        data: {
+          status: 'RUNNING',
+          stage: 'AI_GENERATION',
+          workerId: 'worker-stopped',
+          lockedAt: new Date('2026-01-01T00:00:00.000Z'),
+          startedAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+      });
+      expect(await repository.claimNext('worker-restarted', new Date())).toMatchObject({
+        id: stale.run.id,
+        status: 'RUNNING',
+        workerId: 'worker-restarted',
+      });
 
       const connection = await prisma.cloudConnection.findFirstOrThrow({
         where: { tenantId: tenantA.id },

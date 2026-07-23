@@ -1,6 +1,10 @@
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { CreateRecommendationInput } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
+import type { AiAuditReport } from '../../../domain/models/RecommendationExecutionPlan.js';
+import type { RecommendationEvidenceSnapshot } from './RecommendationEvidenceSnapshot.js';
+import type { RecommendationReadinessReport } from './RecommendationReadinessGate.js';
+import type { DeterministicTrendAnalysis } from './DeterministicTrendAnalysis.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -59,6 +63,21 @@ export interface GenerateAiRecommendationsInput {
   readonly persist?: boolean;
   /** Limita la generación a un recurso que exista en el snapshot factual del tenant. */
   readonly externalResourceId?: string;
+  /** Corrida durable que origina las recomendaciones; solo para orquestación interna. */
+  readonly analysisRunId?: string;
+  /** Preparación factual ya calculada para garantizar que generador y auditor usen el mismo snapshot. */
+  readonly prepared?: PreparedRecommendationAnalysis;
+  readonly onStage?: (stage: 'AI_GENERATION' | 'AI_AUDIT' | 'PERSISTENCE') => Promise<void> | void;
+}
+
+export interface PreparedRecommendationAnalysis {
+  readonly snapshot: CostAnalyticsSnapshot;
+  readonly readinessReport: RecommendationReadinessReport;
+  readonly technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot;
+  readonly evidenceHash: string;
+  readonly deterministicAnalysis: DeterministicTrendAnalysis;
+  readonly model: string;
+  readonly auditorModel: string;
 }
 
 /**
@@ -70,6 +89,17 @@ export interface GenerateAiRecommendationsResponse {
   readonly snapshot: CostAnalyticsSnapshot;
   /** Indica si las recomendaciones fueron persistidas (true) o son solo preview (false). */
   readonly persisted: boolean;
+  readonly analysis: {
+    readonly readinessReport: RecommendationReadinessReport;
+    readonly technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot;
+    readonly evidenceHash: string;
+    readonly auditReport?: AiAuditReport;
+    readonly generatedCount: number;
+    readonly promptTokenEstimate: number;
+    readonly responseTokenEstimate: number;
+    readonly model: string;
+    readonly auditorModel: string;
+  };
 }
 
 /**

@@ -3,7 +3,10 @@
  *
  * - `SAVINGS_REMINDER`: Recordatorio sobre ahorros potenciales o no aprovechados.
  */
-export type InAppNotificationType = 'SAVINGS_REMINDER' | 'BUDGET_ALERT';
+export type InAppNotificationType =
+  | 'SAVINGS_REMINDER'
+  | 'BUDGET_ALERT'
+  | 'RECOMMENDATION_ANALYSIS_COMPLETED';
 
 /**
  * Estado de lectura/gestión de una notificación interna.

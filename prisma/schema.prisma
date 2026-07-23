@@ -187,6 +187,46 @@ enum CostAnomalyStatus {
 enum InAppNotificationType {
   SAVINGS_REMINDER
   BUDGET_ALERT
+  RECOMMENDATION_ANALYSIS_COMPLETED
+}
+
+enum RecommendationAnalysisRunStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  PARTIAL
+  SKIPPED
+  FAILED
+  CANCELLED
+}
+
+enum RecommendationAnalysisRunStage {
+  QUEUED
+  SELECTING_DATA
+  DETERMINISTIC_ANALYSIS
+  EVIDENCE_GATE
+  AI_GENERATION
+  AI_AUDIT
+  PERSISTENCE
+  NOTIFICATION
+  FINISHED
+}
+
+enum RecommendationAnalysisTrigger {
+  MANUAL
+  SCHEDULED
+  POST_INGESTION
+  RETRY
+}
+
+enum RecommendationAnalysisScope {
+  TENANT
+  RESOURCE
+}
+
+enum RecommendationAnalysisRecommendationDisposition {
+  CREATED
+  REUSED
 }
 
 enum BudgetScope {
@@ -334,6 +374,7 @@ model Tenant {
   budgets                  Budget[]
   budgetAlerts             BudgetAlert[]
   costAllocationRules      CostAllocationRule[]
+  recommendationAnalysisRuns RecommendationAnalysisRun[]
 
   @@index([operatorOrganizationId, status])
   @@map("tenants")
@@ -375,6 +416,7 @@ model User {
   outboundMessageDeliveries         OutboundMessageDelivery[]
   createdBudgets                    Budget[]                 @relation("BudgetCreatedBy")
   createdCostAllocationRules        CostAllocationRule[]     @relation("CostAllocationRuleCreatedBy")
+  requestedRecommendationAnalysisRuns RecommendationAnalysisRun[] @relation("RecommendationAnalysisRunRequestedBy")
 
   @@index([operatorOrganizationId, role])
   @@index([tenantId, role])
@@ -863,12 +905,81 @@ model Recommendation {
   manualExecutions         RecommendationManualExecution[]
   inAppNotifications       InAppNotification[]
   outboundMessageDeliveries OutboundMessageDelivery[]
+  analysisRunLinks         RecommendationAnalysisRunRecommendation[]
 
   @@index([tenantId, status, createdAt])
   @@index([cloudAccountId, severity])
   @@index([sourceChargePeriodStart, sourceMetricIdentityHash])
   @@unique([tenantId, deduplicationKey])
   @@map("recommendations")
+}
+
+model RecommendationAnalysisRun {
+  id                       String                                    @id @default(cuid())
+  tenantId                 String                                    @map("tenant_id")
+  requestedByUserId        String?                                   @map("requested_by_user_id")
+  retriedFromRunId         String?                                   @map("retried_from_run_id")
+  trigger                  RecommendationAnalysisTrigger             @default(MANUAL)
+  scope                    RecommendationAnalysisScope               @default(TENANT)
+  scopeKey                 String                                    @map("scope_key")
+  externalResourceId       String?                                   @map("external_resource_id")
+  status                   RecommendationAnalysisRunStatus           @default(PENDING)
+  stage                    RecommendationAnalysisRunStage            @default(QUEUED)
+  periodStart              DateTime?                                 @map("period_start") @db.Timestamptz(6)
+  periodEnd                DateTime?                                 @map("period_end") @db.Timestamptz(6)
+  evidenceHash             String?                                   @map("evidence_hash")
+  snapshot                 Json?
+  evidenceSnapshot         Json?                                     @map("evidence_snapshot")
+  readinessReport          Json?                                     @map("readiness_report")
+  candidateResults         Json?                                     @map("candidate_results")
+  attempts                 Int                                       @default(0)
+  maxAttempts              Int                                       @default(2) @map("max_attempts")
+  resourcesEvaluated       Int                                       @default(0) @map("resources_evaluated")
+  candidatesFound          Int                                       @default(0) @map("candidates_found")
+  candidatesSkipped        Int                                       @default(0) @map("candidates_skipped")
+  recommendationsGenerated Int                                       @default(0) @map("recommendations_generated")
+  recommendationsRejected  Int                                       @default(0) @map("recommendations_rejected")
+  recommendationsPersisted Int                                       @default(0) @map("recommendations_persisted")
+  model                    String?
+  auditorModel             String?                                   @map("auditor_model")
+  promptTokenEstimate      Int                                       @default(0) @map("prompt_token_estimate")
+  responseTokenEstimate    Int                                       @default(0) @map("response_token_estimate")
+  latencyMs                Int?                                      @map("latency_ms")
+  workerId                 String?                                   @map("worker_id")
+  lockedAt                 DateTime?                                 @map("locked_at") @db.Timestamptz(6)
+  nextAttemptAt            DateTime?                                 @map("next_attempt_at") @db.Timestamptz(6)
+  errorCode                String?                                   @map("error_code")
+  errorMessage             String?                                   @map("error_message") @db.Text
+  startedAt                DateTime?                                 @map("started_at") @db.Timestamptz(6)
+  completedAt              DateTime?                                 @map("completed_at") @db.Timestamptz(6)
+  createdAt                DateTime                                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime                                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant                   Tenant                                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requestedBy              User?                                     @relation("RecommendationAnalysisRunRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
+  retriedFrom              RecommendationAnalysisRun?                @relation("RecommendationAnalysisRunRetry", fields: [retriedFromRunId], references: [id], onDelete: SetNull)
+  retries                  RecommendationAnalysisRun[]               @relation("RecommendationAnalysisRunRetry")
+  recommendationLinks      RecommendationAnalysisRunRecommendation[]
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, status, nextAttemptAt])
+  @@index([tenantId, scopeKey, evidenceHash])
+  @@index([status, nextAttemptAt, createdAt])
+  @@index([requestedByUserId, createdAt])
+  @@map("recommendation_analysis_runs")
+}
+
+model RecommendationAnalysisRunRecommendation {
+  runId            String                                          @map("run_id")
+  recommendationId String                                          @map("recommendation_id")
+  candidateId      String?                                         @map("candidate_id")
+  disposition      RecommendationAnalysisRecommendationDisposition
+  createdAt        DateTime                                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  run              RecommendationAnalysisRun                       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  recommendation   Recommendation                                  @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+
+  @@id([runId, recommendationId])
+  @@index([recommendationId, createdAt])
+  @@map("recommendation_analysis_run_recommendations")
 }
 
 model InAppNotification {

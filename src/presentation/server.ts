@@ -9,6 +9,7 @@ import type { CostAllocationService } from '../application/services/CostAllocati
 import type { CloudConnectionService } from '../application/services/CloudConnectionService.js';
 import type { CostAnalyticsService } from '../application/services/CostAnalyticsService.js';
 import type { FinOpsAiService } from '../application/services/FinOpsAiService.js';
+import type { RecommendationAnalysisService } from '../application/services/RecommendationAnalysisService.js';
 import type { AgentInstructionService } from '../application/services/AgentInstructionService.js';
 import type { ContextSummaryBuilderService } from '../application/services/ContextSummaryBuilderService.js';
 import type { OutboundMessageService } from '../application/services/OutboundMessageService.js';
@@ -35,6 +36,7 @@ import { MasterAdminController } from './controllers/MasterAdminController.js';
 import { NotificationController } from './controllers/NotificationController.js';
 import { OutboundMessageController } from './controllers/OutboundMessageController.js';
 import { RecommendationController } from './controllers/RecommendationController.js';
+import { RecommendationAnalysisController } from './controllers/RecommendationAnalysisController.js';
 import { TechnicalMetricsController } from './controllers/TechnicalMetricsController.js';
 import { TelegramController } from './controllers/TelegramController.js';
 import { createAuthMiddleware, requireRole } from './middleware/authMiddleware.js';
@@ -76,6 +78,7 @@ interface ServerDependencies {
   readonly analyticsService: CostAnalyticsService;
   /** Servicio de IA FinOps (chat y generación de recomendaciones). */
   readonly aiService: FinOpsAiService;
+  readonly recommendationAnalysisService: RecommendationAnalysisService;
   /** Servicio de instrucciones/perfil del agente. */
   readonly agentInstructionService: AgentInstructionService;
   /** Repositorio del contexto del agente (perfiles, reglas, trazas). */
@@ -199,6 +202,9 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   });
 
   const aiController = new AiController(dependencies.aiService, dependencies.learningService);
+  const recommendationAnalysisController = new RecommendationAnalysisController(
+    dependencies.recommendationAnalysisService,
+  );
   const budgetController = new BudgetController(dependencies.budgetService);
   const costAllocationController = new CostAllocationController(dependencies.costAllocationService);
   const agentController = new AgentController(
@@ -245,7 +251,10 @@ const telegramController = new TelegramController(
   app.use('/api/v1/telegram/webhook', telegramWebhookLimiter);
 
   app.use('/api/v1/agent', createAgentRoutes(agentController, requireAuth));
-  app.use('/api/v1/ai', createAiRoutes(aiController, requireAuth));
+  app.use(
+    '/api/v1/ai',
+    createAiRoutes(aiController, recommendationAnalysisController, requireAuth, requireCloudManager),
+  );
   app.use('/api/v1/analytics', createAnalyticsRoutes(analyticsController, requireAuth));
   app.use('/api/v1/budgets', createBudgetRoutes(budgetController, requireAuth));
   app.use('/api/v1/cost-allocation', createCostAllocationRoutes(costAllocationController, requireAuth));

@@ -31,6 +31,7 @@ import { ContextSummaryBuilderService } from './application/services/ContextSumm
 import { CostAnalyticsService } from './application/services/CostAnalyticsService.js';
 import { EmailClient } from './application/services/EmailClient.js';
 import { FinOpsAiService } from './application/services/FinOpsAiService.js';
+import { RecommendationAnalysisService } from './application/services/RecommendationAnalysisService.js';
 import { MasterAdminService } from './application/services/MasterAdminService.js';
 import { OutboundMessageScheduler } from './application/services/OutboundMessageScheduler.js';
 import { OutboundMessageService } from './application/services/OutboundMessageService.js';
@@ -60,6 +61,8 @@ import { PrismaMasterAdminRepository } from './infrastructure/repositories/Prism
 import { PrismaNotificationRepository } from './infrastructure/repositories/PrismaNotificationRepository.js';
 import { PrismaOutboundMessageRepository } from './infrastructure/repositories/PrismaOutboundMessageRepository.js';
 import { PrismaRecommendationRepository } from './infrastructure/repositories/PrismaRecommendationRepository.js';
+import { PrismaRecommendationAnalysisRunRepository } from './infrastructure/repositories/PrismaRecommendationAnalysisRunRepository.js';
+import { queueRecommendationAnalysisAfterIngestion } from './infrastructure/repositories/PrismaRecommendationAnalysisScheduler.js';
 import { PrismaResourceMetricRepository } from './infrastructure/repositories/PrismaResourceMetricRepository.js';
 import { PrismaTelegramRepository } from './infrastructure/repositories/PrismaTelegramRepository.js';
 import { PrismaUserRepository } from './infrastructure/repositories/PrismaUserRepository.js';
@@ -112,6 +115,7 @@ async function bootstrap(): Promise<void> {
   const budgetRepository = new PrismaBudgetRepository(prisma);
   const costAllocationRepository = new PrismaCostAllocationRepository(prisma);
   const recommendationRepository = new PrismaRecommendationRepository(prisma);
+  const recommendationAnalysisRepository = new PrismaRecommendationAnalysisRunRepository(prisma);
 const resourceMetricRepository = new PrismaResourceMetricRepository(prisma);
 const notificationRepository = new PrismaNotificationRepository(prisma);
 const outboundMessageRepository = new PrismaOutboundMessageRepository(prisma);
@@ -155,6 +159,11 @@ contextEngineService,
 aiObservabilityService,
 technicalRecommendationEvidenceService,
 );
+  const recommendationAnalysisService = new RecommendationAnalysisService(
+    recommendationAnalysisRepository,
+    aiService,
+    notificationRepository,
+  );
 const telegramEnabled = process.env['TELEGRAM_ENABLED'] === 'true';
 const telegramClient = new TelegramClient(process.env['TELEGRAM_BOT_TOKEN'], telegramEnabled);
 const telegramMessageFormatter = new TelegramMessageFormatter();
@@ -201,6 +210,7 @@ const app = createExpressServer({
     budgetService,
     costAllocationService,
     aiService,
+    recommendationAnalysisService,
     agentInstructionService,
     agentContextRepository,
     contextSummaryBuilderService,
@@ -284,6 +294,59 @@ const PORT = process.env['PORT'] || 3000;
       },
       onSkip: () => {
         console.warn('Agent learning worker iteration skipped because previous run is still active');
+      },
+    });
+  }
+
+  if (process.env['RECOMMENDATION_ANALYSIS_WORKER_ENABLED'] !== 'false') {
+    const workerId = process.env['RECOMMENDATION_ANALYSIS_WORKER_ID']
+      ?? `finops-analysis-${process.pid}`;
+    const intervalMs = parsePositiveIntegerEnv('RECOMMENDATION_ANALYSIS_WORKER_INTERVAL_MS', 5000);
+    const staleAfterMs = parsePositiveIntegerEnv(
+      'RECOMMENDATION_ANALYSIS_WORKER_STALE_AFTER_MS',
+      30 * 60 * 1000,
+    );
+
+    console.log(`   Recommendation analysis worker: enabled (${workerId}, ${intervalMs}ms)`);
+    startNonOverlappingLoop({
+      run: async () => {
+        await recommendationAnalysisService.processNext(workerId, staleAfterMs);
+      },
+      intervalMs,
+      fallbackIntervalMs: 5000,
+      onError: (error: unknown) => {
+        console.error('Recommendation analysis worker iteration failed:', error);
+      },
+      onSkip: () => {
+        console.warn('Recommendation analysis iteration skipped because previous run is still active');
+      },
+    });
+  }
+
+  if (process.env['RECOMMENDATION_ANALYSIS_SCHEDULER_ENABLED'] === 'true') {
+    const intervalMs = parsePositiveIntegerEnv(
+      'RECOMMENDATION_ANALYSIS_SCHEDULER_INTERVAL_MS',
+      300_000,
+    );
+    const cooldownMinutes = parsePositiveIntegerEnv(
+      'RECOMMENDATION_ANALYSIS_SCHEDULER_COOLDOWN_MINUTES',
+      30,
+    );
+
+    console.log(`   Recommendation analysis scheduler: enabled (${intervalMs}ms)`);
+    startNonOverlappingLoop({
+      run: async () => {
+        const queued = await queueRecommendationAnalysisAfterIngestion(
+          prisma,
+          recommendationAnalysisRepository,
+          cooldownMinutes,
+        );
+        if (queued > 0) console.log(`Queued ${queued} post-ingestion analysis run(s).`);
+      },
+      intervalMs,
+      fallbackIntervalMs: 300_000,
+      onError: (error: unknown) => {
+        console.error('Recommendation analysis scheduler iteration failed:', error);
       },
     });
   }

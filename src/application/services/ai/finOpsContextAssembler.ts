@@ -59,6 +59,11 @@ export interface AssembledRecommendationContext {
   readonly technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot;
 }
 
+export interface PreparedRecommendationEvidence {
+  readonly readinessReport: RecommendationReadinessReport;
+  readonly technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot;
+}
+
 /** Contexto y prompt ensamblados para un plan de ejecución. */
 export interface AssembledPlanContext {
   readonly builtContext: BuiltAiContext | undefined;
@@ -117,14 +122,16 @@ private readonly technicalEvidenceProvider?: TechnicalRecommendationEvidenceProv
     readonly snapshot: CostAnalyticsSnapshot;
     /** Recurso exacto para un análisis aislado; no mezcla contexto de otros recursos. */
     readonly externalResourceId?: string;
+    readonly technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot;
 }): Promise<AssembledRecommendationContext> {
     const scoped = input.externalResourceId !== undefined;
     const learningContext = await this.getRecommendationLearningContext(input.tenantId, input.snapshot);
-    const technicalEvidenceSnapshot = await this.getRecommendationTechnicalEvidenceSnapshot(
-      input.tenantId,
-      input.snapshot,
-      input.externalResourceId,
-    );
+    const technicalEvidenceSnapshot = input.technicalEvidenceSnapshot
+      ?? await this.getRecommendationTechnicalEvidenceSnapshot(
+        input.tenantId,
+        input.snapshot,
+        input.externalResourceId,
+      );
     const technicalEvidence = technicalEvidenceSnapshot === undefined
       ? undefined
       : formatRecommendationEvidenceSnapshot(technicalEvidenceSnapshot);
@@ -238,6 +245,27 @@ tenantId,
 queryText: buildSnapshotQueryText(snapshot, true),
 limit: 5,
 });
+}
+
+public async prepareRecommendationEvidence(input: {
+  readonly tenantId: string;
+  readonly snapshot: CostAnalyticsSnapshot;
+  readonly externalResourceId?: string;
+}): Promise<PreparedRecommendationEvidence> {
+  const technicalEvidenceSnapshot = await this.getRecommendationTechnicalEvidenceSnapshot(
+    input.tenantId,
+    input.snapshot,
+    input.externalResourceId,
+  );
+  const readinessReport = buildRecommendationReadinessReport({
+    snapshot: input.snapshot,
+    ...(technicalEvidenceSnapshot !== undefined ? { technicalEvidenceSnapshot } : {}),
+  });
+
+  return {
+    readinessReport,
+    ...(technicalEvidenceSnapshot !== undefined ? { technicalEvidenceSnapshot } : {}),
+  };
 }
 
 private async getRecommendationTechnicalEvidenceSnapshot(

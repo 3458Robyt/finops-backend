@@ -4,6 +4,7 @@ import type { IAiGateway, AiGatewayRequest } from '../../domain/interfaces/IAiGa
 import type {
   CostAnalyticsSnapshot,
   ICostAnalyticsRepository,
+  MonthlyCostPoint,
   MonthlyUsagePoint,
 } from '../../domain/interfaces/ICostAnalyticsRepository.js';
 import type {
@@ -101,6 +102,10 @@ class FakeCostAnalyticsRepository implements ICostAnalyticsRepository {
   }
 
   public async getMonthlyUsageSeries(): Promise<MonthlyUsagePoint[]> {
+    return [];
+  }
+
+  public async getMonthlyCostSeries(): Promise<MonthlyCostPoint[]> {
     return [];
   }
 }

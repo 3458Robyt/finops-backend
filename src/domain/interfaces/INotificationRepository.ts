@@ -43,6 +43,8 @@ export interface CreateInAppNotificationInput {
   readonly periodEnd?: Date;
   /** Fecha para la que se generó la notificación; opcional. */
   readonly generatedForDate?: Date;
+  /** Llave opcional de idempotencia para eventos que no deben repetirse. */
+  readonly dedupeKey?: string;
   /** Metadatos adicionales arbitrarios; opcional. */
   readonly metadata?: unknown;
 }

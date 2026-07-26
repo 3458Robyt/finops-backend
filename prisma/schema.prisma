@@ -1018,6 +1018,7 @@ model InAppNotification {
   periodStart              DateTime?               @map("period_start") @db.Timestamptz(6)
   periodEnd                DateTime?               @map("period_end") @db.Timestamptz(6)
   generatedForDate         DateTime?               @map("generated_for_date") @db.Date
+  dedupeKey                String?                 @map("dedupe_key") @db.VarChar(160)
   metadata                 Json?
   createdAt                DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1026,6 +1027,7 @@ model InAppNotification {
   recommendation           Recommendation?         @relation(fields: [recommendationId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, userId, recommendationId, type, generatedForDate])
+  @@unique([tenantId, userId, dedupeKey])
   @@index([tenantId, userId, status, createdAt])
   @@index([recommendationId, createdAt])
   @@map("in_app_notifications")
@@ -1235,6 +1237,7 @@ model RecommendationManualExecution {
   savingsMeasurements    RecommendationSavingsMeasurement[]
 
   @@index([tenantId, status, createdAt])
+  @@index([tenantId, status, executedAt], map: "recommendation_manual_executions_tenant_id_status_executed_at_i")
   @@index([recommendationId, createdAt])
   @@index([executionPlanId, createdAt])
   @@index([userId, createdAt])
@@ -1305,7 +1308,8 @@ model RecommendationSavingsMeasurement {
   @@unique([manualExecutionId, evidenceHash])
   @@index([tenantId, recommendationId, createdAt])
   @@index([tenantId, status, createdAt])
-  @@index([tenantId, manualExecutionId])
+  @@index([tenantId, manualExecutionId], map: "recommendation_savings_measurements_tenant_id_manual_execut_idx")
+  @@index([tenantId, manualExecutionId, status, createdAt], map: "recommendation_savings_measurements_tenant_id_manual_execution_")
   @@map("recommendation_savings_measurements")
 }
 

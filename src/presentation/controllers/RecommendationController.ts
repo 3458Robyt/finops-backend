@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import type { FinOpsAiService } from '../../application/services/FinOpsAiService.js';
 import type { IAgentLearningService } from '../../domain/interfaces/IAgentLearningService.js';
 import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
+import type { ValueRealizationService } from '../../application/services/ValueRealizationService.js';
 import type { CreateSavingsMeasurementInput } from '../../domain/interfaces/IRecommendationRepository.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import {
@@ -54,6 +55,7 @@ export class RecommendationController {
     private readonly recommendationRepository: IRecommendationRepository,
     private readonly aiService?: FinOpsAiService,
     private readonly learningService?: IAgentLearningService,
+    private readonly valueRealizationService?: ValueRealizationService,
   ) {}
 
   /**
@@ -242,6 +244,9 @@ export class RecommendationController {
         ...(windowDays !== undefined ? { windowDays } : {}),
       };
       const measurement = await this.recommendationRepository.createSavingsMeasurement(input);
+      void this.valueRealizationService?.notifyMeasurement(measurement).catch((error: unknown) => {
+        console.error('Savings measurement notification failed:', error);
+      });
       res.status(201).json({ success: true, measurement });
     } catch (error: unknown) {
       respondWithRecommendationError(res, error, 'No fue posible calcular la medición de ahorro');
@@ -298,6 +303,9 @@ export class RecommendationController {
         userId: auth.userId,
         ...(note !== undefined ? { note } : {}),
       });
+      void this.valueRealizationService?.notifyMeasurement(measurement).catch((error: unknown) => {
+        console.error('Verified savings notification failed:', error);
+      });
       res.status(200).json({ success: true, measurement });
     } catch (error: unknown) {
       respondWithRecommendationError(res, error, 'No fue posible verificar la medición de ahorro');
@@ -322,6 +330,9 @@ export class RecommendationController {
         measurementId,
         userId: auth.userId,
         reason,
+      });
+      void this.valueRealizationService?.notifyMeasurement(measurement).catch((error: unknown) => {
+        console.error('Rejected savings notification failed:', error);
       });
       res.status(200).json({ success: true, measurement });
     } catch (error: unknown) {

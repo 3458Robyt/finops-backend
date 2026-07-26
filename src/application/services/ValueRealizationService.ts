@@ -11,6 +11,7 @@ import type {
 
 export interface ValueRealizationReconciliationResult {
   readonly tenantId: string;
+  readonly durationMs: number;
   readonly attempted: number;
   readonly created: number;
   readonly unchanged: number;
@@ -45,12 +46,17 @@ export class ValueRealizationService {
     return this.repository.listItemsForExport({ ...filters, pageSize: Math.min(filters.pageSize ?? 10_000, 10_000) });
   }
 
+  public async notifyMeasurement(measurement: RecommendationSavingsMeasurement): Promise<void> {
+    await this.createNotifications(measurement.tenantId, [measurement]);
+  }
+
   /**
    * Reconciliación acotada e idempotente: la unicidad de evidenceHash del
    * repositorio de mediciones evita crear filas duplicadas. No hay una cola
    * paralela ni un segundo libro contable.
    */
   public async reconcile(tenantId: string, limit = 50): Promise<ValueRealizationReconciliationResult> {
+    const startedAt = Date.now();
     const candidates = await this.repository.listReconciliationCandidates({ tenantId, limit });
     let created = 0;
     let unchanged = 0;
@@ -91,14 +97,54 @@ export class ValueRealizationService {
     }
 
     if (changed.length > 0) await this.createNotifications(tenantId, changed);
-    return { tenantId, attempted: candidates.length, created, unchanged, waitingForData, calculated, insufficientEvidence, failures };
+    return { tenantId, durationMs: Date.now() - startedAt, attempted: candidates.length, created, unchanged, waitingForData, calculated, insufficientEvidence, failures };
   }
 
   private async createNotifications(tenantId: string, measurements: readonly RecommendationSavingsMeasurement[]): Promise<void> {
     const users = await this.outboundRepository.findTenantUsers(tenantId);
     const generatedForDate = startOfUtcDay(new Date());
     for (const measurement of measurements) {
-      if (this.onMeasurementChanged !== undefined) {
+      let createdAny = false;
+      for (const user of users.filter((item) => item.status === 'ACTIVE')) {
+        try {
+          await this.notificationRepository.create({
+            tenantId,
+            userId: user.id,
+            recommendationId: measurement.recommendationId,
+            type: 'SAVINGS_REMINDER',
+            title: notificationTitle(measurement.status),
+            message: notificationMessage(measurement),
+            ...(measurement.projectedMonthlySavings !== undefined
+              ? { estimatedMonthlySavings: measurement.projectedMonthlySavings }
+              : {}),
+            currency: measurement.currency,
+            periodStart: measurement.observationStart,
+            periodEnd: measurement.observationEnd,
+            generatedForDate,
+            dedupeKey: `VALUE_REALIZATION:${measurement.id}:${measurement.status}`,
+            metadata: {
+              source: 'value_realization_reconciliation',
+              measurementId: measurement.id,
+              measurementStatus: measurement.status,
+            },
+          });
+          createdAny = true;
+        } catch (error) {
+          // La restricción diaria y dedupe hacen la operación idempotente.
+          // Un fallo de notificación nunca debe revertir una medición guardada.
+          if (!isUniqueViolation(error)) {
+            console.error(JSON.stringify({
+              level: 'warn',
+              event: 'value_realization_in_app_notification_failed',
+              tenantId,
+              userId: user.id,
+              measurementId: measurement.id,
+              error: error instanceof Error ? error.message : String(error),
+            }));
+          }
+        }
+      }
+      if (createdAny && this.onMeasurementChanged !== undefined) {
         void this.onMeasurementChanged(measurement).catch((error: unknown) => {
           console.error(JSON.stringify({
             level: 'warn',
@@ -109,37 +155,24 @@ export class ValueRealizationService {
           }));
         });
       }
-      for (const user of users.filter((item) => item.status === 'ACTIVE')) {
-        try {
-          await this.notificationRepository.create({
-            tenantId,
-            userId: user.id,
-            recommendationId: measurement.recommendationId,
-            type: 'SAVINGS_REMINDER',
-            title: measurement.status === 'CALCULATED' ? 'Ahorro listo para revisión' : 'Medición de ahorro actualizada',
-            message: measurement.status === 'CALCULATED'
-              ? `La medición determinística de ahorro ya está disponible para revisión (${measurement.currency}).`
-              : `La medición posterior a la ejecución fue actualizada (${measurement.status.toLowerCase()}).`,
-            ...(measurement.projectedMonthlySavings !== undefined
-              ? { estimatedMonthlySavings: measurement.projectedMonthlySavings }
-              : {}),
-            currency: measurement.currency,
-            periodStart: measurement.observationStart,
-            periodEnd: measurement.observationEnd,
-            generatedForDate,
-            metadata: {
-              source: 'value_realization_reconciliation',
-              measurementId: measurement.id,
-              measurementStatus: measurement.status,
-            },
-          });
-        } catch (error) {
-          // La restricción diaria existente hace la operación idempotente.
-          if (!isUniqueViolation(error)) throw error;
-        }
-      }
     }
   }
+}
+
+function notificationTitle(status: RecommendationSavingsMeasurement['status']): string {
+  if (status === 'CALCULATED') return 'Ahorro listo para revisión';
+  if (status === 'VERIFIED') return 'Ahorro verificado';
+  if (status === 'INSUFFICIENT_EVIDENCE') return 'Evidencia insuficiente';
+  if (status === 'WAITING_FOR_DATA') return 'Medición esperando datos';
+  return 'Medición de ahorro actualizada';
+}
+
+function notificationMessage(measurement: RecommendationSavingsMeasurement): string {
+  if (measurement.status === 'VERIFIED') return `Una persona autorizada verificó el ahorro calculado (${measurement.currency}).`;
+  if (measurement.status === 'CALCULATED') return `La medición determinística de ahorro ya está disponible para revisión (${measurement.currency}).`;
+  if (measurement.status === 'INSUFFICIENT_EVIDENCE') return `La ventana terminó, pero la evidencia disponible no es suficiente para verificar el resultado (${measurement.currency}).`;
+  if (measurement.status === 'WAITING_FOR_DATA') return `La medición posterior a la ejecución sigue esperando datos (${measurement.currency}).`;
+  return `La medición posterior a la ejecución fue actualizada (${measurement.status.toLowerCase()}).`;
 }
 
 function startOfUtcDay(date: Date): Date {

@@ -50,6 +50,8 @@ export interface InAppNotification {
   readonly periodEnd?: Date;
   /** Fecha para la que se generó la notificación (e.g., día de cálculo). */
   readonly generatedForDate?: Date;
+  /** Llave estable de deduplicación del evento, si aplica. */
+  readonly dedupeKey?: string;
   /** Metadatos adicionales de la notificación (estructura libre). */
   readonly metadata?: unknown;
   /** `true` si la notificación se ha persistido en almacenamiento. */

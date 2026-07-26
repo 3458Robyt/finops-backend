@@ -157,14 +157,13 @@ export class PrismaValueRealizationRepository implements IValueRealizationReposi
   }): Promise<readonly ValueRealizationReconciliationCandidate[]> {
     const limit = Math.min(Math.max(input.limit, 1), 250);
     const rows = await this.prisma.$queryRaw<Array<ValueRealizationRow>>(Prisma.sql`
-      WITH latest_executions AS (
+      WITH eligible_executions AS (
         SELECT
           me.id,
           me.tenant_id,
           me.recommendation_id,
           me.user_id,
-          me.executed_at,
-          ROW_NUMBER() OVER (PARTITION BY me.recommendation_id ORDER BY me.created_at DESC, me.id DESC) AS rn
+          me.executed_at
         FROM recommendation_manual_executions me
         WHERE me.tenant_id = ${input.tenantId}
           AND me.status IN ('EXECUTED', 'PARTIAL')
@@ -177,7 +176,7 @@ export class PrismaValueRealizationRepository implements IValueRealizationReposi
       SELECT le.tenant_id, le.recommendation_id, le.id AS manual_execution_id,
              le.user_id AS requested_by_user_id, le.executed_at,
              latest_measurement.id AS latest_measurement_id
-      FROM latest_executions le
+      FROM eligible_executions le
       LEFT JOIN verified_executions ve ON ve.manual_execution_id = le.id
       LEFT JOIN LATERAL (
         SELECT m.id
@@ -187,8 +186,9 @@ export class PrismaValueRealizationRepository implements IValueRealizationReposi
                  m.created_at DESC, m.id DESC
         LIMIT 1
       ) latest_measurement ON TRUE
-      WHERE le.rn = 1 AND ve.manual_execution_id IS NULL
-      ORDER BY le.executed_at ASC, le.id ASC
+      WHERE ve.manual_execution_id IS NULL
+      ORDER BY (le.executed_at + INTERVAL '30 days' <= CURRENT_TIMESTAMP) DESC,
+               le.executed_at ASC, le.id ASC
       LIMIT ${limit}
     `);
     return rows.map((row) => {

@@ -374,6 +374,34 @@ const PORT = process.env['PORT'] || 3000;
     });
   }
 
+  if (process.env['SAVINGS_RECONCILIATION_ENABLED'] === 'true') {
+    const reconciliationTenantId = process.env['SAVINGS_RECONCILIATION_TENANT_ID']?.trim();
+    const batchSize = parsePositiveIntegerEnv('SAVINGS_RECONCILIATION_BATCH_SIZE', 50);
+    const runReconciliation = async (): Promise<void> => {
+      if (reconciliationTenantId === undefined || reconciliationTenantId === '') {
+        console.warn('Savings reconciliation enabled but SAVINGS_RECONCILIATION_TENANT_ID is not configured');
+        return;
+      }
+      const result = await valueRealizationService.reconcile(reconciliationTenantId, batchSize);
+      console.log(JSON.stringify({ level: 'info', event: 'value_realization_reconciliation_completed', ...result }));
+    };
+
+    if (process.env['SAVINGS_RECONCILIATION_RUN_ON_START'] === 'true') {
+      void runReconciliation().catch((error: unknown) => console.error('Initial value realization reconciliation failed:', error));
+    }
+    if (process.env['SAVINGS_RECONCILIATION_SCHEDULER_ENABLED'] === 'true') {
+      const intervalMs = parsePositiveIntegerEnv('SAVINGS_RECONCILIATION_INTERVAL_MS', 300_000);
+      console.log(`   Value realization reconciliation scheduler: enabled (${intervalMs}ms)`);
+      startNonOverlappingLoop({
+        run: runReconciliation,
+        intervalMs,
+        fallbackIntervalMs: 300_000,
+        onError: (error: unknown) => console.error('Value realization reconciliation iteration failed:', error),
+        onSkip: () => console.warn('Value realization reconciliation skipped because previous run is still active'),
+      });
+    }
+  }
+
   if (process.env['INGESTION_SCHEDULER_ENABLED'] === 'true') {
     const intervalMs = parsePositiveIntegerEnv('INGESTION_SCHEDULER_INTERVAL_MS', 300000);
     const metricWindowMinutes = parsePositiveIntegerEnv('INGESTION_SCHEDULER_METRIC_WINDOW_MINUTES', 30);

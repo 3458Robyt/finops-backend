@@ -169,8 +169,8 @@ export class OutboundMessageService {
     const links = await this.telegramRepository.findLinksByTenant(tenantId);
     const activeLinksByUserId = new Map(links.filter((link) => link.status === 'ACTIVE').map((link) => [link.userId, link]));
     const text = input.status === 'CALCULATED'
-      ? `La medición determinística de ahorro ya está disponible para revisión. Moneda: ${input.currency}. Periodo observado: ${input.observationStart.toISOString().slice(0, 10)} a ${input.observationEnd.toISOString().slice(0, 10)}.`
-      : `La medición posterior a la ejecución fue actualizada. Estado: ${input.status.toLowerCase()}. Moneda: ${input.currency}.`;
+      ? `La medición determinística de ahorro ya está disponible para revisión. Recomendación: ${input.recommendationId}. Moneda: ${input.currency}. Periodo observado: ${input.observationStart.toISOString().slice(0, 10)} a ${input.observationEnd.toISOString().slice(0, 10)}.`
+      : `La medición posterior a la ejecución fue actualizada. Recomendación: ${input.recommendationId}. Estado: ${input.status.toLowerCase()}. Moneda: ${input.currency}.`;
     for (const user of users.filter((item) => item.status === 'ACTIVE')) {
       const link = activeLinksByUserId.get(user.id);
       if (link !== undefined) await this.sendTelegram({ tenantId, userId: user.id, chatId: link.chatId, text, messageType: 'SAVINGS_REMINDER' });

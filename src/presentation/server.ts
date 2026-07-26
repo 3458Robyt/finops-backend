@@ -229,6 +229,7 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
     dependencies.recommendationRepository,
     dependencies.aiService,
     dependencies.learningService,
+    dependencies.valueRealizationService,
   );
 const kpiController = new KpiController(dependencies.recommendationRepository);
 const notificationController = new NotificationController(dependencies.savingsReminderService);

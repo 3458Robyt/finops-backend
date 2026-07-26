@@ -13,6 +13,20 @@ describe('value realization PostgreSQL integration', () => {
       const otherTenantId = fixtures.tenants[1]!.id;
       const repository = new PrismaValueRealizationRepository(prisma);
       const fixtureRecommendation = await prisma.recommendation.findUniqueOrThrow({ where: { id: fixtures.recommendationIds[0]! } });
+      const fixtureUser = await prisma.user.findUniqueOrThrow({ where: { email: fixtures.admin.email } });
+      const fixturePlan = await prisma.recommendationExecutionPlan.findFirstOrThrow({ where: { recommendationId: fixtureRecommendation.id } });
+
+      await prisma.recommendationManualExecution.createMany({
+        data: [45, 5].map((daysAgo) => ({
+          tenantId,
+          recommendationId: fixtureRecommendation.id,
+          executionPlanId: fixturePlan.id,
+          userId: fixtureUser.id,
+          status: 'EXECUTED' as const,
+          executedAt: new Date(Date.now() - daysAgo * 86_400_000),
+          currency: 'USD',
+        })),
+      });
 
       const summary = await repository.getSummary({ tenantId });
       const firstPage = await repository.listItems({ tenantId, pageSize: 1 });
@@ -23,7 +37,11 @@ describe('value realization PostgreSQL integration', () => {
       expect(firstPage.items).toHaveLength(1);
       expect(firstPage.items[0]?.cloudAccountId).toBe(fixtureRecommendation.cloudAccountId);
       expect(exported).toHaveLength(1);
-      expect(otherSummary.counts.identified).toBe(0);
+      expect(otherSummary.counts.identified).toBe(1);
+      expect((await repository.listItems({ tenantId: otherTenantId })).items[0]?.recommendationId).not.toBe(fixtureRecommendation.id);
+
+      const candidates = await repository.listReconciliationCandidates({ tenantId, limit: 10 });
+      expect(candidates).toHaveLength(2);
     } finally {
       await cleanupE2eFixtures(prisma, runId);
       await prisma.$disconnect();

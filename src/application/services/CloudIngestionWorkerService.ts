@@ -14,12 +14,15 @@ export interface CloudIngestionWorkerRunResult {
 
 export class CloudIngestionWorkerService {
   private readonly providers: ReadonlyMap<string, CloudIngestionProvider>;
+  private readonly onSuccessfulIngestion: ((input: { readonly tenantId: string; readonly jobId: string; readonly providerCode: string }) => Promise<void>) | undefined;
 
   constructor(
     private readonly jobs: PrismaCloudIngestionJobRepository,
     providers: readonly CloudIngestionProvider[],
+    onSuccessfulIngestion?: (input: { readonly tenantId: string; readonly jobId: string; readonly providerCode: string }) => Promise<void>,
   ) {
     this.providers = new Map(providers.map((provider) => [provider.providerCode, provider]));
+    this.onSuccessfulIngestion = onSuccessfulIngestion;
   }
 
   public async runOnce(workerId: string): Promise<CloudIngestionWorkerRunResult> {
@@ -62,6 +65,21 @@ export class CloudIngestionWorkerService {
         };
       }
       const summary = await this.jobs.completeJob(job, result, startedAt, workerId);
+      if (this.onSuccessfulIngestion !== undefined) {
+        void this.onSuccessfulIngestion({
+          tenantId: job.tenantId,
+          jobId: job.id,
+          providerCode: job.connection.providerCode,
+        }).catch((error: unknown) => {
+          console.error(JSON.stringify({
+            level: 'warn',
+            event: 'post_ingestion_value_reconciliation_failed',
+            jobId: job.id,
+            tenantId: job.tenantId,
+            error: error instanceof Error ? error.message : String(error),
+          }));
+        });
+      }
 
       return {
         processed: true,

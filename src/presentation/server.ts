@@ -23,6 +23,7 @@ import type { IAgentLearningService } from '../domain/interfaces/IAgentLearningS
 import type { ICostRepository } from '../domain/interfaces/ICostRepository.js';
 import type { IRecommendationRepository } from '../domain/interfaces/IRecommendationRepository.js';
 import type { ITokenService } from '../domain/interfaces/ITokenService.js';
+import type { ValueRealizationService } from '../application/services/ValueRealizationService.js';
 import { AgentController } from './controllers/AgentController.js';
 import { BudgetController } from './controllers/BudgetController.js';
 import { CostAllocationController } from './controllers/CostAllocationController.js';
@@ -39,6 +40,7 @@ import { RecommendationController } from './controllers/RecommendationController
 import { RecommendationAnalysisController } from './controllers/RecommendationAnalysisController.js';
 import { TechnicalMetricsController } from './controllers/TechnicalMetricsController.js';
 import { TelegramController } from './controllers/TelegramController.js';
+import { ValueRealizationController } from './controllers/ValueRealizationController.js';
 import { createAuthMiddleware, requireRole } from './middleware/authMiddleware.js';
 import { createAgentRoutes } from './routes/agentRoutes.js';
 import { createBudgetRoutes } from './routes/budgetRoutes.js';
@@ -56,6 +58,7 @@ import { createOutboundMessageRoutes } from './routes/outboundMessageRoutes.js';
 import { createRecommendationRoutes } from './routes/recommendationRoutes.js';
 import { createTechnicalMetricsRoutes } from './routes/technicalMetricsRoutes.js';
 import { createTelegramRoutes } from './routes/telegramRoutes.js';
+import { createValueRealizationRoutes } from './routes/valueRealizationRoutes.js';
 
 /**
  * Dependencias inyectadas en el servidor Express.
@@ -106,6 +109,7 @@ interface ServerDependencies {
   readonly recommendationRepository: IRecommendationRepository;
   /** Servicio de tokens usado por el middleware de autenticación. */
   readonly tokenService: ITokenService;
+  readonly valueRealizationService: ValueRealizationService;
 }
 
 /**
@@ -236,8 +240,15 @@ const telegramController = new TelegramController(
     dependencies.telegramEnabled,
   );
   const masterAdminController = new MasterAdminController(dependencies.masterAdminService);
+  const valueRealizationController = new ValueRealizationController(dependencies.valueRealizationService);
   const requireAuth = createAuthMiddleware(dependencies.tokenService);
   const requireCloudManager = requireRole([
+    'ADMIN',
+    'MASTER_ADMIN',
+    'OPERATOR_ADMIN',
+    'FINOPS_TECHNICIAN',
+  ]);
+  const requireValueRealizationReconcile = requireRole([
     'ADMIN',
     'MASTER_ADMIN',
     'OPERATOR_ADMIN',
@@ -269,6 +280,7 @@ app.use('/api/v1/notifications', createNotificationRoutes(notificationController
 app.use('/api/v1/outbound-messages', createOutboundMessageRoutes(outboundMessageController, requireAuth));
 app.use('/api/v1/recommendations', createRecommendationRoutes(recommendationController, requireAuth));
   app.use('/api/v1/telegram', createTelegramRoutes(telegramController, requireAuth));
+  app.use('/api/v1/value-realization', createValueRealizationRoutes(valueRealizationController, requireAuth, requireValueRealizationReconcile));
 
   app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });

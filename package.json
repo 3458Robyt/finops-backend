@@ -19,6 +19,7 @@
     "test:ai:offline": "vitest run src/application/services/ai/evaluation",
     "test:ai:live": "tsx scripts/testing/ai-live-audit.ts",
     "test:perf:technical-metrics": "tsx scripts/testing/technical-metrics-perf.ts",
+    "test:perf:value-realization": "tsx scripts/testing/value-realization-perf.ts",
     "test:canary:oci-onboarding": "tsx scripts/testing/oci-onboarding-canary.ts",
     "test:fixtures:create": "tsx scripts/testing/create-e2e-fixtures.ts",
     "test:fixtures:cleanup": "tsx scripts/testing/cleanup-e2e-fixtures.ts",

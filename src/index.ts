@@ -38,6 +38,7 @@ import { OutboundMessageService } from './application/services/OutboundMessageSe
 import { SavingsReminderService } from './application/services/SavingsReminderService.js';
 import { TechnicalMetricsService } from './application/services/TechnicalMetricsService.js';
 import { TechnicalRecommendationEvidenceService } from './application/services/ai/TechnicalRecommendationEvidenceService.js';
+import { ValueRealizationService } from './application/services/ValueRealizationService.js';
 import { TelegramBotService } from './application/services/TelegramBotService.js';
 import { TelegramClient } from './application/services/TelegramClient.js';
 import { TelegramLinkService } from './application/services/TelegramLinkService.js';
@@ -66,6 +67,7 @@ import { queueRecommendationAnalysisAfterIngestion } from './infrastructure/repo
 import { PrismaResourceMetricRepository } from './infrastructure/repositories/PrismaResourceMetricRepository.js';
 import { PrismaTelegramRepository } from './infrastructure/repositories/PrismaTelegramRepository.js';
 import { PrismaUserRepository } from './infrastructure/repositories/PrismaUserRepository.js';
+import { PrismaValueRealizationRepository } from './infrastructure/repositories/PrismaValueRealizationRepository.js';
 import { validateRuntimeConfig } from './infrastructure/config/runtimeConfig.js';
 import { Argon2PasswordHasher } from './infrastructure/security/Argon2PasswordHasher.js';
 import { CredentialCipher } from './infrastructure/security/CredentialCipher.js';
@@ -115,6 +117,7 @@ async function bootstrap(): Promise<void> {
   const budgetRepository = new PrismaBudgetRepository(prisma);
   const costAllocationRepository = new PrismaCostAllocationRepository(prisma);
   const recommendationRepository = new PrismaRecommendationRepository(prisma);
+  const valueRealizationRepository = new PrismaValueRealizationRepository(prisma);
   const recommendationAnalysisRepository = new PrismaRecommendationAnalysisRunRepository(prisma);
 const resourceMetricRepository = new PrismaResourceMetricRepository(prisma);
 const notificationRepository = new PrismaNotificationRepository(prisma);
@@ -179,7 +182,7 @@ const telegramBotService = new TelegramBotService(
   costAnalyticsRepository,
   process.env['TELEGRAM_BOT_USERNAME'],
 );
-const outboundMessageService = new OutboundMessageService(
+  const outboundMessageService = new OutboundMessageService(
   outboundMessageRepository,
   telegramRepository,
   telegramClient,
@@ -191,11 +194,30 @@ const outboundMessageService = new OutboundMessageService(
     ...(process.env['TELEGRAM_BOT_USERNAME'] !== undefined ? { telegramBotUsername: process.env['TELEGRAM_BOT_USERNAME'] } : {}),
     ...(process.env['TELEGRAM_WEBHOOK_SECRET'] !== undefined ? { telegramWebhookSecret: process.env['TELEGRAM_WEBHOOK_SECRET'] } : {}),
   },
-);
+  );
+  const valueRealizationService = new ValueRealizationService(
+    valueRealizationRepository,
+    recommendationRepository,
+    notificationRepository,
+    outboundMessageRepository,
+    process.env['VALUE_REALIZATION_OUTBOUND_ENABLED'] === 'true'
+      ? (measurement) => outboundMessageService.sendValueRealizationUpdate(measurement.tenantId, {
+        recommendationId: measurement.recommendationId,
+        measurementId: measurement.id,
+        status: measurement.status,
+        currency: measurement.currency,
+        observationStart: measurement.observationStart,
+        observationEnd: measurement.observationEnd,
+      })
+      : undefined,
+  );
   const ingestionWorker = process.env['INGESTION_WORKER_ENABLED'] === 'true'
     ? new CloudIngestionWorkerService(
       new PrismaCloudIngestionJobRepository(prisma, credentialCipher ?? new CredentialCipher()),
       ingestionProviders,
+      process.env['SAVINGS_RECONCILIATION_ENABLED'] === 'true'
+        ? ({ tenantId }) => valueRealizationService.reconcile(tenantId, parsePositiveIntegerEnv('SAVINGS_RECONCILIATION_BATCH_SIZE', 50)).then(() => undefined)
+        : undefined,
     )
     : null;
 
@@ -226,8 +248,9 @@ const app = createExpressServer({
     learningService,
     costRepository,
   recommendationRepository,
-  tokenService,
-});
+    tokenService,
+    valueRealizationService,
+  });
 
 if (process.env['MESSAGE_SCHEDULER_ENABLED'] === 'true') {
   const schedulerTenantId = process.env['MESSAGE_SCHEDULER_TENANT_ID'];

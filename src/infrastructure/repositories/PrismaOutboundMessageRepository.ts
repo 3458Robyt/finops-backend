@@ -42,7 +42,12 @@ export class PrismaOutboundMessageRepository implements IOutboundMessageReposito
 
   public async findTenantUsers(tenantId: string): Promise<readonly { readonly id: string; readonly email: string; readonly name: string; readonly status: 'ACTIVE' | 'DISABLED' }[]> {
     return this.prisma.user.findMany({
-      where: { tenantId },
+      where: {
+        OR: [
+          { tenantId },
+          { tenantAccessAssignments: { some: { tenantId, disabledAt: null } } },
+        ],
+      },
       select: {
         id: true,
         email: true,

@@ -158,6 +158,23 @@ enum AgentLearningStatus {
   ERROR
 }
 
+enum SavingsMeasurementStatus {
+  WAITING_FOR_DATA
+  READY
+  CALCULATED
+  INSUFFICIENT_EVIDENCE
+  VERIFIED
+  REJECTED
+  FAILED
+}
+
+enum SavingsMeasurementScope {
+  RESOURCE
+  SERVICE
+  ACCOUNT
+  UNKNOWN
+}
+
 enum AgentMemoryScope {
   LOCAL
   GLOBAL
@@ -369,6 +386,7 @@ model Tenant {
   costAnomalies            CostAnomaly[]
   costForecasts            CostForecast[]
   manualExecutions         RecommendationManualExecution[]
+  savingsMeasurements      RecommendationSavingsMeasurement[]
   inAppNotifications       InAppNotification[]
   outboundMessageDeliveries OutboundMessageDelivery[]
   budgets                  Budget[]
@@ -397,6 +415,8 @@ model User {
   decisions                  RecommendationDecision[]
   executionPlans             RecommendationExecutionPlan[]
   manualExecutions           RecommendationManualExecution[]
+  requestedSavingsMeasurements RecommendationSavingsMeasurement[] @relation("SavingsMeasurementRequestedBy")
+  verifiedSavingsMeasurements  RecommendationSavingsMeasurement[] @relation("SavingsMeasurementVerifiedBy")
   auditEvents                AuditEvent[]
   operatorOrganization       OperatorOrganization?         @relation(fields: [operatorOrganizationId], references: [id], onDelete: SetNull)
   tenantAccessAssignments    TenantAccessAssignment[]
@@ -903,6 +923,7 @@ model Recommendation {
   executionPlans           RecommendationExecutionPlan[]
   learningEvents           AgentLearningEvent[]
   manualExecutions         RecommendationManualExecution[]
+  savingsMeasurements      RecommendationSavingsMeasurement[]
   inAppNotifications       InAppNotification[]
   outboundMessageDeliveries OutboundMessageDelivery[]
   analysisRunLinks         RecommendationAnalysisRunRecommendation[]
@@ -1025,6 +1046,7 @@ model RecommendationExecutionPlan {
   generatedBy       User                     @relation(fields: [generatedByUserId], references: [id], onDelete: Restrict)
   decisions         RecommendationDecision[]
   manualExecutions  RecommendationManualExecution[]
+  savingsMeasurements RecommendationSavingsMeasurement[]
 
   @@index([recommendationId, createdAt])
   @@index([generatedByUserId, createdAt])
@@ -1210,12 +1232,81 @@ model RecommendationManualExecution {
   recommendation         Recommendation               @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
   executionPlan          RecommendationExecutionPlan? @relation(fields: [executionPlanId], references: [id], onDelete: SetNull)
   user                   User                         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  savingsMeasurements    RecommendationSavingsMeasurement[]
 
   @@index([tenantId, status, createdAt])
   @@index([recommendationId, createdAt])
   @@index([executionPlanId, createdAt])
   @@index([userId, createdAt])
   @@map("recommendation_manual_executions")
+}
+
+model RecommendationSavingsMeasurement {
+  id                        String                    @id @default(cuid())
+  tenantId                  String                    @map("tenant_id")
+  recommendationId          String                    @map("recommendation_id")
+  manualExecutionId         String                    @map("manual_execution_id")
+  executionPlanId           String?                   @map("execution_plan_id")
+  requestedByUserId         String                    @map("requested_by_user_id")
+  verifiedByUserId          String?                   @map("verified_by_user_id")
+  status                    SavingsMeasurementStatus @default(WAITING_FOR_DATA)
+  scope                     SavingsMeasurementScope
+  provider                  CloudProvider
+  cloudAccountId            String                    @map("cloud_account_id")
+  resourceId                String?                   @map("resource_id")
+  serviceName               String?                   @map("service_name")
+  executedAt                DateTime                  @map("executed_at") @db.Timestamptz(6)
+  baselineStart             DateTime                  @map("baseline_start") @db.Timestamptz(6)
+  baselineEnd               DateTime                  @map("baseline_end") @db.Timestamptz(6)
+  observationStart          DateTime                  @map("observation_start") @db.Timestamptz(6)
+  observationEnd            DateTime                  @map("observation_end") @db.Timestamptz(6)
+  windowDays                Int                       @map("window_days")
+  baselineCoveredDays       Int                       @default(0) @map("baseline_covered_days")
+  observationCoveredDays    Int                       @default(0) @map("observation_covered_days")
+  coverageRatio             Decimal                   @default(0) @map("coverage_ratio") @db.Decimal(8, 6)
+  billingSource             CostBillingSource         @map("billing_source")
+  costBasis                 String?                   @map("cost_basis") @db.VarChar(16)
+  currency                  String                    @db.VarChar(3)
+  baselineCost              Decimal?                  @map("baseline_cost") @db.Decimal(18, 6)
+  observationCost           Decimal?                  @map("observation_cost") @db.Decimal(18, 6)
+  baselineDailyCost         Decimal?                  @map("baseline_daily_cost") @db.Decimal(18, 6)
+  observationDailyCost      Decimal?                  @map("observation_daily_cost") @db.Decimal(18, 6)
+  observedSavings           Decimal?                  @map("observed_savings") @db.Decimal(18, 6)
+  projectedMonthlySavings   Decimal?                  @map("projected_monthly_savings") @db.Decimal(18, 6)
+  costIncreaseMonthlyAmount Decimal?                  @map("cost_increase_monthly_amount") @db.Decimal(18, 6)
+  baselineQuantity          Decimal?                  @map("baseline_quantity") @db.Decimal(24, 9)
+  observationQuantity       Decimal?                  @map("observation_quantity") @db.Decimal(24, 9)
+  baselineUnitCost           Decimal?                  @map("baseline_unit_cost") @db.Decimal(18, 9)
+  observationUnitCost        Decimal?                  @map("observation_unit_cost") @db.Decimal(18, 9)
+  quantityChangeRatio        Decimal?                  @map("quantity_change_ratio") @db.Decimal(8, 6)
+  consumedUnit              String?                   @map("consumed_unit")
+  calculationMethod          String                    @default("COST_DELTA") @map("calculation_method") @db.VarChar(24)
+  confidence                Decimal?                  @db.Decimal(5, 4)
+  confidenceLevel           String?                   @map("confidence_level") @db.VarChar(16)
+  technicalValidationStatus String                    @default("NOT_EVALUATED") @map("technical_validation_status") @db.VarChar(24)
+  reasons                   Json?
+  formula                   Json?
+  evidence                  Json?
+  evidenceHash              String                    @map("evidence_hash")
+  calculationVersion        String                    @map("calculation_version") @db.VarChar(32)
+  verificationNote          String?                   @map("verification_note") @db.Text
+  rejectionReason           String?                   @map("rejection_reason") @db.Text
+  calculatedAt              DateTime?                 @map("calculated_at") @db.Timestamptz(6)
+  verifiedAt                DateTime?                 @map("verified_at") @db.Timestamptz(6)
+  createdAt                 DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant                    Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  recommendation            Recommendation            @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  manualExecution           RecommendationManualExecution @relation(fields: [manualExecutionId], references: [id], onDelete: Cascade)
+  executionPlan             RecommendationExecutionPlan? @relation(fields: [executionPlanId], references: [id], onDelete: SetNull)
+  requestedBy               User                      @relation("SavingsMeasurementRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  verifiedBy                User?                     @relation("SavingsMeasurementVerifiedBy", fields: [verifiedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([manualExecutionId, evidenceHash])
+  @@index([tenantId, recommendationId, createdAt])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, manualExecutionId])
+  @@map("recommendation_savings_measurements")
 }
 
 model AgentLearningEvent {

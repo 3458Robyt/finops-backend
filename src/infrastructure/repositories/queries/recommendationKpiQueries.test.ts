@@ -38,6 +38,9 @@ interface StatusCountRow {
 function createPrismaStub(input: {
   readonly estimatedSum?: number | null;
   readonly observedSum?: number | null;
+  readonly calculatedSum?: number | null;
+  readonly verifiedSum?: number | null;
+  readonly costIncreaseSum?: number | null;
   readonly executedGroups?: number;
   readonly pendingRecs?: readonly SavingsRecRow[];
   readonly statusCounts?: readonly StatusCountRow[];
@@ -51,6 +54,17 @@ function createPrismaStub(input: {
     recommendationManualExecution: {
       aggregate: async () => ({ _sum: { observedMonthlySavings: input.observedSum ?? null } }),
       groupBy: async () => Array.from({ length: input.executedGroups ?? 0 }, (_unused, index) => ({ recommendationId: `rec-${index}` })),
+    },
+    recommendationSavingsMeasurement: {
+      aggregate: async (args: { readonly where?: { readonly status?: string | { readonly in: readonly string[] }; readonly costIncreaseMonthlyAmount?: unknown } }) => {
+        const status = args.where?.status;
+        if (status === 'VERIFIED') return { _sum: { projectedMonthlySavings: input.verifiedSum ?? null } };
+        if (args.where?.costIncreaseMonthlyAmount !== undefined) return { _sum: { costIncreaseMonthlyAmount: input.costIncreaseSum ?? null } };
+        if (typeof status === 'object' && 'in' in status && status.in.includes('CALCULATED')) {
+          return { _sum: { projectedMonthlySavings: input.calculatedSum ?? null } };
+        }
+        return { _sum: { costIncreaseMonthlyAmount: input.costIncreaseSum ?? null } };
+      },
     },
   };
 
@@ -123,6 +137,9 @@ describe('computeSavingsKpis', () => {
     const prisma = createPrismaStub({
       estimatedSum: 1000,
       observedSum: 250,
+      calculatedSum: 125,
+      verifiedSum: 100,
+      costIncreaseSum: 10,
       executedGroups: 2,
       pendingRecs: [],
     });
@@ -130,8 +147,11 @@ describe('computeSavingsKpis', () => {
     const kpis = await computeSavingsKpis(prisma, 'tenant-1');
 
     expect(kpis.estimatedMonthlySavings).toBe(1000);
-    expect(kpis.observedMonthlySavings).toBe(250);
-    expect(kpis.confirmedMonthlySavings).toBe(250);
+    expect(kpis.observedMonthlySavings).toBe(125);
+    expect(kpis.userReportedMonthlySavings).toBe(250);
+    expect(kpis.verifiedMonthlySavings).toBe(100);
+    expect(kpis.costIncreaseMonthlyAmount).toBe(10);
+    expect(kpis.confirmedMonthlySavings).toBe(100);
     expect(kpis.currency).toBe('USD');
     // executedRecommendations = numero de grupos del groupBy de ejecuciones.
     expect(kpis.executedRecommendations).toBe(2);

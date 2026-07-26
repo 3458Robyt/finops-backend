@@ -54,7 +54,8 @@ export async function handleCreateManualExecution(
     const executionPlanId = parseString(readBodyValue(req.body, 'executionPlanId'));
     const status = parseManualExecutionStatus(readBodyValue(req.body, 'status'));
     const executedAt = parseDate(readBodyValue(req.body, 'executedAt'));
-    const observedMonthlySavings = parseNumber(readBodyValue(req.body, 'observedMonthlySavings'));
+    const reportedMonthlySavings = parseNumber(readBodyValue(req.body, 'reportedMonthlySavings'));
+    const legacyObservedMonthlySavings = parseNumber(readBodyValue(req.body, 'observedMonthlySavings'));
     const currency = parseString(readBodyValue(req.body, 'currency')) ?? 'USD';
     const notes = parseString(readBodyValue(req.body, 'notes'));
     const evidence = readBodyValue(req.body, 'evidence');
@@ -62,16 +63,30 @@ export async function handleCreateManualExecution(
     if (recommendationId === undefined || status === undefined) {
       res.status(400).json({
         success: false,
-        error: 'Recommendation id and status are required',
+        error: 'El id de la recomendación y el estado son obligatorios',
         code: 'VALIDATION_ERROR',
       });
       return;
     }
 
-    if (observedMonthlySavings !== undefined && observedMonthlySavings < 0) {
+    if (
+      reportedMonthlySavings !== undefined &&
+      legacyObservedMonthlySavings !== undefined &&
+      reportedMonthlySavings !== legacyObservedMonthlySavings
+    ) {
       res.status(400).json({
         success: false,
-        error: 'Observed monthly savings cannot be negative',
+        error: 'reportedMonthlySavings y observedMonthlySavings deben coincidir cuando se envían ambos',
+        code: 'VALIDATION_ERROR',
+      });
+      return;
+    }
+
+    const userReportedSavings = reportedMonthlySavings ?? legacyObservedMonthlySavings;
+    if (userReportedSavings !== undefined && userReportedSavings < 0) {
+      res.status(400).json({
+        success: false,
+        error: 'El ahorro mensual reportado no puede ser negativo',
         code: 'VALIDATION_ERROR',
       });
       return;
@@ -84,7 +99,7 @@ export async function handleCreateManualExecution(
       userId: auth.userId,
       status,
       ...(executedAt !== undefined ? { executedAt } : {}),
-      ...(observedMonthlySavings !== undefined ? { observedMonthlySavings } : {}),
+      ...(userReportedSavings !== undefined ? { reportedMonthlySavings: userReportedSavings } : {}),
       currency,
       ...(notes !== undefined ? { notes } : {}),
       ...(evidence !== undefined ? { evidence } : {}),

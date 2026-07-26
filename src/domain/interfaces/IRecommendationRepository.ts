@@ -107,7 +107,9 @@ export interface RecommendationManualExecution {
   readonly status: ManualExecutionStatus;
   /** Instante en que se ejecutó; opcional mientras está planificada. */
   readonly executedAt?: Date;
-  /** Ahorro mensual realmente observado tras la ejecución; opcional. */
+  /** Importe mensual reportado manualmente por el usuario; nunca es verificado. */
+  readonly reportedMonthlySavings?: number;
+  /** Alias legado de compatibilidad; no representa una medición verificada. */
   readonly observedMonthlySavings?: number;
   readonly currency: string;
   readonly notes?: string;
@@ -126,7 +128,9 @@ export interface CreateManualExecutionInput {
   readonly userId: string;
   readonly status: ManualExecutionStatus;
   readonly executedAt?: Date;
-  /** Ahorro mensual observado tras la ejecución; opcional. */
+  /** Importe mensual reportado manualmente por el usuario; opcional. */
+  readonly reportedMonthlySavings?: number;
+  /** Alias legado aceptado por clientes antiguos. */
   readonly observedMonthlySavings?: number;
   readonly currency: string;
   readonly notes?: string;
@@ -142,7 +146,7 @@ export interface CreateManualExecutionInput {
 export interface RecommendationTimelineEvent {
   readonly id: string;
   /** Tipo de hito representado en la línea de tiempo. */
-  readonly type: 'RECOMMENDATION_CREATED' | 'PLAN_GENERATED' | 'DECISION_RECORDED' | 'MANUAL_EXECUTION_RECORDED' | 'LEARNING_EVENT';
+  readonly type: 'RECOMMENDATION_CREATED' | 'PLAN_GENERATED' | 'DECISION_RECORDED' | 'MANUAL_EXECUTION_RECORDED' | 'SAVINGS_MEASUREMENT' | 'LEARNING_EVENT';
   readonly title: string;
   readonly description: string;
   readonly createdAt: Date;
@@ -157,6 +161,12 @@ export interface SavingsKpis {
   readonly estimatedMonthlySavings: number;
   /** Ahorro mensual observado agregado tras ejecuciones. */
   readonly observedMonthlySavings: number;
+  /** Importe que el usuario declaró al registrar una ejecución. */
+  readonly userReportedMonthlySavings: number;
+  /** Ahorro calculado determinísticamente, positivo o cero. */
+  readonly verifiedMonthlySavings: number;
+  /** Incremento mensual calculado cuando el costo posterior aumentó. */
+  readonly costIncreaseMonthlyAmount: number;
   /** Ahorro mensual confirmado agregado. */
   readonly confirmedMonthlySavings: number;
   /** Ahorro perdido agregado por recomendaciones no ejecutadas a tiempo. */
@@ -176,6 +186,112 @@ export interface SavingsKpis {
     readonly createdAt: Date;
     readonly status: FinOpsRecommendation['status'];
   };
+}
+
+export type SavingsMeasurementStatus =
+  | 'WAITING_FOR_DATA'
+  | 'READY'
+  | 'CALCULATED'
+  | 'INSUFFICIENT_EVIDENCE'
+  | 'VERIFIED'
+  | 'REJECTED'
+  | 'FAILED';
+
+export type SavingsMeasurementScope = 'RESOURCE' | 'SERVICE' | 'ACCOUNT' | 'UNKNOWN';
+
+export interface RecommendationSavingsMeasurement {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly recommendationId: string;
+  readonly manualExecutionId: string;
+  readonly executionPlanId?: string;
+  readonly requestedByUserId: string;
+  readonly verifiedByUserId?: string;
+  readonly status: SavingsMeasurementStatus;
+  readonly scope: SavingsMeasurementScope;
+  readonly provider: string;
+  readonly cloudAccountId: string;
+  readonly resourceId?: string;
+  readonly serviceName?: string;
+  readonly executedAt: Date;
+  readonly baselineStart: Date;
+  readonly baselineEnd: Date;
+  readonly observationStart: Date;
+  readonly observationEnd: Date;
+  readonly windowDays: number;
+  readonly baselineCoveredDays: number;
+  readonly observationCoveredDays: number;
+  readonly coverageRatio: number;
+  readonly billingSource: string;
+  readonly costBasis?: 'EFFECTIVE' | 'BILLED';
+  readonly currency: string;
+  readonly baselineCost?: number;
+  readonly observationCost?: number;
+  readonly baselineDailyCost?: number;
+  readonly observationDailyCost?: number;
+  /** Delta firmado: positivo es ahorro; negativo es incremento de costo. */
+  readonly observedSavings?: number;
+  readonly projectedMonthlySavings?: number;
+  readonly costIncreaseMonthlyAmount?: number;
+  readonly baselineQuantity?: number;
+  readonly observationQuantity?: number;
+  readonly consumedUnit?: string;
+  readonly calculationMethod: 'COST_DELTA' | 'UNIT_NORMALIZED';
+  readonly baselineUnitCost?: number;
+  readonly observationUnitCost?: number;
+  readonly quantityChangeRatio?: number;
+  readonly confidence?: number;
+  readonly confidenceLevel?: string;
+  readonly technicalValidationStatus: string;
+  readonly reasons: readonly string[];
+  readonly formula: unknown;
+  readonly evidence: unknown;
+  readonly evidenceHash: string;
+  readonly calculationVersion: string;
+  readonly verificationNote?: string;
+  readonly rejectionReason?: string;
+  readonly calculatedAt?: Date;
+  readonly verifiedAt?: Date;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+}
+
+export interface SavingsMeasurementReadiness {
+  readonly recommendationId: string;
+  readonly manualExecutionId?: string;
+  readonly status: SavingsMeasurementStatus | 'NO_EXECUTION';
+  readonly windowDays: number;
+  readonly baselineStart?: Date;
+  readonly baselineEnd?: Date;
+  readonly observationStart?: Date;
+  readonly observationEnd?: Date;
+  readonly availableThrough?: Date;
+  readonly reasons: readonly string[];
+}
+
+export interface CreateSavingsMeasurementInput {
+  readonly tenantId: string;
+  readonly recommendationId: string;
+  readonly manualExecutionId: string;
+  readonly executionPlanId?: string;
+  readonly requestedByUserId: string;
+  readonly windowDays?: number;
+}
+
+export interface VerifySavingsMeasurementInput {
+  readonly tenantId: string;
+  readonly recommendationId: string;
+  readonly measurementId: string;
+  readonly userId: string;
+  readonly note?: string;
+}
+
+export interface RejectSavingsMeasurementInput {
+  readonly tenantId: string;
+  readonly recommendationId: string;
+  readonly measurementId: string;
+  readonly userId: string;
+  readonly reason: string;
 }
 
 /**
@@ -316,4 +432,21 @@ export interface IRecommendationRepository {
    * @returns Indicadores de adopción agregados.
    */
   getAdoptionKpis(tenantId: string): Promise<AdoptionKpis>;
+
+  getSavingsMeasurementReadiness(
+    tenantId: string,
+    recommendationId: string,
+  ): Promise<SavingsMeasurementReadiness>;
+  createSavingsMeasurement(input: CreateSavingsMeasurementInput): Promise<RecommendationSavingsMeasurement>;
+  findSavingsMeasurementsByRecommendation(
+    tenantId: string,
+    recommendationId: string,
+  ): Promise<RecommendationSavingsMeasurement[]>;
+  findSavingsMeasurementById(
+    tenantId: string,
+    recommendationId: string,
+    measurementId: string,
+  ): Promise<RecommendationSavingsMeasurement | null>;
+  verifySavingsMeasurement(input: VerifySavingsMeasurementInput): Promise<RecommendationSavingsMeasurement>;
+  rejectSavingsMeasurement(input: RejectSavingsMeasurementInput): Promise<RecommendationSavingsMeasurement>;
 }

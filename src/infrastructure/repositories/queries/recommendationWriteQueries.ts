@@ -147,8 +147,8 @@ export async function createManualExecutionTx(
         userId: input.userId,
         status: input.status,
         ...(input.executedAt !== undefined ? { executedAt: input.executedAt } : {}),
-        ...(input.observedMonthlySavings !== undefined
-          ? { observedMonthlySavings: input.observedMonthlySavings }
+        ...((input.reportedMonthlySavings ?? input.observedMonthlySavings) !== undefined
+          ? { observedMonthlySavings: input.reportedMonthlySavings ?? input.observedMonthlySavings }
           : {}),
         currency: input.currency,
         ...(input.notes !== undefined ? { notes: input.notes } : {}),

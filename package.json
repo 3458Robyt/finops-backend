@@ -12,7 +12,7 @@
     "typecheck": "prisma generate && tsc --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run",
-    "test:integration": "cross-env RUN_DB_INTEGRATION_TESTS=true vitest run src/testing/e2eFixtures.test.ts src/testing/technicalMetrics.integration.test.ts",
+    "test:integration": "cross-env RUN_DB_INTEGRATION_TESTS=true vitest run src/testing/e2eFixtures.test.ts src/testing/technicalMetrics.integration.test.ts src/testing/recommendationAnalysis.integration.test.ts src/testing/verifiedSavingsMeasurement.integration.test.ts",
     "test:integration:docker": "docker compose -f docker-compose.test.yml up -d --wait && cross-env DATABASE_URL=postgresql://finops:finops@localhost:55432/finops_test prisma migrate deploy && cross-env TEST_DATABASE_URL=postgresql://finops:finops@localhost:55432/finops_test ALLOW_DESTRUCTIVE_TEST_DATABASE=true RUN_DB_INTEGRATION_TESTS=true vitest run src/testing/e2eFixtures.test.ts src/testing/**/*.integration.test.ts",
     "test:api:smoke": "tsx scripts/testing/api-smoke.ts",
     "test:api:onboarding": "tsx scripts/testing/cloud-onboarding-api-smoke.ts",

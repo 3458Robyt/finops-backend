@@ -72,6 +72,7 @@ import { validateRuntimeConfig } from './infrastructure/config/runtimeConfig.js'
 import { Argon2PasswordHasher } from './infrastructure/security/Argon2PasswordHasher.js';
 import { CredentialCipher } from './infrastructure/security/CredentialCipher.js';
 import { JwtTokenService } from './infrastructure/security/JwtTokenService.js';
+import { runWithDatabaseContext } from './infrastructure/database/tenantContext.js';
 
 /**
  * Composición Raíz (Composition Root) — Configuración y arranque de la aplicación.
@@ -359,10 +360,13 @@ const PORT = process.env['PORT'] || 3000;
     console.log(`   Recommendation analysis scheduler: enabled (${intervalMs}ms)`);
     startNonOverlappingLoop({
       run: async () => {
-        const queued = await queueRecommendationAnalysisAfterIngestion(
-          prisma,
-          recommendationAnalysisRepository,
-          cooldownMinutes,
+        const queued = await runWithDatabaseContext(
+          { workerId: 'recommendation-analysis-scheduler', role: 'MASTER_ADMIN' },
+          () => queueRecommendationAnalysisAfterIngestion(
+            prisma,
+            recommendationAnalysisRepository,
+            cooldownMinutes,
+          ),
         );
         if (queued > 0) console.log(`Queued ${queued} post-ingestion analysis run(s).`);
       },
@@ -382,7 +386,10 @@ const PORT = process.env['PORT'] || 3000;
         console.warn('Savings reconciliation enabled but SAVINGS_RECONCILIATION_TENANT_ID is not configured');
         return;
       }
-      const result = await valueRealizationService.reconcile(reconciliationTenantId, batchSize);
+      const result = await runWithDatabaseContext(
+        { tenantId: reconciliationTenantId, role: 'MASTER_ADMIN', workerId: 'value-realization-reconciliation' },
+        () => valueRealizationService.reconcile(reconciliationTenantId, batchSize),
+      );
       console.log(JSON.stringify({ level: 'info', event: 'value_realization_reconciliation_completed', ...result }));
     };
 
@@ -418,19 +425,22 @@ const PORT = process.env['PORT'] || 3000;
       intervalMs,
       fallbackIntervalMs: 300000,
       run: async () => {
-        const result = await runPrismaIngestionJobScheduler(prisma, {
-          apply: true,
-          schedule: {
-            now: new Date(),
-            metricWindowMinutes,
-            metricCooldownMinutes,
-            billingWindowHours,
-            billingCooldownHours,
-            maxAttempts,
-          },
-          ...(providerCode !== undefined ? { providerCode } : {}),
-          ...(connectionId !== undefined ? { connectionId } : {}),
-        });
+        const result = await runWithDatabaseContext(
+          { workerId: 'ingestion-scheduler', role: 'MASTER_ADMIN' },
+          () => runPrismaIngestionJobScheduler(prisma, {
+            apply: true,
+            schedule: {
+              now: new Date(),
+              metricWindowMinutes,
+              metricCooldownMinutes,
+              billingWindowHours,
+              billingCooldownHours,
+              maxAttempts,
+            },
+            ...(providerCode !== undefined ? { providerCode } : {}),
+            ...(connectionId !== undefined ? { connectionId } : {}),
+          }),
+        );
         console.log(`Ingestion scheduler planned ${result.plannedJobs.length} job(s), created ${result.createdJobs.length}.`);
       },
       onError: (error: unknown) => {

@@ -3,6 +3,7 @@ import type {
   IngestionJobExecutionSummary,
   PrismaCloudIngestionJobRepository,
 } from '../../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
+import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 
 export interface CloudIngestionWorkerRunResult {
   readonly processed: boolean;
@@ -26,8 +27,23 @@ export class CloudIngestionWorkerService {
   }
 
   public async runOnce(workerId: string): Promise<CloudIngestionWorkerRunResult> {
-    const job = await this.jobs.claimNextPendingJob(workerId);
+    return runWithDatabaseContext({ workerId, role: 'MASTER_ADMIN' }, async () => {
+      const job = await this.jobs.claimNextPendingJob(workerId);
+      if (job === null) {
+        return { processed: false };
+      }
 
+      return runWithDatabaseContext(
+        { tenantId: job.tenantId, workerId, role: 'MASTER_ADMIN' },
+        () => this.processClaimedJob(job, workerId),
+      );
+    });
+  }
+
+  private async processClaimedJob(
+    job: Awaited<ReturnType<PrismaCloudIngestionJobRepository['claimNextPendingJob']>> & object,
+    workerId: string,
+  ): Promise<CloudIngestionWorkerRunResult> {
     if (job === null) {
       return { processed: false };
     }

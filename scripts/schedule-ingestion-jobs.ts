@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
 import type { IngestionScheduleOptions } from '../src/infrastructure/ingestion/ingestionJobScheduler.js';
 import { runPrismaIngestionJobScheduler } from '../src/infrastructure/ingestion/PrismaIngestionJobScheduler.js';
+import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -11,12 +12,15 @@ async function main(): Promise<void> {
   const connectionId = args.values.get('connection-id');
   const options = buildOptions(args.values);
 
-  const result = await runPrismaIngestionJobScheduler(prisma, {
-    apply,
-    schedule: options,
-    ...(provider !== undefined ? { providerCode: provider } : {}),
-    ...(connectionId !== undefined ? { connectionId } : {}),
-  });
+  const result = await runWithDatabaseContext(
+    { workerId: 'ingestion-scheduler', role: 'MASTER_ADMIN' },
+    () => runPrismaIngestionJobScheduler(prisma, {
+      apply,
+      schedule: options,
+      ...(provider !== undefined ? { providerCode: provider } : {}),
+      ...(connectionId !== undefined ? { connectionId } : {}),
+    }),
+  );
 
   console.log(JSON.stringify({
     success: true,

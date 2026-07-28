@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import type { ITokenService } from '../../domain/interfaces/ITokenService.js';
 import type { UserRole } from '../../domain/models/AuthContext.js';
 import { AuthorizationError } from '../../domain/errors/errors.js';
+import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 
 /**
  * Crea el middleware de autenticación basado en Bearer token.
@@ -33,7 +34,12 @@ export function createAuthMiddleware(tokenService: ITokenService) {
 
     try {
       req.auth = tokenService.verifyToken(header.slice('Bearer '.length).trim());
-      next();
+      runWithDatabaseContext({
+        tenantId: req.auth.tenantId,
+        userId: req.auth.userId,
+        role: req.auth.role,
+        requestId: res.locals.requestId,
+      }, next);
     } catch {
       res.status(401).json({
         success: false,

@@ -10,6 +10,7 @@ import type { FinOpsAiService } from './FinOpsAiService.js';
 import type { PreparedRecommendationAnalysis } from './ai/finOpsAiTypes.js';
 import type { RecommendationOpportunityCandidate } from './ai/RecommendationReadinessGate.js';
 import { isRecord } from './ai/jsonReadHelpers.js';
+import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 
 const managerRoles = new Set<AuthContext['role']>([
   'MASTER_ADMIN',
@@ -114,37 +115,44 @@ export class RecommendationAnalysisService {
   }
 
   public async processNext(workerId: string, staleAfterMs = 30 * 60 * 1000): Promise<RecommendationAnalysisRun | null> {
-    const run = await this.repository.claimNext(workerId, new Date(Date.now() - staleAfterMs));
-    if (run === null) return null;
+    return runWithDatabaseContext({ workerId, role: 'MASTER_ADMIN' }, async () => {
+      const run = await this.repository.claimNext(workerId, new Date(Date.now() - staleAfterMs));
+      if (run === null) return null;
 
-    const startedAt = Date.now();
-    try {
-      return await this.processRun(run, startedAt);
-    } catch (error: unknown) {
-      if (error instanceof AiAuditRejectedError) {
-        return this.completeAuditRejection(run, error, startedAt);
-      }
-      if (error instanceof FinOpsBaseError && error.code === 'VALIDATION_ERROR') {
-        return this.repository.complete(run.id, {
-          status: 'SKIPPED',
-          recommendationsGenerated: 0,
-          recommendationsRejected: 0,
-          candidateResults: [],
-          recommendationLinks: [],
-          promptTokenEstimate: 0,
-          responseTokenEstimate: 0,
-          latencyMs: Date.now() - startedAt,
-          errorCode: 'INSUFFICIENT_EVIDENCE',
-          errorMessage: safeMessage(error),
-        });
-      }
+      return runWithDatabaseContext(
+        { tenantId: run.tenantId, workerId, role: 'MASTER_ADMIN' },
+        async () => {
+          const startedAt = Date.now();
+          try {
+            return await this.processRun(run, startedAt);
+          } catch (error: unknown) {
+            if (error instanceof AiAuditRejectedError) {
+              return this.completeAuditRejection(run, error, startedAt);
+            }
+            if (error instanceof FinOpsBaseError && error.code === 'VALIDATION_ERROR') {
+              return this.repository.complete(run.id, {
+                status: 'SKIPPED',
+                recommendationsGenerated: 0,
+                recommendationsRejected: 0,
+                candidateResults: [],
+                recommendationLinks: [],
+                promptTokenEstimate: 0,
+                responseTokenEstimate: 0,
+                latencyMs: Date.now() - startedAt,
+                errorCode: 'INSUFFICIENT_EVIDENCE',
+                errorMessage: safeMessage(error),
+              });
+            }
 
-      return this.repository.recordFailure(run.id, {
-        code: error instanceof FinOpsBaseError ? error.code : 'ANALYSIS_PROVIDER_ERROR',
-        message: safeMessage(error),
-        retryAt: new Date(Date.now() + retryDelayMs(run.attempts)),
-      });
-    }
+            return this.repository.recordFailure(run.id, {
+              code: error instanceof FinOpsBaseError ? error.code : 'ANALYSIS_PROVIDER_ERROR',
+              message: safeMessage(error),
+              retryAt: new Date(Date.now() + retryDelayMs(run.attempts)),
+            });
+          }
+        },
+      );
+    });
   }
 
   private async processRun(

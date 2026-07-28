@@ -30,6 +30,7 @@ import {
   buildGlobalMemoryInput,
   buildLocalMemoryInput,
 } from './learning/memoryInputBuilder.js';
+import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 
 /** Veredicto del auditor IA que habilita la persistencia de una memoria aprendida. */
 const approvedAuditVerdict = 'APPROVED';
@@ -195,15 +196,20 @@ export class AgentLearningService implements IAgentLearningService {
 
   /** Reclama y procesa un único evento disponible para el worker persistente. */
   public async processNextQueuedRecommendationDecision(workerId: string): Promise<RecommendationLearningResult | null> {
-    const event = await this.learningRepository.claimNextQueuedEvent({
-      workerId,
-      leaseExpiredBefore: new Date(Date.now() - learningWorkerLeaseMs),
-    });
-    if (event === null) {
-      return null;
-    }
+    return runWithDatabaseContext({ workerId, role: 'MASTER_ADMIN' }, async () => {
+      const event = await this.learningRepository.claimNextQueuedEvent({
+        workerId,
+        leaseExpiredBefore: new Date(Date.now() - learningWorkerLeaseMs),
+      });
+      if (event === null) {
+        return null;
+      }
 
-    return this.processEvent(event, workerId);
+      return runWithDatabaseContext(
+        { tenantId: event.tenantId, workerId, role: 'MASTER_ADMIN' },
+        () => this.processEvent(event, workerId),
+      );
+    });
   }
 
   private async processEvent(

@@ -8,6 +8,8 @@ const productionOnlyRequired = [
   'JWT_SECRET',
   'CREDENTIAL_ENCRYPTION_KEY',
   'CORS_ORIGIN',
+  'DB_RUNTIME_ENFORCE',
+  'DB_RUNTIME_ROLE',
 ] as const;
 
 export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): void {
@@ -29,6 +31,14 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
     const corsOrigin = env['CORS_ORIGIN'];
     if (corsOrigin !== undefined && corsOrigin.includes('*')) {
       issues.push({ key: 'CORS_ORIGIN', message: 'No debe usar comodines en produccion.' });
+    }
+
+    if (env['DB_RUNTIME_ENFORCE'] !== 'true') {
+      issues.push({ key: 'DB_RUNTIME_ENFORCE', message: 'Debe ser true en produccion.' });
+    }
+
+    if (env['DB_RUNTIME_ROLE'] !== 'finops_runtime') {
+      issues.push({ key: 'DB_RUNTIME_ROLE', message: 'Debe ser finops_runtime en produccion.' });
     }
   }
 

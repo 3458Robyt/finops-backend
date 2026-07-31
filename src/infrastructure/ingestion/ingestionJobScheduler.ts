@@ -13,6 +13,7 @@ export interface ScheduleableIngestionConnection {
   readonly id: string;
   readonly tenantId: string;
   readonly providerCode: string;
+  readonly lastValidatedAt: Date | null;
   readonly metadata: unknown;
   readonly credentials: readonly ScheduleableCredential[];
   readonly ingestionJobs: readonly ScheduleableIngestionJob[];
@@ -101,12 +102,29 @@ function evaluateSource(
   sourceType: IngestionSourceType,
   options: IngestionScheduleOptions,
 ): { readonly kind: 'job'; readonly job: PlannedIngestionJob } | { readonly kind: 'skip'; readonly reason: string } {
+  if (connection.lastValidatedAt === null) {
+    return { kind: 'skip', reason: 'La conexión debe validarse después de su última modificación.' };
+  }
+
+  const capabilities = availableCapabilities(connection.metadata);
+  if (!capabilities.has('IDENTITY')) {
+    return { kind: 'skip', reason: 'La validación vigente no confirmó la identidad del proveedor.' };
+  }
+
   if (!hasCredentialForSource(connection.credentials, sourceType)) {
     return { kind: 'skip', reason: 'No hay credencial activa con permisos esperados para esta fuente.' };
   }
 
   if (!hasMetadataForSource(providerCode, sourceType, connection.metadata)) {
     return { kind: 'skip', reason: 'No hay metadata configurada para programar esta fuente sin inventar datos.' };
+  }
+
+  const requiredCapability = requiredCapabilityForSource(providerCode, sourceType, connection.metadata);
+  if (!capabilities.has(requiredCapability)) {
+    return {
+      kind: 'skip',
+      reason: `La validación vigente no confirmó la capacidad ${requiredCapability} para esta fuente.`,
+    };
   }
 
   const runningJob = connection.ingestionJobs.find((job) => {
@@ -197,6 +215,34 @@ function hasMetadataForSource(
   }
 
   return false;
+}
+
+function requiredCapabilityForSource(
+  providerCode: 'aws' | 'oci',
+  sourceType: IngestionSourceType,
+  metadata: unknown,
+): 'METRICS' | 'STORAGE' | 'COSTS' {
+  if (sourceType === 'TECHNICAL_METRIC') return 'METRICS';
+  if (!isRecord(metadata)) return 'COSTS';
+
+  const mode = billingSourceMode(metadata);
+  if (mode === 'FOCUS') return 'STORAGE';
+  if (mode === 'PROVIDER_API') return 'COSTS';
+
+  const focusKeys = providerCode === 'aws'
+    ? ['awsFocusExportObjects', 'awsFocusExportLocations']
+    : ['ociFocusReportObjects', 'ociFocusReportLocations'];
+  return focusKeys.some((key) => hasArrayItems(metadata[key])) ? 'STORAGE' : 'COSTS';
+}
+
+function availableCapabilities(metadata: unknown): ReadonlySet<string> {
+  if (!isRecord(metadata)) return new Set();
+  const validation = metadata['capabilityValidation'];
+  if (!isRecord(validation) || !Array.isArray(validation['capabilities'])) return new Set();
+
+  return new Set(validation['capabilities']
+    .filter((item): item is Record<string, unknown> => isRecord(item) && item['status'] === 'AVAILABLE')
+    .map((item) => String(item['capability'])));
 }
 
 function billingSourceMode(metadata: Record<string, unknown>): 'AUTO' | 'FOCUS' | 'PROVIDER_API' {

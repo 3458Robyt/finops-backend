@@ -579,6 +579,7 @@ model CloudExportConfig {
   ingestionObjects  IngestionObject[]
 
   @@index([cloudConnectionId, sourceType, status])
+  @@index([storageLocationId], map: "cloud_export_configs_storage_location_id_idx")
   @@map("cloud_export_configs")
 }
 
@@ -669,6 +670,8 @@ model IngestionJob {
 
   @@index([status, sourceType, createdAt])
   @@index([tenantId, cloudConnectionId, sourceType])
+  @@index([cloudConnectionId], map: "ingestion_jobs_cloud_connection_id_idx")
+  @@index([requestedByUserId], map: "ingestion_jobs_requested_by_user_id_idx")
   @@map("ingestion_jobs")
 }
 
@@ -693,6 +696,7 @@ model IngestionObject {
 
   @@unique([cloudConnectionId, objectUri, objectEtag])
   @@index([tenantId, sourceType, status])
+  @@index([exportConfigId], map: "ingestion_objects_export_config_id_idx")
   @@map("ingestion_objects")
 }
 
@@ -822,6 +826,7 @@ model AgentInstallation {
 
   @@unique([cloudConnectionId, externalResourceId, agentType])
   @@index([tenantId, status])
+  @@index([cloudResourceId], map: "agent_installations_cloud_resource_id_idx")
   @@map("agent_installations")
 }
 
@@ -842,6 +847,7 @@ model DataQualityCheck {
 
   @@index([tenantId, sourceType, status, observedAt])
   @@index([cloudConnectionId, observedAt])
+  @@index([createdByUserId], map: "data_quality_checks_created_by_user_id_idx")
   @@map("data_quality_checks")
 }
 
@@ -897,6 +903,9 @@ model CostMetric {
   @@index([tenantId, provider, chargePeriodStart])
   @@index([tenantId, cloudConnectionId, billingSource, chargePeriodStart])
   @@index([resourceId])
+  @@index([cloudAccountId], map: "cost_metrics_cloud_account_id_idx")
+  @@index([cloudConnectionId], map: "cost_metrics_cloud_connection_id_idx")
+  @@index([ingestionRunId], map: "cost_metrics_ingestion_run_id_idx")
   @@map("cost_metrics")
 }
 
@@ -986,6 +995,7 @@ model RecommendationAnalysisRun {
   @@index([tenantId, scopeKey, evidenceHash])
   @@index([status, nextAttemptAt, createdAt])
   @@index([requestedByUserId, createdAt])
+  @@index([retriedFromRunId], map: "recommendation_analysis_runs_retried_from_run_id_idx")
   @@map("recommendation_analysis_runs")
 }
 
@@ -1030,6 +1040,7 @@ model InAppNotification {
   @@unique([tenantId, userId, dedupeKey])
   @@index([tenantId, userId, status, createdAt])
   @@index([recommendationId, createdAt])
+  @@index([userId], map: "in_app_notifications_user_id_idx")
   @@map("in_app_notifications")
 }
 
@@ -1160,6 +1171,8 @@ model Budget {
 
   @@index([tenantId, status, periodStart])
   @@index([tenantId, cloudAccountId, periodStart])
+  @@index([cloudAccountId], map: "budgets_cloud_account_id_idx")
+  @@index([createdByUserId], map: "budgets_created_by_user_id_idx")
   @@map("budgets")
 }
 
@@ -1180,6 +1193,7 @@ model BudgetAlert {
   budget           Budget           @relation(fields: [budgetId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, budgetId, periodStart])
+  @@index([budgetId], map: "budget_alerts_budget_id_idx")
   @@map("budget_alerts")
 }
 
@@ -1213,6 +1227,7 @@ model CostAllocationRule {
 
   @@index([tenantId, status, priority])
   @@index([tenantId, cloudAccountId, serviceName])
+  @@index([createdByUserId], map: "cost_allocation_rules_created_by_user_id_idx")
   @@map("cost_allocation_rules")
 }
 
@@ -1310,6 +1325,10 @@ model RecommendationSavingsMeasurement {
   @@index([tenantId, status, createdAt])
   @@index([tenantId, manualExecutionId], map: "recommendation_savings_measurements_tenant_id_manual_execut_idx")
   @@index([tenantId, manualExecutionId, status, createdAt], map: "recommendation_savings_measurements_tenant_id_manual_execution_")
+  @@index([executionPlanId], map: "savings_measurements_execution_plan_id_idx")
+  @@index([recommendationId], map: "savings_measurements_recommendation_id_idx")
+  @@index([requestedByUserId], map: "savings_measurements_requested_by_user_id_idx")
+  @@index([verifiedByUserId], map: "savings_measurements_verified_by_user_id_idx")
   @@map("recommendation_savings_measurements")
 }
 
@@ -1351,6 +1370,7 @@ model AgentLearningEvent {
   @@index([recommendationId, createdAt])
   @@index([decisionId])
   @@index([reasonCode, recommendationType])
+  @@index([userId], map: "agent_learning_events_user_id_idx")
   @@map("agent_learning_events")
 }
 
@@ -1398,6 +1418,8 @@ model AgentInstructionProfile {
   activatedBy       User?                         @relation("AgentInstructionProfileActivatedBy", fields: [activatedByUserId], references: [id], onDelete: SetNull)
 
   @@index([status, version])
+  @@index([activatedByUserId], map: "agent_instruction_profiles_activated_by_idx")
+  @@index([createdByUserId], map: "agent_instruction_profiles_created_by_idx")
   @@map("agent_instruction_profiles")
 }
 
@@ -1416,6 +1438,7 @@ model TenantAgentRule {
   createdBy       User                  @relation("TenantAgentRuleCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
 
   @@index([tenantId, status, priority])
+  @@index([createdByUserId], map: "tenant_agent_rules_created_by_user_id_idx")
   @@map("tenant_agent_rules")
 }
 
@@ -1488,6 +1511,7 @@ model AiContextTrace {
   @@index([tenantId, operation, createdAt])
   @@index([tenantId, status, createdAt])
   @@index([expiresAt])
+  @@index([userId], map: "ai_context_traces_user_id_idx")
   @@map("ai_context_traces")
 }
 
@@ -1507,6 +1531,7 @@ model ContextBuildRun {
   createdBy       User?                 @relation("ContextBuildRunCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, status, createdAt])
+  @@index([createdByUserId], map: "context_build_runs_created_by_user_id_idx")
   @@map("context_build_runs")
 }
 
@@ -1530,6 +1555,7 @@ model TelegramChatLink {
   @@unique([tenantId, userId, chatId])
   @@index([tenantId, status])
   @@index([userId, status])
+  @@index([linkedByUserId], map: "telegram_chat_links_linked_by_user_id_idx")
   @@map("telegram_chat_links")
 }
 
@@ -1552,6 +1578,7 @@ model TelegramInteractionLog {
   @@index([tenantId, userId, createdAt])
   @@index([chatId, createdAt])
   @@index([status, createdAt])
+  @@index([userId], map: "telegram_interaction_logs_user_id_idx")
   @@map("telegram_interaction_logs")
 }
 

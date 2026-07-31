@@ -115,16 +115,23 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
   public async updateCloudConnection(
     input: UpdateCloudConnectionInput,
   ): Promise<CloudConnectionSummary | null> {
-    const updated = await this.prisma.cloudConnection.updateMany({
+    const connection = await this.prisma.cloudConnection.findFirst({
       where: { id: input.cloudConnectionId, tenantId: input.tenantId },
+      select: { id: true, defaultRegion: true, metadata: true },
+    });
+    if (connection === null) return null;
+
+    const nextRegion = input.defaultRegion ?? null;
+    const regionChanged = connection.defaultRegion !== nextRegion;
+    const updated = await this.prisma.cloudConnection.update({
+      where: { id: connection.id },
       data: {
         name: input.name,
-        defaultRegion: input.defaultRegion ?? null,
+        defaultRegion: nextRegion,
+        ...(regionChanged ? invalidatedValidationData(connection.metadata) : {}),
       },
     });
-    if (updated.count === 0) return null;
-    const connection = await this.prisma.cloudConnection.findUnique({ where: { id: input.cloudConnectionId } });
-    return connection === null ? null : mapCloudConnection(connection);
+    return mapCloudConnection(updated);
   }
 
   /**
@@ -223,7 +230,7 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     return this.prisma.$transaction(async (tx) => {
       const connection = await tx.cloudConnection.findFirst({
         where: { id: input.cloudConnectionId, tenantId: input.tenantId },
-        select: { id: true },
+        select: { id: true, metadata: true },
       });
       if (connection === null) return null;
 
@@ -248,6 +255,11 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
         },
       });
 
+      await tx.cloudConnection.update({
+        where: { id: connection.id },
+        data: invalidatedValidationData(connection.metadata),
+      });
+
       return mapCredentialSummary(credential);
     });
   }
@@ -263,13 +275,21 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
         cloudConnectionId,
         cloudConnection: { tenantId },
       },
+      include: { cloudConnection: { select: { metadata: true } } },
     });
     if (credential === null) return null;
 
-    return mapCredentialSummary(await this.prisma.cloudConnectionCredential.update({
-      where: { id: credential.id },
-      data: { status: 'REVOKED', revokedAt: new Date() },
-    }));
+    return this.prisma.$transaction(async (tx) => {
+      const revoked = await tx.cloudConnectionCredential.update({
+        where: { id: credential.id },
+        data: { status: 'REVOKED', revokedAt: new Date() },
+      });
+      await tx.cloudConnection.update({
+        where: { id: cloudConnectionId },
+        data: invalidatedValidationData(credential.cloudConnection.metadata),
+      });
+      return mapCredentialSummary(revoked);
+    });
   }
 
   public async getIngestionConnectionForTenant(
@@ -718,7 +738,9 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
 
     await this.prisma.cloudConnection.update({
       where: { id: connection.id },
-      data: { metadata: result.metadata as Prisma.InputJsonValue },
+      data: {
+        ...invalidatedValidationData(result.metadata),
+      },
     });
 
     return {
@@ -751,7 +773,7 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
 
     await this.prisma.cloudConnection.update({
       where: { id: connection.id },
-      data: { metadata: metadata as Prisma.InputJsonValue },
+      data: invalidatedValidationData(metadata),
     });
 
     return {
@@ -781,7 +803,7 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     metadata[updatedKey] = definitions;
     await this.prisma.cloudConnection.update({
       where: { id: connection.id },
-      data: { metadata: metadata as Prisma.InputJsonValue },
+      data: invalidatedValidationData(metadata),
     });
     return {
       cloudConnectionId: connection.id,
@@ -791,6 +813,20 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
       replaced: input.replace,
     };
   }
+}
+
+function invalidatedValidationData(metadata: unknown): {
+  readonly metadata: Prisma.InputJsonValue;
+  readonly lastValidatedAt: null;
+} {
+  const nextMetadata = metadata !== null && typeof metadata === 'object' && !Array.isArray(metadata)
+    ? { ...(metadata as Record<string, unknown>) }
+    : {};
+  delete nextMetadata['capabilityValidation'];
+  return {
+    metadata: nextMetadata as Prisma.InputJsonValue,
+    lastValidatedAt: null,
+  };
 }
 
 function toIngestionJobSummary(job: {

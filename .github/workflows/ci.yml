@@ -74,6 +74,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 3458Robyt/finops---front
+          ref: ${{ github.head_ref || github.ref_name }}
           path: finops-app
       - name: Install frontend E2E dependencies
         working-directory: finops-app

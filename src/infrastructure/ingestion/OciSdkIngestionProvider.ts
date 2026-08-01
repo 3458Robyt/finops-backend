@@ -1,4 +1,9 @@
-import * as oci from 'oci-sdk';
+import * as common from 'oci-common';
+import * as core from 'oci-core';
+import * as identity from 'oci-identity';
+import * as monitoring from 'oci-monitoring';
+import * as objectstorage from 'oci-objectstorage';
+import * as usageapi from 'oci-usageapi';
 import { createHash } from 'node:crypto';
 import type {
   CloudIngestionJobContext,
@@ -162,7 +167,7 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     }
 
     const job = buildValidationJob(connection);
-    let authProvider: oci.common.AuthenticationDetailsProvider;
+    let authProvider: common.AuthenticationDetailsProvider;
     try {
       authProvider = this.createAuthProvider(job);
     } catch (error) {
@@ -199,7 +204,7 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     ));
 
     const costs = await validateOciCall('COSTS', checkedAt, () => withOciClient(
-      new oci.usageapi.UsageapiClient({ authenticationDetailsProvider: authProvider }) as unknown as OciUsageClient,
+      new usageapi.UsageapiClient({ authenticationDetailsProvider: authProvider }) as unknown as OciUsageClient,
       async (client) => {
       const end = new Date();
       const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
@@ -429,15 +434,15 @@ resources: inventory.resources.length,
 
   private async collectProviderApiCosts(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {
     const provider = this.createAuthProvider(job);
-    const client = new oci.usageapi.UsageapiClient({ authenticationDetailsProvider: provider }) as unknown as OciUsageClient;
+    const client = new usageapi.UsageapiClient({ authenticationDetailsProvider: provider }) as unknown as OciUsageClient;
     try {
     const response = await this.withProviderRetry(() => client.requestSummarizedUsages({
       requestSummarizedUsagesDetails: {
         tenantId: job.connection.rootExternalId,
         timeUsageStarted: job.targetStart,
         timeUsageEnded: job.targetEnd,
-        granularity: oci.usageapi.models.RequestSummarizedUsagesDetails.Granularity.Daily,
-        queryType: oci.usageapi.models.RequestSummarizedUsagesDetails.QueryType.Cost,
+        granularity: usageapi.models.RequestSummarizedUsagesDetails.Granularity.Daily,
+        queryType: usageapi.models.RequestSummarizedUsagesDetails.QueryType.Cost,
         groupBy: ['service'],
       },
     }));
@@ -510,7 +515,7 @@ resources: inventory.resources.length,
 
   private createMonitoringClient(job: CloudIngestionJobContext): OciMonitoringClient {
     const provider = this.createAuthProvider(job);
-    const client = new oci.monitoring.MonitoringClient({
+    const client = new monitoring.MonitoringClient({
       authenticationDetailsProvider: provider,
     });
 
@@ -518,9 +523,9 @@ resources: inventory.resources.length,
   }
 
 private createIdentityClient(
-authenticationDetailsProvider: oci.common.AuthenticationDetailsProvider,
+authenticationDetailsProvider: common.AuthenticationDetailsProvider,
 ): OciIdentityClient {
-return new oci.identity.IdentityClient({ authenticationDetailsProvider }) as unknown as OciIdentityClient;
+return new identity.IdentityClient({ authenticationDetailsProvider }) as unknown as OciIdentityClient;
 }
 
 
@@ -571,7 +576,7 @@ metadata: { namespaceName, bucketName },
 
 private createObjectStorageClient(job: CloudIngestionJobContext): OciObjectStorageClient {
 const provider = this.createAuthProvider(job);
-const client = new oci.objectstorage.ObjectStorageClient({
+const client = new objectstorage.ObjectStorageClient({
 authenticationDetailsProvider: provider,
 });
 
@@ -580,14 +585,14 @@ return client as unknown as OciObjectStorageClient;
 
 private createComputeClient(job: CloudIngestionJobContext): OciComputeClient {
 const provider = this.createAuthProvider(job);
-const client = new oci.core.ComputeClient({
+const client = new core.ComputeClient({
 authenticationDetailsProvider: provider,
 });
 
 return client as unknown as OciComputeClient;
 }
 
-  private createAuthProvider(job: CloudIngestionJobContext): oci.common.AuthenticationDetailsProvider {
+  private createAuthProvider(job: CloudIngestionJobContext): common.AuthenticationDetailsProvider {
 const credential = getCredential(job.connection.credentials, [
 'INVENTORY_READ',
 'METRICS_READ',
@@ -600,8 +605,8 @@ const credential = getCredential(job.connection.credentials, [
     }
 
     const regionId = optionalString(credential.payload['region']) ?? job.connection.defaultRegion ?? 'sa-bogota-1';
-    const region = oci.common.Region.fromRegionId(regionId);
-    return new oci.common.SimpleAuthenticationDetailsProvider(
+    const region = common.Region.fromRegionId(regionId);
+    return new common.SimpleAuthenticationDetailsProvider(
       requireString(credential.payload['tenancyId'], 'OCI tenancyId'),
       requireString(credential.payload['userId'], 'OCI userId'),
       requireString(credential.payload['fingerprint'], 'OCI fingerprint'),

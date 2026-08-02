@@ -31,6 +31,7 @@ export interface RecommendationOpportunityCandidate {
 export interface RecommendationReadinessReport {
   readonly candidates: readonly RecommendationOpportunityCandidate[];
   readonly blocked: readonly RecommendationOpportunityCandidate[];
+  readonly deferred: readonly RecommendationOpportunityCandidate[];
   readonly summary: string;
 }
 
@@ -48,24 +49,29 @@ export function buildRecommendationReadinessReport(input: {
     (input.technicalEvidenceSnapshot?.resources ?? []).map((resource) => [resource.externalResourceId, resource]),
   );
 
-  const candidates = [
+  const prioritized = [
     ...buildUsageCandidates(input.snapshot, accountById),
     ...buildResourceCandidates(input.snapshot, accountById, evidenceByResource),
     ...buildServiceCandidates(input.snapshot, accountById),
   ]
-    .sort((left, right) => right.maxEstimatedMonthlySavings - left.maxEstimatedMonthlySavings)
-    .slice(0, maxCandidates);
+    .sort((left, right) => right.maxEstimatedMonthlySavings - left.maxEstimatedMonthlySavings);
 
-  const allowed = candidates.filter((candidate) => candidate.readiness !== 'BLOCKED_NO_EVIDENCE');
-  const blocked = candidates.filter((candidate) => candidate.readiness === 'BLOCKED_NO_EVIDENCE');
+  const batch = prioritized.slice(0, maxCandidates);
+  const deferred = prioritized.slice(maxCandidates).map((candidate) => ({
+    ...candidate,
+    reasons: [...candidate.reasons, 'Aplazado porque existen candidatos de mayor impacto en este lote.'],
+  }));
+  const allowed = batch.filter((candidate) => candidate.readiness !== 'BLOCKED_NO_EVIDENCE');
+  const blocked = batch.filter((candidate) => candidate.readiness === 'BLOCKED_NO_EVIDENCE');
 
   return {
     candidates: allowed,
     blocked,
+    deferred,
     summary:
       allowed.length === 0
         ? 'No hay candidatos suficientes para generar recomendaciones auditables.'
-        : `Hay ${allowed.length} candidatos auditables: ${allowed
+        : `Hay ${allowed.length} candidatos auditables${deferred.length > 0 ? ` y ${deferred.length} aplazados para otro lote` : ''}: ${allowed
             .map((candidate) => `${candidate.id}:${candidate.readiness}`)
             .join(', ')}.`,
   };
@@ -81,7 +87,9 @@ export function formatRecommendationReadinessForPrompt(report: RecommendationRea
         'estimatedMonthlySavings no puede superar maxEstimatedMonthlySavings.',
         'Debes copiar sourceFacts y technicalEvidenceRefs relevantes en evidence.',
       ],
-      ...report,
+      summary: report.summary,
+      candidates: report.candidates,
+      blocked: report.blocked,
     },
     null,
     2,
@@ -92,7 +100,7 @@ function buildUsageCandidates(
   snapshot: CostAnalyticsSnapshot,
   accountById: ReadonlyMap<string, { readonly cloudAccountId: string; readonly provider: string }>,
 ): RecommendationOpportunityCandidate[] {
-  return (snapshot.topUsage ?? []).slice(0, 4).map((usage, index) => {
+  return (snapshot.topUsage ?? []).map((usage, index) => {
     const account = pickAccountForProvider(snapshot, accountById, usage.provider);
     return {
       id: `usage-${index + 1}`,
@@ -122,7 +130,7 @@ function buildResourceCandidates(
   accountById: ReadonlyMap<string, { readonly cloudAccountId: string; readonly provider: string }>,
   evidenceByResource: ReadonlyMap<string, RecommendationEvidenceResource>,
 ): RecommendationOpportunityCandidate[] {
-  return snapshot.topResources.slice(0, 4).map((resource, index) => {
+  return snapshot.topResources.map((resource, index) => {
     const account = pickAccountForProvider(snapshot, accountById, resource.provider);
     const evidenceResource = evidenceByResource.get(resource.resourceId);
     const ruleEvaluation = evidenceResource?.ruleEvaluation;
@@ -178,7 +186,7 @@ function buildServiceCandidates(
   snapshot: CostAnalyticsSnapshot,
   accountById: ReadonlyMap<string, { readonly cloudAccountId: string; readonly provider: string }>,
 ): RecommendationOpportunityCandidate[] {
-  return snapshot.services.slice(0, 4).map((service, index) => {
+  return snapshot.services.map((service, index) => {
     const account = pickAccountForProvider(snapshot, accountById, service.provider);
     return {
       id: `service-${index + 1}`,

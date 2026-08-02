@@ -74,6 +74,7 @@ export class PrismaNotificationRepository implements INotificationRepository {
         ...(input.periodStart !== undefined ? { periodStart: input.periodStart } : {}),
         ...(input.periodEnd !== undefined ? { periodEnd: input.periodEnd } : {}),
         ...(input.generatedForDate !== undefined ? { generatedForDate: input.generatedForDate } : {}),
+        ...(input.dedupeKey !== undefined ? { dedupeKey: input.dedupeKey } : {}),
         ...(input.metadata !== undefined ? { metadata: input.metadata as Prisma.InputJsonValue } : {}),
       },
     });
@@ -171,6 +172,7 @@ export class PrismaNotificationRepository implements INotificationRepository {
       ...(row.periodStart !== null ? { periodStart: row.periodStart } : {}),
       ...(row.periodEnd !== null ? { periodEnd: row.periodEnd } : {}),
       ...(row.generatedForDate !== null ? { generatedForDate: row.generatedForDate } : {}),
+      ...(row.dedupeKey !== null ? { dedupeKey: row.dedupeKey } : {}),
       ...(row.metadata !== null ? { metadata: row.metadata } : {}),
       persisted: true,
       createdAt: row.createdAt,

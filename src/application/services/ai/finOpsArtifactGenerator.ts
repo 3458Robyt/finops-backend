@@ -12,6 +12,7 @@ import { parseAuditReport, parseExecutionPlan, parseRecommendationDrafts } from 
 import type { AiRecommendationDraft } from './finOpsAiTypes.js';
 import type { AiTraceRecorder } from './aiTraceRecorder.js';
 import type { RecommendationEvidenceSnapshot } from './RecommendationEvidenceSnapshot.js';
+import type { DeterministicTrendAnalysis } from './DeterministicTrendAnalysis.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -74,11 +75,14 @@ export class FinOpsArtifactGenerator {
     systemPrompt: string,
     externalResourceId?: string,
     technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot,
+    deterministicAnalysis?: DeterministicTrendAnalysis,
+    onAuditStart?: () => Promise<void> | void,
   ): Promise<AuditedDraftsResult> {
     const firstRawResponse = await this.requestRecommendations(systemPrompt);
     let drafts = this.withTenant(parseRecommendationDrafts(firstRawResponse, snapshot), tenantId);
+    await onAuditStart?.();
     let auditReport = await this.auditArtifact(
-      'recommendations', snapshot, undefined, tenantId, userId, drafts, technicalEvidenceSnapshot,
+      'recommendations', snapshot, undefined, tenantId, userId, drafts, technicalEvidenceSnapshot, deterministicAnalysis,
     );
 
     if (auditReport.verdict === 'NEEDS_REVISION') {
@@ -87,8 +91,9 @@ export class FinOpsArtifactGenerator {
         auditReport.repairInstructions ?? auditReport.requiredChanges,
       );
       drafts = this.withTenant(parseRecommendationDrafts(revisedRaw, snapshot), tenantId);
+      await onAuditStart?.();
       auditReport = await this.auditArtifact(
-        'recommendations', snapshot, undefined, tenantId, userId, drafts, technicalEvidenceSnapshot,
+        'recommendations', snapshot, undefined, tenantId, userId, drafts, technicalEvidenceSnapshot, deterministicAnalysis,
       );
     }
 
@@ -236,6 +241,7 @@ export class FinOpsArtifactGenerator {
     userId: string | undefined,
     artifact: unknown,
     technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot,
+    deterministicAnalysis?: DeterministicTrendAnalysis,
   ): Promise<AiAuditReport> {
     const startedAt = Date.now();
     const request: AiGatewayRequest = {
@@ -253,6 +259,9 @@ export class FinOpsArtifactGenerator {
             JSON.stringify(compactSnapshot(snapshot), null, 2),
             ...(technicalEvidenceSnapshot !== undefined
               ? ['Evidencia tecnica canonica:', JSON.stringify(technicalEvidenceSnapshot, null, 2)]
+              : []),
+            ...(deterministicAnalysis !== undefined
+              ? ['Preanalisis deterministico de tendencias:', JSON.stringify(deterministicAnalysis, null, 2)]
               : []),
             ...(recommendation !== undefined
               ? ['Recomendacion original:', JSON.stringify(recommendation, null, 2)]

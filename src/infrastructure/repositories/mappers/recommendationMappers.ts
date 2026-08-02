@@ -92,7 +92,10 @@ export function toManualExecutionDomain(
     status: row.status,
     ...(row.executedAt !== null ? { executedAt: row.executedAt } : {}),
     ...(row.observedMonthlySavings !== null
-      ? { observedMonthlySavings: Number(row.observedMonthlySavings) }
+      ? {
+          reportedMonthlySavings: Number(row.observedMonthlySavings),
+          observedMonthlySavings: Number(row.observedMonthlySavings),
+        }
       : {}),
     currency: row.currency,
     ...(row.notes !== null ? { notes: row.notes } : {}),

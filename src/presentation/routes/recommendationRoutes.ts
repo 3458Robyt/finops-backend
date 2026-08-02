@@ -37,6 +37,12 @@ export function createRecommendationRoutes(
   router.post('/:id/execution-plan', requireAuth, recommendationController.createExecutionPlan);
   router.post('/:id/decisions', requireAuth, recommendationController.createDecision);
   router.post('/:id/manual-execution', requireAuth, recommendationController.createManualExecution);
+  router.get('/:id/savings-measurements/readiness', requireAuth, recommendationController.getSavingsMeasurementReadiness);
+  router.post('/:id/savings-measurements', requireAuth, recommendationController.createSavingsMeasurement);
+  router.get('/:id/savings-measurements', requireAuth, recommendationController.listSavingsMeasurements);
+  router.get('/:id/savings-measurements/:measurementId', requireAuth, recommendationController.getSavingsMeasurement);
+  router.post('/:id/savings-measurements/:measurementId/verify', requireAuth, recommendationController.verifySavingsMeasurement);
+  router.post('/:id/savings-measurements/:measurementId/reject', requireAuth, recommendationController.rejectSavingsMeasurement);
   router.get('/:id/timeline', requireAuth, recommendationController.getTimeline);
   router.get('/:id', requireAuth, recommendationController.getRecommendationById);
   router.get('/', requireAuth, recommendationController.getRecommendations);

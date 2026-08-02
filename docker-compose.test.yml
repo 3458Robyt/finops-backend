@@ -10,6 +10,7 @@ services:
       - "55432:5432"
     volumes:
       - finops-postgres-test-data:/var/lib/postgresql/data
+      - ./scripts/testing/postgres-test-init.sql:/docker-entrypoint-initdb.d/00-finops-supabase-roles.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U finops -d finops_test"]
       interval: 5s

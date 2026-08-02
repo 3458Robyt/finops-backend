@@ -1,4 +1,5 @@
 import type { AuthContext } from '../../domain/models/AuthContext.js';
+import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 import type { OutboundMessageService } from './OutboundMessageService.js';
 import { startNonOverlappingLoop, type NonOverlappingLoopHandle } from './NonOverlappingLoop.js';
 
@@ -18,7 +19,19 @@ export class OutboundMessageScheduler {
 
     const intervalMs = Math.max(5, this.intervalMinutes) * 60 * 1000;
     this.loop = startNonOverlappingLoop({
-      run: () => this.outboundMessageService.sendSavingsReminders(this.systemActor as AuthContext),
+      run: () => {
+        const actor = this.systemActor as AuthContext;
+        return runWithDatabaseContext(
+          {
+            tenantId: actor.tenantId,
+            userId: actor.userId,
+            role: actor.role,
+            loginEmail: actor.email,
+            workerId: 'message-scheduler',
+          },
+          () => this.outboundMessageService.sendSavingsReminders(actor),
+        );
+      },
       intervalMs,
       fallbackIntervalMs: 5 * 60 * 1000,
       runImmediately: false,

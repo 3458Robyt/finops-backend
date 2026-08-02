@@ -9,6 +9,11 @@ import type {
   RecommendationManualExecution,
   RecommendationQuery,
   RecommendationTimelineEvent,
+  RecommendationSavingsMeasurement,
+  SavingsMeasurementReadiness,
+  CreateSavingsMeasurementInput,
+  VerifySavingsMeasurementInput,
+  RejectSavingsMeasurementInput,
   SavingsKpis,
 } from '../../domain/interfaces/IRecommendationRepository.js';
 import type { FinOpsRecommendation } from '../../domain/models/FinOpsRecommendation.js';
@@ -28,6 +33,14 @@ import {
   createDecisionTx,
   createManualExecutionTx,
 } from './queries/recommendationWriteQueries.js';
+import {
+  createSavingsMeasurement,
+  findSavingsMeasurementById,
+  findSavingsMeasurementsByRecommendation,
+  getSavingsMeasurementReadiness,
+  rejectSavingsMeasurement,
+  verifySavingsMeasurement,
+} from './queries/recommendationSavingsMeasurementQueries.js';
 
 /**
  * Adaptador de infraestructura (Clean Architecture) que implementa el puerto de
@@ -341,7 +354,7 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
       return [];
     }
 
-    const [plans, decisions, executions, learningEvents] = await Promise.all([
+    const [plans, decisions, executions, measurements, learningEvents] = await Promise.all([
       this.prisma.recommendationExecutionPlan.findMany({
         where: { recommendationId },
         orderBy: { createdAt: 'asc' },
@@ -354,13 +367,17 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
         where: { tenantId, recommendationId },
         orderBy: { createdAt: 'asc' },
       }),
+      this.prisma.recommendationSavingsMeasurement.findMany({
+        where: { tenantId, recommendationId },
+        orderBy: { createdAt: 'asc' },
+      }),
       this.prisma.agentLearningEvent.findMany({
         where: { tenantId, recommendationId },
         orderBy: { createdAt: 'asc' },
       }),
     ]);
 
-    return buildRecommendationTimeline(recommendation, plans, decisions, executions, learningEvents);
+    return buildRecommendationTimeline(recommendation, plans, decisions, executions, measurements, learningEvents);
   }
 
   /**
@@ -403,5 +420,45 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
    */
   public async getAdoptionKpis(tenantId: string): Promise<AdoptionKpis> {
     return computeAdoptionKpis(this.prisma, tenantId);
+  }
+
+  public async getSavingsMeasurementReadiness(
+    tenantId: string,
+    recommendationId: string,
+  ): Promise<SavingsMeasurementReadiness> {
+    return getSavingsMeasurementReadiness(this.prisma, tenantId, recommendationId);
+  }
+
+  public async createSavingsMeasurement(
+    input: CreateSavingsMeasurementInput,
+  ): Promise<RecommendationSavingsMeasurement> {
+    return createSavingsMeasurement(this.prisma, input);
+  }
+
+  public async findSavingsMeasurementsByRecommendation(
+    tenantId: string,
+    recommendationId: string,
+  ): Promise<RecommendationSavingsMeasurement[]> {
+    return findSavingsMeasurementsByRecommendation(this.prisma, tenantId, recommendationId);
+  }
+
+  public async findSavingsMeasurementById(
+    tenantId: string,
+    recommendationId: string,
+    measurementId: string,
+  ): Promise<RecommendationSavingsMeasurement | null> {
+    return findSavingsMeasurementById(this.prisma, tenantId, recommendationId, measurementId);
+  }
+
+  public async verifySavingsMeasurement(
+    input: VerifySavingsMeasurementInput,
+  ): Promise<RecommendationSavingsMeasurement> {
+    return verifySavingsMeasurement(this.prisma, input);
+  }
+
+  public async rejectSavingsMeasurement(
+    input: RejectSavingsMeasurementInput,
+  ): Promise<RecommendationSavingsMeasurement> {
+    return rejectSavingsMeasurement(this.prisma, input);
   }
 }

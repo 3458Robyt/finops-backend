@@ -44,7 +44,10 @@ import {
  * @returns KPIs de ahorro de dominio.
  */
 export async function computeSavingsKpis(prisma: PrismaClient, tenantId: string): Promise<SavingsKpis> {
-  const [estimated, observed, executed, pendingSavings] = await Promise.all([
+  const savingsMeasurementModel = (prisma as PrismaClient & {
+    readonly recommendationSavingsMeasurement?: PrismaClient['recommendationSavingsMeasurement'];
+  }).recommendationSavingsMeasurement;
+  const [estimated, reported, observed, verified, costIncrease, executed, pendingSavings] = await Promise.all([
     prisma.recommendation.aggregate({
       where: { tenantId },
       _sum: { estimatedMonthlySavings: true },
@@ -55,6 +58,26 @@ export async function computeSavingsKpis(prisma: PrismaClient, tenantId: string)
         status: { in: ['EXECUTED', 'PARTIAL'] },
       },
       _sum: { observedMonthlySavings: true },
+    }),
+    savingsMeasurementModel === undefined ? Promise.resolve({ _sum: { projectedMonthlySavings: null } }) : savingsMeasurementModel.aggregate({
+      where: {
+        tenantId,
+        status: { in: ['CALCULATED', 'VERIFIED'] },
+        projectedMonthlySavings: { gt: 0 },
+      },
+      _sum: { projectedMonthlySavings: true },
+    }),
+    savingsMeasurementModel === undefined ? Promise.resolve({ _sum: { projectedMonthlySavings: null } }) : savingsMeasurementModel.aggregate({
+      where: { tenantId, status: 'VERIFIED', projectedMonthlySavings: { gt: 0 } },
+      _sum: { projectedMonthlySavings: true },
+    }),
+    savingsMeasurementModel === undefined ? Promise.resolve({ _sum: { costIncreaseMonthlyAmount: null } }) : savingsMeasurementModel.aggregate({
+      where: {
+        tenantId,
+        status: { in: ['CALCULATED', 'VERIFIED'] },
+        costIncreaseMonthlyAmount: { gt: 0 },
+      },
+      _sum: { costIncreaseMonthlyAmount: true },
     }),
     prisma.recommendationManualExecution.groupBy({
       by: ['recommendationId'],
@@ -73,7 +96,10 @@ export async function computeSavingsKpis(prisma: PrismaClient, tenantId: string)
     }),
   ]);
 
-  const observedMonthlySavings = Number(observed._sum.observedMonthlySavings ?? 0);
+  const userReportedMonthlySavings = Number(reported._sum.observedMonthlySavings ?? 0);
+  const observedMonthlySavings = Number(observed._sum.projectedMonthlySavings ?? 0);
+  const verifiedMonthlySavings = Number(verified._sum.projectedMonthlySavings ?? 0);
+  const costIncreaseMonthlyAmount = Number(costIncrease._sum.costIncreaseMonthlyAmount ?? 0);
   const missedSavings = pendingSavings
     .map((recommendation) => ({
       recommendation,
@@ -92,7 +118,10 @@ export async function computeSavingsKpis(prisma: PrismaClient, tenantId: string)
   return {
     estimatedMonthlySavings: Number(estimated._sum.estimatedMonthlySavings ?? 0),
     observedMonthlySavings,
-    confirmedMonthlySavings: observedMonthlySavings,
+    userReportedMonthlySavings,
+    verifiedMonthlySavings,
+    costIncreaseMonthlyAmount,
+    confirmedMonthlySavings: verifiedMonthlySavings,
     missedSavingsAmount,
     currency: 'USD',
     executedRecommendations: executed.length,

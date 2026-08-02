@@ -1,4 +1,5 @@
 import { AiAuditRejectedError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { createHash } from 'node:crypto';
 import type { IAiGateway } from '../../domain/interfaces/IAiGateway.js';
 import type { ICostAnalyticsRepository } from '../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
@@ -14,6 +15,8 @@ import { FinOpsContextAssembler } from './ai/finOpsContextAssembler.js';
 import { AiTraceRecorder } from './ai/aiTraceRecorder.js';
 import { FinOpsArtifactGenerator } from './ai/finOpsArtifactGenerator.js';
 import type { TechnicalRecommendationEvidenceProvider } from './ai/TechnicalRecommendationEvidenceService.js';
+import type { RecommendationReadinessReport } from './ai/RecommendationReadinessGate.js';
+import { buildDeterministicTrendAnalysis } from './ai/DeterministicTrendAnalysis.js';
 
 // Reexporta los contratos públicos para preservar la API del servicio.
 export type {
@@ -23,6 +26,7 @@ export type {
   GenerateAiRecommendationsInput,
   GenerateAiRecommendationsResponse,
   GenerateExecutionPlanInput,
+  PreparedRecommendationAnalysis,
 } from './ai/finOpsAiTypes.js';
 
 import type {
@@ -31,6 +35,7 @@ import type {
   GenerateAiRecommendationsInput,
   GenerateAiRecommendationsResponse,
   GenerateExecutionPlanInput,
+  PreparedRecommendationAnalysis,
 } from './ai/finOpsAiTypes.js';
 
 /** Veredicto de auditoría requerido para aceptar el artefacto generado por IA. */
@@ -188,26 +193,53 @@ export class FinOpsAiService {
   public async generateRecommendations(
     input: GenerateAiRecommendationsInput,
   ): Promise<GenerateAiRecommendationsResponse> {
-    const tenantSnapshot = await this.analyticsRepository.getLatestTenantSnapshot(input.tenantId);
-    const snapshot = input.externalResourceId === undefined
-      ? tenantSnapshot
-      : scopeSnapshotToResource(tenantSnapshot, input.externalResourceId);
-    const { builtContext, systemPrompt, learningContext, readinessReport, technicalEvidenceSnapshot } =
-      await this.contextAssembler.assembleRecommendationContext({
+    const prepared = input.prepared ?? await this.prepareRecommendationAnalysis(input);
+    const { snapshot, readinessReport, technicalEvidenceSnapshot } = prepared;
+    if (readinessReport.candidates.length === 0) {
+      return {
+        recommendations: [],
+        snapshot,
+        persisted: input.persist === true,
+        analysis: {
+          readinessReport,
+          ...(technicalEvidenceSnapshot !== undefined ? { technicalEvidenceSnapshot } : {}),
+          evidenceHash: prepared.evidenceHash,
+          generatedCount: 0,
+          promptTokenEstimate: 0,
+          responseTokenEstimate: 0,
+          model: this.mainModel,
+          auditorModel: this.auditorModel,
+        },
+      };
+    }
+
+    const assembled = await this.contextAssembler.assembleRecommendationContext({
       tenantId: input.tenantId,
       ...(input.userId !== undefined ? { userId: input.userId } : {}),
       snapshot,
       ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
+      ...(prepared.technicalEvidenceSnapshot !== undefined
+        ? { technicalEvidenceSnapshot: prepared.technicalEvidenceSnapshot }
+        : {}),
     });
+    const { builtContext, systemPrompt, learningContext } = assembled;
+    const governedSystemPrompt = [
+      systemPrompt,
+      'PREANALISIS DETERMINISTICO DE TENDENCIAS (hechos autorizados):',
+      JSON.stringify(prepared.deterministicAnalysis, null, 2),
+    ].join('\n\n');
     const startedAt = Date.now();
 
+    await input.onStage?.('AI_GENERATION');
     const { drafts, auditReport, firstRawResponse } = await this.artifactGenerator.generateAuditedDrafts(
       input.tenantId,
       input.userId,
       snapshot,
-      systemPrompt,
+      governedSystemPrompt,
       input.externalResourceId,
       technicalEvidenceSnapshot,
+      prepared.deterministicAnalysis,
+      () => input.onStage?.('AI_AUDIT'),
     );
 
     if (auditReport.verdict !== approvedAuditVerdict) {
@@ -215,8 +247,13 @@ export class FinOpsAiService {
         diagnosticId: this.buildAuditDiagnosticId(input.tenantId),
         audit: {
           ...auditReport,
+          generatedCount: drafts.length,
+          promptTokenEstimate: estimateTokens(governedSystemPrompt),
+          responseTokenEstimate: estimateTokens(firstRawResponse),
+          model: this.mainModel,
+          auditorModel: this.auditorModel,
           readinessSummary: readinessReport.summary,
-          candidates: readinessReport.candidates.map((candidate) => ({
+          candidates: readinessReport.candidates.map((candidate: RecommendationReadinessReport['candidates'][number]) => ({
             id: candidate.id,
             readiness: candidate.readiness,
             cloudAccountId: candidate.cloudAccountId,
@@ -230,7 +267,13 @@ export class FinOpsAiService {
     }
 
     const auditedDrafts = drafts.map((draft) => ({
-      ...applyAuditEvidence(draft, auditReport, learningContext, technicalEvidenceSnapshot),
+      ...applyAuditEvidence(
+        draft,
+        auditReport,
+        learningContext,
+        technicalEvidenceSnapshot,
+        input.analysisRunId,
+      ),
       deduplicationKey: buildRecommendationDeduplicationKey(
         draft,
         snapshot.periodStart,
@@ -239,6 +282,7 @@ export class FinOpsAiService {
     }));
 
     const persisted = input.persist === true;
+    await input.onStage?.('PERSISTENCE');
     const recommendations = persisted
       ? await this.recommendationRepository.createMany(auditedDrafts)
       : auditedDrafts.map((draft, index) => toEphemeralRecommendation(draft, index));
@@ -249,7 +293,74 @@ export class FinOpsAiService {
       recommendations,
       snapshot,
       persisted,
+      analysis: {
+        readinessReport,
+        ...(technicalEvidenceSnapshot !== undefined ? { technicalEvidenceSnapshot } : {}),
+        evidenceHash: prepared.evidenceHash,
+        auditReport,
+        generatedCount: drafts.length,
+        promptTokenEstimate: estimateTokens(governedSystemPrompt),
+        responseTokenEstimate: estimateTokens(firstRawResponse),
+        model: this.mainModel,
+        auditorModel: this.auditorModel,
+      },
     };
+  }
+
+  public async prepareRecommendationAnalysis(
+    input: Pick<GenerateAiRecommendationsInput, 'tenantId' | 'externalResourceId'>,
+  ): Promise<PreparedRecommendationAnalysis> {
+    const tenantSnapshot = await this.analyticsRepository.getLatestTenantSnapshot(input.tenantId);
+    const snapshot = input.externalResourceId === undefined
+      ? tenantSnapshot
+      : scopeSnapshotToResource(tenantSnapshot, input.externalResourceId);
+    const preparedEvidence = await this.contextAssembler.prepareRecommendationEvidence({
+      tenantId: input.tenantId,
+      snapshot,
+      ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
+    });
+    const periodEnd = new Date(snapshot.periodEnd);
+    const periodFrom = new Date(periodEnd);
+    periodFrom.setUTCMonth(periodFrom.getUTCMonth() - 6);
+    const trendFilters = {
+      from: periodFrom,
+      to: periodEnd,
+      ...(input.externalResourceId !== undefined
+        ? { groupBy: 'resource' as const }
+        : { groupBy: 'service' as const }),
+    };
+    const [allCostSeries, allUsageSeries] = await Promise.all([
+      this.analyticsRepository.getMonthlyCostSeries(input.tenantId, trendFilters),
+      this.analyticsRepository.getMonthlyUsageSeries(input.tenantId, trendFilters),
+    ]);
+    const costSeries = input.externalResourceId === undefined
+      ? allCostSeries
+      : allCostSeries.filter((point) => point.resourceId === input.externalResourceId);
+    const usageSeries = input.externalResourceId === undefined
+      ? allUsageSeries
+      : allUsageSeries.filter((point) => point.resourceId === input.externalResourceId);
+    const deterministicAnalysis = buildDeterministicTrendAnalysis(costSeries, usageSeries);
+    const evidenceHash = createHash('sha256').update(JSON.stringify({
+      snapshot,
+      technicalEvidenceHash: preparedEvidence.technicalEvidenceSnapshot?.hash ?? null,
+      deterministicAnalysis,
+    })).digest('hex');
+
+    return {
+      snapshot,
+      readinessReport: preparedEvidence.readinessReport,
+      ...(preparedEvidence.technicalEvidenceSnapshot !== undefined
+        ? { technicalEvidenceSnapshot: preparedEvidence.technicalEvidenceSnapshot }
+        : {}),
+      evidenceHash,
+      deterministicAnalysis,
+      model: this.mainModel,
+      auditorModel: this.auditorModel,
+    };
+  }
+
+  public getModelNames(): { readonly model: string; readonly auditorModel: string } {
+    return { model: this.mainModel, auditorModel: this.auditorModel };
   }
 
   /**
@@ -351,6 +462,10 @@ export class FinOpsAiService {
   private buildAuditDiagnosticId(tenantId: string): string {
     return `audit-${tenantId}-${Date.now().toString(36)}`;
   }
+}
+
+function estimateTokens(value: string): number {
+  return Math.ceil(value.length / 4);
 }
 
 function scopeSnapshotToResource(

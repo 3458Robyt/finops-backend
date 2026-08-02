@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { RequestHandler } from 'express';
 import { AiController } from '../controllers/AiController.js';
+import { RecommendationAnalysisController } from '../controllers/RecommendationAnalysisController.js';
 
 /**
  * Construye el router de las funcionalidades de IA (chat y recomendaciones).
@@ -21,10 +22,18 @@ import { AiController } from '../controllers/AiController.js';
  */
 export function createAiRoutes(
   aiController: AiController,
+  recommendationAnalysisController: RecommendationAnalysisController,
   requireAuth: RequestHandler,
+  requireAnalysisManager: RequestHandler,
 ): Router {
   const router = Router();
 
+  router.get('/analysis-runs/readiness', requireAuth, recommendationAnalysisController.preview);
+  router.post('/analysis-runs', requireAuth, requireAnalysisManager, recommendationAnalysisController.queue);
+  router.get('/analysis-runs', requireAuth, recommendationAnalysisController.list);
+  router.get('/analysis-runs/:id', requireAuth, recommendationAnalysisController.get);
+  router.post('/analysis-runs/:id/cancel', requireAuth, requireAnalysisManager, recommendationAnalysisController.cancel);
+  router.post('/analysis-runs/:id/retry', requireAuth, requireAnalysisManager, recommendationAnalysisController.retry);
   router.get('/learning/summary', requireAuth, aiController.getLearningSummary);
   router.post('/chat', requireAuth, aiController.chat);
   router.post('/recommendations/generate', requireAuth, aiController.generateRecommendations);

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../../generated/prisma/client.js';
 import { ConfigurationError } from '../../domain/errors/errors.js';
+import { createTenantAwarePool } from './tenantContext.js';
 
 /** Instancia singleton del cliente Prisma, reutilizada entre llamadas. */
 let prismaClient: PrismaClient | undefined;
@@ -33,8 +34,11 @@ export function getPrismaClient(): PrismaClient {
   if (schema !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
     throw new ConfigurationError('DATABASE_URL schema must be a valid PostgreSQL identifier');
   }
+  const pool = process.env['DB_RUNTIME_ENFORCE'] === 'true'
+    ? createTenantAwarePool(connectionString, schema)
+    : undefined;
   const adapter = new PrismaPg(
-    {
+    pool ?? {
       connectionString,
       ...(schema === undefined ? {} : { options: `-c search_path=${schema}` }),
     },

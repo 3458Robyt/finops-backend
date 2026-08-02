@@ -31,6 +31,7 @@ export function applyAuditEvidence(
   auditReport: AiAuditReport,
   learningContext: AgentLearningContext,
   technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot,
+  analysisRunId?: string,
 ): CreateRecommendationInput {
   return {
     ...draft,
@@ -38,6 +39,7 @@ export function applyAuditEvidence(
       ...(isRecord(draft.evidence) ? draft.evidence : {}),
       aiAudit: auditReport,
       ...(technicalEvidenceSnapshot !== undefined ? { recommendationEvidenceSnapshot: technicalEvidenceSnapshot } : {}),
+      ...(analysisRunId !== undefined ? { analysisRunId } : {}),
       ...(learningContext.summary !== ''
         ? {
             aiLearning: {

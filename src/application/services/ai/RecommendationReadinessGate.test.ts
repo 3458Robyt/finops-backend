@@ -64,6 +64,25 @@ describe('RecommendationReadinessGate', () => {
     expect(promptBlock).toContain('VALIDATION_ONLY');
     expect(promptBlock).toContain('estimatedMonthlySavings no puede superar');
   });
+
+  it('records lower-priority candidates as deferred instead of dropping them silently', () => {
+    const base = buildSnapshot();
+    const report = buildRecommendationReadinessReport({
+      snapshot: {
+        ...base,
+        services: Array.from({ length: 8 }, (_, index) => ({
+          serviceName: `Servicio ${index + 1}`,
+          provider: 'AWS',
+          totalCost: 500 - index,
+          metricCount: 10,
+        })),
+      },
+    });
+
+    expect(report.candidates.length + report.blocked.length).toBe(6);
+    expect(report.deferred).toHaveLength(4);
+    expect(report.deferred[0]?.reasons.join(' ')).toContain('Aplazado');
+  });
 });
 
 function buildSnapshot(): CostAnalyticsSnapshot {

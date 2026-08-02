@@ -31,12 +31,14 @@ import { ContextSummaryBuilderService } from './application/services/ContextSumm
 import { CostAnalyticsService } from './application/services/CostAnalyticsService.js';
 import { EmailClient } from './application/services/EmailClient.js';
 import { FinOpsAiService } from './application/services/FinOpsAiService.js';
+import { RecommendationAnalysisService } from './application/services/RecommendationAnalysisService.js';
 import { MasterAdminService } from './application/services/MasterAdminService.js';
 import { OutboundMessageScheduler } from './application/services/OutboundMessageScheduler.js';
 import { OutboundMessageService } from './application/services/OutboundMessageService.js';
 import { SavingsReminderService } from './application/services/SavingsReminderService.js';
 import { TechnicalMetricsService } from './application/services/TechnicalMetricsService.js';
 import { TechnicalRecommendationEvidenceService } from './application/services/ai/TechnicalRecommendationEvidenceService.js';
+import { ValueRealizationService } from './application/services/ValueRealizationService.js';
 import { TelegramBotService } from './application/services/TelegramBotService.js';
 import { TelegramClient } from './application/services/TelegramClient.js';
 import { TelegramLinkService } from './application/services/TelegramLinkService.js';
@@ -60,13 +62,17 @@ import { PrismaMasterAdminRepository } from './infrastructure/repositories/Prism
 import { PrismaNotificationRepository } from './infrastructure/repositories/PrismaNotificationRepository.js';
 import { PrismaOutboundMessageRepository } from './infrastructure/repositories/PrismaOutboundMessageRepository.js';
 import { PrismaRecommendationRepository } from './infrastructure/repositories/PrismaRecommendationRepository.js';
+import { PrismaRecommendationAnalysisRunRepository } from './infrastructure/repositories/PrismaRecommendationAnalysisRunRepository.js';
+import { queueRecommendationAnalysisAfterIngestion } from './infrastructure/repositories/PrismaRecommendationAnalysisScheduler.js';
 import { PrismaResourceMetricRepository } from './infrastructure/repositories/PrismaResourceMetricRepository.js';
 import { PrismaTelegramRepository } from './infrastructure/repositories/PrismaTelegramRepository.js';
 import { PrismaUserRepository } from './infrastructure/repositories/PrismaUserRepository.js';
+import { PrismaValueRealizationRepository } from './infrastructure/repositories/PrismaValueRealizationRepository.js';
 import { validateRuntimeConfig } from './infrastructure/config/runtimeConfig.js';
 import { Argon2PasswordHasher } from './infrastructure/security/Argon2PasswordHasher.js';
 import { CredentialCipher } from './infrastructure/security/CredentialCipher.js';
 import { JwtTokenService } from './infrastructure/security/JwtTokenService.js';
+import { runWithDatabaseContext } from './infrastructure/database/tenantContext.js';
 
 /**
  * Composición Raíz (Composition Root) — Configuración y arranque de la aplicación.
@@ -112,6 +118,8 @@ async function bootstrap(): Promise<void> {
   const budgetRepository = new PrismaBudgetRepository(prisma);
   const costAllocationRepository = new PrismaCostAllocationRepository(prisma);
   const recommendationRepository = new PrismaRecommendationRepository(prisma);
+  const valueRealizationRepository = new PrismaValueRealizationRepository(prisma);
+  const recommendationAnalysisRepository = new PrismaRecommendationAnalysisRunRepository(prisma);
 const resourceMetricRepository = new PrismaResourceMetricRepository(prisma);
 const notificationRepository = new PrismaNotificationRepository(prisma);
 const outboundMessageRepository = new PrismaOutboundMessageRepository(prisma);
@@ -155,6 +163,11 @@ contextEngineService,
 aiObservabilityService,
 technicalRecommendationEvidenceService,
 );
+  const recommendationAnalysisService = new RecommendationAnalysisService(
+    recommendationAnalysisRepository,
+    aiService,
+    notificationRepository,
+  );
 const telegramEnabled = process.env['TELEGRAM_ENABLED'] === 'true';
 const telegramClient = new TelegramClient(process.env['TELEGRAM_BOT_TOKEN'], telegramEnabled);
 const telegramMessageFormatter = new TelegramMessageFormatter();
@@ -170,7 +183,7 @@ const telegramBotService = new TelegramBotService(
   costAnalyticsRepository,
   process.env['TELEGRAM_BOT_USERNAME'],
 );
-const outboundMessageService = new OutboundMessageService(
+  const outboundMessageService = new OutboundMessageService(
   outboundMessageRepository,
   telegramRepository,
   telegramClient,
@@ -182,11 +195,30 @@ const outboundMessageService = new OutboundMessageService(
     ...(process.env['TELEGRAM_BOT_USERNAME'] !== undefined ? { telegramBotUsername: process.env['TELEGRAM_BOT_USERNAME'] } : {}),
     ...(process.env['TELEGRAM_WEBHOOK_SECRET'] !== undefined ? { telegramWebhookSecret: process.env['TELEGRAM_WEBHOOK_SECRET'] } : {}),
   },
-);
+  );
+  const valueRealizationService = new ValueRealizationService(
+    valueRealizationRepository,
+    recommendationRepository,
+    notificationRepository,
+    outboundMessageRepository,
+    process.env['VALUE_REALIZATION_OUTBOUND_ENABLED'] === 'true'
+      ? (measurement) => outboundMessageService.sendValueRealizationUpdate(measurement.tenantId, {
+        recommendationId: measurement.recommendationId,
+        measurementId: measurement.id,
+        status: measurement.status,
+        currency: measurement.currency,
+        observationStart: measurement.observationStart,
+        observationEnd: measurement.observationEnd,
+      })
+      : undefined,
+  );
   const ingestionWorker = process.env['INGESTION_WORKER_ENABLED'] === 'true'
     ? new CloudIngestionWorkerService(
       new PrismaCloudIngestionJobRepository(prisma, credentialCipher ?? new CredentialCipher()),
       ingestionProviders,
+      process.env['SAVINGS_RECONCILIATION_ENABLED'] === 'true'
+        ? ({ tenantId }) => valueRealizationService.reconcile(tenantId, parsePositiveIntegerEnv('SAVINGS_RECONCILIATION_BATCH_SIZE', 50)).then(() => undefined)
+        : undefined,
     )
     : null;
 
@@ -201,6 +233,7 @@ const app = createExpressServer({
     budgetService,
     costAllocationService,
     aiService,
+    recommendationAnalysisService,
     agentInstructionService,
     agentContextRepository,
     contextSummaryBuilderService,
@@ -216,8 +249,9 @@ const app = createExpressServer({
     learningService,
     costRepository,
   recommendationRepository,
-  tokenService,
-});
+    tokenService,
+    valueRealizationService,
+  });
 
 if (process.env['MESSAGE_SCHEDULER_ENABLED'] === 'true') {
   const schedulerTenantId = process.env['MESSAGE_SCHEDULER_TENANT_ID'];
@@ -288,6 +322,93 @@ const PORT = process.env['PORT'] || 3000;
     });
   }
 
+  if (process.env['RECOMMENDATION_ANALYSIS_WORKER_ENABLED'] !== 'false') {
+    const workerId = process.env['RECOMMENDATION_ANALYSIS_WORKER_ID']
+      ?? `finops-analysis-${process.pid}`;
+    const intervalMs = parsePositiveIntegerEnv('RECOMMENDATION_ANALYSIS_WORKER_INTERVAL_MS', 5000);
+    const staleAfterMs = parsePositiveIntegerEnv(
+      'RECOMMENDATION_ANALYSIS_WORKER_STALE_AFTER_MS',
+      30 * 60 * 1000,
+    );
+
+    console.log(`   Recommendation analysis worker: enabled (${workerId}, ${intervalMs}ms)`);
+    startNonOverlappingLoop({
+      run: async () => {
+        await recommendationAnalysisService.processNext(workerId, staleAfterMs);
+      },
+      intervalMs,
+      fallbackIntervalMs: 5000,
+      onError: (error: unknown) => {
+        console.error('Recommendation analysis worker iteration failed:', error);
+      },
+      onSkip: () => {
+        console.warn('Recommendation analysis iteration skipped because previous run is still active');
+      },
+    });
+  }
+
+  if (process.env['RECOMMENDATION_ANALYSIS_SCHEDULER_ENABLED'] === 'true') {
+    const intervalMs = parsePositiveIntegerEnv(
+      'RECOMMENDATION_ANALYSIS_SCHEDULER_INTERVAL_MS',
+      300_000,
+    );
+    const cooldownMinutes = parsePositiveIntegerEnv(
+      'RECOMMENDATION_ANALYSIS_SCHEDULER_COOLDOWN_MINUTES',
+      30,
+    );
+
+    console.log(`   Recommendation analysis scheduler: enabled (${intervalMs}ms)`);
+    startNonOverlappingLoop({
+      run: async () => {
+        const queued = await runWithDatabaseContext(
+          { workerId: 'recommendation-analysis-scheduler', role: 'MASTER_ADMIN' },
+          () => queueRecommendationAnalysisAfterIngestion(
+            prisma,
+            recommendationAnalysisRepository,
+            cooldownMinutes,
+          ),
+        );
+        if (queued > 0) console.log(`Queued ${queued} post-ingestion analysis run(s).`);
+      },
+      intervalMs,
+      fallbackIntervalMs: 300_000,
+      onError: (error: unknown) => {
+        console.error('Recommendation analysis scheduler iteration failed:', error);
+      },
+    });
+  }
+
+  if (process.env['SAVINGS_RECONCILIATION_ENABLED'] === 'true') {
+    const reconciliationTenantId = process.env['SAVINGS_RECONCILIATION_TENANT_ID']?.trim();
+    const batchSize = parsePositiveIntegerEnv('SAVINGS_RECONCILIATION_BATCH_SIZE', 50);
+    const runReconciliation = async (): Promise<void> => {
+      if (reconciliationTenantId === undefined || reconciliationTenantId === '') {
+        console.warn('Savings reconciliation enabled but SAVINGS_RECONCILIATION_TENANT_ID is not configured');
+        return;
+      }
+      const result = await runWithDatabaseContext(
+        { tenantId: reconciliationTenantId, role: 'MASTER_ADMIN', workerId: 'value-realization-reconciliation' },
+        () => valueRealizationService.reconcile(reconciliationTenantId, batchSize),
+      );
+      console.log(JSON.stringify({ level: 'info', event: 'value_realization_reconciliation_completed', ...result }));
+    };
+
+    if (process.env['SAVINGS_RECONCILIATION_RUN_ON_START'] === 'true') {
+      void runReconciliation().catch((error: unknown) => console.error('Initial value realization reconciliation failed:', error));
+    }
+    if (process.env['SAVINGS_RECONCILIATION_SCHEDULER_ENABLED'] === 'true') {
+      const intervalMs = parsePositiveIntegerEnv('SAVINGS_RECONCILIATION_INTERVAL_MS', 300_000);
+      console.log(`   Value realization reconciliation scheduler: enabled (${intervalMs}ms)`);
+      startNonOverlappingLoop({
+        run: runReconciliation,
+        intervalMs,
+        fallbackIntervalMs: 300_000,
+        onError: (error: unknown) => console.error('Value realization reconciliation iteration failed:', error),
+        onSkip: () => console.warn('Value realization reconciliation skipped because previous run is still active'),
+      });
+    }
+  }
+
   if (process.env['INGESTION_SCHEDULER_ENABLED'] === 'true') {
     const intervalMs = parsePositiveIntegerEnv('INGESTION_SCHEDULER_INTERVAL_MS', 300000);
     const metricWindowMinutes = parsePositiveIntegerEnv('INGESTION_SCHEDULER_METRIC_WINDOW_MINUTES', 30);
@@ -304,19 +425,22 @@ const PORT = process.env['PORT'] || 3000;
       intervalMs,
       fallbackIntervalMs: 300000,
       run: async () => {
-        const result = await runPrismaIngestionJobScheduler(prisma, {
-          apply: true,
-          schedule: {
-            now: new Date(),
-            metricWindowMinutes,
-            metricCooldownMinutes,
-            billingWindowHours,
-            billingCooldownHours,
-            maxAttempts,
-          },
-          ...(providerCode !== undefined ? { providerCode } : {}),
-          ...(connectionId !== undefined ? { connectionId } : {}),
-        });
+        const result = await runWithDatabaseContext(
+          { workerId: 'ingestion-scheduler', role: 'MASTER_ADMIN' },
+          () => runPrismaIngestionJobScheduler(prisma, {
+            apply: true,
+            schedule: {
+              now: new Date(),
+              metricWindowMinutes,
+              metricCooldownMinutes,
+              billingWindowHours,
+              billingCooldownHours,
+              maxAttempts,
+            },
+            ...(providerCode !== undefined ? { providerCode } : {}),
+            ...(connectionId !== undefined ? { connectionId } : {}),
+          }),
+        );
         console.log(`Ingestion scheduler planned ${result.plannedJobs.length} job(s), created ${result.createdJobs.length}.`);
       },
       onError: (error: unknown) => {

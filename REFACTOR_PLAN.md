@@ -1,5 +1,9 @@
 # Plan de refactorización — finops-backend (handoff para agente CLI)
 
+> **Estado: HISTÓRICO / COMPLETADO (2026-07-31).** Este documento conserva el plan original
+> de refactorización y no es una lista de trabajo activa. El estado vigente está en
+> `docs/ESTADO_ACTUAL_FINOPS.md`, `docs/ROADMAP_PRODUCTO.md` y `docs/DEUDA_TECNICA.md`.
+
 > Documento autocontenido. Objetivo: dejar **todos los archivos de código propio bajo 200 líneas efectivas** (código real, sin comentarios JSDoc ni líneas en blanco), sin cambiar comportamiento funcional, preservando contratos de API y dejando typecheck + tests en verde.
 
 ---

@@ -35,6 +35,15 @@ export interface SendSavingsRemindersResult {
   readonly attemptedUsers: number;
 }
 
+export interface ValueRealizationOutboundInput {
+  readonly recommendationId: string;
+  readonly measurementId: string;
+  readonly status: string;
+  readonly currency: string;
+  readonly observationStart: Date;
+  readonly observationEnd: Date;
+}
+
 export class OutboundMessageService {
   constructor(
     private readonly outboundRepository: IOutboundMessageRepository,
@@ -153,6 +162,20 @@ export class OutboundMessageService {
     }
 
     return { deliveries, attemptedUsers: users.filter((item) => item.status === 'ACTIVE').length };
+  }
+
+  public async sendValueRealizationUpdate(tenantId: string, input: ValueRealizationOutboundInput): Promise<void> {
+    const users = await this.outboundRepository.findTenantUsers(tenantId);
+    const links = await this.telegramRepository.findLinksByTenant(tenantId);
+    const activeLinksByUserId = new Map(links.filter((link) => link.status === 'ACTIVE').map((link) => [link.userId, link]));
+    const text = input.status === 'CALCULATED'
+      ? `La medición determinística de ahorro ya está disponible para revisión. Recomendación: ${input.recommendationId}. Moneda: ${input.currency}. Periodo observado: ${input.observationStart.toISOString().slice(0, 10)} a ${input.observationEnd.toISOString().slice(0, 10)}.`
+      : `La medición posterior a la ejecución fue actualizada. Recomendación: ${input.recommendationId}. Estado: ${input.status.toLowerCase()}. Moneda: ${input.currency}.`;
+    for (const user of users.filter((item) => item.status === 'ACTIVE')) {
+      const link = activeLinksByUserId.get(user.id);
+      if (link !== undefined) await this.sendTelegram({ tenantId, userId: user.id, chatId: link.chatId, text, messageType: 'SAVINGS_REMINDER' });
+      await this.sendEmail({ tenantId, userId: user.id, to: user.email, subject: 'Actualización de valor realizado FinOps', text, messageType: 'SAVINGS_REMINDER' });
+    }
   }
 
   public async sendAiResponseToUser(input: {

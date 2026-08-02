@@ -65,7 +65,8 @@ export interface RecommendationEvidenceSnapshot {
 export function hashRecommendationEvidenceSnapshot(
   snapshot: Omit<RecommendationEvidenceSnapshot, 'hash'>,
 ): string {
-  return createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+  const { generatedAt: _generatedAt, ...stableFacts } = snapshot;
+  return createHash('sha256').update(JSON.stringify(stableFacts)).digest('hex');
 }
 
 export function formatRecommendationEvidenceSnapshot(snapshot: RecommendationEvidenceSnapshot): string {

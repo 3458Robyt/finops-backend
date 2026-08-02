@@ -9,6 +9,7 @@ import type { CostAllocationService } from '../application/services/CostAllocati
 import type { CloudConnectionService } from '../application/services/CloudConnectionService.js';
 import type { CostAnalyticsService } from '../application/services/CostAnalyticsService.js';
 import type { FinOpsAiService } from '../application/services/FinOpsAiService.js';
+import type { RecommendationAnalysisService } from '../application/services/RecommendationAnalysisService.js';
 import type { AgentInstructionService } from '../application/services/AgentInstructionService.js';
 import type { ContextSummaryBuilderService } from '../application/services/ContextSummaryBuilderService.js';
 import type { OutboundMessageService } from '../application/services/OutboundMessageService.js';
@@ -22,6 +23,7 @@ import type { IAgentLearningService } from '../domain/interfaces/IAgentLearningS
 import type { ICostRepository } from '../domain/interfaces/ICostRepository.js';
 import type { IRecommendationRepository } from '../domain/interfaces/IRecommendationRepository.js';
 import type { ITokenService } from '../domain/interfaces/ITokenService.js';
+import type { ValueRealizationService } from '../application/services/ValueRealizationService.js';
 import { AgentController } from './controllers/AgentController.js';
 import { BudgetController } from './controllers/BudgetController.js';
 import { CostAllocationController } from './controllers/CostAllocationController.js';
@@ -35,8 +37,10 @@ import { MasterAdminController } from './controllers/MasterAdminController.js';
 import { NotificationController } from './controllers/NotificationController.js';
 import { OutboundMessageController } from './controllers/OutboundMessageController.js';
 import { RecommendationController } from './controllers/RecommendationController.js';
+import { RecommendationAnalysisController } from './controllers/RecommendationAnalysisController.js';
 import { TechnicalMetricsController } from './controllers/TechnicalMetricsController.js';
 import { TelegramController } from './controllers/TelegramController.js';
+import { ValueRealizationController } from './controllers/ValueRealizationController.js';
 import { createAuthMiddleware, requireRole } from './middleware/authMiddleware.js';
 import { createAgentRoutes } from './routes/agentRoutes.js';
 import { createBudgetRoutes } from './routes/budgetRoutes.js';
@@ -54,6 +58,7 @@ import { createOutboundMessageRoutes } from './routes/outboundMessageRoutes.js';
 import { createRecommendationRoutes } from './routes/recommendationRoutes.js';
 import { createTechnicalMetricsRoutes } from './routes/technicalMetricsRoutes.js';
 import { createTelegramRoutes } from './routes/telegramRoutes.js';
+import { createValueRealizationRoutes } from './routes/valueRealizationRoutes.js';
 
 /**
  * Dependencias inyectadas en el servidor Express.
@@ -76,6 +81,7 @@ interface ServerDependencies {
   readonly analyticsService: CostAnalyticsService;
   /** Servicio de IA FinOps (chat y generación de recomendaciones). */
   readonly aiService: FinOpsAiService;
+  readonly recommendationAnalysisService: RecommendationAnalysisService;
   /** Servicio de instrucciones/perfil del agente. */
   readonly agentInstructionService: AgentInstructionService;
   /** Repositorio del contexto del agente (perfiles, reglas, trazas). */
@@ -103,6 +109,7 @@ interface ServerDependencies {
   readonly recommendationRepository: IRecommendationRepository;
   /** Servicio de tokens usado por el middleware de autenticación. */
   readonly tokenService: ITokenService;
+  readonly valueRealizationService: ValueRealizationService;
 }
 
 /**
@@ -199,6 +206,9 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   });
 
   const aiController = new AiController(dependencies.aiService, dependencies.learningService);
+  const recommendationAnalysisController = new RecommendationAnalysisController(
+    dependencies.recommendationAnalysisService,
+  );
   const budgetController = new BudgetController(dependencies.budgetService);
   const costAllocationController = new CostAllocationController(dependencies.costAllocationService);
   const agentController = new AgentController(
@@ -219,6 +229,7 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
     dependencies.recommendationRepository,
     dependencies.aiService,
     dependencies.learningService,
+    dependencies.valueRealizationService,
   );
 const kpiController = new KpiController(dependencies.recommendationRepository);
 const notificationController = new NotificationController(dependencies.savingsReminderService);
@@ -230,8 +241,15 @@ const telegramController = new TelegramController(
     dependencies.telegramEnabled,
   );
   const masterAdminController = new MasterAdminController(dependencies.masterAdminService);
+  const valueRealizationController = new ValueRealizationController(dependencies.valueRealizationService);
   const requireAuth = createAuthMiddleware(dependencies.tokenService);
   const requireCloudManager = requireRole([
+    'ADMIN',
+    'MASTER_ADMIN',
+    'OPERATOR_ADMIN',
+    'FINOPS_TECHNICIAN',
+  ]);
+  const requireValueRealizationReconcile = requireRole([
     'ADMIN',
     'MASTER_ADMIN',
     'OPERATOR_ADMIN',
@@ -245,7 +263,10 @@ const telegramController = new TelegramController(
   app.use('/api/v1/telegram/webhook', telegramWebhookLimiter);
 
   app.use('/api/v1/agent', createAgentRoutes(agentController, requireAuth));
-  app.use('/api/v1/ai', createAiRoutes(aiController, requireAuth));
+  app.use(
+    '/api/v1/ai',
+    createAiRoutes(aiController, recommendationAnalysisController, requireAuth, requireCloudManager),
+  );
   app.use('/api/v1/analytics', createAnalyticsRoutes(analyticsController, requireAuth));
   app.use('/api/v1/budgets', createBudgetRoutes(budgetController, requireAuth));
   app.use('/api/v1/cost-allocation', createCostAllocationRoutes(costAllocationController, requireAuth));
@@ -260,6 +281,7 @@ app.use('/api/v1/notifications', createNotificationRoutes(notificationController
 app.use('/api/v1/outbound-messages', createOutboundMessageRoutes(outboundMessageController, requireAuth));
 app.use('/api/v1/recommendations', createRecommendationRoutes(recommendationController, requireAuth));
   app.use('/api/v1/telegram', createTelegramRoutes(telegramController, requireAuth));
+  app.use('/api/v1/value-realization', createValueRealizationRoutes(valueRealizationController, requireAuth, requireValueRealizationReconcile));
 
   app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });

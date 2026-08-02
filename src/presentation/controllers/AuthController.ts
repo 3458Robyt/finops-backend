@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AuthService } from '../../application/services/AuthService.js';
 import { AuthenticationError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -59,12 +60,15 @@ export class AuthController {
 
     try {
       const userAgent = req.header('user-agent');
-      const result = await this.authService.login({
+      const result = await runWithDatabaseContext({
+        loginEmail: parsed.data.email,
+        requestId: res.locals.requestId,
+      }, () => this.authService.login({
         email: parsed.data.email,
         password: parsed.data.password,
         ...(req.ip !== undefined ? { ipAddress: req.ip } : {}),
         ...(userAgent !== undefined ? { userAgent } : {}),
-      });
+      }));
 
       res.status(200).json({
         success: true,

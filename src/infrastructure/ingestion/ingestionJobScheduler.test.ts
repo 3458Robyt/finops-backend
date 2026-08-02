@@ -34,6 +34,7 @@ describe('buildIngestionSchedulePlan', () => {
         metadata: {
           awsMetricDefinitions: [{ metricName: 'CPUUtilization' }],
           awsFocusExportLocations: [{ bucket: 'finops', prefix: 'focus/' }],
+          capabilityValidation: capabilityValidation(['IDENTITY', 'METRICS', 'STORAGE']),
         },
         credentials: [{ purpose: 'OPERATIONAL', status: 'ACTIVE' }],
       }),
@@ -95,7 +96,7 @@ describe('buildIngestionSchedulePlan', () => {
   it('uses the provider API for billing in AUTO mode when no FOCUS export is configured', () => {
     const plan = buildIngestionSchedulePlan([
       buildAwsConnection({
-        metadata: {},
+        metadata: { capabilityValidation: capabilityValidation(['IDENTITY', 'COSTS']) },
         credentials: [{ purpose: 'OPERATIONAL', status: 'ACTIVE' }],
       }),
     ], defaultOptions);
@@ -112,6 +113,33 @@ describe('buildIngestionSchedulePlan', () => {
         reason: 'No hay metadata configurada para programar esta fuente sin inventar datos.',
       }),
     ]);
+  });
+
+  it('skips every source when the connection has not been validated after configuration changes', () => {
+    const plan = buildIngestionSchedulePlan([
+      buildOciConnection({ lastValidatedAt: null }),
+    ], defaultOptions);
+
+    expect(plan.jobs).toEqual([]);
+    expect(plan.skipped).toHaveLength(2);
+    expect(plan.skipped.every((item) => item.reason === 'La conexión debe validarse después de su última modificación.')).toBe(true);
+  });
+
+  it('requires the source-specific capability from the latest validation', () => {
+    const plan = buildIngestionSchedulePlan([
+      buildOciConnection({
+        metadata: {
+          ociMetricDefinitions: [{ metricName: 'CpuUtilization' }],
+          capabilityValidation: capabilityValidation(['IDENTITY']),
+        },
+      }),
+    ], defaultOptions);
+
+    expect(plan.jobs).toEqual([]);
+    expect(plan.skipped).toContainEqual(expect.objectContaining({
+      sourceType: 'TECHNICAL_METRIC',
+      reason: 'La validación vigente no confirmó la capacidad METRICS para esta fuente.',
+    }));
   });
 
   it('skips sources without active read credentials', () => {
@@ -136,8 +164,10 @@ function buildOciConnection(
     id: 'oci_1',
     tenantId: 'tenant_1',
     providerCode: 'oci',
+    lastValidatedAt: new Date('2026-06-05T10:00:00.000Z'),
     metadata: {
       ociMetricDefinitions: [{ metricName: 'CpuUtilization' }],
+      capabilityValidation: capabilityValidation(['IDENTITY', 'METRICS', 'COSTS']),
     },
     credentials: [{ purpose: 'OPERATIONAL', status: 'ACTIVE' }],
     ingestionJobs: [],
@@ -152,11 +182,20 @@ function buildAwsConnection(
     id: 'aws_1',
     tenantId: 'tenant_1',
     providerCode: 'aws',
+    lastValidatedAt: new Date('2026-06-05T10:00:00.000Z'),
     metadata: {
       awsMetricDefinitions: [{ metricName: 'CPUUtilization' }],
+      capabilityValidation: capabilityValidation(['IDENTITY', 'METRICS', 'COSTS']),
     },
     credentials: [{ purpose: 'METRICS_READ', status: 'ACTIVE' }],
     ingestionJobs: [],
     ...overrides,
+  };
+}
+
+function capabilityValidation(capabilities: readonly string[]): Readonly<Record<string, unknown>> {
+  return {
+    checkedAt: '2026-06-05T10:00:00.000Z',
+    capabilities: capabilities.map((capability) => ({ capability, status: 'AVAILABLE' })),
   };
 }

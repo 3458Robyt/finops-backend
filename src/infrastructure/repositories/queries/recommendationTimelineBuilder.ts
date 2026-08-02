@@ -23,11 +23,13 @@ import {
   toExecutionPlanDomain,
   toManualExecutionDomain,
 } from '../mappers/recommendationMappers.js';
+import { toDomain as toSavingsMeasurementDomain } from './recommendationSavingsMeasurementQueries.js';
 
 type RecommendationRow = Awaited<ReturnType<PrismaClient['recommendation']['findFirst']>> & {};
 type ExecutionPlanRows = Awaited<ReturnType<PrismaClient['recommendationExecutionPlan']['findMany']>>;
 type DecisionRows = Awaited<ReturnType<PrismaClient['recommendationDecision']['findMany']>>;
 type ManualExecutionRows = Awaited<ReturnType<PrismaClient['recommendationManualExecution']['findMany']>>;
+type MeasurementRows = Awaited<ReturnType<PrismaClient['recommendationSavingsMeasurement']['findMany']>>;
 type LearningEventRows = Awaited<ReturnType<PrismaClient['agentLearningEvent']['findMany']>>;
 
 /**
@@ -51,6 +53,7 @@ export function buildRecommendationTimeline(
   plans: ExecutionPlanRows,
   decisions: DecisionRows,
   executions: ManualExecutionRows,
+  measurements: MeasurementRows,
   learningEvents: LearningEventRows,
 ): RecommendationTimelineEvent[] {
   const events: RecommendationTimelineEvent[] = [
@@ -90,6 +93,18 @@ export function buildRecommendationTimeline(
       createdAt: execution.createdAt,
       metadata: toManualExecutionDomain(execution),
     })),
+    ...measurements.map((measurement): RecommendationTimelineEvent => ({
+      id: measurement.id,
+      type: 'SAVINGS_MEASUREMENT',
+      title: savingsMeasurementTitle(measurement.status),
+      description: savingsMeasurementDescription(
+        measurement.status,
+        measurement.projectedMonthlySavings,
+        measurement.costIncreaseMonthlyAmount,
+      ),
+      createdAt: measurement.createdAt,
+      metadata: toSavingsMeasurementDomain(measurement),
+    })),
     ...learningEvents.map((event): RecommendationTimelineEvent => ({
       id: event.id,
       type: 'LEARNING_EVENT',
@@ -107,4 +122,26 @@ export function buildRecommendationTimeline(
   ];
 
   return events.sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+}
+
+function savingsMeasurementTitle(status: string): string {
+  const titles: Record<string, string> = {
+    WAITING_FOR_DATA: 'Medición de ahorro en espera de datos',
+    READY: 'Medición de ahorro lista',
+    CALCULATED: 'Ahorro calculado',
+    INSUFFICIENT_EVIDENCE: 'Evidencia insuficiente para medir',
+    VERIFIED: 'Ahorro verificado por una persona',
+    REJECTED: 'Medición de ahorro rechazada',
+    FAILED: 'Error en la medición de ahorro',
+  };
+  return titles[status] ?? 'Medición de ahorro';
+}
+
+function savingsMeasurementDescription(status: string, projectedMonthlySavings: unknown, costIncreaseMonthlyAmount: unknown): string {
+  if (status === 'WAITING_FOR_DATA') return 'La ejecución fue registrada; falta completar la ventana posterior.';
+  if (Number(costIncreaseMonthlyAmount ?? 0) > 0) return `Aumento mensual observado: ${Number(costIncreaseMonthlyAmount).toFixed(2)}.`;
+  if (status === 'VERIFIED') return `Ahorro mensual verificado: ${Number(projectedMonthlySavings ?? 0).toFixed(2)}`;
+  if (status === 'INSUFFICIENT_EVIDENCE') return 'No se puede afirmar el ahorro con la evidencia disponible.';
+  if (status === 'CALCULATED') return `Resultado determinístico: ${Number(projectedMonthlySavings ?? 0).toFixed(2)} mensual.`;
+  return `Estado ${status}`;
 }

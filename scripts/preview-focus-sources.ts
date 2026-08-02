@@ -1,5 +1,6 @@
 import 'dotenv/config';
-import * as oci from 'oci-sdk';
+import * as common from 'oci-common';
+import * as objectstorage from 'oci-objectstorage';
 import { ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 import { AssumeRoleCommand, STSClient } from '@aws-sdk/client-sts';
 import type { AwsCredentialIdentity } from '@smithy/types';
@@ -95,7 +96,7 @@ async function previewOci(
   connection: LoadedConnection,
   locations: readonly Extract<ReturnType<typeof readFocusSourcePreviewConfig>['locations'][number], { provider: 'oci' }>[],
 ): Promise<readonly PreviewObject[]> {
-  const client = new oci.objectstorage.ObjectStorageClient({
+  const client = new objectstorage.ObjectStorageClient({
     authenticationDetailsProvider: createOciAuthProvider(connection),
   });
   const objects: PreviewObject[] = [];
@@ -167,20 +168,20 @@ async function assumeAwsRole(
   };
 }
 
-function createOciAuthProvider(connection: LoadedConnection): oci.common.AuthenticationDetailsProvider {
+function createOciAuthProvider(connection: LoadedConnection): common.AuthenticationDetailsProvider {
   const credential = getCredential(connection.credentials, ['BILLING_EXPORT_READ', 'STORAGE_READ', 'OPERATIONAL']);
   if (credential === undefined) {
     throw new Error('OCI BILLING_EXPORT_READ, STORAGE_READ or OPERATIONAL credential is required');
   }
 
   const regionId = optionalString(credential.payload['region']) ?? connection.defaultRegion ?? 'sa-bogota-1';
-  return new oci.common.SimpleAuthenticationDetailsProvider(
+  return new common.SimpleAuthenticationDetailsProvider(
     requireString(credential.payload['tenancyId'], 'OCI tenancyId'),
     requireString(credential.payload['userId'], 'OCI userId'),
     requireString(credential.payload['fingerprint'], 'OCI fingerprint'),
     requireString(credential.payload['privateKey'], 'OCI privateKey'),
     optionalString(credential.payload['passphrase']) ?? null,
-    oci.common.Region.fromRegionId(regionId),
+    common.Region.fromRegionId(regionId),
   );
 }
 

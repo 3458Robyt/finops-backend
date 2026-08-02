@@ -54,6 +54,7 @@ export async function runPrismaIngestionJobScheduler(
       id: true,
       tenantId: true,
       providerCode: true,
+      lastValidatedAt: true,
       metadata: true,
       credentials: {
         select: {

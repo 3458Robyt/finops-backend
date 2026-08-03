@@ -23,6 +23,7 @@ export interface E2eFixtureManifest {
     readonly name: string;
     readonly slug: string;
   }[];
+  readonly billingPeriod: string;
   readonly recommendationIds: readonly string[];
   readonly resourceIds: readonly string[];
 }
@@ -166,6 +167,7 @@ export async function cleanupE2eFixtures(prisma: PrismaClient, runId?: string): 
 export async function createE2eFixtures(prisma: PrismaClient, runId = generateRunId()): Promise<E2eFixtureManifest> {
   await cleanupE2eFixtures(prisma, runId);
   await ensureProviderCatalog(prisma);
+  const periodStart = recentFixturePeriodStart(new Date());
 
   const password = process.env['E2E_PASSWORD'] ?? `FinOps-${runId}-Test!`;
   const passwordHash = await argon2.hash(password);
@@ -204,6 +206,7 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
     resourceId: `i-${runId.slice(0, 8)}`,
     resourceName: `e2e-ec2-${runId}`,
     serviceName: 'Amazon Elastic Compute Cloud',
+    periodStart,
   });
 
   await seedTenantData(prisma, {
@@ -216,6 +219,7 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
     resourceId: `ocid1.instance.oc1.iad.${runId}`,
     resourceName: `e2e-oci-${runId}`,
     serviceName: 'Oracle Compute',
+    periodStart,
   });
 
   return {
@@ -230,6 +234,7 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
       { id: tenantA.id, name: tenantA.name, slug: tenantA.slug },
       { id: tenantB.id, name: tenantB.name, slug: tenantB.slug },
     ],
+    billingPeriod: periodStart.toISOString().slice(0, 7),
     recommendationIds: [tenantAFixture.recommendationId],
     resourceIds: [tenantAFixture.resourceId],
   };
@@ -278,10 +283,11 @@ async function seedTenantData(
     readonly resourceId: string;
     readonly resourceName: string;
     readonly serviceName: string;
+    readonly periodStart: Date;
   },
 ): Promise<{ readonly recommendationId: string; readonly resourceId: string }> {
   const now = new Date();
-  const periodStart = recentFixturePeriodStart(now);
+  const { periodStart } = input;
   const latestTechnicalSampleAt = new Date(periodStart);
   latestTechnicalSampleAt.setUTCMinutes((14 * 48 - 1) * 30);
   const technicalEvidenceRef = `resource_metric_samples:${input.resourceId}:CPUUtilization:${latestTechnicalSampleAt.toISOString()}`;

@@ -28,6 +28,7 @@ const loginBody = await login.response.json() as {
   readonly availableTenants: readonly { readonly id: string }[];
 };
 let token = loginBody.accessToken;
+const billingPeriod = manifest.billingPeriod;
 
 await check('health', `${apiBaseUrl.replace(/\/api\/v1$/, '')}/health`);
 await check('auth tenants', '/auth/tenants', token);
@@ -41,31 +42,31 @@ assertOk(allocationRule, 'create allocation rule');
 const allocationRuleBody = await allocationRule.response.json() as { readonly rule: { readonly id: string } };
 const allocationPreview = await request('/cost-allocation/preview', {
   method: 'POST', token,
-  body: JSON.stringify({ period: '2026-05', rule: { name: 'E2E preview', priority: 10, status: 'DRAFT', serviceName: 'Amazon Elastic Compute Cloud', costCenter: 'E2E-CC' } }),
+  body: JSON.stringify({ period: billingPeriod, rule: { name: 'E2E preview', priority: 10, status: 'DRAFT', serviceName: 'Amazon Elastic Compute Cloud', costCenter: 'E2E-CC' } }),
 });
 assertOk(allocationPreview, 'preview allocation rule');
 const allocationPreviewBody = await allocationPreview.response.json() as { readonly preview: { readonly metricCount: number } };
 if (allocationPreviewBody.preview.metricCount === 0) throw new Error('Allocation preview did not match the fixture cost.');
 const activatedAllocationRule = await request(`/cost-allocation/rules/${encodeURIComponent(allocationRuleBody.rule.id)}/activate`, { method: 'POST', token });
 assertOk(activatedAllocationRule, 'activate allocation rule');
-const allocationSummary = await request('/cost-allocation/summary?period=2026-05', { token });
+const allocationSummary = await request(`/cost-allocation/summary?period=${encodeURIComponent(billingPeriod)}`, { token });
 assertOk(allocationSummary, 'allocation summary');
 const allocationSummaryBody = await allocationSummary.response.json() as { readonly summary: readonly { readonly allocatedCost: number }[] };
 if (!allocationSummaryBody.summary.some((item) => item.allocatedCost > 0)) throw new Error('Allocation activation did not reduce unallocated fixture cost.');
-await check('allocation comparison', '/cost-allocation/comparison?period=2026-05', token);
-await check('allocation unallocated', '/cost-allocation/unallocated?period=2026-05', token);
-await check('allocation csv', '/cost-allocation/export.csv?period=2026-05', token);
+await check('allocation comparison', `/cost-allocation/comparison?period=${encodeURIComponent(billingPeriod)}`, token);
+await check('allocation unallocated', `/cost-allocation/unallocated?period=${encodeURIComponent(billingPeriod)}`, token);
+await check('allocation csv', `/cost-allocation/export.csv?period=${encodeURIComponent(billingPeriod)}`, token);
 const createdBudget = await request('/budgets', {
   method: 'POST',
   token,
-  body: JSON.stringify({ scope: 'TENANT', period: '2026-05', amount: 100, currency: 'USD' }),
+  body: JSON.stringify({ scope: 'TENANT', period: billingPeriod, amount: 100, currency: 'USD' }),
 });
 assertOk(createdBudget, 'create budget');
 const budgetBody = await createdBudget.response.json() as { readonly budget: { readonly id: string } };
 const duplicateBudget = await request('/budgets', {
   method: 'POST',
   token,
-  body: JSON.stringify({ scope: 'TENANT', period: '2026-05', amount: 100, currency: 'USD' }),
+  body: JSON.stringify({ scope: 'TENANT', period: billingPeriod, amount: 100, currency: 'USD' }),
 });
 if (duplicateBudget.response.status !== 400) {
   throw new Error(`Expected duplicate budget to return 400, got ${duplicateBudget.response.status}.`);

@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type {
@@ -136,6 +136,33 @@ describe('TechnicalRecommendationEvidenceService', () => {
     expect(repository.summaryFilters?.externalResourceIds).toEqual(['ocid1.instance.oc1.test']);
     expect(evidence).toContain('ocid1.instance.oc1.test');
     expect(evidence).not.toContain('ocid1.instance.other');
+  });
+
+  test('does not treat a future monthly period end as stale technical evidence', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-20T12:00:00.000Z'));
+    try {
+      const repository = new FakeResourceMetricRepository();
+      repository.summaries = [{
+        ...metricSummary('CpuUtilization', 8, 25),
+        firstSampledAt: new Date('2026-06-06T00:00:00.000Z'),
+        latestSampledAt: new Date('2026-06-19T23:30:00.000Z'),
+      }];
+      const service = new TechnicalRecommendationEvidenceService(repository);
+
+      const evidence = await service.buildRecommendationEvidenceSnapshot({
+        tenantId: 'tenant-1',
+        snapshot: {
+          ...snapshot,
+          periodStart: '2026-06-01T00:00:00.000Z',
+          periodEnd: '2026-07-01T00:00:00.000Z',
+        },
+      });
+
+      expect(evidence.deterministicRules[0]?.blockers).not.toContain('INSUFFICIENT_TECHNICAL_COVERAGE');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

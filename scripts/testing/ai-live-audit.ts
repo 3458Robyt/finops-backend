@@ -42,7 +42,10 @@ const recommendationLatencyMs = Date.now() - recommendationStartedAt;
 checks.push({
   name: 'endpoint_recomendaciones_responde',
   passed: generatedResult.ok,
-  detail: generatedResult.ok ? 'HTTP 200' : `HTTP ${generatedResult.status}: ${JSON.stringify(generatedResult.body).slice(0, 300)}`,
+  detail: generatedResult.ok ? 'HTTP 200' : JSON.stringify({
+    status: generatedResult.status,
+    ...summarizeAiFailure(generatedResult.body),
+  }),
 });
 const generated = generatedResult.ok ? generatedResult.body : {};
 const recommendations = Array.isArray(generated['recommendations']) ? generated['recommendations'] as Record<string, unknown>[] : [];
@@ -197,4 +200,14 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function readNonNegativeNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function summarizeAiFailure(body: Record<string, unknown>): Record<string, unknown> {
+  const audit = asRecord(body['audit']);
+  return {
+    error: body['error'],
+    code: body['code'],
+    diagnosticId: body['diagnosticId'],
+    ...(audit === undefined ? {} : { audit }),
+  };
 }

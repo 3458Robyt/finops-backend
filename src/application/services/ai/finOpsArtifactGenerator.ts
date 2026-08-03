@@ -13,6 +13,11 @@ import type { AiRecommendationDraft } from './finOpsAiTypes.js';
 import type { AiTraceRecorder } from './aiTraceRecorder.js';
 import type { RecommendationEvidenceSnapshot } from './RecommendationEvidenceSnapshot.js';
 import type { DeterministicTrendAnalysis } from './DeterministicTrendAnalysis.js';
+import type {
+  RecommendationOpportunityCandidate,
+  RecommendationReadinessReport,
+} from './RecommendationReadinessGate.js';
+import { isRecord } from './jsonReadHelpers.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -76,21 +81,41 @@ export class FinOpsArtifactGenerator {
     externalResourceId?: string,
     technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot,
     deterministicAnalysis?: DeterministicTrendAnalysis,
+    readinessReport?: RecommendationReadinessReport,
     onAuditStart?: () => Promise<void> | void,
   ): Promise<AuditedDraftsResult> {
     const firstRawResponse = await this.requestRecommendations(systemPrompt);
-    let drafts = this.withTenant(parseRecommendationDrafts(firstRawResponse, snapshot), tenantId);
+    let drafts = this.withTenant(
+      normalizeRecommendationDrafts(
+        parseRecommendationDrafts(firstRawResponse, snapshot),
+        readinessReport,
+        technicalEvidenceSnapshot,
+      ),
+      tenantId,
+    );
     await onAuditStart?.();
     let auditReport = await this.auditArtifact(
       'recommendations', snapshot, undefined, tenantId, userId, drafts, technicalEvidenceSnapshot, deterministicAnalysis,
     );
 
-    if (auditReport.verdict === 'NEEDS_REVISION') {
+    const repairInstructions = auditReport.repairInstructions ?? auditReport.requiredChanges;
+    const hasRepairInstructions = (auditReport.repairInstructions?.length ?? 0) > 0;
+    if (auditReport.verdict === 'NEEDS_REVISION' || (
+      auditReport.verdict === 'REJECTED' &&
+      hasRepairInstructions
+    )) {
       const revisedRaw = await this.requestRecommendationRevision(
         systemPrompt,
-        auditReport.repairInstructions ?? auditReport.requiredChanges,
+        repairInstructions,
       );
-      drafts = this.withTenant(parseRecommendationDrafts(revisedRaw, snapshot), tenantId);
+      drafts = this.withTenant(
+        normalizeRecommendationDrafts(
+          parseRecommendationDrafts(revisedRaw, snapshot),
+          readinessReport,
+          technicalEvidenceSnapshot,
+        ),
+        tenantId,
+      );
       await onAuditStart?.();
       auditReport = await this.auditArtifact(
         'recommendations', snapshot, undefined, tenantId, userId, drafts, technicalEvidenceSnapshot, deterministicAnalysis,
@@ -309,4 +334,158 @@ export class FinOpsArtifactGenerator {
       deterministicReport: quality,
     } as AiAuditReport;
   }
+}
+
+function normalizeRecommendationDrafts(
+  drafts: readonly AiRecommendationDraft[],
+  readinessReport: RecommendationReadinessReport | undefined,
+  technicalEvidenceSnapshot: RecommendationEvidenceSnapshot | undefined,
+): readonly AiRecommendationDraft[] {
+  if (readinessReport === undefined) {
+    return drafts;
+  }
+
+  return drafts.map((draft) => {
+    const candidate = findCandidate(draft, readinessReport.candidates);
+    if (candidate === undefined) {
+      return draft;
+    }
+
+    const existingEvidence = isRecord(draft.evidence) ? draft.evidence : {};
+    const technicalResource = candidate.resourceId === undefined || technicalEvidenceSnapshot === undefined
+      ? undefined
+      : technicalEvidenceSnapshot.resources.find((resource) => resource.externalResourceId === candidate.resourceId);
+    const primaryMetric = technicalResource?.metrics.find((metric) => /cpu|memory/i.test(metric.metricName))
+      ?? technicalResource?.metrics[0];
+    const technicalFields = technicalResource !== undefined && primaryMetric !== undefined
+      ? {
+          externalResourceId: technicalResource.externalResourceId,
+          ...(technicalResource.cloudResourceId !== undefined ? { cloudResourceId: technicalResource.cloudResourceId } : {}),
+          technicalEvidenceRefs: technicalResource.metrics.map((metric) => metric.evidenceRef),
+          technicalSampleCount: primaryMetric.sampleCount,
+          technicalCoverageDays: primaryMetric.coverageDays,
+          latestTechnicalSampleAt: primaryMetric.latestSampledAt,
+          blockers: technicalResource.ruleEvaluation.blockers,
+          ruleMatches: technicalResource.ruleEvaluation.ruleMatches,
+          deterministicRules: technicalResource.ruleEvaluation,
+        }
+      : {};
+    const withoutStaleTechnicalFields = technicalResource !== undefined
+      ? removeTechnicalEvidenceFields(existingEvidence)
+      : candidate.resourceId === undefined
+        ? removeTechnicalEvidenceFields(existingEvidence)
+        : existingEvidence;
+    const requiresTechnicalValidation = candidate.requiresTechnicalValidation
+      || technicalResource !== undefined
+      || existingEvidence['requiresTechnicalValidation'] === true;
+    const safeType = technicalResource !== undefined && requiresTechnicalValidation
+      ? 'PERFORMANCE_CAPACITY_REVIEW'
+      : candidate.opportunityType;
+    const safeTitle = technicalResource !== undefined && requiresTechnicalValidation
+      ? `Revisar capacidad y rendimiento de ${technicalResource.externalResourceId}`
+      : candidate.resourceId === undefined
+        ? `Revisar costo y consumo de ${candidate.serviceName}`
+        : draft.title;
+    const safeDescription = technicalResource !== undefined && requiresTechnicalValidation
+      ? [
+          `Revisar la capacidad y el rendimiento del recurso ${technicalResource.externalResourceId}.`,
+          candidate.sourceFacts.join(' '),
+          'La evidencia permite priorizar una revisión, pero no autoriza reducción, resize ni otro cambio operativo; la validación y aprobación manual son obligatorias.',
+        ].join(' ')
+      : candidate.resourceId === undefined
+        ? [
+            candidate.sourceFacts.join(' '),
+            'Esta oportunidad usa únicamente costo y consumo facturado FOCUS; no autoriza cambios operativos ni afirma utilización técnica.',
+          ].join(' ')
+        : draft.description;
+
+    return {
+      ...draft,
+      type: safeType,
+      title: safeTitle,
+      description: safeDescription,
+      evidence: {
+        ...withoutStaleTechnicalFields,
+        candidateId: candidate.id,
+        evidenceLevel: candidate.evidenceLevelAllowed,
+        evidenceStrength: candidate.evidenceStrength ?? withoutStaleTechnicalFields['evidenceStrength'] ?? 'MEDIUM',
+        sourceFacts: candidate.sourceFacts,
+        requiresTechnicalValidation,
+        maxEstimatedMonthlySavings: candidate.maxEstimatedMonthlySavings,
+        readiness: candidate.readiness,
+        ...technicalFields,
+      },
+    };
+  });
+}
+
+function findCandidate(
+  draft: AiRecommendationDraft,
+  candidates: readonly RecommendationOpportunityCandidate[],
+): RecommendationOpportunityCandidate | undefined {
+  const evidence = isRecord(draft.evidence) ? draft.evidence : {};
+  const explicitId = typeof evidence['candidateId'] === 'string' ? evidence['candidateId'] : undefined;
+  if (explicitId !== undefined) {
+    const explicit = candidates.find((candidate) => candidate.id === explicitId);
+    if (explicit !== undefined) return explicit;
+  }
+
+  const externalResourceId = typeof evidence['externalResourceId'] === 'string'
+    ? evidence['externalResourceId']
+    : undefined;
+  if (externalResourceId !== undefined) {
+    const resource = candidates.find((candidate) => candidate.resourceId === externalResourceId);
+    if (resource !== undefined) return resource;
+  }
+
+  const normalizedType = draft.type.toUpperCase();
+  const exact = uniqueCandidate(candidates, (candidate) => candidate.opportunityType.toUpperCase() === normalizedType);
+  if (exact !== undefined) return exact;
+
+  const resourceAlias = new Set([
+    'TECHNICAL_OPTIMIZATION',
+    'COMPUTE_OPTIMIZATION',
+    'COMPUTE_RIGHTSIZING',
+    'CAPACITY_OPTIMIZATION',
+    'CAPACITY_REVIEW',
+  ]);
+  if (resourceAlias.has(normalizedType)) {
+    return uniqueCandidate(candidates, (candidate) => candidate.resourceId !== undefined);
+  }
+
+  const serviceAlias = new Set(['COST_OPTIMIZATION', 'SERVICE_OPTIMIZATION', 'COST_REVIEW']);
+  if (serviceAlias.has(normalizedType)) {
+    return uniqueCandidate(candidates, (candidate) => candidate.id.startsWith('service-'));
+  }
+
+  const usageAlias = new Set(['CONSUMPTION_OPTIMIZATION', 'USAGE_REVIEW']);
+  if (usageAlias.has(normalizedType)) {
+    return uniqueCandidate(candidates, (candidate) => candidate.id.startsWith('usage-'));
+  }
+
+  return undefined;
+}
+
+function uniqueCandidate(
+  candidates: readonly RecommendationOpportunityCandidate[],
+  predicate: (candidate: RecommendationOpportunityCandidate) => boolean,
+): RecommendationOpportunityCandidate | undefined {
+  const matches = candidates.filter(predicate);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function removeTechnicalEvidenceFields(evidence: Record<string, unknown>): Record<string, unknown> {
+  const {
+    externalResourceId: _externalResourceId,
+    cloudResourceId: _cloudResourceId,
+    technicalEvidenceRefs: _technicalEvidenceRefs,
+    technicalSampleCount: _technicalSampleCount,
+    technicalCoverageDays: _technicalCoverageDays,
+    latestTechnicalSampleAt: _latestTechnicalSampleAt,
+    blockers: _blockers,
+    ruleMatches: _ruleMatches,
+    deterministicRules: _deterministicRules,
+    ...rest
+  } = evidence;
+  return rest;
 }

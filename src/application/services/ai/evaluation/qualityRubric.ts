@@ -388,10 +388,15 @@ function isRecentTechnicalSample(latestSampleAt: string | undefined, snapshot: C
   }
 
   const latest = new Date(latestSampleAt);
-  const reference = new Date(snapshot.periodEnd);
-  if (Number.isNaN(latest.getTime()) || Number.isNaN(reference.getTime())) {
+  const periodEnd = new Date(snapshot.periodEnd);
+  if (Number.isNaN(latest.getTime()) || Number.isNaN(periodEnd.getTime())) {
     return false;
   }
+
+  // Monthly billing snapshots can end in the future while the technical
+  // samples stop at "now". Use the earlier instant so fresh samples are not
+  // rejected solely because the billing period is still open.
+  const reference = new Date(Math.min(periodEnd.getTime(), Date.now()));
 
   const ageDays = (reference.getTime() - latest.getTime()) / (24 * 60 * 60 * 1000);
   return ageDays >= 0 && ageDays <= 7;

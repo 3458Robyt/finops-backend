@@ -106,7 +106,11 @@ function buildResources(
         provider: first.provider,
         ...(first.resourceType !== undefined ? { resourceType: first.resourceType } : {}),
         ...(first.serviceName !== undefined ? { serviceName: first.serviceName } : {}),
-        linkQuality: cost === undefined ? 'TECHNICAL_ONLY' : 'COST_AND_TECHNICAL',
+        linkQuality: cost !== undefined
+          && first.cloudResourceId !== undefined
+          && cost.cloudResourceId === first.cloudResourceId
+          ? 'COST_AND_TECHNICAL'
+          : 'TECHNICAL_ONLY',
         ...(cost !== undefined ? { cost: toCost(cost) } : {}),
         usage: (snapshot.topUsage ?? [])
           .filter((usage) => usage.provider === first.provider && usage.serviceName === first.serviceName)
@@ -131,6 +135,7 @@ function buildResources(
 
 function toCost(cost: TechnicalCostContextItem): NonNullable<RecommendationEvidenceResource['cost']> {
   return {
+    ...(cost.cloudResourceId !== undefined ? { cloudResourceId: cost.cloudResourceId } : {}),
     totalCost: round(cost.totalCost),
     currency: cost.currency,
     focusMetricCount: cost.metricCount,

@@ -8,6 +8,10 @@ export interface FinOpsRecommendation {
   readonly id: string;
   /** Cuenta cloud a la que aplica la recomendación. */
   readonly cloudAccountId: string;
+  /** Recurso normalizado al que aplica, cuando la oportunidad es por recurso. */
+  readonly cloudResourceId?: string;
+  /** Motivo por el que no existe un enlace seguro al inventario. */
+  readonly resourceLinkReason?: string;
   /** Tipo de recomendación (e.g., rightsizing, eliminación de recursos ociosos). */
   readonly type: string;
   /**

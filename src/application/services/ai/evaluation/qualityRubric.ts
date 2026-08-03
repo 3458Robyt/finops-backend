@@ -296,7 +296,7 @@ function hasStrongTechnicalEvidence(
   const sampleCount = readNumericEvidence(draft.evidence, 'technicalSampleCount');
   const coverageDays = readNumericEvidence(draft.evidence, 'technicalCoverageDays');
   const latestSampleAt = readStringEvidence(draft.evidence, 'latestTechnicalSampleAt');
-  const hasResourceLink = readStringEvidence(draft.evidence, 'cloudResourceId') !== undefined ||
+  const hasResourceLink = readStringEvidence(draft.evidence, 'cloudResourceId') !== undefined &&
     readStringEvidence(draft.evidence, 'externalResourceId') !== undefined;
 
   const legacyStrong = evidenceRefs.length > 0 &&
@@ -318,12 +318,18 @@ function matchesCanonicalTechnicalEvidence(
   }
 
   const externalResourceId = readStringEvidence(draft.evidence, 'externalResourceId');
-  if (externalResourceId === undefined) {
+  const cloudResourceId = readStringEvidence(draft.evidence, 'cloudResourceId');
+  if (externalResourceId === undefined || cloudResourceId === undefined) {
     return false;
   }
 
   const resource = snapshot.resources.find((item) => item.externalResourceId === externalResourceId);
-  if (resource === undefined || resource.linkQuality !== 'COST_AND_TECHNICAL') {
+  if (
+    resource === undefined
+    || resource.linkQuality !== 'COST_AND_TECHNICAL'
+    || resource.cloudResourceId === undefined
+    || resource.cloudResourceId !== cloudResourceId
+  ) {
     return false;
   }
 

@@ -13,6 +13,7 @@ export interface RecommendationOpportunityCandidate {
   readonly provider: string;
   readonly serviceName: string;
   readonly resourceId?: string;
+  readonly cloudResourceId?: string;
   readonly opportunityType: string;
   readonly evidenceLevelAllowed: 'COST_ONLY' | 'COST_AND_USAGE' | 'COST_USAGE_AND_TECHNICAL';
   readonly requiresTechnicalValidation: boolean;
@@ -147,6 +148,7 @@ function buildResourceCandidates(
       provider: resource.provider,
       serviceName: resource.serviceName,
       resourceId: resource.resourceId,
+      ...(evidenceResource?.cloudResourceId !== undefined ? { cloudResourceId: evidenceResource.cloudResourceId } : {}),
       opportunityType: ruleEvaluation?.recommendedActionType ?? (hasResourceTechnicalEvidence ? 'TECHNICAL_OPTIMIZATION' : 'TECHNICAL_VALIDATION_REQUIRED'),
       evidenceLevelAllowed:
         readiness === 'GENERATABLE' && hasResourceTechnicalEvidence ? 'COST_USAGE_AND_TECHNICAL' : 'COST_ONLY',

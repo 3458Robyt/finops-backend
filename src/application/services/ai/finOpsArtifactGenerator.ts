@@ -398,9 +398,14 @@ function normalizeRecommendationDrafts(
             'Esta oportunidad usa únicamente costo y consumo facturado FOCUS; no autoriza cambios operativos ni afirma utilización técnica.',
           ].join(' ')
         : draft.description;
+    const normalizedCloudResourceId = technicalResource?.cloudResourceId ?? candidate.cloudResourceId;
 
     return {
       ...draft,
+      ...(normalizedCloudResourceId !== undefined ? { cloudResourceId: normalizedCloudResourceId } : {}),
+      ...(normalizedCloudResourceId === undefined && candidate.resourceId !== undefined
+        ? { resourceLinkReason: 'INVENTORY_RESOURCE_NOT_FOUND' }
+        : {}),
       type: safeType,
       title: safeTitle,
       description: safeDescription,

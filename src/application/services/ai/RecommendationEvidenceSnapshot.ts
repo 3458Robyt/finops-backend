@@ -35,6 +35,7 @@ export interface RecommendationEvidenceResource {
   readonly serviceName?: string;
   readonly linkQuality: 'COST_AND_TECHNICAL' | 'TECHNICAL_ONLY';
   readonly cost?: {
+    readonly cloudResourceId?: string;
     readonly totalCost: number;
     readonly currency: string;
     readonly focusMetricCount: number;

@@ -24,6 +24,7 @@ import type { ICostRepository } from '../domain/interfaces/ICostRepository.js';
 import type { IRecommendationRepository } from '../domain/interfaces/IRecommendationRepository.js';
 import type { ITokenService } from '../domain/interfaces/ITokenService.js';
 import type { ValueRealizationService } from '../application/services/ValueRealizationService.js';
+import type { ResourceLinkageReadinessService } from '../application/services/ResourceLinkageReadinessService.js';
 import { AgentController } from './controllers/AgentController.js';
 import { BudgetController } from './controllers/BudgetController.js';
 import { CostAllocationController } from './controllers/CostAllocationController.js';
@@ -41,6 +42,7 @@ import { RecommendationAnalysisController } from './controllers/RecommendationAn
 import { TechnicalMetricsController } from './controllers/TechnicalMetricsController.js';
 import { TelegramController } from './controllers/TelegramController.js';
 import { ValueRealizationController } from './controllers/ValueRealizationController.js';
+import { ResourceLinkageController } from './controllers/ResourceLinkageController.js';
 import { createAuthMiddleware, requireRole } from './middleware/authMiddleware.js';
 import { createAgentRoutes } from './routes/agentRoutes.js';
 import { createBudgetRoutes } from './routes/budgetRoutes.js';
@@ -110,6 +112,7 @@ interface ServerDependencies {
   /** Servicio de tokens usado por el middleware de autenticación. */
   readonly tokenService: ITokenService;
   readonly valueRealizationService: ValueRealizationService;
+  readonly resourceLinkageReadinessService: ResourceLinkageReadinessService;
 }
 
 /**
@@ -242,6 +245,7 @@ const telegramController = new TelegramController(
   );
   const masterAdminController = new MasterAdminController(dependencies.masterAdminService);
   const valueRealizationController = new ValueRealizationController(dependencies.valueRealizationService);
+  const resourceLinkageController = new ResourceLinkageController(dependencies.resourceLinkageReadinessService);
   const requireAuth = createAuthMiddleware(dependencies.tokenService);
   const requireCloudManager = requireRole([
     'ADMIN',
@@ -273,7 +277,7 @@ const telegramController = new TelegramController(
   app.use('/api/v1/auth', createAuthRoutes(authController, requireAuth));
   app.use('/api/v1/cloud-connections', createCloudConnectionRoutes(cloudConnectionController, requireAuth, requireCloudManager));
   app.use('/api/v1/costs', createCostRoutes(costController, requireAuth));
-  app.use('/api/v1/ingestion', createIngestionRoutes(cloudConnectionController, requireAuth, requireCloudManager));
+  app.use('/api/v1/ingestion', createIngestionRoutes(cloudConnectionController, requireAuth, requireCloudManager, resourceLinkageController));
   app.use('/api/v1/technical-metrics', createTechnicalMetricsRoutes(technicalMetricsController, requireAuth));
   app.use('/api/v1/kpis', createKpiRoutes(kpiController, requireAuth));
 app.use('/api/v1/master-admin', createMasterAdminRoutes(masterAdminController, requireAuth));

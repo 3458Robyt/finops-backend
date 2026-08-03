@@ -19,6 +19,7 @@ describe('focusCostMetricProjection', () => {
       job,
       rows: [row],
       accountIdsByExternalId: new Map([['subaccount-1', 'cloud-account-1']]),
+      resourceIdsByExternalId: new Map([['instance-1', 'cloud-resource-1']]),
     });
 
     expect(getFocusCloudAccountExternalId(job, row)).toBe('subaccount-1');
@@ -35,6 +36,7 @@ describe('focusCostMetricProjection', () => {
       serviceName: 'Compute',
       serviceCategory: 'Compute',
       resourceId: 'instance-1',
+      cloudResourceId: 'cloud-resource-1',
       resourceName: 'vm-1',
       resourceType: 'Compute Instance',
       regionId: 'sa-bogota-1',
@@ -68,6 +70,18 @@ describe('focusCostMetricProjection', () => {
 
     expect(getFocusCloudAccountExternalId(job, row)).toBe('root-tenancy-1');
     expect(getFocusCloudAccountName(job, row)).toBe('root-tenancy-1');
+  });
+
+  it('classifies an unresolved resource id without linking by name', () => {
+    const rows = buildFocusCostMetricRows({
+      job: buildJob(),
+      rows: [buildFocusRow({ resourceId: 'vm-name' })],
+      accountIdsByExternalId: new Map([['subaccount-1', 'cloud-account-1']]),
+      resourceIdsByExternalId: new Map(),
+    });
+
+    expect(rows[0]).toMatchObject({ resourceLinkReason: 'INVENTORY_RESOURCE_NOT_FOUND' });
+    expect(rows[0]?.cloudResourceId).toBeUndefined();
   });
 });
 

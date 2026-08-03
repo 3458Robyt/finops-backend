@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CloudConnectionController } from '../controllers/CloudConnectionController.js';
+import type { ResourceLinkageController } from '../controllers/ResourceLinkageController.js';
 import { createIngestionRoutes } from './ingestionRoutes.js';
 
 describe('createIngestionRoutes', () => {
@@ -12,8 +13,11 @@ describe('createIngestionRoutes', () => {
       listDataQuality: vi.fn(),
       getIngestionReadiness: vi.fn(),
     } as unknown as CloudConnectionController;
+    const resourceLinkageController = {
+      getReadiness: vi.fn(),
+    } as unknown as ResourceLinkageController;
     const allow = (_req: unknown, _res: unknown, next: () => void) => next();
-    const router = createIngestionRoutes(controller, allow as never, allow as never);
+    const router = createIngestionRoutes(controller, allow as never, allow as never, resourceLinkageController);
     const stack = router.stack as readonly {
       readonly route?: {
         readonly path: string;
@@ -30,6 +34,10 @@ describe('createIngestionRoutes', () => {
     const readiness = stack.find((layer) => layer.route?.path === '/readiness' && layer.route.methods['get']);
     expect(readiness).toBeDefined();
     expect(readiness?.route?.stack.at(-1)?.handle).toBe(controller.getIngestionReadiness);
+
+    const resourceLinkage = stack.find((layer) => layer.route?.path === '/resource-linkage' && layer.route.methods['get']);
+    expect(resourceLinkage).toBeDefined();
+    expect(resourceLinkage?.route?.stack.at(-1)?.handle).toBe(resourceLinkageController.getReadiness);
 
     const focusSources = stack.find((layer) => layer.route?.path === '/focus-sources' && layer.route.methods['post']);
     expect(focusSources).toBeDefined();

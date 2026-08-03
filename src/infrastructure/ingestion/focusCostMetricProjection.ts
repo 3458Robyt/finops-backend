@@ -5,6 +5,10 @@ import type {
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import type { Prisma } from '../../generated/prisma/client.js';
 import { CostBillingSource } from '../../generated/prisma/client.js';
+import {
+  normalizeExternalResourceId,
+  resolveExactResourceLink,
+} from '../../domain/models/ResourceLinkage.js';
 
 export function getFocusCloudAccountExternalId(
   job: CloudIngestionJobContext,
@@ -28,6 +32,7 @@ export function buildFocusCostMetricRows(input: {
   readonly job: CloudIngestionJobContext;
   readonly rows: readonly NormalizedFocusCostLineItem[];
   readonly accountIdsByExternalId: ReadonlyMap<string, string>;
+  readonly resourceIdsByExternalId: ReadonlyMap<string, string>;
 }): Prisma.CostMetricCreateManyInput[] {
   return input.rows.map((row) => {
     const accountExternalId = getFocusCloudAccountExternalId(input.job, row);
@@ -47,6 +52,18 @@ export function buildFocusCostMetricRows(input: {
     const chargeFrequency = rawString(row, 'ChargeFrequency');
     const pricingQuantity = rawNumber(row, 'PricingQuantity');
     const pricingUnit = rawString(row, 'PricingUnit');
+    const normalizedResourceId = normalizeExternalResourceId(row.resourceId);
+    const knownResourceId = normalizedResourceId === undefined
+      ? undefined
+      : input.resourceIdsByExternalId.get(normalizedResourceId);
+    const resourceLink = knownResourceId === undefined
+      ? resolveExactResourceLink({
+          cloudConnectionId: row.cloudConnectionId,
+          externalResourceId: normalizedResourceId,
+          resourceIdsByKey: new Map(),
+          serviceLevel: normalizedResourceId === undefined && !Object.prototype.hasOwnProperty.call(row.rawRow, 'ResourceId'),
+        })
+      : { cloudResourceId: knownResourceId };
 
     return {
       tenantId: row.tenantId,
@@ -61,6 +78,8 @@ export function buildFocusCostMetricRows(input: {
       serviceName: row.serviceName,
       ...(serviceCategory !== undefined ? { serviceCategory } : {}),
       resourceId: row.resourceId,
+      ...(resourceLink.cloudResourceId !== undefined ? { cloudResourceId: resourceLink.cloudResourceId } : {}),
+      ...(resourceLink.reason !== undefined ? { resourceLinkReason: resourceLink.reason } : {}),
       ...(resourceName !== undefined ? { resourceName } : {}),
       ...(resourceType !== undefined ? { resourceType } : {}),
       ...(row.regionId !== undefined ? { regionId: row.regionId } : {}),

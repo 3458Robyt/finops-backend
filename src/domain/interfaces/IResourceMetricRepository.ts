@@ -126,6 +126,8 @@ export interface TechnicalMetricCoverageAggregate {
 
 export interface TechnicalCostContextItem {
   readonly externalResourceId: string;
+  /** Recurso normalizado cuando el costo pasó por el enlace exacto de inventario. */
+  readonly cloudResourceId?: string;
   readonly totalCost: number;
   readonly currency: string;
   readonly metricCount: number;

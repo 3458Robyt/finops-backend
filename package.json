@@ -40,6 +40,7 @@
     "ingestion:worker:once": "tsx scripts/run-ingestion-worker-once.ts",
     "ingestion:worker:preflight": "tsx scripts/run-ingestion-worker-once.ts --preflight",
     "ingestion:preview-focus": "tsx scripts/preview-focus-sources.ts",
+    "db:reconcile:resource-links": "tsx scripts/reconcile-resource-links.ts",
     "oci:register-profile": "tsx scripts/register-oci-profile-credential.ts",
     "telegram:set-webhook": "tsx scripts/telegram-set-webhook.ts",
     "users:consolidate-admin-tenants": "tsx scripts/consolidate-admin-tenants.ts"

@@ -774,6 +774,8 @@ model CloudResource {
   tenant             Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   cloudConnection    CloudConnection        @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
   metricSamples      ResourceMetricSample[]
+  costMetrics        CostMetric[]
+  recommendations    Recommendation[]
   agentInstallations AgentInstallation[]
 
   @@unique([cloudConnectionId, externalResourceId])
@@ -787,6 +789,7 @@ model ResourceMetricSample {
   tenantId           String              @map("tenant_id")
   cloudConnectionId  String              @map("cloud_connection_id")
   cloudResourceId    String?             @map("cloud_resource_id")
+  resourceLinkReason String?             @map("resource_link_reason")
   provider           CloudProvider
   externalResourceId String              @map("external_resource_id")
   metricName         String              @map("metric_name")
@@ -855,6 +858,8 @@ model CostMetric {
   tenantId           String        @map("tenant_id")
   cloudAccountId     String        @map("cloud_account_id")
   cloudConnectionId  String?       @map("cloud_connection_id")
+  cloudResourceId    String?       @map("cloud_resource_id")
+  resourceLinkReason String?       @map("resource_link_reason")
   ingestionRunId     String?       @map("ingestion_run_id")
   provider           CloudProvider
   billingSource      CostBillingSource @default(UNKNOWN) @map("billing_source")
@@ -895,6 +900,7 @@ model CostMetric {
   tenant             Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   cloudAccount       CloudAccount  @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
   cloudConnection    CloudConnection? @relation(fields: [cloudConnectionId], references: [id], onDelete: SetNull)
+  cloudResource      CloudResource? @relation(fields: [cloudResourceId], references: [id], onDelete: SetNull)
   ingestionRun       IngestionRun? @relation(fields: [ingestionRunId], references: [id], onDelete: SetNull)
 
   @@id([chargePeriodStart, metricIdentityHash])
@@ -902,6 +908,7 @@ model CostMetric {
   @@index([tenantId, serviceName, chargePeriodStart])
   @@index([tenantId, provider, chargePeriodStart])
   @@index([tenantId, cloudConnectionId, billingSource, chargePeriodStart])
+  @@index([tenantId, cloudResourceId, chargePeriodStart])
   @@index([resourceId])
   @@index([cloudAccountId], map: "cost_metrics_cloud_account_id_idx")
   @@index([cloudConnectionId], map: "cost_metrics_cloud_connection_id_idx")
@@ -913,6 +920,8 @@ model Recommendation {
   id                       String                        @id @default(cuid())
   tenantId                 String                        @map("tenant_id")
   cloudAccountId           String                        @map("cloud_account_id")
+  cloudResourceId          String?                       @map("cloud_resource_id")
+  resourceLinkReason       String?                       @map("resource_link_reason")
   sourceChargePeriodStart  DateTime?                     @map("source_charge_period_start") @db.Timestamptz(6)
   sourceMetricIdentityHash String?                       @map("source_metric_identity_hash")
   deduplicationKey         String?                       @map("deduplication_key")
@@ -928,6 +937,7 @@ model Recommendation {
   updatedAt                DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
   tenant                   Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   cloudAccount             CloudAccount                  @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
+  cloudResource             CloudResource?                @relation(fields: [cloudResourceId], references: [id], onDelete: SetNull)
   decisions                RecommendationDecision[]
   executionPlans           RecommendationExecutionPlan[]
   learningEvents           AgentLearningEvent[]
@@ -938,6 +948,7 @@ model Recommendation {
   analysisRunLinks         RecommendationAnalysisRunRecommendation[]
 
   @@index([tenantId, status, createdAt])
+  @@index([tenantId, cloudResourceId, createdAt])
   @@index([cloudAccountId, severity])
   @@index([sourceChargePeriodStart, sourceMetricIdentityHash])
   @@unique([tenantId, deduplicationKey])

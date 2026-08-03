@@ -247,6 +247,8 @@ export function toEphemeralRecommendation(
   return {
     id: `ai-preview-${index + 1}`,
     cloudAccountId: input.cloudAccountId,
+    ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
+    ...(input.resourceLinkReason !== undefined ? { resourceLinkReason: input.resourceLinkReason } : {}),
     type: input.type,
     status: 'PENDING',
     severity: input.severity,

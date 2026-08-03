@@ -123,6 +123,26 @@ describe('qualityRubric — recommendations', () => {
     expect(report.checks.find((check) => check.name === 'canonicalTechnicalEvidence')?.passed).toBe(true);
   });
 
+  test('rejects technical evidence without the normalized resource relationship', () => {
+    const report = evaluateRecommendationDrafts([
+      draft({
+        type: 'RIGHTSIZING',
+        estimatedMonthlySavings: 40,
+        evidence: {
+          evidenceLevel: 'COST_USAGE_AND_TECHNICAL',
+          externalResourceId: 'i-requested',
+          technicalEvidenceRefs: ['resource_metric_samples:i-requested:CpuUtilization:2026-04-30T00:00:00.000Z'],
+          technicalSampleCount: 96,
+          technicalCoverageDays: 14,
+          latestTechnicalSampleAt: '2026-04-30T00:00:00.000Z',
+        },
+      }),
+    ], snapshot, undefined, undefined, buildCanonicalEvidenceSnapshot());
+
+    expect(report.passed).toBe(false);
+    expect(report.checks.find((check) => check.name === 'canonicalTechnicalEvidence')?.passed).toBe(false);
+  });
+
   test('rejects an invented metric reference even when the auditor would approve it', () => {
     const report = evaluateRecommendationDrafts([
       draft({

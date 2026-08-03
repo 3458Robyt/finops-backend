@@ -95,7 +95,12 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
         tenantId: query.tenantId,
         ...(query.cloudAccountId !== undefined ? { cloudAccountId: query.cloudAccountId } : {}),
         ...(query.externalResourceId !== undefined
-          ? { evidence: { path: ['externalResourceId'], equals: query.externalResourceId } }
+          ? {
+              OR: [
+                { cloudResource: { externalResourceId: query.externalResourceId } },
+                { evidence: { path: ['externalResourceId'], equals: query.externalResourceId } },
+              ],
+            }
           : {}),
         ...(query.status !== undefined ? { status: query.status } : {}),
       },
@@ -129,6 +134,8 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
       const data = {
         tenantId: item.tenantId,
         cloudAccountId: item.cloudAccountId,
+        ...(item.cloudResourceId !== undefined ? { cloudResourceId: item.cloudResourceId } : {}),
+        ...(item.resourceLinkReason !== undefined ? { resourceLinkReason: item.resourceLinkReason } : {}),
         type: item.type,
         severity: item.severity,
         status: 'PENDING' as const,

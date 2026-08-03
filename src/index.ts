@@ -38,6 +38,7 @@ import { OutboundMessageService } from './application/services/OutboundMessageSe
 import { SavingsReminderService } from './application/services/SavingsReminderService.js';
 import { TechnicalMetricsService } from './application/services/TechnicalMetricsService.js';
 import { TechnicalRecommendationEvidenceService } from './application/services/ai/TechnicalRecommendationEvidenceService.js';
+import { ResourceLinkageReadinessService } from './application/services/ResourceLinkageReadinessService.js';
 import { ValueRealizationService } from './application/services/ValueRealizationService.js';
 import { TelegramBotService } from './application/services/TelegramBotService.js';
 import { TelegramClient } from './application/services/TelegramClient.js';
@@ -65,6 +66,7 @@ import { PrismaRecommendationRepository } from './infrastructure/repositories/Pr
 import { PrismaRecommendationAnalysisRunRepository } from './infrastructure/repositories/PrismaRecommendationAnalysisRunRepository.js';
 import { queueRecommendationAnalysisAfterIngestion } from './infrastructure/repositories/PrismaRecommendationAnalysisScheduler.js';
 import { PrismaResourceMetricRepository } from './infrastructure/repositories/PrismaResourceMetricRepository.js';
+import { PrismaResourceLinkageReadinessRepository } from './infrastructure/repositories/PrismaResourceLinkageReadinessRepository.js';
 import { PrismaTelegramRepository } from './infrastructure/repositories/PrismaTelegramRepository.js';
 import { PrismaUserRepository } from './infrastructure/repositories/PrismaUserRepository.js';
 import { PrismaValueRealizationRepository } from './infrastructure/repositories/PrismaValueRealizationRepository.js';
@@ -135,6 +137,7 @@ const telegramRepository = new PrismaTelegramRepository(prisma);
   const ingestionProviders = [new AwsSdkIngestionProvider(), new OciSdkIngestionProvider()];
   const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository, ingestionProviders);
 const technicalMetricsService = new TechnicalMetricsService(resourceMetricRepository);
+const resourceLinkageReadinessService = new ResourceLinkageReadinessService(new PrismaResourceLinkageReadinessRepository(prisma));
 const technicalRecommendationEvidenceService = new TechnicalRecommendationEvidenceService(resourceMetricRepository);
 const analyticsService = new CostAnalyticsService(costAnalyticsRepository);
   const budgetService = new BudgetService(budgetRepository, notificationRepository, outboundMessageRepository, telegramRepository);
@@ -229,6 +232,7 @@ const app = createExpressServer({
     authService,
     cloudConnectionService,
     technicalMetricsService,
+    resourceLinkageReadinessService,
     analyticsService,
     budgetService,
     costAllocationService,

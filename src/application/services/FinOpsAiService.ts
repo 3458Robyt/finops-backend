@@ -239,6 +239,7 @@ export class FinOpsAiService {
       input.externalResourceId,
       technicalEvidenceSnapshot,
       prepared.deterministicAnalysis,
+      readinessReport,
       () => input.onStage?.('AI_AUDIT'),
     );
 

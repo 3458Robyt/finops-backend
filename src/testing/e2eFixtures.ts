@@ -281,7 +281,10 @@ async function seedTenantData(
   },
 ): Promise<{ readonly recommendationId: string; readonly resourceId: string }> {
   const now = new Date();
-  const periodStart = new Date(Date.UTC(2026, 4, 1));
+  const periodStart = recentFixturePeriodStart(now);
+  const latestTechnicalSampleAt = new Date(periodStart);
+  latestTechnicalSampleAt.setUTCMinutes((14 * 48 - 1) * 30);
+  const technicalEvidenceRef = `resource_metric_samples:${input.resourceId}:CPUUtilization:${latestTechnicalSampleAt.toISOString()}`;
   const connection = await prisma.cloudConnection.create({
     data: {
       tenantId: input.tenantId,
@@ -362,10 +365,10 @@ async function seedTenantData(
         evidenceLevel: 'COST_USAGE_AND_TECHNICAL',
         cloudResourceId: resource.id,
         externalResourceId: input.resourceId,
-        technicalEvidenceRefs: [`resource_metric_samples:${input.resourceId}:CPUUtilization:2026-05`],
-        technicalSampleCount: 96,
-        technicalCoverageDays: 2,
-        latestTechnicalSampleAt: new Date(Date.UTC(2026, 4, 2, 23, 30)).toISOString(),
+        technicalEvidenceRefs: [technicalEvidenceRef],
+        technicalSampleCount: 14 * 48,
+        technicalCoverageDays: 14,
+        latestTechnicalSampleAt: latestTechnicalSampleAt.toISOString(),
         recommendationEvidenceSnapshot: {
           version: '1',
           hash: `e2e-evidence-${input.runId}`,
@@ -382,10 +385,10 @@ async function seedTenantData(
             cost: { totalCost: 169, currency: 'USD', focusMetricCount: 31 },
             usage: [],
             metrics: [{
-              metricName: 'CPUUtilization', metricUnit: 'Percent', sampleCount: 96, coverageDays: 2,
-              min: 2, max: 20, avg: 8, p50: 8, p95: 15, p99: 20, latest: 8,
-              firstSampledAt: periodStart.toISOString(), latestSampledAt: new Date(Date.UTC(2026, 4, 2, 23, 30)).toISOString(),
-              evidenceRef: `resource_metric_samples:${input.resourceId}:CPUUtilization:2026-05`,
+              metricName: 'CPUUtilization', metricUnit: 'Percent', sampleCount: 14 * 48, coverageDays: 14,
+              min: 8, max: 19, avg: 13.5, p50: 13.5, p95: 19, p99: 19, latest: 19,
+              firstSampledAt: periodStart.toISOString(), latestSampledAt: latestTechnicalSampleAt.toISOString(),
+              evidenceRef: technicalEvidenceRef,
             }],
             ruleEvaluation: {
               externalResourceId: input.resourceId, cloudResourceId: resource.id, provider: input.provider,
@@ -488,7 +491,7 @@ function buildCostMetrics(
       chargePeriodStart: start,
       chargePeriodEnd: end,
       billingPeriodStart: periodStart,
-      billingPeriodEnd: new Date(Date.UTC(2026, 5, 1)),
+      billingPeriodEnd: new Date(Date.UTC(periodStart.getUTCFullYear(), periodStart.getUTCMonth() + 1, 1)),
       billedCost: new Prisma.Decimal(8 + index * 0.5),
       effectiveCost: new Prisma.Decimal(8 + index * 0.5),
       billingCurrency: 'USD',
@@ -522,10 +525,10 @@ function buildMetricSamples(
     { name: 'NetworkIn', unit: 'Bytes' },
   ] as const;
 
-  return metricNames.flatMap((metric, metricIndex) => Array.from({ length: 96 }, (_, index) => {
+  return metricNames.flatMap((metric, metricIndex) => Array.from({ length: 14 * 48 }, (_, index) => {
     const sampledAt = new Date(periodStart);
     sampledAt.setUTCMinutes(sampledAt.getUTCMinutes() + index * 30);
-    const base = metric.name === 'CPUUtilization' ? 8 : metric.name === 'MemoryUtilization' ? 48 : 1024;
+    const base = metric.name === 'CPUUtilization' ? 8 : metric.name === 'MemoryUtilization' ? 20 : 1024;
     const value = base + (index % 12) + metricIndex;
 
     return {
@@ -543,4 +546,11 @@ function buildMetricSamples(
       rawMetric: { e2eRunId: input.runId, fixture: true },
     };
   }));
+}
+
+function recentFixturePeriodStart(referenceDate: Date): Date {
+  const periodStart = new Date(referenceDate);
+  periodStart.setUTCDate(periodStart.getUTCDate() - 13);
+  periodStart.setUTCHours(0, 0, 0, 0);
+  return periodStart;
 }

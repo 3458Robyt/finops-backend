@@ -24,6 +24,7 @@ export interface TechnicalRecommendationEvidenceProvider {
 
 const maxResources = 12;
 const maxMetricsPerResource = 8;
+const technicalEvidenceLookbackDays = 30;
 
 export class TechnicalRecommendationEvidenceService implements TechnicalRecommendationEvidenceProvider {
   public constructor(private readonly repository: IResourceMetricRepository) {}
@@ -35,15 +36,21 @@ export class TechnicalRecommendationEvidenceService implements TechnicalRecommen
   }): Promise<RecommendationEvidenceSnapshot> {
     const startDate = parseDate(input.snapshot.periodStart);
     const endDate = parseDate(input.snapshot.periodEnd);
+    const now = new Date();
+    const evidenceStartDate = startDate === undefined
+      ? undefined
+      : new Date(startDate.getTime() - technicalEvidenceLookbackDays * 24 * 60 * 60 * 1000);
+    const evidenceEndDate = endDate !== undefined && endDate <= now ? endDate : now;
+    const referenceDate = evidenceEndDate;
     const summaries = await this.repository.listMetricSummariesForTenant(input.tenantId, {
-      ...(startDate !== undefined ? { startDate } : {}),
-      ...(endDate !== undefined ? { endDate } : {}),
+      ...(evidenceStartDate !== undefined ? { startDate: evidenceStartDate } : {}),
+      ...(evidenceEndDate !== undefined ? { endDate: evidenceEndDate } : {}),
       ...(input.externalResourceId !== undefined ? { externalResourceIds: [input.externalResourceId] } : {}),
       limit: 1000,
     });
     const deterministicRules = evaluateTechnicalOptimizationRules({
       summaries,
-      referenceDate: endDate ?? new Date(),
+      referenceDate,
     });
     const resourceIds = [...new Set(summaries.map((summary) => summary.externalResourceId))];
     const costContext = await this.repository.listCostContextForResources(input.tenantId, resourceIds);

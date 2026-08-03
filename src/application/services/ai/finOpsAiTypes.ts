@@ -63,6 +63,7 @@ export interface GenerateAiRecommendationsInput {
   readonly persist?: boolean;
   /** Limita la generación a un recurso que exista en el snapshot factual del tenant. */
   readonly externalResourceId?: string;
+  readonly cloudResourceId?: string;
   /** Corrida durable que origina las recomendaciones; solo para orquestación interna. */
   readonly analysisRunId?: string;
   /** Preparación factual ya calculada para garantizar que generador y auditor usen el mismo snapshot. */

@@ -7,6 +7,7 @@ import { resolveFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const queueSchema = z.object({
   externalResourceId: z.string().trim().min(1).max(500).optional(),
+  cloudResourceId: z.string().trim().min(1).max(200).optional(),
 });
 
 export class RecommendationAnalysisController {
@@ -25,6 +26,9 @@ export class RecommendationAnalysisController {
         ...(parsed.data.externalResourceId !== undefined
           ? { externalResourceId: parsed.data.externalResourceId }
           : {}),
+        ...(parsed.data.cloudResourceId !== undefined
+          ? { cloudResourceId: parsed.data.cloudResourceId }
+          : {}),
       });
       res.status(202).json({
         success: true,
@@ -42,6 +46,9 @@ export class RecommendationAnalysisController {
       ...(typeof req.query['externalResourceId'] === 'string'
         ? { externalResourceId: req.query['externalResourceId'] }
         : {}),
+      ...(typeof req.query['cloudResourceId'] === 'string'
+        ? { cloudResourceId: req.query['cloudResourceId'] }
+        : {}),
     });
     if (!parsed.success) {
       res.status(400).json({
@@ -56,6 +63,9 @@ export class RecommendationAnalysisController {
       const preview = await this.service.preview(req.auth, {
         ...(parsed.data.externalResourceId !== undefined
           ? { externalResourceId: parsed.data.externalResourceId }
+          : {}),
+        ...(parsed.data.cloudResourceId !== undefined
+          ? { cloudResourceId: parsed.data.cloudResourceId }
           : {}),
       });
       res.status(200).json({
@@ -136,6 +146,7 @@ function serializeRun(run: RecommendationAnalysisRun, detail: boolean): Record<s
     trigger: run.trigger,
     scope: run.scope,
     ...(run.externalResourceId !== undefined ? { externalResourceId: run.externalResourceId } : {}),
+    ...(run.cloudResourceId !== undefined ? { cloudResourceId: run.cloudResourceId } : {}),
     status: run.status,
     stage: run.stage,
     ...(run.periodStart !== undefined ? { periodStart: run.periodStart.toISOString() } : {}),

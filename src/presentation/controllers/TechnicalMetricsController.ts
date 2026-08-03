@@ -53,6 +53,7 @@ export class TechnicalMetricsController {
       const resource = await this.technicalMetricsService.getResource(
         this.requireTenant(req),
         this.requireParam(req, 'externalResourceId'),
+        this.parseString(req.query['cloudResourceId']),
       );
       if (resource === undefined) {
         res.status(404).json({ success: false, error: 'Recurso no encontrado.', code: 'NOT_FOUND' });
@@ -69,6 +70,7 @@ export class TechnicalMetricsController {
       const summary = await this.technicalMetricsService.getResourceSummary(
         this.requireTenant(req),
         this.requireParam(req, 'externalResourceId'),
+        this.parseString(req.query['cloudResourceId']),
       );
       if (summary === undefined) {
         res.status(404).json({ success: false, error: 'Recurso no encontrado.', code: 'NOT_FOUND' });
@@ -194,6 +196,7 @@ export class TechnicalMetricsController {
     const startDate = this.parseDate(req.query['startDate']);
     const endDate = this.parseDate(req.query['endDate']);
     const externalResourceId = this.parseString(req.query['externalResourceId']);
+    const cloudResourceId = this.parseString(req.query['cloudResourceId']);
     const metricNames = this.parseStringList(req.query['metricNames']);
     const bucket = includeBucket ? this.parseBucket(req.query['bucket']) : undefined;
     const cursor = includeBucket ? this.parseString(req.query['cursor']) : undefined;
@@ -203,6 +206,7 @@ export class TechnicalMetricsController {
       ...(startDate !== undefined ? { startDate } : {}),
       ...(endDate !== undefined ? { endDate } : {}),
       ...(externalResourceId !== undefined ? { externalResourceId } : {}),
+      ...(cloudResourceId !== undefined ? { cloudResourceId } : {}),
       ...(metricNames !== undefined ? { metricNames } : {}),
       ...(bucket !== undefined ? { bucket } : {}),
       ...(cursor !== undefined ? { cursor } : {}),

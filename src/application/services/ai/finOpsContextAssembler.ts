@@ -122,15 +122,17 @@ private readonly technicalEvidenceProvider?: TechnicalRecommendationEvidenceProv
     readonly snapshot: CostAnalyticsSnapshot;
     /** Recurso exacto para un análisis aislado; no mezcla contexto de otros recursos. */
     readonly externalResourceId?: string;
+    readonly cloudResourceId?: string;
     readonly technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot;
 }): Promise<AssembledRecommendationContext> {
-    const scoped = input.externalResourceId !== undefined;
+    const scoped = input.externalResourceId !== undefined || input.cloudResourceId !== undefined;
     const learningContext = await this.getRecommendationLearningContext(input.tenantId, input.snapshot);
     const technicalEvidenceSnapshot = input.technicalEvidenceSnapshot
       ?? await this.getRecommendationTechnicalEvidenceSnapshot(
         input.tenantId,
         input.snapshot,
         input.externalResourceId,
+        input.cloudResourceId,
       );
     const technicalEvidence = technicalEvidenceSnapshot === undefined
       ? undefined
@@ -159,6 +161,7 @@ return {
           technicalEvidence,
           formatRecommendationReadinessForPrompt(readinessReport),
           input.externalResourceId,
+          input.cloudResourceId,
         ),
         builtContext,
       ),
@@ -251,11 +254,13 @@ public async prepareRecommendationEvidence(input: {
   readonly tenantId: string;
   readonly snapshot: CostAnalyticsSnapshot;
   readonly externalResourceId?: string;
+  readonly cloudResourceId?: string;
 }): Promise<PreparedRecommendationEvidence> {
   const technicalEvidenceSnapshot = await this.getRecommendationTechnicalEvidenceSnapshot(
     input.tenantId,
     input.snapshot,
     input.externalResourceId,
+    input.cloudResourceId,
   );
   const readinessReport = buildRecommendationReadinessReport({
     snapshot: input.snapshot,
@@ -272,6 +277,7 @@ private async getRecommendationTechnicalEvidenceSnapshot(
 tenantId: string,
 snapshot: CostAnalyticsSnapshot,
 externalResourceId?: string,
+cloudResourceId?: string,
 ): Promise<RecommendationEvidenceSnapshot | undefined> {
 if (this.technicalEvidenceProvider === undefined) {
 return undefined;
@@ -281,6 +287,7 @@ return this.technicalEvidenceProvider.buildRecommendationEvidenceSnapshot({
   tenantId,
   snapshot,
   ...(externalResourceId !== undefined ? { externalResourceId } : {}),
+  ...(cloudResourceId !== undefined ? { cloudResourceId } : {}),
 });
 }
 }

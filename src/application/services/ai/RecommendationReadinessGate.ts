@@ -46,13 +46,11 @@ export function buildRecommendationReadinessReport(input: {
   readonly technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot;
 }): RecommendationReadinessReport {
   const accountById = new Map(input.snapshot.accounts.map((account) => [account.cloudAccountId, account]));
-  const evidenceByResource = new Map(
-    (input.technicalEvidenceSnapshot?.resources ?? []).map((resource) => [resource.externalResourceId, resource]),
-  );
+  const evidenceResources = input.technicalEvidenceSnapshot?.resources ?? [];
 
   const prioritized = [
     ...buildUsageCandidates(input.snapshot, accountById),
-    ...buildResourceCandidates(input.snapshot, accountById, evidenceByResource),
+    ...buildResourceCandidates(input.snapshot, accountById, evidenceResources),
     ...buildServiceCandidates(input.snapshot, accountById),
   ]
     .sort((left, right) => right.maxEstimatedMonthlySavings - left.maxEstimatedMonthlySavings);
@@ -129,16 +127,22 @@ function buildUsageCandidates(
 function buildResourceCandidates(
   snapshot: CostAnalyticsSnapshot,
   accountById: ReadonlyMap<string, { readonly cloudAccountId: string; readonly provider: string }>,
-  evidenceByResource: ReadonlyMap<string, RecommendationEvidenceResource>,
+  evidenceResources: readonly RecommendationEvidenceResource[],
 ): RecommendationOpportunityCandidate[] {
   return snapshot.topResources.map((resource, index) => {
     const account = pickAccountForProvider(snapshot, accountById, resource.provider);
-    const evidenceResource = evidenceByResource.get(resource.resourceId);
+    const matchingEvidence = evidenceResources.filter((item) =>
+      item.externalResourceId === resource.resourceId && item.provider === resource.provider,
+    );
+    const evidenceResource = matchingEvidence.length === 1 ? matchingEvidence[0] : undefined;
+    const ambiguous = matchingEvidence.length > 1;
     const ruleEvaluation = evidenceResource?.ruleEvaluation;
     const refsForResource = evidenceResource?.metrics.map((metric) => metric.evidenceRef) ?? [];
     const hasResourceTechnicalEvidence =
       evidenceResource?.linkQuality === 'COST_AND_TECHNICAL' && refsForResource.length > 0;
-    const readiness = ruleEvaluation?.readiness ?? (hasResourceTechnicalEvidence ? 'GENERATABLE' : 'VALIDATION_ONLY');
+    const readiness = ambiguous
+      ? 'BLOCKED_NO_EVIDENCE'
+      : ruleEvaluation?.readiness ?? (hasResourceTechnicalEvidence ? 'GENERATABLE' : 'VALIDATION_ONLY');
     const maxSavingsRate = ruleEvaluation?.maxTechnicalSavingsRate ?? (hasResourceTechnicalEvidence ? technicalSavingsRate : costSavingsRate);
 
     return {
@@ -152,7 +156,7 @@ function buildResourceCandidates(
       opportunityType: ruleEvaluation?.recommendedActionType ?? (hasResourceTechnicalEvidence ? 'TECHNICAL_OPTIMIZATION' : 'TECHNICAL_VALIDATION_REQUIRED'),
       evidenceLevelAllowed:
         readiness === 'GENERATABLE' && hasResourceTechnicalEvidence ? 'COST_USAGE_AND_TECHNICAL' : 'COST_ONLY',
-      requiresTechnicalValidation: readiness !== 'GENERATABLE',
+      requiresTechnicalValidation: readiness !== 'GENERATABLE' || hasResourceTechnicalEvidence,
       maxEstimatedMonthlySavings: round(
         Math.max(resource.totalCost * maxSavingsRate, 0),
       ),
@@ -169,13 +173,17 @@ function buildResourceCandidates(
       ...(ruleEvaluation?.blockers !== undefined ? { blockers: ruleEvaluation.blockers } : {}),
       ...(ruleEvaluation?.metricSummary !== undefined ? { metricSummary: ruleEvaluation.metricSummary } : {}),
       reasons:
-        ruleEvaluation?.blockers !== undefined && ruleEvaluation.blockers.length > 0
+        ambiguous
+          ? ['El identificador externo coincide con más de un recurso/conexión; se requiere el cloudResourceId canónico.']
+          : ruleEvaluation?.blockers !== undefined && ruleEvaluation.blockers.length > 0
           ? [`Reglas deterministicas detectaron bloqueos: ${ruleEvaluation.blockers.join(', ')}.`]
           : hasResourceTechnicalEvidence
             ? ['Hay evidencia tecnica enlazada al recurso y reglas deterministicas compatibles.']
             : ['Hay costo por recurso, pero falta evidencia tecnica fuerte para ejecutar cambios de capacidad.'],
       forbiddenClaims:
-        ruleEvaluation?.blockers !== undefined && ruleEvaluation.blockers.length > 0
+        ambiguous
+          ? ['No afirmes evidencia técnica ni propongas cambios ejecutables mientras el recurso sea ambiguo.']
+          : ruleEvaluation?.blockers !== undefined && ruleEvaluation.blockers.length > 0
           ? ['No recomiendes rightsizing, apagado o resize como accion ejecutable porque existen bloqueos tecnicos.']
           : hasResourceTechnicalEvidence
             ? ['No extrapoles metricas tecnicas fuera de las referencias citadas.']

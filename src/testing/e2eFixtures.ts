@@ -331,7 +331,7 @@ async function seedTenantData(
   });
 
   await prisma.costMetric.createMany({
-    data: buildCostMetrics(input, account.id, connection.id, periodStart),
+    data: buildCostMetrics(input, account.id, connection.id, resource.id, periodStart),
   });
   await prisma.costForecast.create({
     data: {
@@ -476,6 +476,7 @@ function buildCostMetrics(
   },
   cloudAccountId: string,
   cloudConnectionId: string,
+  cloudResourceId: string,
   periodStart: Date,
 ): Prisma.CostMetricCreateManyInput[] {
   return Array.from({ length: 14 }, (_, index) => {
@@ -488,6 +489,7 @@ function buildCostMetrics(
       tenantId: input.tenantId,
       cloudAccountId,
       cloudConnectionId,
+      cloudResourceId,
       provider: input.provider,
       serviceName: input.serviceName,
       resourceId: input.resourceId,

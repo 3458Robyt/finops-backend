@@ -29,6 +29,7 @@ type PrismaResourceMetricSample = Awaited<ReturnType<PrismaClient['resourceMetri
 export function toCloudResourceItem(resource: NonNullable<PrismaCloudResource>): CloudResourceItem {
   return {
     id: resource.id,
+    cloudConnectionId: resource.cloudConnectionId,
     provider: resource.provider,
     externalResourceId: resource.externalResourceId,
     ...(resource.name !== null ? { name: resource.name } : {}),
@@ -57,6 +58,7 @@ export function toResourceMetricSampleItem(
   return {
     id: sample.id,
     provider: sample.provider,
+    cloudConnectionId: sample.cloudConnectionId,
     externalResourceId: sample.externalResourceId,
     ...(sample.cloudResourceId !== null ? { cloudResourceId: sample.cloudResourceId } : {}),
     metricName: sample.metricName,

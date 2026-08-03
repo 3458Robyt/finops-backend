@@ -81,7 +81,7 @@ describe('TechnicalRecommendationEvidenceService', () => {
       sample('s2', 12, '2026-06-21T00:00:00.000Z'),
     ];
     repository.costContext = [
-      { externalResourceId: 'ocid1.instance.oc1.test', totalCost: 42, currency: 'USD', metricCount: 2 },
+      { externalResourceId: 'ocid1.instance.oc1.test', cloudResourceId: 'cloud-resource-1', totalCost: 42, currency: 'USD', metricCount: 2 },
     ];
     repository.summaries = [
       metricSummary('CpuUtilization', 8, 25),
@@ -95,7 +95,7 @@ describe('TechnicalRecommendationEvidenceService', () => {
     });
 
     expect(evidence).toContain('COST_USAGE_AND_TECHNICAL_AVAILABLE');
-    expect(evidence).toContain('resource_metric_samples:ocid1.instance.oc1.test:CpuUtilization');
+    expect(evidence).toContain('resource_metric_samples:cloud-resource-1:ocid1.instance.oc1.test:CpuUtilization');
     expect(evidence).toContain('"technicalEvidenceRefs"');
     expect(evidence).toContain('"deterministicRules"');
     expect(evidence).toContain('CPU_STRONG_UNDERUTILIZATION');

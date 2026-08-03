@@ -1,10 +1,16 @@
 import type {
   IResourceLinkageReadinessRepository,
+  ResourceLinkageConnectionReadiness,
   ResourceLinkageReadiness,
   ResourceLinkageResourceCoverage,
   ResourceLinkageTableCoverage,
 } from '../../domain/interfaces/IResourceLinkageReadinessRepository.js';
-import type { ResourceLinkReasonCode } from '../../domain/models/ResourceLinkage.js';
+import {
+  buildResourceFreshness,
+  classifyResourceEvidenceStatus,
+  type ResourceFreshness,
+  type ResourceLinkReasonCode,
+} from '../../domain/models/ResourceLinkage.js';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { Prisma } from '../../generated/prisma/client.js';
 
@@ -12,7 +18,9 @@ interface CountRow {
   readonly total: bigint;
   readonly eligible: bigint;
   readonly linked: bigint;
+  readonly not_eligible: bigint;
   readonly unresolved: bigint;
+  readonly ambiguous: bigint;
 }
 
 interface ReasonRow {
@@ -22,6 +30,7 @@ interface ReasonRow {
 
 interface ResourceRow {
   readonly id: string;
+  readonly cloud_connection_id: string;
   readonly external_resource_id: string;
   readonly provider: string;
   readonly service_name: string;
@@ -30,12 +39,44 @@ interface ResourceRow {
   readonly cost_metrics: bigint;
   readonly metric_samples: bigint;
   readonly recommendations: bigint;
+  readonly last_seen_at: Date;
+  readonly latest_cost_at: Date | null;
+  readonly latest_metric_at: Date | null;
 }
 
 interface ResourceCountRow {
   readonly with_cost: bigint;
   readonly with_metrics: bigint;
   readonly with_both: bigint;
+}
+
+interface ConnectionRow {
+  readonly cloud_connection_id: string;
+  readonly total: bigint;
+  readonly eligible: bigint;
+  readonly linked: bigint;
+  readonly not_eligible: bigint;
+  readonly unresolved: bigint;
+  readonly ambiguous: bigint;
+}
+
+interface ConnectionReasonRow {
+  readonly cloud_connection_id: string;
+  readonly reason: string | null;
+  readonly count: bigint;
+}
+
+interface FreshnessRow {
+  readonly inventory_at: Date | null;
+  readonly costs_at: Date | null;
+  readonly metrics_at: Date | null;
+}
+
+interface ConnectionFreshnessRow {
+  readonly cloud_connection_id: string;
+  readonly inventory_at: Date | null;
+  readonly costs_at: Date | null;
+  readonly metrics_at: Date | null;
 }
 
 const knownReasons: readonly ResourceLinkReasonCode[] = [
@@ -51,13 +92,15 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
   public constructor(private readonly prisma: PrismaClient) {}
 
   public async getForTenant(tenantId: string, resourceLimit: number): Promise<ResourceLinkageReadiness> {
-    const [cost, metric, recommendations, inventory, resources, resourceCounts, latestReconciliation] = await Promise.all([
+    const [cost, metric, recommendations, inventory, resources, resourceCounts, connections, freshness, latestReconciliation] = await Promise.all([
       this.getCostCoverage(tenantId),
       this.getMetricCoverage(tenantId),
       this.getRecommendationCoverage(tenantId),
       this.prisma.cloudResource.count({ where: { tenantId } }),
       this.getResources(tenantId, resourceLimit),
       this.getResourceCounts(tenantId),
+      this.getConnections(tenantId),
+      this.getFreshness(tenantId),
       this.prisma.dataQualityCheck.findFirst({
         where: { tenantId, checkName: 'resource_linkage_reconciliation' },
         orderBy: { observedAt: 'desc' },
@@ -69,11 +112,23 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
     const linkedResourcesWithMetrics = Number(resourceCounts.with_metrics);
     const linkedResourcesWithBoth = Number(resourceCounts.with_both);
     const hasData = inventory > 0 || cost.total > 0 || metric.total > 0 || recommendations.total > 0;
+    const technicalRecommendationBlockers = buildTechnicalRecommendationBlockers({
+      inventoryResources: inventory,
+      linkedResourcesWithBoth,
+      cost,
+      metric,
+      freshness,
+    });
     const hasUnresolved = cost.unresolved > 0 || metric.unresolved > 0 || recommendations.unresolved > 0;
+    const hasStaleData = Object.values(freshness).some((signal) => signal.status === 'STALE');
 
     return {
       generatedAt: new Date(),
-      status: !hasData ? 'NO_DATA' : hasUnresolved ? 'PARTIAL' : 'READY',
+      status: !hasData
+        ? 'NO_DATA'
+        : inventory === 0 && (cost.eligible > 0 || metric.eligible > 0)
+          ? 'BLOCKED'
+          : hasUnresolved || hasStaleData || technicalRecommendationBlockers.length > 0 ? 'PARTIAL' : 'READY',
       inventoryResources: inventory,
       linkedResourcesWithCost,
       linkedResourcesWithMetrics,
@@ -82,6 +137,9 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
       metrics: metric,
       recommendations,
       resources,
+      connections,
+      freshness,
+      technicalRecommendationBlockers,
       ...(latestReconciliation !== null ? {
         latestReconciliation: {
           observedAt: latestReconciliation.observedAt,
@@ -99,7 +157,9 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
           count(*)::bigint AS total,
           count(*) FILTER (WHERE btrim(resource_id) <> '' OR cloud_resource_id IS NOT NULL)::bigint AS eligible,
           count(*) FILTER (WHERE cloud_resource_id IS NOT NULL)::bigint AS linked,
+          count(*) FILTER (WHERE (resource_id IS NULL OR btrim(resource_id) = '') AND cloud_resource_id IS NULL)::bigint AS not_eligible,
           count(*) FILTER (WHERE cloud_resource_id IS NULL AND btrim(resource_id) <> '')::bigint AS unresolved
+          ,count(*) FILTER (WHERE cloud_resource_id IS NULL AND btrim(resource_id) <> '' AND resource_link_reason = 'AMBIGUOUS_RESOURCE_ID')::bigint AS ambiguous
         FROM cost_metrics
         WHERE tenant_id = ${tenantId}
       `),
@@ -120,7 +180,9 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
           count(*)::bigint AS total,
           count(*)::bigint AS eligible,
           count(*) FILTER (WHERE cloud_resource_id IS NOT NULL)::bigint AS linked,
+          0::bigint AS not_eligible,
           count(*) FILTER (WHERE cloud_resource_id IS NULL)::bigint AS unresolved
+          ,count(*) FILTER (WHERE cloud_resource_id IS NULL AND resource_link_reason = 'AMBIGUOUS_RESOURCE_ID')::bigint AS ambiguous
         FROM resource_metric_samples
         WHERE tenant_id = ${tenantId}
       `),
@@ -139,9 +201,11 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
       this.prisma.$queryRaw<CountRow[]>(Prisma.sql`
         SELECT
           count(*)::bigint AS total,
-          count(*) FILTER (WHERE resource_link_reason IS DISTINCT FROM 'SERVICE_LEVEL_COST')::bigint AS eligible,
+          count(*) FILTER (WHERE resource_link_reason IS DISTINCT FROM 'SERVICE_LEVEL_COST' AND resource_link_reason IS DISTINCT FROM 'EMPTY_RESOURCE_ID')::bigint AS eligible,
           count(*) FILTER (WHERE cloud_resource_id IS NOT NULL)::bigint AS linked,
-          count(*) FILTER (WHERE cloud_resource_id IS NULL AND resource_link_reason IS DISTINCT FROM 'SERVICE_LEVEL_COST')::bigint AS unresolved
+          count(*) FILTER (WHERE resource_link_reason IN ('SERVICE_LEVEL_COST', 'EMPTY_RESOURCE_ID'))::bigint AS not_eligible,
+          count(*) FILTER (WHERE cloud_resource_id IS NULL AND resource_link_reason IS DISTINCT FROM 'SERVICE_LEVEL_COST' AND resource_link_reason IS DISTINCT FROM 'EMPTY_RESOURCE_ID')::bigint AS unresolved,
+          count(*) FILTER (WHERE cloud_resource_id IS NULL AND resource_link_reason = 'AMBIGUOUS_RESOURCE_ID')::bigint AS ambiguous
         FROM recommendations
         WHERE tenant_id = ${tenantId}
       `),
@@ -174,48 +238,202 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
     return rows[0] ?? { with_cost: 0n, with_metrics: 0n, with_both: 0n };
   }
 
+  private async getFreshness(tenantId: string): Promise<ResourceFreshness> {
+    const rows = await this.prisma.$queryRaw<FreshnessRow[]>(Prisma.sql`
+      SELECT
+        (SELECT max(last_seen_at) FROM cloud_resources WHERE tenant_id = ${tenantId}) AS inventory_at,
+        (SELECT max(charge_period_end) FROM cost_metrics WHERE tenant_id = ${tenantId}) AS costs_at,
+        (SELECT max(sampled_at) FROM resource_metric_samples WHERE tenant_id = ${tenantId}) AS metrics_at
+    `);
+    const row = rows[0];
+    return buildResourceFreshness({
+      inventoryAt: row?.inventory_at ?? null,
+      costsAt: row?.costs_at ?? null,
+      metricsAt: row?.metrics_at ?? null,
+    });
+  }
+
+  private async getConnections(tenantId: string): Promise<readonly ResourceLinkageConnectionReadiness[]> {
+    const [connections, inventoryRows, costRows, costReasons, metricRows, metricReasons, recommendationRows, recommendationReasons, connectionFreshnessRows] = await Promise.all([
+      this.prisma.cloudConnection.findMany({
+        where: { tenantId },
+        select: { id: true, name: true, providerCode: true },
+        orderBy: { name: 'asc' },
+      }),
+      this.prisma.$queryRaw<Array<{ readonly cloud_connection_id: string; readonly count: bigint }>>(Prisma.sql`
+        SELECT cloud_connection_id, count(*)::bigint AS count
+        FROM cloud_resources
+        WHERE tenant_id = ${tenantId}
+        GROUP BY cloud_connection_id
+      `),
+      this.prisma.$queryRaw<ConnectionRow[]>(Prisma.sql`
+        SELECT cloud_connection_id,
+          count(*)::bigint AS total,
+          count(*) FILTER (WHERE btrim(resource_id) <> '' OR cloud_resource_id IS NOT NULL)::bigint AS eligible,
+          count(*) FILTER (WHERE cloud_resource_id IS NOT NULL)::bigint AS linked,
+          count(*) FILTER (WHERE (resource_id IS NULL OR btrim(resource_id) = '') AND cloud_resource_id IS NULL)::bigint AS not_eligible,
+          count(*) FILTER (WHERE cloud_resource_id IS NULL AND btrim(resource_id) <> '')::bigint AS unresolved,
+          count(*) FILTER (WHERE cloud_resource_id IS NULL AND resource_link_reason = 'AMBIGUOUS_RESOURCE_ID')::bigint AS ambiguous
+        FROM cost_metrics
+        WHERE tenant_id = ${tenantId} AND cloud_connection_id IS NOT NULL
+        GROUP BY cloud_connection_id
+      `),
+      this.prisma.$queryRaw<ConnectionReasonRow[]>(Prisma.sql`
+        SELECT cloud_connection_id, resource_link_reason AS reason, count(*)::bigint AS count
+        FROM cost_metrics
+        WHERE tenant_id = ${tenantId} AND cloud_connection_id IS NOT NULL
+          AND cloud_resource_id IS NULL AND resource_link_reason IS NOT NULL
+        GROUP BY cloud_connection_id, resource_link_reason
+      `),
+      this.prisma.$queryRaw<ConnectionRow[]>(Prisma.sql`
+        SELECT cloud_connection_id,
+          count(*)::bigint AS total,
+          count(*)::bigint AS eligible,
+          count(*) FILTER (WHERE cloud_resource_id IS NOT NULL)::bigint AS linked,
+          0::bigint AS not_eligible,
+          count(*) FILTER (WHERE cloud_resource_id IS NULL)::bigint AS unresolved,
+          count(*) FILTER (WHERE cloud_resource_id IS NULL AND resource_link_reason = 'AMBIGUOUS_RESOURCE_ID')::bigint AS ambiguous
+        FROM resource_metric_samples
+        WHERE tenant_id = ${tenantId}
+        GROUP BY cloud_connection_id
+      `),
+      this.prisma.$queryRaw<ConnectionReasonRow[]>(Prisma.sql`
+        SELECT cloud_connection_id, resource_link_reason AS reason, count(*)::bigint AS count
+        FROM resource_metric_samples
+        WHERE tenant_id = ${tenantId} AND cloud_resource_id IS NULL AND resource_link_reason IS NOT NULL
+        GROUP BY cloud_connection_id, resource_link_reason
+      `),
+      this.prisma.$queryRaw<ConnectionRow[]>(Prisma.sql`
+        SELECT cr.cloud_connection_id,
+          count(*)::bigint AS total,
+          count(*)::bigint AS eligible,
+          count(*) FILTER (WHERE rec.cloud_resource_id IS NOT NULL)::bigint AS linked,
+          0::bigint AS not_eligible,
+          0::bigint AS unresolved,
+          0::bigint AS ambiguous
+        FROM recommendations rec
+        INNER JOIN cloud_resources cr ON cr.id = rec.cloud_resource_id AND cr.tenant_id = rec.tenant_id
+        WHERE rec.tenant_id = ${tenantId} AND rec.cloud_resource_id IS NOT NULL
+        GROUP BY cr.cloud_connection_id
+      `),
+      Promise.resolve([] as ConnectionReasonRow[]),
+      this.prisma.$queryRaw<ConnectionFreshnessRow[]>(Prisma.sql`
+        SELECT cloud_connection_id,
+          max(inventory_at) AS inventory_at,
+          max(costs_at) AS costs_at,
+          max(metrics_at) AS metrics_at
+        FROM (
+          SELECT cloud_connection_id, max(last_seen_at) AS inventory_at, NULL::timestamptz AS costs_at, NULL::timestamptz AS metrics_at
+          FROM cloud_resources
+          WHERE tenant_id = ${tenantId}
+          GROUP BY cloud_connection_id
+          UNION ALL
+          SELECT cloud_connection_id, NULL::timestamptz, max(charge_period_end), NULL::timestamptz
+          FROM cost_metrics
+          WHERE tenant_id = ${tenantId} AND cloud_connection_id IS NOT NULL
+          GROUP BY cloud_connection_id
+          UNION ALL
+          SELECT cloud_connection_id, NULL::timestamptz, NULL::timestamptz, max(sampled_at)
+          FROM resource_metric_samples
+          WHERE tenant_id = ${tenantId}
+          GROUP BY cloud_connection_id
+        ) source_dates
+        GROUP BY cloud_connection_id
+      `),
+    ]);
+
+    const inventoryByConnection = new Map(inventoryRows.map((row) => [row.cloud_connection_id, Number(row.count)]));
+    const freshnessByConnection = new Map(connectionFreshnessRows.map((row) => [row.cloud_connection_id, buildResourceFreshness({
+      inventoryAt: row.inventory_at,
+      costsAt: row.costs_at,
+      metricsAt: row.metrics_at,
+    })]));
+    return connections.map((connection) => {
+      const costs = toConnectionCoverage(connection.id, costRows, costReasons);
+      const metrics = toConnectionCoverage(connection.id, metricRows, metricReasons);
+      const recommendations = toConnectionCoverage(connection.id, recommendationRows, recommendationReasons);
+      const inventoryResources = inventoryByConnection.get(connection.id) ?? 0;
+      const freshness = freshnessByConnection.get(connection.id) ?? buildResourceFreshness({});
+      return {
+        id: connection.id,
+        name: connection.name,
+        provider: connection.providerCode,
+        inventoryResources,
+        costs,
+        metrics,
+        recommendations,
+        freshness,
+        status: getReadinessStatus({ inventoryResources, costs, metrics, recommendations, freshness }),
+      } satisfies ResourceLinkageConnectionReadiness;
+    });
+  }
+
   private async getResources(tenantId: string, limit: number): Promise<readonly ResourceLinkageResourceCoverage[]> {
     const rows = await this.prisma.$queryRaw<ResourceRow[]>(Prisma.sql`
-      WITH costs AS (
-        SELECT cloud_resource_id, count(*)::bigint AS count
-        FROM cost_metrics
-        WHERE tenant_id = ${tenantId} AND cloud_resource_id IS NOT NULL
-        GROUP BY cloud_resource_id
+      WITH base_resources AS (
+        SELECT id,
+               cloud_connection_id,
+               external_resource_id,
+               provider::text AS provider,
+               service_name,
+               resource_type,
+               status::text AS status,
+               last_seen_at
+        FROM cloud_resources
+        WHERE tenant_id = ${tenantId}
+        ORDER BY last_seen_at DESC, id ASC
+        LIMIT ${limit}
+      ), costs AS (
+        SELECT cm.cloud_resource_id, count(*)::bigint AS count, max(cm.charge_period_end) AS latest_cost_at
+        FROM cost_metrics cm
+        INNER JOIN base_resources br ON br.id = cm.cloud_resource_id
+        WHERE cm.tenant_id = ${tenantId}
+        GROUP BY cm.cloud_resource_id
       ), metric_counts AS (
-        SELECT cloud_resource_id, count(*)::bigint AS count
-        FROM resource_metric_samples
-        WHERE tenant_id = ${tenantId} AND cloud_resource_id IS NOT NULL
-        GROUP BY cloud_resource_id
+        SELECT rms.cloud_resource_id, count(*)::bigint AS count, max(rms.sampled_at) AS latest_metric_at
+        FROM resource_metric_samples rms
+        INNER JOIN base_resources br ON br.id = rms.cloud_resource_id
+        WHERE rms.tenant_id = ${tenantId}
+        GROUP BY rms.cloud_resource_id
       ), recommendation_counts AS (
-        SELECT cloud_resource_id, count(*)::bigint AS count
-        FROM recommendations
-        WHERE tenant_id = ${tenantId} AND cloud_resource_id IS NOT NULL
-        GROUP BY cloud_resource_id
+        SELECT rec.cloud_resource_id, count(*)::bigint AS count
+        FROM recommendations rec
+        INNER JOIN base_resources br ON br.id = rec.cloud_resource_id
+        WHERE rec.tenant_id = ${tenantId}
+        GROUP BY rec.cloud_resource_id
       )
       SELECT
-        cr.id,
-        cr.external_resource_id,
-        cr.provider::text AS provider,
-        cr.service_name,
-        cr.resource_type,
-        cr.status::text AS status,
+        br.id,
+        br.cloud_connection_id,
+        br.external_resource_id,
+        br.provider,
+        br.service_name,
+        br.resource_type,
+        br.status,
         coalesce(costs.count, 0)::bigint AS cost_metrics,
         coalesce(metric_counts.count, 0)::bigint AS metric_samples,
-        coalesce(recommendation_counts.count, 0)::bigint AS recommendations
-      FROM cloud_resources cr
-      LEFT JOIN costs ON costs.cloud_resource_id = cr.id
-      LEFT JOIN metric_counts ON metric_counts.cloud_resource_id = cr.id
-      LEFT JOIN recommendation_counts ON recommendation_counts.cloud_resource_id = cr.id
-      WHERE cr.tenant_id = ${tenantId}
-      ORDER BY cr.last_seen_at DESC, cr.id ASC
-      LIMIT ${limit}
+        coalesce(recommendation_counts.count, 0)::bigint AS recommendations,
+        br.last_seen_at,
+        costs.latest_cost_at,
+        metric_counts.latest_metric_at
+      FROM base_resources br
+      LEFT JOIN costs ON costs.cloud_resource_id = br.id
+      LEFT JOIN metric_counts ON metric_counts.cloud_resource_id = br.id
+      LEFT JOIN recommendation_counts ON recommendation_counts.cloud_resource_id = br.id
+      ORDER BY br.last_seen_at DESC, br.id ASC
     `);
 
     return rows.map((row) => {
       const costMetrics = Number(row.cost_metrics);
       const metricSamples = Number(row.metric_samples);
+      const freshness = buildResourceFreshness({
+        inventoryAt: row.last_seen_at,
+        costsAt: row.latest_cost_at,
+        metricsAt: row.latest_metric_at,
+      });
       return {
         id: row.id,
+        cloudConnectionId: row.cloud_connection_id,
         externalResourceId: row.external_resource_id,
         provider: row.provider,
         serviceName: row.service_name,
@@ -228,6 +446,14 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
           ? 'COST_AND_TECHNICAL'
           : costMetrics > 0 ? 'COST_ONLY'
             : metricSamples > 0 ? 'TECHNICAL_ONLY' : 'INVENTORY_ONLY',
+        evidenceStatus: classifyResourceEvidenceStatus({
+          costCount: costMetrics,
+          metricCount: metricSamples,
+          freshness,
+        }),
+        freshness,
+        ...(row.latest_cost_at !== null ? { latestCostAt: row.latest_cost_at } : {}),
+        ...(row.latest_metric_at !== null ? { latestMetricAt: row.latest_metric_at } : {}),
       } satisfies ResourceLinkageResourceCoverage;
     });
   }
@@ -237,7 +463,9 @@ function toCoverage(countRow: CountRow | undefined, reasonRows: readonly ReasonR
   const total = Number(countRow?.total ?? 0n);
   const eligible = Number(countRow?.eligible ?? 0n);
   const linked = Number(countRow?.linked ?? 0n);
+  const notEligible = Number(countRow?.not_eligible ?? 0n);
   const unresolved = Number(countRow?.unresolved ?? 0n);
+  const ambiguous = Number(countRow?.ambiguous ?? 0n);
   const reasons: Partial<Record<ResourceLinkReasonCode, number>> = {};
   for (const row of reasonRows) {
     if (row.reason !== null && knownReasons.includes(row.reason as ResourceLinkReasonCode)) {
@@ -248,10 +476,66 @@ function toCoverage(countRow: CountRow | undefined, reasonRows: readonly ReasonR
     total,
     eligible,
     linked,
+    notEligible,
     unresolved,
+    ambiguous,
     coveragePercent: eligible === 0 ? 100 : Math.round((linked / eligible) * 10000) / 100,
     reasons,
   };
+}
+
+function toConnectionCoverage(
+  connectionId: string,
+  rows: readonly ConnectionRow[],
+  reasonRows: readonly ConnectionReasonRow[],
+): ResourceLinkageTableCoverage {
+  const row = rows.find((candidate) => candidate.cloud_connection_id === connectionId);
+  return toCoverage(row, reasonRows
+    .filter((candidate) => candidate.cloud_connection_id === connectionId)
+    .map((candidate) => ({ reason: candidate.reason, count: candidate.count })));
+}
+
+function getReadinessStatus(input: {
+  readonly inventoryResources: number;
+  readonly costs: ResourceLinkageTableCoverage;
+  readonly metrics: ResourceLinkageTableCoverage;
+  readonly recommendations: ResourceLinkageTableCoverage;
+  readonly freshness: ResourceFreshness;
+}): ResourceLinkageReadiness['status'] {
+  const hasData = input.inventoryResources > 0
+    || input.costs.total > 0
+    || input.metrics.total > 0
+    || input.recommendations.total > 0;
+  if (!hasData) return 'NO_DATA';
+  if (input.inventoryResources === 0 && (input.costs.eligible > 0 || input.metrics.eligible > 0)) return 'BLOCKED';
+  const hasUnresolved = input.costs.unresolved > 0
+    || input.metrics.unresolved > 0
+    || input.recommendations.unresolved > 0;
+  const hasStale = Object.values(input.freshness).some((signal) => signal.status === 'STALE');
+  return hasUnresolved || hasStale ? 'PARTIAL' : 'READY';
+}
+
+function buildTechnicalRecommendationBlockers(input: {
+  readonly inventoryResources: number;
+  readonly linkedResourcesWithBoth: number;
+  readonly cost: ResourceLinkageTableCoverage;
+  readonly metric: ResourceLinkageTableCoverage;
+  readonly freshness: ResourceFreshness;
+}): readonly string[] {
+  const blockers: string[] = [];
+  if (input.inventoryResources === 0 && (input.cost.eligible > 0 || input.metric.eligible > 0)) {
+    blockers.push('NO_NORMALIZED_INVENTORY');
+  }
+  if (input.inventoryResources > 0 && input.linkedResourcesWithBoth === 0
+    && (input.cost.eligible > 0 || input.metric.eligible > 0)) {
+    blockers.push('NO_RESOURCE_WITH_COST_AND_TECHNICAL_EVIDENCE');
+  }
+  if (input.cost.unresolved > 0) blockers.push('UNLINKED_COST_EVIDENCE');
+  if (input.metric.unresolved > 0) blockers.push('UNLINKED_TECHNICAL_EVIDENCE');
+  if (input.freshness.inventory.status !== 'FRESH') blockers.push('INVENTORY_NOT_FRESH');
+  if (input.freshness.costs.status === 'STALE') blockers.push('COST_DATA_NOT_FRESH');
+  if (input.freshness.metrics.status === 'STALE') blockers.push('TECHNICAL_METRICS_NOT_FRESH');
+  return blockers;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

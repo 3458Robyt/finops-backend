@@ -9,9 +9,14 @@ export type TechnicalRecommendedActionType =
   | 'PERFORMANCE_CAPACITY_REVIEW'
   | 'TECHNICAL_VALIDATION_REQUIRED';
 
+export function technicalMetricEvidenceRef(summary: Pick<TechnicalMetricSummaryItem, 'cloudResourceId' | 'cloudConnectionId' | 'externalResourceId' | 'metricName' | 'latestSampledAt'>): string {
+  return `resource_metric_samples:${summary.cloudResourceId ?? summary.cloudConnectionId ?? 'unresolved'}:${summary.externalResourceId}:${summary.metricName}:${summary.latestSampledAt.toISOString()}`;
+}
+
 export interface TechnicalResourceRuleEvaluation {
   readonly externalResourceId: string;
   readonly cloudResourceId?: string;
+  readonly cloudConnectionId?: string;
   readonly provider: string;
   readonly resourceType?: string;
   readonly serviceName?: string;
@@ -53,11 +58,16 @@ export function evaluateTechnicalOptimizationRules(input: {
   readonly summaries: readonly TechnicalMetricSummaryItem[];
   readonly referenceDate: Date;
 }): readonly TechnicalResourceRuleEvaluation[] {
-  const byResource = groupBy(input.summaries, (summary) => summary.externalResourceId);
+  const byResource = groupBy(input.summaries, resourceKey);
 
-  return [...byResource.entries()].map(([externalResourceId, summaries]) =>
-    evaluateResource(externalResourceId, summaries, input.referenceDate),
+  return [...byResource.values()].map((summaries) =>
+    evaluateResource(summaries[0]?.externalResourceId ?? 'UNKNOWN', summaries, input.referenceDate),
   );
+}
+
+function resourceKey(summary: TechnicalMetricSummaryItem): string {
+  return summary.cloudResourceId
+    ?? `${summary.cloudConnectionId ?? 'unknown'}\u0000${summary.provider}\u0000${summary.externalResourceId}`;
 }
 
 function evaluateResource(
@@ -154,6 +164,7 @@ function evaluateResource(
   return {
     externalResourceId,
     ...(first?.cloudResourceId !== undefined ? { cloudResourceId: first.cloudResourceId } : {}),
+    ...(first?.cloudConnectionId !== undefined ? { cloudConnectionId: first.cloudConnectionId } : {}),
     provider: first?.provider ?? 'UNKNOWN',
     ...(first?.resourceType !== undefined ? { resourceType: first.resourceType } : {}),
     ...(first?.serviceName !== undefined ? { serviceName: first.serviceName } : {}),
@@ -163,10 +174,7 @@ function evaluateResource(
     ruleMatches,
     blockers,
     sourceFacts,
-    technicalEvidenceRefs: summaries.map(
-      (summary) =>
-        `resource_metric_samples:${summary.externalResourceId}:${summary.metricName}:${summary.latestSampledAt.toISOString()}`,
-    ),
+    technicalEvidenceRefs: summaries.map(technicalMetricEvidenceRef),
     metricSummary: summaries.map(toMetricRuleSummary),
     maxTechnicalSavingsRate: idleCandidate ? 0.4 : strongRightsizing ? 0.25 : moderateRightsizing ? 0.15 : 0,
   };

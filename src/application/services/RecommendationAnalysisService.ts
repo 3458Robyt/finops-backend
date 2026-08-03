@@ -28,26 +28,34 @@ export class RecommendationAnalysisService {
 
   public async queue(
     actor: AuthContext,
-    input: { readonly externalResourceId?: string },
+    input: { readonly externalResourceId?: string; readonly cloudResourceId?: string },
   ): Promise<{ readonly run: RecommendationAnalysisRun; readonly reused: boolean }> {
     this.requireManager(actor);
     const externalResourceId = input.externalResourceId?.trim();
+    const cloudResourceId = input.cloudResourceId?.trim();
     if (input.externalResourceId !== undefined && externalResourceId === '') {
       throw new FinOpsBaseError('El identificador del recurso no puede estar vacío.', 'VALIDATION_ERROR');
+    }
+    if (input.cloudResourceId !== undefined && cloudResourceId === '') {
+      throw new FinOpsBaseError('El identificador canónico del recurso no puede estar vacío.', 'VALIDATION_ERROR');
+    }
+    if (cloudResourceId !== undefined && externalResourceId === undefined) {
+      throw new FinOpsBaseError('El cloudResourceId requiere externalResourceId para mantener el alcance canónico.', 'VALIDATION_ERROR');
     }
 
     return this.repository.queue({
       tenantId: actor.tenantId,
       requestedByUserId: actor.userId,
       trigger: 'MANUAL',
-      scope: externalResourceId === undefined ? 'TENANT' : 'RESOURCE',
+      scope: externalResourceId === undefined && cloudResourceId === undefined ? 'TENANT' : 'RESOURCE',
       ...(externalResourceId !== undefined ? { externalResourceId } : {}),
+      ...(cloudResourceId !== undefined ? { cloudResourceId } : {}),
     });
   }
 
   public async preview(
     actor: AuthContext,
-    input: { readonly externalResourceId?: string },
+    input: { readonly externalResourceId?: string; readonly cloudResourceId?: string },
   ): Promise<{
     readonly scope: 'TENANT' | 'RESOURCE';
     readonly externalResourceId?: string;
@@ -60,11 +68,16 @@ export class RecommendationAnalysisService {
     readonly readinessReport: PreparedRecommendationAnalysis['readinessReport'];
   }> {
     const externalResourceId = input.externalResourceId?.trim();
+    const cloudResourceId = input.cloudResourceId?.trim();
+    if (cloudResourceId !== undefined && cloudResourceId !== '' && (externalResourceId === undefined || externalResourceId === '')) {
+      throw new FinOpsBaseError('El cloudResourceId requiere externalResourceId para mantener el alcance canónico.', 'VALIDATION_ERROR');
+    }
     const prepared = await this.aiService.prepareRecommendationAnalysis({
       tenantId: actor.tenantId,
       ...(externalResourceId !== undefined && externalResourceId !== ''
         ? { externalResourceId }
         : {}),
+      ...(cloudResourceId !== undefined && cloudResourceId !== '' ? { cloudResourceId } : {}),
     });
     const period = normalizePeriod(prepared.snapshot.periodStart, prepared.snapshot.periodEnd);
     return {
@@ -163,6 +176,7 @@ export class RecommendationAnalysisService {
     const prepared = await this.aiService.prepareRecommendationAnalysis({
       tenantId: run.tenantId,
       ...(run.externalResourceId !== undefined ? { externalResourceId: run.externalResourceId } : {}),
+      ...(run.cloudResourceId !== undefined ? { cloudResourceId: run.cloudResourceId } : {}),
     });
     const bounds = normalizePeriod(prepared.snapshot.periodStart, prepared.snapshot.periodEnd);
     const initialCandidateResults = buildInitialCandidateResults(prepared);
@@ -236,6 +250,7 @@ export class RecommendationAnalysisService {
       tenantId: run.tenantId,
       ...(run.requestedByUserId !== undefined ? { userId: run.requestedByUserId } : {}),
       ...(run.externalResourceId !== undefined ? { externalResourceId: run.externalResourceId } : {}),
+      ...(run.cloudResourceId !== undefined ? { cloudResourceId: run.cloudResourceId } : {}),
       analysisRunId: run.id,
       persist: true,
       prepared,

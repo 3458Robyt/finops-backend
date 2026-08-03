@@ -79,6 +79,7 @@ export class FinOpsArtifactGenerator {
     snapshot: CostAnalyticsSnapshot,
     systemPrompt: string,
     externalResourceId?: string,
+    cloudResourceId?: string,
     technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot,
     deterministicAnalysis?: DeterministicTrendAnalysis,
     readinessReport?: RecommendationReadinessReport,
@@ -86,11 +87,12 @@ export class FinOpsArtifactGenerator {
   ): Promise<AuditedDraftsResult> {
     const firstRawResponse = await this.requestRecommendations(systemPrompt);
     let drafts = this.withTenant(
-      normalizeRecommendationDrafts(
+      dropNonActionableFinancialDrafts(normalizeRecommendationDrafts(
         parseRecommendationDrafts(firstRawResponse, snapshot),
         readinessReport,
         technicalEvidenceSnapshot,
-      ),
+        cloudResourceId,
+      ), readinessReport),
       tenantId,
     );
     await onAuditStart?.();
@@ -109,11 +111,12 @@ export class FinOpsArtifactGenerator {
         repairInstructions,
       );
       drafts = this.withTenant(
-        normalizeRecommendationDrafts(
+        dropNonActionableFinancialDrafts(normalizeRecommendationDrafts(
           parseRecommendationDrafts(revisedRaw, snapshot),
           readinessReport,
           technicalEvidenceSnapshot,
-        ),
+          cloudResourceId,
+        ), readinessReport),
         tenantId,
       );
       await onAuditStart?.();
@@ -340,6 +343,7 @@ function normalizeRecommendationDrafts(
   drafts: readonly AiRecommendationDraft[],
   readinessReport: RecommendationReadinessReport | undefined,
   technicalEvidenceSnapshot: RecommendationEvidenceSnapshot | undefined,
+  cloudResourceId?: string,
 ): readonly AiRecommendationDraft[] {
   if (readinessReport === undefined) {
     return drafts;
@@ -354,7 +358,11 @@ function normalizeRecommendationDrafts(
     const existingEvidence = isRecord(draft.evidence) ? draft.evidence : {};
     const technicalResource = candidate.resourceId === undefined || technicalEvidenceSnapshot === undefined
       ? undefined
-      : technicalEvidenceSnapshot.resources.find((resource) => resource.externalResourceId === candidate.resourceId);
+      : technicalEvidenceSnapshot.resources.find((resource) =>
+        resource.externalResourceId === candidate.resourceId
+        && (cloudResourceId === undefined || resource.cloudResourceId === cloudResourceId)
+        && (candidate.cloudResourceId === undefined || resource.cloudResourceId === candidate.cloudResourceId),
+      );
     const primaryMetric = technicalResource?.metrics.find((metric) => /cpu|memory/i.test(metric.metricName))
       ?? technicalResource?.metrics[0];
     const technicalFields = technicalResource !== undefined && primaryMetric !== undefined
@@ -378,20 +386,42 @@ function normalizeRecommendationDrafts(
     const requiresTechnicalValidation = candidate.requiresTechnicalValidation
       || technicalResource !== undefined
       || existingEvidence['requiresTechnicalValidation'] === true;
-    const safeType = technicalResource !== undefined && requiresTechnicalValidation
+    const hasCapacityBlocker = technicalResource?.ruleEvaluation.blockers.some((blocker) =>
+      blocker === 'CPU_SATURATION_RISK' || blocker === 'MEMORY_SATURATION_RISK',
+    ) === true;
+    const technicalReviewOnly = technicalResource !== undefined && (
+      candidate.opportunityType === 'PERFORMANCE_CAPACITY_REVIEW' || hasCapacityBlocker
+    );
+    const technicalValidationOnly = technicalResource !== undefined && (
+      technicalReviewOnly || technicalResource.ruleEvaluation.blockers.length > 0
+    );
+    const safeType = technicalReviewOnly
       ? 'PERFORMANCE_CAPACITY_REVIEW'
+      : technicalValidationOnly
+        ? 'TECHNICAL_VALIDATION_REQUIRED'
       : candidate.opportunityType;
-    const safeTitle = technicalResource !== undefined && requiresTechnicalValidation
+    const safeTitle = technicalReviewOnly
       ? `Revisar capacidad y rendimiento de ${technicalResource.externalResourceId}`
+      : technicalValidationOnly
+        ? `Validar señales técnicas de ${technicalResource.externalResourceId}`
+      : technicalResource !== undefined
+        ? [
+            draft.description,
+            'La validación técnica y la aprobación manual son obligatorias; esta recomendación no autoriza por sí sola resize, apagado ni otro cambio operativo.',
+          ].join(' ')
       : candidate.resourceId === undefined
         ? `Revisar costo y consumo de ${candidate.serviceName}`
         : draft.title;
-    const safeDescription = technicalResource !== undefined && requiresTechnicalValidation
+    const safeDescription = technicalReviewOnly
       ? [
           `Revisar la capacidad y el rendimiento del recurso ${technicalResource.externalResourceId}.`,
-          candidate.sourceFacts.join(' '),
-          'La evidencia permite priorizar una revisión, pero no autoriza reducción, resize ni otro cambio operativo; la validación y aprobación manual son obligatorias.',
+          'La evidencia permite priorizar una revisión previa. Esta salida es informativa, no es una autorización ni un plan de ejecución. La validación y aprobación manual son obligatorias antes de cualquier cambio operativo.',
         ].join(' ')
+      : technicalValidationOnly
+        ? [
+            `Validar las señales técnicas observadas en el recurso ${technicalResource.externalResourceId}.`,
+            'Esta salida es informativa, no propone un cambio operativo ni autoriza su ejecución. La validación y aprobación manual son obligatorias.',
+          ].join(' ')
       : candidate.resourceId === undefined
         ? [
             candidate.sourceFacts.join(' '),
@@ -399,9 +429,13 @@ function normalizeRecommendationDrafts(
           ].join(' ')
         : draft.description;
     const normalizedCloudResourceId = technicalResource?.cloudResourceId ?? candidate.cloudResourceId;
+    const { estimatedMonthlySavings: generatedSavings, ...draftWithoutSavings } = draft;
 
     return {
-      ...draft,
+      ...draftWithoutSavings,
+      ...(technicalValidationOnly || generatedSavings === undefined
+        ? {}
+        : { estimatedMonthlySavings: generatedSavings }),
       ...(normalizedCloudResourceId !== undefined ? { cloudResourceId: normalizedCloudResourceId } : {}),
       ...(normalizedCloudResourceId === undefined && candidate.resourceId !== undefined
         ? { resourceLinkReason: 'INVENTORY_RESOURCE_NOT_FOUND' }
@@ -414,13 +448,39 @@ function normalizeRecommendationDrafts(
         candidateId: candidate.id,
         evidenceLevel: candidate.evidenceLevelAllowed,
         evidenceStrength: candidate.evidenceStrength ?? withoutStaleTechnicalFields['evidenceStrength'] ?? 'MEDIUM',
-        sourceFacts: candidate.sourceFacts,
+        sourceFacts: technicalReviewOnly
+          ? candidate.sourceFacts.filter((fact) => /^(CPU|Memoria)\b/i.test(fact))
+          : candidate.sourceFacts,
         requiresTechnicalValidation,
         maxEstimatedMonthlySavings: candidate.maxEstimatedMonthlySavings,
         readiness: candidate.readiness,
+        ...(technicalValidationOnly
+          ? {
+              technicalReviewOnly: true,
+              operationalAuthorization: 'NONE',
+              requiresManualValidation: true,
+            }
+          : {}),
         ...technicalFields,
       },
     };
+  });
+}
+
+function dropNonActionableFinancialDrafts(
+  drafts: readonly AiRecommendationDraft[],
+  readinessReport: RecommendationReadinessReport | undefined,
+): readonly AiRecommendationDraft[] {
+  if (readinessReport === undefined) return drafts;
+  const candidatesById = new Map(readinessReport.candidates.map((candidate) => [candidate.id, candidate]));
+  return drafts.filter((draft) => {
+    const evidence = isRecord(draft.evidence) ? draft.evidence : {};
+    const candidateId = typeof evidence['candidateId'] === 'string' ? evidence['candidateId'] : undefined;
+    const candidate = candidateId === undefined ? undefined : candidatesById.get(candidateId);
+    const isFinancialCandidate = candidate !== undefined && candidate.resourceId === undefined;
+    const hasPositivePotential = (candidate?.maxEstimatedMonthlySavings ?? 0) > 0;
+    const estimatedSavings = typeof draft.estimatedMonthlySavings === 'number' ? draft.estimatedMonthlySavings : 0;
+    return !(isFinancialCandidate && hasPositivePotential && estimatedSavings <= 0);
   });
 }
 
@@ -439,7 +499,13 @@ function findCandidate(
     ? evidence['externalResourceId']
     : undefined;
   if (externalResourceId !== undefined) {
-    const resource = candidates.find((candidate) => candidate.resourceId === externalResourceId);
+    const requestedCloudResourceId = typeof evidence['cloudResourceId'] === 'string'
+      ? evidence['cloudResourceId']
+      : undefined;
+    const resource = uniqueCandidate(candidates, (candidate) =>
+      candidate.resourceId === externalResourceId
+      && (requestedCloudResourceId === undefined || candidate.cloudResourceId === requestedCloudResourceId),
+    );
     if (resource !== undefined) return resource;
   }
 

@@ -102,6 +102,7 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
               ],
             }
           : {}),
+        ...(query.cloudResourceId !== undefined ? { cloudResourceId: query.cloudResourceId } : {}),
         ...(query.status !== undefined ? { status: query.status } : {}),
       },
       orderBy: [

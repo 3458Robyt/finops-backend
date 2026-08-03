@@ -29,7 +29,7 @@ export interface ICostAllocationRepository {
   archiveRule(tenantId: string, ruleId: string, now: Date): Promise<CostAllocationRule | null>;
   summarize(tenantId: string, periodStart: Date, cloudAccountId?: string, serviceName?: string): Promise<readonly AllocationSummary[]>;
   preview(tenantId: string, input: CostAllocationRuleInput, periodStart: Date): Promise<AllocationPreview>;
-  resourceSummary(tenantId: string, resourceId: string): Promise<readonly AllocationSummary[]>;
+  resourceSummary(tenantId: string, resourceId: string, cloudResourceId?: string): Promise<readonly AllocationSummary[]>;
   unallocated(tenantId: string, periodStart: Date, currency?: string, cloudAccountId?: string, serviceName?: string): Promise<readonly UnallocatedCostDetail[]>;
   writeAudit(tenantId: string, userId: string, action: string, ruleId: string, metadata: unknown): Promise<void>;
 }

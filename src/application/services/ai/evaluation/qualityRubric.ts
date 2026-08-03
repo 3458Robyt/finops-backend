@@ -323,7 +323,10 @@ function matchesCanonicalTechnicalEvidence(
     return false;
   }
 
-  const resource = snapshot.resources.find((item) => item.externalResourceId === externalResourceId);
+  const matchingResources = snapshot.resources.filter((item) => item.externalResourceId === externalResourceId);
+  const resource = matchingResources.length === 1
+    ? matchingResources[0]
+    : matchingResources.find((item) => item.cloudResourceId === cloudResourceId);
   if (
     resource === undefined
     || resource.linkQuality !== 'COST_AND_TECHNICAL'

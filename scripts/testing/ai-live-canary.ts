@@ -23,6 +23,7 @@ const nodeCommand = process.execPath;
 const prismaCli = resolve('node_modules/prisma/build/index.js');
 const tsxCli = resolve('node_modules/tsx/dist/cli.mjs');
 let server: ReturnType<typeof spawn> | undefined;
+const serverOutput: string[] = [];
 
 await mkdir(resolve('.test-artifacts'), { recursive: true });
 
@@ -57,7 +58,6 @@ try {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
-  const serverOutput: string[] = [];
   server.stdout?.on('data', (chunk: Buffer) => appendOutput(serverOutput, chunk));
   server.stderr?.on('data', (chunk: Buffer) => appendOutput(serverOutput, chunk));
   await waitForHealth(`http://127.0.0.1:${port}/health`, serverOutput);
@@ -71,6 +71,9 @@ try {
   if (audit.stderr.trim() !== '') {
     console.error(audit.stderr.trim());
   }
+} catch (error: unknown) {
+  console.error(`AI live canary backend output:\n${serverOutput.join('')}`);
+  throw error;
 } finally {
   await stopProcess(server);
   await dropSchema(baseUrl, schema);

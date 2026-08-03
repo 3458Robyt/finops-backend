@@ -28,11 +28,29 @@ describe('RecommendationReadinessGate', () => {
     const resourceCandidate = report.candidates.find((candidate) => candidate.id === 'resource-1');
 
     expect(resourceCandidate?.readiness).toBe('GENERATABLE');
-    expect(resourceCandidate?.requiresTechnicalValidation).toBe(false);
+    expect(resourceCandidate?.requiresTechnicalValidation).toBe(true);
     expect(resourceCandidate?.evidenceLevelAllowed).toBe('COST_USAGE_AND_TECHNICAL');
     expect(resourceCandidate?.technicalEvidenceRefs).toEqual([
       'resource_metric_samples:i-prod-1:CPUUtilization:2026-06',
     ]);
+  });
+
+  it('blocks duplicate external ids until a canonical resource is selected', () => {
+    const first = buildEvidenceSnapshot({ cloudResourceId: 'cloud-a', cloudConnectionId: 'connection-a' });
+    const second = buildEvidenceSnapshot({ cloudResourceId: 'cloud-b', cloudConnectionId: 'connection-b' });
+    const report = buildRecommendationReadinessReport({
+      snapshot: buildSnapshot(),
+      technicalEvidenceSnapshot: {
+        ...first,
+        resources: [...first.resources, { ...second.resources[0]! }],
+        deterministicRules: [...first.deterministicRules, { ...second.deterministicRules[0]! }],
+      },
+    });
+
+    const resourceCandidate = report.blocked.find((candidate) => candidate.id === 'resource-1');
+
+    expect(resourceCandidate?.readiness).toBe('BLOCKED_NO_EVIDENCE');
+    expect(resourceCandidate?.reasons.join(' ')).toContain('cloudResourceId');
   });
 
   it('keeps a resource validation-only when deterministic rules report blockers', () => {

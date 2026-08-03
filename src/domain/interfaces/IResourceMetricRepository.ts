@@ -1,3 +1,8 @@
+import type {
+  ResourceEvidenceStatus,
+  ResourceFreshness,
+} from '../models/ResourceLinkage.js';
+
 /**
  * Estado del ciclo de vida de un recurso cloud inventariado.
  *
@@ -14,6 +19,7 @@ export type CloudResourceStatus = 'ACTIVE' | 'STOPPED' | 'TERMINATED' | 'UNKNOWN
  */
 export interface CloudResourceItem {
   readonly id: string;
+  readonly cloudConnectionId?: string;
   readonly provider: string;
   readonly externalResourceId: string;
   readonly name?: string;
@@ -23,6 +29,15 @@ export interface CloudResourceItem {
   readonly status: CloudResourceStatus;
   readonly firstSeenAt: Date;
   readonly lastSeenAt: Date;
+  readonly lineage?: {
+    readonly status: ResourceEvidenceStatus;
+    readonly linkedCostCount: number;
+    readonly linkedMetricSampleCount: number;
+    readonly linkedRecommendationCount: number;
+    readonly latestCostAt?: Date;
+    readonly latestMetricAt?: Date;
+    readonly freshness: ResourceFreshness;
+  };
 }
 
 /**
@@ -36,6 +51,7 @@ export interface CloudResourceItem {
 export interface ResourceMetricSampleItem {
   readonly id: string;
   readonly provider: string;
+  readonly cloudConnectionId?: string;
   readonly externalResourceId: string;
   readonly cloudResourceId?: string;
   /** Nombre de la métrica técnica (p. ej. `cpu_utilization`, `memory_used`). */
@@ -54,6 +70,7 @@ export interface TechnicalMetricSampleFilters {
   readonly startDate?: Date;
   readonly endDate?: Date;
   readonly externalResourceId?: string;
+  readonly cloudResourceId?: string;
   readonly metricNames?: readonly string[];
   readonly limit: number;
 }
@@ -64,6 +81,7 @@ export interface TechnicalMetricSeriesFilters {
   readonly startDate?: Date;
   readonly endDate?: Date;
   readonly externalResourceId?: string;
+  readonly cloudResourceId?: string;
   readonly metricNames?: readonly string[];
   readonly bucket: TechnicalMetricSeriesBucket;
   readonly cursor?: string;
@@ -73,6 +91,7 @@ export interface TechnicalMetricSeriesFilters {
 export interface TechnicalMetricSeriesRepositoryPoint {
   readonly bucketStart: Date;
   readonly externalResourceId: string;
+  readonly cloudResourceId?: string;
   readonly metricName: string;
   readonly metricUnit?: string;
   readonly avg: number;
@@ -96,10 +115,12 @@ export interface TechnicalMetricCoverageFilters {
   readonly startDate?: Date;
   readonly endDate?: Date;
   readonly externalResourceId?: string;
+  readonly cloudResourceId?: string;
 }
 
 export interface TechnicalMetricCoverageSampleItem {
   readonly externalResourceId: string;
+  readonly cloudResourceId?: string;
   readonly metricName: string;
   readonly sampledAt: Date;
 }
@@ -128,6 +149,7 @@ export interface TechnicalCostContextItem {
   readonly externalResourceId: string;
   /** Recurso normalizado cuando el costo pasó por el enlace exacto de inventario. */
   readonly cloudResourceId?: string;
+  readonly cloudConnectionId?: string;
   readonly totalCost: number;
   readonly currency: string;
   readonly metricCount: number;
@@ -137,6 +159,7 @@ export interface TechnicalMetricSummaryFilters {
   readonly startDate?: Date;
   readonly endDate?: Date;
   readonly externalResourceIds?: readonly string[];
+  readonly cloudResourceIds?: readonly string[];
   readonly metricNames?: readonly string[];
   readonly limit: number;
 }
@@ -145,6 +168,7 @@ export interface TechnicalMetricSummaryItem {
   readonly provider: string;
   readonly externalResourceId: string;
   readonly cloudResourceId?: string;
+  readonly cloudConnectionId?: string;
   readonly resourceType?: string;
   readonly serviceName?: string;
   readonly metricName: string;
@@ -185,6 +209,8 @@ export interface IResourceMetricRepository {
    */
   listResourcesForTenant(tenantId: string, limit: number): Promise<readonly CloudResourceItem[]>;
 
+  getResourceForTenantById?(tenantId: string, cloudResourceId: string): Promise<CloudResourceItem | undefined>;
+
   /**
    * Lista las muestras de métricas técnicas de un tenant, de la más reciente a
    * la más antigua.
@@ -221,6 +247,7 @@ export interface IResourceMetricRepository {
   listCostContextForResources(
     tenantId: string,
     externalResourceIds: readonly string[],
+    cloudResourceIds?: readonly string[],
   ): Promise<readonly TechnicalCostContextItem[]>;
 
   listMetricSummariesForTenant(

@@ -14,6 +14,7 @@ export interface QueueRecommendationAnalysisRunInput {
   readonly trigger: RecommendationAnalysisTrigger;
   readonly scope: RecommendationAnalysisScope;
   readonly externalResourceId?: string;
+  readonly cloudResourceId?: string;
   readonly retriedFromRunId?: string;
   readonly maxAttempts?: number;
 }

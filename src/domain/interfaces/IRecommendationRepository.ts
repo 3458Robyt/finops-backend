@@ -15,6 +15,8 @@ export interface RecommendationQuery {
   readonly cloudAccountId?: string;
   /** Filtra por el identificador exacto de recurso registrado en evidence. */
   readonly externalResourceId?: string;
+  /** Filtra por la relación normalizada exacta; tiene prioridad sobre el identificador externo. */
+  readonly cloudResourceId?: string;
   /** Filtra por estado de la recomendación; opcional. */
   readonly status?: FinOpsRecommendation['status'];
 }

@@ -15,6 +15,7 @@ const chatSchema = z.object({
 const generateRecommendationsSchema = z.object({
   persist: z.boolean().optional(),
   externalResourceId: z.string().trim().min(1).optional(),
+  cloudResourceId: z.string().trim().min(1).optional(),
 });
 
 /**
@@ -150,6 +151,7 @@ export class AiController {
         userId: req.auth.userId,
         persist: parsed.data.persist === true,
         ...(parsed.data.externalResourceId !== undefined ? { externalResourceId: parsed.data.externalResourceId } : {}),
+        ...(parsed.data.cloudResourceId !== undefined ? { cloudResourceId: parsed.data.cloudResourceId } : {}),
       });
 
       res.status(200).json({

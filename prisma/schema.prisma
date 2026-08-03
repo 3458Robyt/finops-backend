@@ -781,6 +781,7 @@ model CloudResource {
   @@unique([cloudConnectionId, externalResourceId])
   @@index([tenantId, provider, resourceType])
   @@index([tenantId, status])
+  @@index([tenantId, lastSeenAt], map: "cloud_resources_tenant_last_seen_at_idx")
   @@map("cloud_resources")
 }
 
@@ -806,6 +807,7 @@ model ResourceMetricSample {
 
   @@unique([cloudConnectionId, externalResourceId, metricName, sampledAt])
   @@index([tenantId, sampledAt])
+  @@index([tenantId, cloudConnectionId, sampledAt], map: "resource_metric_samples_tenant_connection_sampled_at_idx")
   @@index([tenantId, metricName, sampledAt])
   @@index([tenantId, externalResourceId, metricName, sampledAt])
   @@index([cloudResourceId, sampledAt])
@@ -908,6 +910,7 @@ model CostMetric {
   @@index([tenantId, serviceName, chargePeriodStart])
   @@index([tenantId, provider, chargePeriodStart])
   @@index([tenantId, cloudConnectionId, billingSource, chargePeriodStart])
+  @@index([tenantId, cloudConnectionId, chargePeriodEnd], map: "cost_metrics_tenant_connection_period_end_idx")
   @@index([tenantId, cloudResourceId, chargePeriodStart])
   @@index([resourceId])
   @@index([cloudAccountId], map: "cost_metrics_cloud_account_id_idx")
@@ -964,6 +967,7 @@ model RecommendationAnalysisRun {
   scope                    RecommendationAnalysisScope               @default(TENANT)
   scopeKey                 String                                    @map("scope_key")
   externalResourceId       String?                                   @map("external_resource_id")
+  cloudResourceId          String?                                   @map("cloud_resource_id")
   status                   RecommendationAnalysisRunStatus           @default(PENDING)
   stage                    RecommendationAnalysisRunStage            @default(QUEUED)
   periodStart              DateTime?                                 @map("period_start") @db.Timestamptz(6)
@@ -1004,6 +1008,7 @@ model RecommendationAnalysisRun {
   @@index([tenantId, createdAt])
   @@index([tenantId, status, nextAttemptAt])
   @@index([tenantId, scopeKey, evidenceHash])
+  @@index([tenantId, cloudResourceId, createdAt])
   @@index([status, nextAttemptAt, createdAt])
   @@index([requestedByUserId, createdAt])
   @@index([retriedFromRunId], map: "recommendation_analysis_runs_retried_from_run_id_idx")

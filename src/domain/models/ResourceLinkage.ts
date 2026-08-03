@@ -10,9 +10,80 @@ export const resourceLinkReasonCodes = [
 
 export type ResourceLinkReasonCode = (typeof resourceLinkReasonCodes)[number];
 
+export type ResourceEvidenceStatus =
+  | 'EVIDENCE_COMPLETE'
+  | 'COST_ONLY'
+  | 'TECHNICAL_ONLY'
+  | 'INSUFFICIENT_EVIDENCE'
+  | 'STALE_DATA';
+
+export type ResourceFreshnessStatus = 'FRESH' | 'STALE' | 'NO_DATA';
+
+export interface ResourceFreshnessSignal {
+  readonly status: ResourceFreshnessStatus;
+  readonly observedAt?: Date;
+}
+
+export interface ResourceFreshness {
+  readonly inventory: ResourceFreshnessSignal;
+  readonly costs: ResourceFreshnessSignal;
+  readonly metrics: ResourceFreshnessSignal;
+}
+
+export const resourceFreshnessWindowsMs = {
+  inventory: 48 * 60 * 60 * 1000,
+  costs: 45 * 24 * 60 * 60 * 1000,
+  metrics: 48 * 60 * 60 * 1000,
+} as const;
+
+export function buildResourceFreshness(input: {
+  readonly inventoryAt?: Date | null;
+  readonly costsAt?: Date | null;
+  readonly metricsAt?: Date | null;
+}, now = new Date()): ResourceFreshness {
+  return {
+    inventory: classifyFreshness(input.inventoryAt, resourceFreshnessWindowsMs.inventory, now),
+    costs: classifyFreshness(input.costsAt, resourceFreshnessWindowsMs.costs, now),
+    metrics: classifyFreshness(input.metricsAt, resourceFreshnessWindowsMs.metrics, now),
+  };
+}
+
+export function classifyResourceEvidenceStatus(input: {
+  readonly costCount: number;
+  readonly metricCount: number;
+  readonly freshness: ResourceFreshness;
+}): ResourceEvidenceStatus {
+  if (input.costCount === 0 && input.metricCount === 0) {
+    return 'INSUFFICIENT_EVIDENCE';
+  }
+  if (input.freshness.inventory.status === 'STALE'
+    || (input.costCount > 0 && input.freshness.costs.status === 'STALE')
+    || (input.metricCount > 0 && input.freshness.metrics.status === 'STALE')) {
+    return 'STALE_DATA';
+  }
+  if (input.costCount > 0 && input.metricCount > 0) {
+    return 'EVIDENCE_COMPLETE';
+  }
+  return input.costCount > 0 ? 'COST_ONLY' : 'TECHNICAL_ONLY';
+}
+
 export interface ResourceLinkResolution {
   readonly cloudResourceId?: string;
   readonly reason?: ResourceLinkReasonCode;
+}
+
+function classifyFreshness(
+  observedAt: Date | null | undefined,
+  maxAgeMs: number,
+  now: Date,
+): ResourceFreshnessSignal {
+  if (observedAt === undefined || observedAt === null) {
+    return { status: 'NO_DATA' };
+  }
+  return {
+    status: now.getTime() - observedAt.getTime() <= maxAgeMs ? 'FRESH' : 'STALE',
+    observedAt,
+  };
 }
 
 export function normalizeExternalResourceId(value: unknown): string | undefined {

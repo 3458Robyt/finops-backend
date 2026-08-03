@@ -193,6 +193,9 @@ export class FinOpsAiService {
   public async generateRecommendations(
     input: GenerateAiRecommendationsInput,
   ): Promise<GenerateAiRecommendationsResponse> {
+    if (input.cloudResourceId !== undefined && input.externalResourceId === undefined) {
+      throw new FinOpsBaseError('cloudResourceId requiere externalResourceId para mantener el alcance canónico.', 'VALIDATION_ERROR');
+    }
     const prepared = input.prepared ?? await this.prepareRecommendationAnalysis(input);
     const { snapshot, readinessReport, technicalEvidenceSnapshot } = prepared;
     if (readinessReport.candidates.length === 0) {
@@ -218,6 +221,7 @@ export class FinOpsAiService {
       ...(input.userId !== undefined ? { userId: input.userId } : {}),
       snapshot,
       ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
+      ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
       ...(prepared.technicalEvidenceSnapshot !== undefined
         ? { technicalEvidenceSnapshot: prepared.technicalEvidenceSnapshot }
         : {}),
@@ -237,6 +241,7 @@ export class FinOpsAiService {
       snapshot,
       governedSystemPrompt,
       input.externalResourceId,
+      input.cloudResourceId,
       technicalEvidenceSnapshot,
       prepared.deterministicAnalysis,
       readinessReport,
@@ -309,8 +314,11 @@ export class FinOpsAiService {
   }
 
   public async prepareRecommendationAnalysis(
-    input: Pick<GenerateAiRecommendationsInput, 'tenantId' | 'externalResourceId'>,
+    input: Pick<GenerateAiRecommendationsInput, 'tenantId' | 'externalResourceId' | 'cloudResourceId'>,
   ): Promise<PreparedRecommendationAnalysis> {
+    if (input.cloudResourceId !== undefined && input.externalResourceId === undefined) {
+      throw new FinOpsBaseError('cloudResourceId requiere externalResourceId para mantener el alcance canónico.', 'VALIDATION_ERROR');
+    }
     const tenantSnapshot = await this.analyticsRepository.getLatestTenantSnapshot(input.tenantId);
     const snapshot = input.externalResourceId === undefined
       ? tenantSnapshot
@@ -319,6 +327,7 @@ export class FinOpsAiService {
       tenantId: input.tenantId,
       snapshot,
       ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
+      ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
     });
     const periodEnd = new Date(snapshot.periodEnd);
     const periodFrom = new Date(periodEnd);

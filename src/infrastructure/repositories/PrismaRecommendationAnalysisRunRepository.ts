@@ -29,7 +29,7 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
   public async queue(
     input: QueueRecommendationAnalysisRunInput,
   ): Promise<{ readonly run: RecommendationAnalysisRun; readonly reused: boolean }> {
-    const scopeKey = input.externalResourceId ?? '__tenant__';
+    const scopeKey = input.cloudResourceId ?? input.externalResourceId ?? '__tenant__';
 
     try {
       const row = await this.prisma.recommendationAnalysisRun.create({
@@ -41,6 +41,7 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
           scope: input.scope,
           scopeKey,
           ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
+          ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
           ...(input.maxAttempts !== undefined ? { maxAttempts: input.maxAttempts } : {}),
         },
         include: runInclude,
@@ -113,6 +114,7 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
       trigger: 'RETRY',
       scope: source.scope,
       ...(source.externalResourceId !== null ? { externalResourceId: source.externalResourceId } : {}),
+      ...(source.cloudResourceId !== null ? { cloudResourceId: source.cloudResourceId } : {}),
       maxAttempts: source.maxAttempts,
     });
     return queued.run;
@@ -308,6 +310,7 @@ function toDomain(row: RunRow): RecommendationAnalysisRun {
     scope: row.scope,
     scopeKey: row.scopeKey,
     ...(row.externalResourceId !== null ? { externalResourceId: row.externalResourceId } : {}),
+    ...(row.cloudResourceId !== null ? { cloudResourceId: row.cloudResourceId } : {}),
     status: row.status,
     stage: row.stage,
     ...(row.periodStart !== null ? { periodStart: row.periodStart } : {}),

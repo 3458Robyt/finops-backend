@@ -4,7 +4,7 @@ import type {
   TechnicalCostContextItem,
   TechnicalMetricSummaryItem,
 } from '../../../domain/interfaces/IResourceMetricRepository.js';
-import { evaluateTechnicalOptimizationRules } from './TechnicalOptimizationRuleEngine.js';
+import { evaluateTechnicalOptimizationRules, technicalMetricEvidenceRef } from './TechnicalOptimizationRuleEngine.js';
 import {
   formatRecommendationEvidenceSnapshot,
   hashRecommendationEvidenceSnapshot,
@@ -19,6 +19,7 @@ export interface TechnicalRecommendationEvidenceProvider {
     readonly tenantId: string;
     readonly snapshot: CostAnalyticsSnapshot;
     readonly externalResourceId?: string;
+    readonly cloudResourceId?: string;
   }): Promise<RecommendationEvidenceSnapshot>;
 }
 
@@ -33,6 +34,7 @@ export class TechnicalRecommendationEvidenceService implements TechnicalRecommen
     readonly tenantId: string;
     readonly snapshot: CostAnalyticsSnapshot;
     readonly externalResourceId?: string;
+    readonly cloudResourceId?: string;
   }): Promise<RecommendationEvidenceSnapshot> {
     const startDate = parseDate(input.snapshot.periodStart);
     const endDate = parseDate(input.snapshot.periodEnd);
@@ -46,6 +48,7 @@ export class TechnicalRecommendationEvidenceService implements TechnicalRecommen
       ...(evidenceStartDate !== undefined ? { startDate: evidenceStartDate } : {}),
       ...(evidenceEndDate !== undefined ? { endDate: evidenceEndDate } : {}),
       ...(input.externalResourceId !== undefined ? { externalResourceIds: [input.externalResourceId] } : {}),
+      ...(input.cloudResourceId !== undefined ? { cloudResourceIds: [input.cloudResourceId] } : {}),
       limit: 1000,
     });
     const deterministicRules = evaluateTechnicalOptimizationRules({
@@ -53,7 +56,8 @@ export class TechnicalRecommendationEvidenceService implements TechnicalRecommen
       referenceDate,
     });
     const resourceIds = [...new Set(summaries.map((summary) => summary.externalResourceId))];
-    const costContext = await this.repository.listCostContextForResources(input.tenantId, resourceIds);
+    const cloudResourceIds = [...new Set(summaries.map((summary) => summary.cloudResourceId).filter((value): value is string => value !== undefined))];
+    const costContext = await this.repository.listCostContextForResources(input.tenantId, resourceIds, cloudResourceIds);
     const resources = buildResources(input.snapshot, summaries, costContext, deterministicRules);
     const availability = resources.length === 0
       ? 'NO_TECHNICAL_EVIDENCE'
@@ -88,21 +92,23 @@ function buildResources(
   costContext: readonly TechnicalCostContextItem[],
   deterministicRules: readonly ReturnType<typeof evaluateTechnicalOptimizationRules>[number][],
 ): readonly RecommendationEvidenceResource[] {
-  const byResource = groupBy(summaries, (summary) => summary.externalResourceId);
-  const costByResource = new Map(costContext.map((item) => [item.externalResourceId, item]));
-  const ruleByResource = new Map(deterministicRules.map((rule) => [rule.externalResourceId, rule]));
+  const byResource = groupBy(summaries, resourceKey);
+  const costByResource = new Map(costContext.map((item) => [costKey(item), item]));
+  const ruleByResource = new Map(deterministicRules.map((rule) => [resourceKey(rule), rule]));
 
   return [...byResource.entries()]
-    .map(([externalResourceId, resourceSummaries]) => {
+    .map(([, resourceSummaries]) => {
       const first = resourceSummaries[0]!;
-      const cost = costByResource.get(externalResourceId);
-      const ruleEvaluation = ruleByResource.get(externalResourceId);
+      const externalResourceId = first.externalResourceId;
+      const cost = costByResource.get(resourceKey(first));
+      const ruleEvaluation = ruleByResource.get(resourceKey(first));
       if (ruleEvaluation === undefined) {
         return undefined;
       }
       return {
         externalResourceId,
         ...(first.cloudResourceId !== undefined ? { cloudResourceId: first.cloudResourceId } : {}),
+        ...(first.cloudConnectionId !== undefined ? { cloudConnectionId: first.cloudConnectionId } : {}),
         provider: first.provider,
         ...(first.resourceType !== undefined ? { resourceType: first.resourceType } : {}),
         ...(first.serviceName !== undefined ? { serviceName: first.serviceName } : {}),
@@ -159,7 +165,7 @@ function toMetric(summary: TechnicalMetricSummaryItem): RecommendationEvidenceMe
     highUtilizationRatio: round(summary.highUtilizationRatio ?? 0),
     firstSampledAt: summary.firstSampledAt.toISOString(),
     latestSampledAt: summary.latestSampledAt.toISOString(),
-    evidenceRef: `resource_metric_samples:${summary.externalResourceId}:${summary.metricName}:${summary.latestSampledAt.toISOString()}`,
+    evidenceRef: technicalMetricEvidenceRef(summary),
   };
 }
 
@@ -174,6 +180,21 @@ function groupBy<T>(items: readonly T[], keyFn: (item: T) => string): Map<string
     grouped.set(keyFn(item), [...(grouped.get(keyFn(item)) ?? []), item]);
   }
   return grouped;
+}
+
+function resourceKey(input: {
+  readonly cloudResourceId?: string;
+  readonly cloudConnectionId?: string;
+  readonly provider: string;
+  readonly externalResourceId: string;
+}): string {
+  return input.cloudResourceId
+    ?? `${input.cloudConnectionId ?? 'unknown'}\u0000${input.provider}\u0000${input.externalResourceId}`;
+}
+
+function costKey(input: TechnicalCostContextItem): string {
+  return input.cloudResourceId
+    ?? `${input.cloudConnectionId ?? 'unknown'}\u0000${input.externalResourceId}`;
 }
 
 function round(value: number): number {

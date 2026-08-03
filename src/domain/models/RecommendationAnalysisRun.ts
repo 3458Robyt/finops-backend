@@ -47,6 +47,7 @@ export interface RecommendationAnalysisRun {
   readonly scope: RecommendationAnalysisScope;
   readonly scopeKey: string;
   readonly externalResourceId?: string;
+  readonly cloudResourceId?: string;
   readonly status: RecommendationAnalysisRunStatus;
   readonly stage: RecommendationAnalysisRunStage;
   readonly periodStart?: Date;

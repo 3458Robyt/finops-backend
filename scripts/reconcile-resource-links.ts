@@ -26,8 +26,12 @@ interface LinkCounters {
   linked: number;
   alreadyLinked: number;
   updated: number;
+  notEligible: number;
   unresolved: number;
+  ambiguous: number;
+  failed: number;
   reasons: Record<ResourceLinkReasonCode, number>;
+  failureMessages: string[];
 }
 
 interface LinkAction {
@@ -71,8 +75,12 @@ function createCounters(): LinkCounters {
     linked: 0,
     alreadyLinked: 0,
     updated: 0,
+    notEligible: 0,
     unresolved: 0,
+    ambiguous: 0,
+    failed: 0,
     reasons: Object.fromEntries(reasonCodes.map((code) => [code, 0])) as Record<ResourceLinkReasonCode, number>,
+    failureMessages: [],
   };
 }
 
@@ -118,20 +126,21 @@ async function reconcileTenant(
   batchSize: number,
   apply: boolean,
 ): Promise<Record<string, unknown>> {
-  const costMetrics = await reconcileCostMetrics(prisma, tenantId, batchSize, apply);
-  const metricSamples = await reconcileMetricSamples(prisma, tenantId, batchSize, apply);
-  const recommendations = await reconcileRecommendations(prisma, tenantId, batchSize, apply);
+  const costMetrics = await safelyReconcile('cost_metrics', () => reconcileCostMetrics(prisma, tenantId, batchSize, apply));
+  const metricSamples = await safelyReconcile('resource_metric_samples', () => reconcileMetricSamples(prisma, tenantId, batchSize, apply));
+  const recommendations = await safelyReconcile('recommendations', () => reconcileRecommendations(prisma, tenantId, batchSize, apply));
   const summary = { costMetrics, metricSamples, recommendations };
 
   if (apply) {
-    const hasUnresolved = [costMetrics, metricSamples, recommendations]
-      .some((table) => table.unresolved > 0);
+    const tables = [costMetrics, metricSamples, recommendations];
+    const hasFailure = tables.some((table) => table.failed > 0);
+    const hasUnresolved = tables.some((table) => table.unresolved > 0);
     await prisma.dataQualityCheck.create({
       data: {
         tenantId,
         sourceType: 'INVENTORY',
         checkName: 'resource_linkage_reconciliation',
-        status: hasUnresolved ? 'WARNING' : 'PASSED',
+        status: hasFailure ? 'FAILED' : hasUnresolved ? 'WARNING' : 'PASSED',
         details: {
           mode: 'APPLY',
           batchSize,
@@ -142,6 +151,20 @@ async function reconcileTenant(
   }
 
   return { tenantId, ...summary };
+}
+
+async function safelyReconcile(
+  table: string,
+  operation: () => Promise<LinkCounters>,
+): Promise<LinkCounters> {
+  try {
+    return await operation();
+  } catch (error: unknown) {
+    const counters = createCounters();
+    counters.failed = 1;
+    counters.failureMessages.push(`${table}: ${error instanceof Error ? error.message : String(error)}`);
+    return counters;
+  }
 }
 
 async function reconcileCostMetrics(
@@ -408,14 +431,21 @@ function recordActions(counters: LinkCounters, actions: readonly LinkAction[]): 
       continue;
     }
 
-    counters.unresolved += 1;
     if (action.reason !== undefined) {
       counters.reasons[action.reason] += 1;
+      if (action.reason === 'SERVICE_LEVEL_COST' || action.reason === 'EMPTY_RESOURCE_ID') {
+        counters.notEligible += 1;
+      } else {
+        counters.unresolved += 1;
+      }
+      if (action.reason === 'AMBIGUOUS_RESOURCE_ID') {
+        counters.ambiguous += 1;
+      }
+    } else {
+      counters.unresolved += 1;
     }
     if (action.currentCloudResourceId !== null || action.currentReason !== action.reason) {
       counters.updated += 1;
-    } else {
-      counters.alreadyLinked += 1;
     }
   }
 }

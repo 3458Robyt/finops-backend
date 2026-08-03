@@ -20,6 +20,7 @@ export interface TechnicalMetricOverviewInput {
   readonly startDate?: Date;
   readonly endDate?: Date;
   readonly externalResourceId?: string;
+  readonly cloudResourceId?: string;
   readonly metricNames?: readonly string[];
 }
 
@@ -87,6 +88,8 @@ export interface TechnicalMetricKpi {
 }
 
 export interface TechnicalMetricResourceSummary {
+  readonly cloudResourceId?: string;
+  readonly cloudConnectionId?: string;
   readonly externalResourceId: string;
   readonly provider: string;
   readonly name?: string;
@@ -112,6 +115,7 @@ export interface TechnicalMetricOpportunity {
   readonly title: string;
   readonly description: string;
   readonly externalResourceId?: string;
+  readonly cloudResourceId?: string;
   readonly metricName?: string;
   readonly value?: number;
   readonly unit?: string;
@@ -194,16 +198,22 @@ export class TechnicalMetricsService {
     return this.repository.listResourcesForTenant(tenantId, this.clampLimit(limit));
   }
 
-  public async getResource(tenantId: string, externalResourceId: string): Promise<CloudResourceItem | undefined> {
+  public async getResource(tenantId: string, externalResourceId: string, cloudResourceId?: string): Promise<CloudResourceItem | undefined> {
+    if (cloudResourceId !== undefined && this.repository.getResourceForTenantById !== undefined) {
+      const resource = await this.repository.getResourceForTenantById(tenantId, cloudResourceId);
+      return resource?.externalResourceId === externalResourceId ? resource : undefined;
+    }
     const resources = await this.repository.listResourcesForTenant(tenantId, 200);
-    return resources.find((resource) => resource.externalResourceId === externalResourceId);
+    return resources.find((resource) => resource.externalResourceId === externalResourceId
+      && (cloudResourceId === undefined || resource.id === cloudResourceId));
   }
 
   public async getResourceSummary(
     tenantId: string,
     externalResourceId: string,
+    cloudResourceId?: string,
   ): Promise<TechnicalResourceSummary | undefined> {
-    const resource = await this.getResource(tenantId, externalResourceId);
+    const resource = await this.getResource(tenantId, externalResourceId, cloudResourceId);
     if (resource === undefined) {
       return undefined;
     }
@@ -211,15 +221,17 @@ export class TechnicalMetricsService {
     const [metrics, coverage, costs] = await Promise.all([
       this.repository.listMetricSummariesForTenant(tenantId, {
         externalResourceIds: [externalResourceId],
+        ...(cloudResourceId !== undefined ? { cloudResourceIds: [cloudResourceId] } : {}),
         limit: 100,
       }),
-      this.getCoverage(tenantId, { externalResourceId }),
-      this.repository.listCostContextForResources(tenantId, [externalResourceId]),
+      this.getCoverage(tenantId, { externalResourceId, ...(cloudResourceId !== undefined ? { cloudResourceId } : {}) }),
+      this.repository.listCostContextForResources(tenantId, [externalResourceId], cloudResourceId === undefined ? undefined : [cloudResourceId]),
     ]);
     const evaluation = evaluateTechnicalOptimizationRules({
       summaries: metrics,
       referenceDate: new Date(),
-    }).find((item) => item.externalResourceId === externalResourceId);
+    }).find((item) => item.externalResourceId === externalResourceId
+      && (cloudResourceId === undefined || item.cloudResourceId === cloudResourceId));
 
     return {
       resource,
@@ -257,12 +269,14 @@ export class TechnicalMetricsService {
       ...(input.startDate !== undefined ? { startDate: input.startDate } : {}),
       ...(input.endDate !== undefined ? { endDate: input.endDate } : {}),
       ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
+      ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
       ...(input.metricNames !== undefined ? { metricNames: input.metricNames } : {}),
       limit: maxOverviewSamples,
     });
     const resources = await this.repository.listResourcesForTenant(tenantId, 200);
     const resourceIds = unique(samples.map((sample) => sample.externalResourceId));
-    const costContext = await this.repository.listCostContextForResources(tenantId, resourceIds);
+    const cloudResourceIds = unique(samples.map((sample) => sample.cloudResourceId).filter((value): value is string => value !== undefined));
+    const costContext = await this.repository.listCostContextForResources(tenantId, resourceIds, cloudResourceIds);
 
     return buildOverview(samples, resources, costContext);
   }
@@ -278,6 +292,7 @@ export class TechnicalMetricsService {
       ...(input.startDate !== undefined ? { startDate: input.startDate } : {}),
       ...(input.endDate !== undefined ? { endDate: input.endDate } : {}),
       ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
+      ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
       ...(input.metricNames !== undefined ? { metricNames: input.metricNames } : {}),
       ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
       bucket,
@@ -307,6 +322,7 @@ export class TechnicalMetricsService {
         ...(input.startDate !== undefined ? { startDate: input.startDate } : {}),
         ...(input.endDate !== undefined ? { endDate: input.endDate } : {}),
         ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
+        ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
       });
 
       return buildCoverageFromAggregate(aggregate, input.startDate, input.endDate);
@@ -316,6 +332,7 @@ export class TechnicalMetricsService {
       ...(input.startDate !== undefined ? { startDate: input.startDate } : {}),
       ...(input.endDate !== undefined ? { endDate: input.endDate } : {}),
       ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
+      ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
     });
 
     return buildCoverage(samples, input.startDate, input.endDate);
@@ -358,8 +375,8 @@ function buildOverview(
   const minSampledAt = minDate(samples.map((sample) => sample.sampledAt));
   const maxSampledAt = maxDate(samples.map((sample) => sample.sampledAt));
   const latestSampledAt = maxSampledAt;
-  const resourceMap = new Map(resources.map((resource) => [resource.externalResourceId, resource]));
-  const costMap = new Map(costContext.map((item) => [item.externalResourceId, item]));
+  const resourceMap = new Map(resources.map((resource) => [resourceIdentity(resource), resource]));
+  const costMap = new Map(costContext.map((item) => [resourceIdentity(item), item]));
   const resourceSummaries = buildResourceSummaries(samples, resourceMap, costMap);
   const metrics = buildMetricCatalog(samples);
   const kpis = buildKpis(samples);
@@ -386,18 +403,26 @@ function buildResourceSummaries(
   const grouped = new Map<string, ResourceMetricSampleItem[]>();
 
   for (const sample of samples) {
-    const existing = grouped.get(sample.externalResourceId) ?? [];
+    const existing = grouped.get(resourceIdentity(sample)) ?? [];
     existing.push(sample);
-    grouped.set(sample.externalResourceId, existing);
+    grouped.set(resourceIdentity(sample), existing);
   }
 
-  return [...grouped.entries()].map(([externalResourceId, resourceSamples]) => {
-    const resource = resourceMap.get(externalResourceId);
-    const cost = costMap.get(externalResourceId);
+  return [...grouped.entries()].map(([, resourceSamples]) => {
+    const firstSample = resourceSamples[0]!;
+    const resource = resourceMap.get(resourceIdentity(firstSample));
+    const cost = costMap.get(resourceIdentity(firstSample));
+    const externalResourceId = firstSample.externalResourceId;
 
     return {
+      ...(firstSample.cloudResourceId !== undefined
+        ? { cloudResourceId: firstSample.cloudResourceId }
+        : resource?.id !== undefined ? { cloudResourceId: resource.id } : {}),
+      ...(firstSample.cloudConnectionId !== undefined
+        ? { cloudConnectionId: firstSample.cloudConnectionId }
+        : resource?.cloudConnectionId !== undefined ? { cloudConnectionId: resource.cloudConnectionId } : {}),
       externalResourceId,
-      provider: resourceSamples[0]?.provider ?? resource?.provider ?? 'UNKNOWN',
+      provider: firstSample.provider ?? resource?.provider ?? 'UNKNOWN',
       ...(resource?.name !== undefined ? { name: resource.name } : {}),
       ...(resource?.serviceName !== undefined ? { serviceName: resource.serviceName } : {}),
       ...(resource?.resourceType !== undefined ? { resourceType: resource.resourceType } : {}),
@@ -489,7 +514,7 @@ function buildOpportunities(
   const opportunities: TechnicalMetricOpportunity[] = [];
 
   for (const resource of resources) {
-    const resourceSamples = samples.filter((sample) => sample.externalResourceId === resource.externalResourceId);
+    const resourceSamples = samples.filter((sample) => resourceIdentity(sample) === resourceIdentity(resource));
     const cpuSamples = resourceSamples.filter((sample) => classifyMetric(sample.metricName) === 'CPU');
     const memorySamples = resourceSamples.filter((sample) => classifyMetric(sample.metricName) === 'MEMORY');
 
@@ -502,6 +527,7 @@ function buildOpportunities(
           title: 'Oportunidad por baja utilizacion de CPU',
           description: 'El recurso muestra CPU promedio baja. Revisar rightsizing, apagado programado o cambio de shape antes de ejecutar.',
           externalResourceId: resource.externalResourceId,
+          ...(resource.cloudResourceId !== undefined ? { cloudResourceId: resource.cloudResourceId } : {}),
           metricName: 'CPU',
           value: round(avgCpu),
           unit: '%',
@@ -519,6 +545,7 @@ function buildOpportunities(
           title: 'Memoria con picos altos',
           description: 'La memoria supera 85%. Antes de reducir capacidad, validar comportamiento de la aplicacion y ventanas de carga.',
           externalResourceId: resource.externalResourceId,
+          ...(resource.cloudResourceId !== undefined ? { cloudResourceId: resource.cloudResourceId } : {}),
           metricName: 'Memoria',
           value: round(maxMemory),
           unit: '%',
@@ -533,6 +560,7 @@ function buildOpportunities(
         title: 'Metrica tecnica sin inventario normalizado',
         description: 'Hay muestras reales para este recurso, pero falta asociarlas a cloud_resources. Esto limita el cruce exacto con servicio, region y estado.',
         externalResourceId: resource.externalResourceId,
+        ...(resource.cloudResourceId !== undefined ? { cloudResourceId: resource.cloudResourceId } : {}),
       });
     }
   }
@@ -589,7 +617,7 @@ function buildCoverage(
     ...(maxSampledAt !== undefined ? { maxSampledAt } : {}),
     totalSamples: samples.length,
     metricCount: metricBuckets.size,
-    resourceCount: unique(samples.map((sample) => sample.externalResourceId)).length,
+    resourceCount: unique(samples.map(resourceIdentity)).length,
     expectedDays,
     daysWithData,
     coveragePercent: expectedDays === 0 ? 0 : round((daysWithData / expectedDays) * 100),
@@ -799,6 +827,15 @@ function average(values: readonly number[]): number {
 
 function unique(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+function resourceIdentity(input: {
+  readonly cloudResourceId?: string;
+  readonly cloudConnectionId?: string;
+  readonly externalResourceId: string;
+}): string {
+  return input.cloudResourceId
+    ?? `${input.cloudConnectionId ?? 'unresolved'}\u0000${input.externalResourceId}`;
 }
 
 function round(value: number): number {

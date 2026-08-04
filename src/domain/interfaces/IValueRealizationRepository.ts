@@ -110,6 +110,17 @@ export interface ValueRealizationTrendPoint {
   readonly verifiedMeasurements: number;
 }
 
+export interface ValueRealizationDestinationSummary {
+  readonly period: string;
+  readonly allocationKey: string;
+  readonly currency: string;
+  readonly potentialSavings: number;
+  readonly approvedSavings: number;
+  readonly verifiedSavings: number;
+  readonly observedSavings: number;
+  readonly attributedRecommendations: number;
+}
+
 export interface ValueRealizationReconciliationCandidate {
   readonly tenantId: string;
   readonly recommendationId: string;
@@ -124,6 +135,7 @@ export interface IValueRealizationRepository {
   listItems(filters: ValueRealizationFilters): Promise<ValueRealizationItemsPage>;
   listItemsForExport(filters: ValueRealizationFilters): Promise<readonly ValueRealizationItem[]>;
   listTrend(filters: ValueRealizationFilters): Promise<readonly ValueRealizationTrendPoint[]>;
+  listDestinationSummary(input: { readonly tenantId: string; readonly period: Date; readonly currency?: string }): Promise<readonly ValueRealizationDestinationSummary[]>;
   listReconciliationCandidates(input: {
     readonly tenantId: string;
     readonly limit: number;

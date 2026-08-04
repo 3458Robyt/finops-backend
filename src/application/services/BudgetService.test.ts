@@ -42,10 +42,21 @@ describe('BudgetService', () => {
     await expect(service.getPerformance(viewer, 'budget-1')).resolves.toMatchObject({ actualCost: 95 });
     await expect(service.create(viewer, { scope: 'TENANT', period: '2026-07', amount: 100, currency: 'USD' })).rejects.toMatchObject({ code: 'AUTHORIZATION_FAILED' });
   });
+
+  it('accepts a normalized allocation destination and requires its key', async () => {
+    const repository = new FakeBudgetRepository(buildBudget());
+    const service = new BudgetService(repository as unknown as IBudgetRepository, new FakeNotifications() as unknown as INotificationRepository, new FakeOutbound() as unknown as IOutboundMessageRepository, new FakeTelegram() as any);
+
+    await service.create(actor, { scope: 'ALLOCATION_DESTINATION', scopeKey: '  centro-costos:plataforma  ', period: '2026-07', amount: 100, currency: 'USD' });
+
+    expect(repository.createdInput).toMatchObject({ scope: 'ALLOCATION_DESTINATION', scopeKey: 'centro-costos:plataforma' });
+    await expect(service.create(actor, { scope: 'ALLOCATION_DESTINATION', period: '2026-07', amount: 100, currency: 'USD' })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
 });
 
 class FakeBudgetRepository {
   public readonly alerts: BudgetAlert[] = [];
+  public createdInput: unknown;
   public actualCost = 95;
   public constructor(private readonly budget: Budget) {}
   public async findById(tenantId: string, id: string): Promise<Budget | null> { return tenantId === this.budget.tenantId && id === this.budget.id ? this.budget : null; }
@@ -55,7 +66,7 @@ class FakeBudgetRepository {
   public async cloudAccountExists(): Promise<boolean> { return true; }
   public async createAlertIfAbsent(input: Omit<BudgetAlert, 'id' | 'createdAt'>): Promise<BudgetAlert | null> { if (this.alerts.some((alert) => alert.idempotencyKey === input.idempotencyKey)) return null; const alert: BudgetAlert = { ...input, id: `alert-${this.alerts.length + 1}`, createdAt: new Date() }; this.alerts.push(alert); return alert; }
   public async listAlerts(): Promise<readonly BudgetAlert[]> { return this.alerts; }
-  public async create(): Promise<Budget> { return this.budget; }
+  public async create(input: unknown): Promise<Budget> { this.createdInput = input; return this.budget; }
   public async update(): Promise<Budget> { return this.budget; }
   public async archive(): Promise<Budget> { return this.budget; }
 }

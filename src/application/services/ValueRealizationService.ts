@@ -4,6 +4,7 @@ import type { IRecommendationRepository, RecommendationSavingsMeasurement } from
 import type {
   IValueRealizationRepository,
   ValueRealizationFilters,
+  ValueRealizationDestinationSummary,
   ValueRealizationItemsPage,
   ValueRealizationSummary,
   ValueRealizationTrendPoint,
@@ -40,6 +41,10 @@ export class ValueRealizationService {
 
   public listTrend(filters: ValueRealizationFilters): Promise<readonly ValueRealizationTrendPoint[]> {
     return this.repository.listTrend(filters);
+  }
+
+  public listDestinationSummary(input: { readonly tenantId: string; readonly period: Date; readonly currency?: string }): Promise<readonly ValueRealizationDestinationSummary[]> {
+    return this.repository.listDestinationSummary(input);
   }
 
   public exportItems(filters: ValueRealizationFilters) {

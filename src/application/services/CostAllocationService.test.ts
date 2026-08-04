@@ -22,6 +22,16 @@ describe('CostAllocationService', () => {
     await expect(service.createRule(viewer, ruleInput)).rejects.toMatchObject({ code: 'AUTHORIZATION_FAILED' });
   });
 
+  it('requires an exact 100% split and a business destination for every target', async () => {
+    const service = new CostAllocationService(new FakeRepository() as unknown as ICostAllocationRepository);
+    const split = { ...ruleInput, allocationMode: 'SPLIT' as const, allocationTargets: [{ percentage: 60, project: 'Platform' }, { percentage: 30, project: 'Product' }] };
+    await expect(service.createRule(actor, split)).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    await expect(service.createRule(actor, { ...split, allocationTargets: [{ percentage: 50 }, { percentage: 50, project: 'Product' }] })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    await expect(service.createRule(actor, { ...split, allocationTargets: [{ percentage: 50, project: 'Platform' }, { percentage: 50, project: 'Product' }] })).resolves.toMatchObject({ allocationMode: 'SPLIT', configurationVersion: 1 });
+    await expect(service.createRule(actor, { ...split, allocationTargets: [{ percentage: 50.00001, project: 'Platform' }, { percentage: 49.99999, project: 'Product' }] })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    await expect(service.createRule(actor, { ...split, allocationTargets: [{ percentage: 50, project: 'Platform' }, { percentage: 50, project: 'Platform' }] })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
   it('keeps preview read-only and never resolves a rule from another tenant', async () => {
     const repository = new FakeRepository();
     const service = new CostAllocationService(repository as unknown as ICostAllocationRepository);
@@ -39,7 +49,7 @@ class FakeRepository {
   public lastPreviewTenantId: string | undefined;
   public async listRules(): Promise<readonly CostAllocationRule[]> { return this.rules; }
   public async findRule(tenantId: string, id: string): Promise<CostAllocationRule | null> { return this.rules.find((rule) => rule.id === id && rule.tenantId === tenantId) ?? null; }
-  public async createRule(tenantId: string, userId: string, input: typeof ruleInput): Promise<CostAllocationRule> { const now = new Date(); const rule: CostAllocationRule = { id: `rule-${this.rules.length + 1}`, tenantId, createdByUserId: userId, createdAt: now, updatedAt: now, ...input }; this.rules.push(rule); return rule; }
+  public async createRule(tenantId: string, userId: string, input: typeof ruleInput): Promise<CostAllocationRule> { const now = new Date(); const rule: CostAllocationRule = { id: `rule-${this.rules.length + 1}`, tenantId, createdByUserId: userId, createdAt: now, updatedAt: now, allocationMode: 'DIRECT', allocationTargets: [], configurationVersion: 1, ...input }; this.rules.push(rule); return rule; }
   public async updateRule(): Promise<CostAllocationRule | null> { return this.rules[0] ?? null; }
   public async archiveRule(): Promise<CostAllocationRule | null> { return this.rules[0] ?? null; }
   public async summarize() { return []; }

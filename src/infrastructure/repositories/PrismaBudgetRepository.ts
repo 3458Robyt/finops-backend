@@ -2,9 +2,14 @@ import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { Budget, BudgetAlert } from '../../domain/models/Budget.js';
 import type { BudgetFilters, CreateBudgetInput, IBudgetRepository, UpdateBudgetInput } from '../../domain/interfaces/IBudgetRepository.js';
+import { PrismaCostAllocationRepository } from './PrismaCostAllocationRepository.js';
 
 export class PrismaBudgetRepository implements IBudgetRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly allocation: PrismaCostAllocationRepository;
+
+  constructor(private readonly prisma: PrismaClient) {
+    this.allocation = new PrismaCostAllocationRepository(prisma);
+  }
 
   public async create(input: CreateBudgetInput): Promise<Budget> {
     try {
@@ -48,6 +53,7 @@ export class PrismaBudgetRepository implements IBudgetRepository {
   }
 
   public async getActualCost(budget: Budget): Promise<number> {
+    if (budget.scope === 'ALLOCATION_DESTINATION') return this.getAllocationDestinationCost(budget);
     const next = nextMonth(budget.periodStart);
     const rows = await this.prisma.$queryRaw<readonly { total: Prisma.Decimal | null }[]>(Prisma.sql`
       SELECT COALESCE(SUM("billed_cost"), 0) AS total
@@ -67,6 +73,7 @@ export class PrismaBudgetRepository implements IBudgetRepository {
   }
 
   public async getForecastCost(budget: Budget): Promise<number | undefined> {
+    if (budget.scope === 'ALLOCATION_DESTINATION') return undefined;
     const groupings = budget.scope === 'TENANT'
       ? ['total', 'service', 'account']
       : budget.scope === 'CLOUD_ACCOUNT'
@@ -87,6 +94,16 @@ export class PrismaBudgetRepository implements IBudgetRepository {
       if (rows.length > 0) return rows.reduce((total, row) => total + Number(row.predictedCost), 0);
     }
     return undefined;
+  }
+
+  private async getAllocationDestinationCost(budget: Budget): Promise<number> {
+    const closures = await this.allocation.listClosures(budget.tenantId, budget.periodStart);
+    const closure = closures.find((item) => item.status === 'CLOSED' && item.currency === budget.currency);
+    if (closure !== undefined) return destinationTotal(closure.results, budget.scopeKey);
+
+    const summaries = await this.allocation.summarize(budget.tenantId, budget.periodStart);
+    const summary = summaries.find((item) => item.currency === budget.currency);
+    return summary === undefined ? 0 : destinationTotal(summary.dimensions, budget.scopeKey);
   }
 
   public async createAlertIfAbsent(input: Omit<BudgetAlert, 'id' | 'createdAt'>): Promise<BudgetAlert | null> {
@@ -117,5 +134,6 @@ export class PrismaBudgetRepository implements IBudgetRepository {
 }
 
 function nextMonth(value: Date): Date { return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + 1, 1)); }
+function destinationTotal(rows: readonly { readonly allocationKey: string; readonly cost: number }[], allocationKey: string): number { return rows.filter((row) => row.allocationKey === allocationKey).reduce((total, row) => total + row.cost, 0); }
 function toBudget(row: any): Budget { return { ...row, cloudAccountId: row.cloudAccountId ?? undefined, serviceName: row.serviceName ?? undefined, archivedAt: row.archivedAt ?? undefined, amount: Number(row.amount), warningThreshold: Number(row.warningThreshold), criticalThreshold: Number(row.criticalThreshold), exceededThreshold: Number(row.exceededThreshold) }; }
 function toBudgetAlert(row: any): BudgetAlert { return { ...row, forecastCost: row.forecastCost === null ? undefined : Number(row.forecastCost), actualCost: Number(row.actualCost), threshold: Number(row.threshold), metadata: row.metadata ?? undefined }; }

@@ -1,4 +1,4 @@
-export type BudgetScope = 'TENANT' | 'CLOUD_ACCOUNT' | 'SERVICE';
+export type BudgetScope = 'TENANT' | 'CLOUD_ACCOUNT' | 'SERVICE' | 'ALLOCATION_DESTINATION';
 export type BudgetStatus = 'ACTIVE' | 'ARCHIVED';
 export type BudgetAlertLevel = 'WARNING' | 'CRITICAL' | 'EXCEEDED';
 export type BudgetHealth = 'HEALTHY' | BudgetAlertLevel;

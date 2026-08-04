@@ -11,6 +11,7 @@ export function createValueRealizationRoutes(
   router.get('/summary', controller.summary);
   router.get('/items', controller.items);
   router.get('/trend', controller.trend);
+  router.get('/destinations', controller.destinations);
   router.get('/export.csv', controller.exportCsv);
   router.post('/reconcile', requireReconcile, controller.reconcile);
   return router;

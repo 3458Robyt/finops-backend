@@ -1,4 +1,6 @@
 export type CostAllocationRuleStatus = 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
+export type CostAllocationMode = 'DIRECT' | 'SPLIT';
+export type CostAllocationClosureStatus = 'CLOSED' | 'REPLACED';
 export type AllocationCloudProvider = 'AWS' | 'OCI' | 'AZURE' | 'GCP' | 'CUSTOM';
 
 export interface CostAllocationTarget {
@@ -9,6 +11,11 @@ export interface CostAllocationTarget {
   readonly environment?: string;
 }
 
+export interface CostAllocationRuleTarget extends CostAllocationTarget {
+  readonly percentage: number;
+  readonly id?: string;
+}
+
 export interface CostAllocationRule extends CostAllocationTarget {
   readonly id: string;
   readonly tenantId: string;
@@ -16,6 +23,10 @@ export interface CostAllocationRule extends CostAllocationTarget {
   readonly description?: string;
   readonly priority: number;
   readonly status: CostAllocationRuleStatus;
+  readonly allocationMode: CostAllocationMode;
+  readonly allocationTargets: readonly CostAllocationRuleTarget[];
+  readonly configurationVersion: number;
+  readonly configurationHash?: string;
   readonly cloudAccountId?: string;
   readonly provider?: AllocationCloudProvider;
   readonly serviceName?: string;
@@ -37,6 +48,9 @@ export interface AllocationBreakdown extends CostAllocationTarget {
   readonly cost: number;
   readonly metricCount: number;
   readonly resourceCount: number;
+  readonly percentage?: number;
+  readonly ruleId?: string;
+  readonly shared: boolean;
 }
 
 export interface AllocationSummary {
@@ -45,15 +59,42 @@ export interface AllocationSummary {
   readonly totalCost: number;
   readonly allocatedCost: number;
   readonly unallocatedCost: number;
+  readonly sharedCost: number;
   readonly coveragePercent: number;
   readonly dimensions: readonly AllocationBreakdown[];
 }
 
 export interface AllocationPreview {
   readonly summary: readonly AllocationSummary[];
+  readonly previousSummary: readonly AllocationSummary[];
+  readonly rulesUsed: readonly { readonly id: string; readonly name: string; readonly allocationMode: CostAllocationMode; readonly configurationVersion: number }[];
   readonly metricCount: number;
   readonly resourceCount: number;
   readonly examples: readonly { readonly currency: string; readonly cost: number; readonly cloudAccountId: string; readonly serviceName: string; readonly resourceId?: string }[];
+}
+
+export interface CostAllocationClosure {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly period: string;
+  readonly currency: string;
+  readonly version: number;
+  readonly status: CostAllocationClosureStatus;
+  readonly sourceTotal: number;
+  readonly allocatedTotal: number;
+  readonly sharedTotal: number;
+  readonly unallocatedTotal: number;
+  readonly sourceHash: string;
+  readonly rulesHash: string;
+  readonly results: readonly AllocationBreakdown[];
+  readonly replacementReason?: string;
+  readonly closedByUserId: string;
+  readonly createdAt: Date;
+}
+
+export interface CostAllocationClosureComparison {
+  readonly current: CostAllocationClosure;
+  readonly previous?: CostAllocationClosure;
 }
 
 export interface UnallocatedCostDetail {

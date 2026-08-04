@@ -11,6 +11,7 @@ export class ValueRealizationController {
   public summary = (req: Request, res: Response): Promise<void> => this.run(req, res, async () => ({ summary: await this.service.getSummary(this.filters(req)) }));
   public items = (req: Request, res: Response): Promise<void> => this.run(req, res, async () => ({ page: await this.service.listItems(this.filters(req)) }));
   public trend = (req: Request, res: Response): Promise<void> => this.run(req, res, async () => ({ points: await this.service.listTrend(this.filters(req)) }));
+  public destinations = (req: Request, res: Response): Promise<void> => this.run(req, res, async () => ({ destinations: await this.service.listDestinationSummary({ tenantId: this.auth(req).tenantId, period: monthPeriod(requiredQuery(req.query['period'])), ...(queryString(req.query['currency']) === undefined ? {} : { currency: queryString(req.query['currency'])! }) }) }));
   public reconcile = (req: Request, res: Response): Promise<void> => this.run(req, res, async () => ({ result: await this.service.reconcile(this.auth(req).tenantId, positiveInteger(req.body?.limit, 50, 100)) }));
 
   public exportCsv = async (req: Request, res: Response): Promise<void> => {
@@ -67,4 +68,6 @@ function queryString(value: unknown): string | undefined { return typeof value =
 function optional(key: string, req: Request): Record<string, string> { const value = queryString(req.query[key]); return value === undefined ? {} : { [key]: value }; }
 function positiveInteger(value: unknown, fallback: number, max: number): number { const parsed = Number.parseInt(String(value ?? ''), 10); return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, max) : fallback; }
 function booleanQuery(value: unknown): boolean { return value === 'true' || value === true; }
+function requiredQuery(value: unknown): string { const parsed = queryString(value); if (parsed === undefined) throw new FinOpsBaseError('El período es obligatorio', 'VALIDATION_ERROR'); return parsed; }
+function monthPeriod(value: string): Date { if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) throw new FinOpsBaseError('El período debe tener formato YYYY-MM', 'VALIDATION_ERROR'); const [year, month] = value.split('-').map(Number); return new Date(Date.UTC(year!, month! - 1, 1)); }
 function csvCell(value: unknown): string { const text = String(value ?? ''); return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text; }

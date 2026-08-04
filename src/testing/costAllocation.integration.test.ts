@@ -141,6 +141,15 @@ describe.skipIf(!integrationEnabled)('shared cost allocation PostgreSQL integrat
         };
       }),
     });
+    const explainRows = await prisma.$queryRaw<readonly { readonly ['QUERY PLAN']: unknown }[]>`
+      EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+      SELECT "metric_identity_hash"
+      FROM "cost_metrics"
+      WHERE "tenant_id" = ${actor.tenantId}
+        AND "charge_period_start" >= ${periodStart}
+        AND "charge_period_start" < ${new Date('2025-02-01T00:00:00.000Z')}
+    `;
+    console.info(`[cost-allocation-explain] ${JSON.stringify(explainRows).slice(0, 2_000)}`);
 
     const ruleInput = {
       name: `Performance ${runId}`,

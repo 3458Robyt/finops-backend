@@ -922,6 +922,7 @@ model CostMetric {
 
   @@id([chargePeriodStart, metricIdentityHash])
   @@index([tenantId, cloudAccountId, chargePeriodStart])
+  @@index([tenantId, chargePeriodStart], map: "cost_metrics_tenant_period_idx")
   @@index([tenantId, serviceName, chargePeriodStart])
   @@index([tenantId, provider, chargePeriodStart])
   @@index([tenantId, cloudConnectionId, billingSource, chargePeriodStart])

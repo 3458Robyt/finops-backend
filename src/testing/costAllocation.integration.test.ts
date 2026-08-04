@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { AuthContext } from '../domain/models/AuthContext.js';
+import type { Budget } from '../domain/models/Budget.js';
 import { CostAllocationService } from '../application/services/CostAllocationService.js';
+import { PrismaBudgetRepository } from '../infrastructure/repositories/PrismaBudgetRepository.js';
 import { PrismaCostAllocationRepository } from '../infrastructure/repositories/PrismaCostAllocationRepository.js';
 import {
   cleanupE2eFixtures,
@@ -39,6 +41,9 @@ describe.skipIf(!integrationEnabled)('shared cost allocation PostgreSQL integrat
     const ruleInput = { name: `Direct ${fixtures.runId}`, priority: 1, status: 'DRAFT' as const, serviceName: 'Amazon Elastic Compute Cloud', costCenter: 'CC-PLATFORM' };
     const rule = await service.createRule(actor, ruleInput);
     await prisma.budget.create({ data: { tenantId: actor.tenantId, scope: 'ALLOCATION_DESTINATION', scopeKey: 'CC-PLATFORM', periodStart: new Date(`${period}-01T00:00:00.000Z`), amount: 1_000, currency: 'USD', createdByUserId: actor.userId } });
+    const destinationBudget = { tenantId: actor.tenantId, scope: 'ALLOCATION_DESTINATION', scopeKey: 'CC-PLATFORM', periodStart: new Date(`${period}-01T00:00:00.000Z`), currency: 'USD' } as Budget;
+    const budgetRepository = new PrismaBudgetRepository(prisma);
+    await expect(budgetRepository.getActualCost(destinationBudget)).resolves.toEqual({ amount: 0, available: false, source: 'NO_CLOSED_ALLOCATION' });
 
     const preview = await service.preview(actor, ruleInput, period, rule.id);
     expect(preview.metricCount).toBeGreaterThan(0);
@@ -53,6 +58,9 @@ describe.skipIf(!integrationEnabled)('shared cost allocation PostgreSQL integrat
     const first = await service.closePeriod(actor, { period, confirmUnallocated: true });
     expect(first.length).toBeGreaterThan(0);
     expect(first.every((closure) => closure.sourceTotal === closure.allocatedTotal + closure.unallocatedTotal)).toBe(true);
+    const destinationActual = await budgetRepository.getActualCost(destinationBudget);
+    expect(destinationActual.available).toBe(true);
+    expect(destinationActual.source).toBe('CLOSED_ALLOCATION');
     const second = await service.closePeriod(actor, { period, confirmUnallocated: true });
     expect(second.map((closure) => closure.id)).toEqual(first.map((closure) => closure.id));
     expect(await prisma.costAllocationClosureLine.count({ where: { tenantId: actor.tenantId } })).toBeGreaterThan(0);

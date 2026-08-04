@@ -61,7 +61,7 @@ class FakeBudgetRepository {
   public constructor(private readonly budget: Budget) {}
   public async findById(tenantId: string, id: string): Promise<Budget | null> { return tenantId === this.budget.tenantId && id === this.budget.id ? this.budget : null; }
   public async list(): Promise<readonly Budget[]> { return [this.budget]; }
-  public async getActualCost(): Promise<number> { return this.actualCost; }
+  public async getActualCost(): Promise<{ amount: number; available: true; source: 'COST_METRICS' }> { return { amount: this.actualCost, available: true, source: 'COST_METRICS' }; }
   public async getForecastCost(): Promise<number | undefined> { return undefined; }
   public async cloudAccountExists(): Promise<boolean> { return true; }
   public async createAlertIfAbsent(input: Omit<BudgetAlert, 'id' | 'createdAt'>): Promise<BudgetAlert | null> { if (this.alerts.some((alert) => alert.idempotencyKey === input.idempotencyKey)) return null; const alert: BudgetAlert = { ...input, id: `alert-${this.alerts.length + 1}`, createdAt: new Date() }; this.alerts.push(alert); return alert; }

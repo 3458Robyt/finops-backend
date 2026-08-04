@@ -18,7 +18,22 @@ describe('PrismaBudgetRepository allocation destinations', () => {
       createdAt: new Date('2026-07-01T00:00:00.000Z'), updatedAt: new Date('2026-07-01T00:00:00.000Z'),
     };
 
-    await expect(repository.getActualCost(budget)).resolves.toBe(12.5);
+    await expect(repository.getActualCost(budget)).resolves.toEqual({ amount: 12.5, available: true, source: 'CLOSED_ALLOCATION' });
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { tenantId: 'tenant-1', periodStart: budget.periodStart } }));
+  });
+
+  it('does not recalculate live showback before a destination closure exists', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const repository = new PrismaBudgetRepository({ costAllocationClosure: { findMany } } as any);
+    const summarize = vi.fn();
+    (repository as any).allocation.summarize = summarize;
+    const budget: Budget = {
+      id: 'budget-2', tenantId: 'tenant-1', scope: 'ALLOCATION_DESTINATION', scopeKey: 'CC-PLATFORM', periodStart: new Date('2026-07-01T00:00:00.000Z'),
+      amount: 20, currency: 'USD', warningThreshold: 0.8, criticalThreshold: 0.9, exceededThreshold: 1, status: 'ACTIVE', createdByUserId: 'user-1',
+      createdAt: new Date('2026-07-01T00:00:00.000Z'), updatedAt: new Date('2026-07-01T00:00:00.000Z'),
+    };
+
+    await expect(repository.getActualCost(budget)).resolves.toEqual({ amount: 0, available: false, source: 'NO_CLOSED_ALLOCATION' });
+    expect(summarize).not.toHaveBeenCalled();
   });
 });

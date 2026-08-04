@@ -1,6 +1,6 @@
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
-import type { Budget, BudgetAlert } from '../../domain/models/Budget.js';
+import type { Budget, BudgetActualCost, BudgetAlert } from '../../domain/models/Budget.js';
 import type { BudgetFilters, CreateBudgetInput, IBudgetRepository, UpdateBudgetInput } from '../../domain/interfaces/IBudgetRepository.js';
 import { PrismaCostAllocationRepository } from './PrismaCostAllocationRepository.js';
 
@@ -52,7 +52,7 @@ export class PrismaBudgetRepository implements IBudgetRepository {
     return result.count === 0 ? null : this.findById(tenantId, id);
   }
 
-  public async getActualCost(budget: Budget): Promise<number> {
+  public async getActualCost(budget: Budget): Promise<BudgetActualCost> {
     if (budget.scope === 'ALLOCATION_DESTINATION') return this.getAllocationDestinationCost(budget);
     const next = nextMonth(budget.periodStart);
     const rows = await this.prisma.$queryRaw<readonly { total: Prisma.Decimal | null }[]>(Prisma.sql`
@@ -65,7 +65,7 @@ export class PrismaBudgetRepository implements IBudgetRepository {
         ${budget.scope === 'CLOUD_ACCOUNT' ? Prisma.sql`AND "cloud_account_id" = ${budget.scopeKey}` : Prisma.empty}
         ${budget.scope === 'SERVICE' ? Prisma.sql`AND "service_name" = ${budget.scopeKey}` : Prisma.empty}
     `);
-    return Number(rows[0]?.total ?? 0);
+    return { amount: Number(rows[0]?.total ?? 0), available: true, source: 'COST_METRICS' };
   }
 
   public async cloudAccountExists(tenantId: string, cloudAccountId: string): Promise<boolean> {
@@ -96,14 +96,11 @@ export class PrismaBudgetRepository implements IBudgetRepository {
     return undefined;
   }
 
-  private async getAllocationDestinationCost(budget: Budget): Promise<number> {
+  private async getAllocationDestinationCost(budget: Budget): Promise<BudgetActualCost> {
     const closures = await this.allocation.listClosures(budget.tenantId, budget.periodStart);
     const closure = closures.find((item) => item.status === 'CLOSED' && item.currency === budget.currency);
-    if (closure !== undefined) return destinationTotal(closure.results, budget.scopeKey);
-
-    const summaries = await this.allocation.summarize(budget.tenantId, budget.periodStart);
-    const summary = summaries.find((item) => item.currency === budget.currency);
-    return summary === undefined ? 0 : destinationTotal(summary.dimensions, budget.scopeKey);
+    if (closure !== undefined) return { amount: destinationTotal(closure.results, budget.scopeKey), available: true, source: 'CLOSED_ALLOCATION' };
+    return { amount: 0, available: false, source: 'NO_CLOSED_ALLOCATION' };
   }
 
   public async createAlertIfAbsent(input: Omit<BudgetAlert, 'id' | 'createdAt'>): Promise<BudgetAlert | null> {

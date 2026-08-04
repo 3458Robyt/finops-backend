@@ -1,7 +1,14 @@
 export type BudgetScope = 'TENANT' | 'CLOUD_ACCOUNT' | 'SERVICE' | 'ALLOCATION_DESTINATION';
 export type BudgetStatus = 'ACTIVE' | 'ARCHIVED';
 export type BudgetAlertLevel = 'WARNING' | 'CRITICAL' | 'EXCEEDED';
-export type BudgetHealth = 'HEALTHY' | BudgetAlertLevel;
+export type BudgetHealth = 'HEALTHY' | BudgetAlertLevel | 'UNAVAILABLE';
+export type BudgetActualCostSource = 'COST_METRICS' | 'CLOSED_ALLOCATION' | 'NO_CLOSED_ALLOCATION';
+
+export interface BudgetActualCost {
+  readonly amount: number;
+  readonly available: boolean;
+  readonly source: BudgetActualCostSource;
+}
 
 export interface Budget {
   readonly id: string;
@@ -41,6 +48,8 @@ export interface BudgetAlert {
 export interface BudgetPerformance {
   readonly budget: Budget;
   readonly actualCost: number;
+  readonly actualCostAvailable: boolean;
+  readonly actualCostSource: BudgetActualCostSource;
   readonly remainingBudget: number;
   readonly consumedPercent: number;
   readonly forecastCost?: number;

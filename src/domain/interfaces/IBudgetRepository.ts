@@ -1,4 +1,4 @@
-import type { Budget, BudgetAlert, BudgetScope, BudgetStatus } from '../models/Budget.js';
+import type { Budget, BudgetActualCost, BudgetAlert, BudgetScope, BudgetStatus } from '../models/Budget.js';
 
 export interface CreateBudgetInput {
   readonly tenantId: string;
@@ -31,7 +31,7 @@ export interface BudgetFilters {
 }
 
 export interface ICostByBudgetScope {
-  getActualCost(budget: Budget): Promise<number>;
+  getActualCost(budget: Budget): Promise<BudgetActualCost>;
   getForecastCost(budget: Budget): Promise<number | undefined>;
   cloudAccountExists(tenantId: string, cloudAccountId: string): Promise<boolean>;
 }

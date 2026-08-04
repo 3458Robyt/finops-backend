@@ -57,10 +57,11 @@ export class BudgetService {
 
   public async getPerformance(actor: AuthContext, budgetId: string, now = new Date()): Promise<BudgetPerformance> {
     const budget = await this.requireBudget(actor, budgetId);
-    const [actualCost, forecastCost] = await Promise.all([this.budgets.getActualCost(budget), this.budgets.getForecastCost(budget)]);
+    const [actualResult, forecastCost] = await Promise.all([this.budgets.getActualCost(budget), this.budgets.getForecastCost(budget)]);
+    const actualCost = actualResult.amount;
     const consumedPercent = round((actualCost / budget.amount) * 100);
-    const health = healthFor(budget, Math.max(actualCost, forecastCost ?? 0));
-    return { budget, actualCost, remainingBudget: round(budget.amount - actualCost), consumedPercent, ...(forecastCost !== undefined ? { forecastCost, varianceAmount: round(forecastCost - budget.amount), variancePercent: round(((forecastCost - budget.amount) / budget.amount) * 100) } : {}), health, ...(depletionDate(budget, actualCost, now) !== undefined ? { estimatedDepletionDate: depletionDate(budget, actualCost, now)! } : {}) };
+    const health = actualResult.available ? healthFor(budget, Math.max(actualCost, forecastCost ?? 0)) : 'UNAVAILABLE';
+    return { budget, actualCost, actualCostAvailable: actualResult.available, actualCostSource: actualResult.source, remainingBudget: round(budget.amount - actualCost), consumedPercent, ...(forecastCost !== undefined ? { forecastCost, varianceAmount: round(forecastCost - budget.amount), variancePercent: round(((forecastCost - budget.amount) / budget.amount) * 100) } : {}), health, ...(actualResult.available && depletionDate(budget, actualCost, now) !== undefined ? { estimatedDepletionDate: depletionDate(budget, actualCost, now)! } : {}) };
   }
 
   public async evaluate(actor: AuthContext, budgetId?: string): Promise<{ readonly evaluated: number; readonly newAlerts: readonly BudgetAlert[] }> {
@@ -69,10 +70,11 @@ export class BudgetService {
     const newAlerts: BudgetAlert[] = [];
     for (const budget of selected) {
       const performance = await this.getPerformance(actor, budget.id);
+      if (!performance.actualCostAvailable) continue;
       for (const [level, threshold] of [['WARNING', budget.warningThreshold], ['CRITICAL', budget.criticalThreshold], ['EXCEEDED', budget.exceededThreshold]] as const) {
         const comparedCost = Math.max(performance.actualCost, performance.forecastCost ?? 0);
         if (comparedCost < budget.amount * threshold) continue;
-        const alert = await this.budgets.createAlertIfAbsent({ tenantId: budget.tenantId, budgetId: budget.id, level, threshold, periodStart: budget.periodStart, actualCost: performance.actualCost, ...(performance.forecastCost !== undefined ? { forecastCost: performance.forecastCost } : {}), currency: budget.currency, idempotencyKey: `${budget.id}:${budget.periodStart.toISOString().slice(0, 10)}:${level}`, metadata: { health: performance.health, source: performance.forecastCost !== undefined && performance.forecastCost >= performance.actualCost ? 'forecast_or_actual' : 'actual' } });
+        const alert = await this.budgets.createAlertIfAbsent({ tenantId: budget.tenantId, budgetId: budget.id, level, threshold, periodStart: budget.periodStart, actualCost: performance.actualCost, ...(performance.forecastCost !== undefined ? { forecastCost: performance.forecastCost } : {}), currency: budget.currency, idempotencyKey: `${budget.id}:${budget.periodStart.toISOString().slice(0, 10)}:${level}`, metadata: { health: performance.health, source: performance.forecastCost !== undefined && performance.forecastCost >= performance.actualCost ? 'forecast_or_actual' : performance.actualCostSource } });
         if (alert !== null) { newAlerts.push(alert); await this.publishAlert(budget, performance, alert); }
       }
     }

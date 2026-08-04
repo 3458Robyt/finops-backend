@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { AuthContext } from '../domain/models/AuthContext.js';
 import type { Budget } from '../domain/models/Budget.js';
+import { Prisma } from '../generated/prisma/client.js';
 import { CostAllocationService } from '../application/services/CostAllocationService.js';
 import { PrismaBudgetRepository } from '../infrastructure/repositories/PrismaBudgetRepository.js';
 import { PrismaCostAllocationRepository } from '../infrastructure/repositories/PrismaCostAllocationRepository.js';
@@ -85,5 +86,87 @@ describe.skipIf(!integrationEnabled)('shared cost allocation PostgreSQL integrat
       SET source_total = source_total + 1
       WHERE id = ${closure.id}
     `).rejects.toThrow();
+  }, 120_000);
+
+  it('measures preview and closure with 10,000 persisted cost records', async () => {
+    const period = '2025-01';
+    const periodStart = new Date('2025-01-01T00:00:00.000Z');
+    const sample = await prisma.costMetric.findFirstOrThrow({
+      where: { tenantId: actor.tenantId },
+      select: {
+        cloudAccountId: true,
+        cloudConnectionId: true,
+        cloudResourceId: true,
+        provider: true,
+        resourceId: true,
+        resourceName: true,
+        regionId: true,
+      },
+    });
+    const runId = `cost-allocation-perf-${Date.now().toString(36)}`;
+    const serviceName = 'Cost Allocation Benchmark';
+    await prisma.costMetric.createMany({
+      data: Array.from({ length: 10_000 }, (_, index) => {
+        const chargePeriodStart = new Date(periodStart);
+        chargePeriodStart.setUTCDate(chargePeriodStart.getUTCDate() + (index % 28));
+        const chargePeriodEnd = new Date(chargePeriodStart);
+        chargePeriodEnd.setUTCDate(chargePeriodEnd.getUTCDate() + 1);
+        const amount = new Prisma.Decimal(String((index % 25) + 1));
+        return {
+          tenantId: actor.tenantId,
+          cloudAccountId: sample.cloudAccountId,
+          ...(sample.cloudConnectionId === null ? {} : { cloudConnectionId: sample.cloudConnectionId }),
+          ...(sample.cloudResourceId === null ? {} : { cloudResourceId: sample.cloudResourceId }),
+          provider: sample.provider,
+          serviceName,
+          resourceId: sample.resourceId,
+          ...(sample.resourceName === null ? {} : { resourceName: sample.resourceName }),
+          ...(sample.regionId === null ? {} : { regionId: sample.regionId }),
+          chargePeriodStart,
+          chargePeriodEnd,
+          billingPeriodStart: periodStart,
+          billingPeriodEnd: new Date('2025-02-01T00:00:00.000Z'),
+          billedCost: amount,
+          effectiveCost: amount,
+          billingCurrency: 'USD',
+          pricingCurrency: 'USD',
+          consumedQuantity: new Prisma.Decimal(1),
+          consumedUnit: 'Hours',
+          pricingQuantity: new Prisma.Decimal(1),
+          pricingUnit: 'Hours',
+          sourceMetric: 'E2E_PERF',
+          metricIdentityHash: `${runId}:${index}`,
+          tags: { e2eRunId: fixtures.runId, perfRunId: runId },
+          providerRaw: { fixture: true, benchmark: true },
+        };
+      }),
+    });
+
+    const ruleInput = {
+      name: `Performance ${runId}`,
+      priority: 1,
+      status: 'DRAFT' as const,
+      serviceName,
+      costCenter: 'CC-PERF',
+    };
+    const rule = await service.createRule(actor, ruleInput);
+    const previewStartedAt = performance.now();
+    const preview = await service.preview(actor, ruleInput, period, rule.id);
+    const previewMs = performance.now() - previewStartedAt;
+    expect(preview.metricCount).toBe(10_000);
+    expect(preview.summary.every((summary) => summary.totalCost === summary.allocatedCost + summary.unallocatedCost)).toBe(true);
+
+    await service.activateRule(actor, rule.id);
+    const closureStartedAt = performance.now();
+    const closures = await service.closePeriod(actor, { period, confirmUnallocated: true });
+    const closureMs = performance.now() - closureStartedAt;
+    expect(closures).toHaveLength(1);
+    expect(closures[0]!.sourceTotal).toBe(closures[0]!.allocatedTotal + closures[0]!.unallocatedTotal);
+    expect(await prisma.costAllocationClosureLine.count({ where: { tenantId: actor.tenantId, closureId: closures[0]!.id } })).toBe(10_000);
+    console.info(`[cost-allocation-perf] records=10000 previewMs=${previewMs.toFixed(2)} closureMs=${closureMs.toFixed(2)}`);
+    if (process.env['ENFORCE_COST_ALLOCATION_PERF'] === 'true') {
+      expect(previewMs).toBeLessThanOrEqual(500);
+      expect(closureMs).toBeLessThanOrEqual(2_000);
+    }
   }, 120_000);
 });

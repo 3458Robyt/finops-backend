@@ -40,7 +40,10 @@ describe('cost allocation period closures', () => {
     const tx = {
       ingestionJob: { count: vi.fn().mockResolvedValue(0) },
       costAllocationRule: { findMany: vi.fn().mockResolvedValue([ruleRow]) },
-      costMetric: { findMany: vi.fn().mockImplementation(async () => metrics) },
+      costMetric: {
+        findMany: vi.fn().mockImplementation(async () => metrics),
+        aggregate: vi.fn().mockImplementation(async () => ({ _count: { _all: metrics.length }, _sum: { billedCost: metrics.reduce((total, item) => total.plus(item.billedCost), new Prisma.Decimal(0)) } })),
+      },
       costAllocationClosure: {
         findMany: vi.fn().mockImplementation(async ({ where }: any) => closures.filter((row) => matches(row, where))),
         create: vi.fn().mockImplementation(async ({ data }: any) => { const row = { id: `closure-${closures.length + 1}`, ...data, createdAt: new Date('2026-06-01T00:00:00.000Z') }; closures.push(row); return row; }),

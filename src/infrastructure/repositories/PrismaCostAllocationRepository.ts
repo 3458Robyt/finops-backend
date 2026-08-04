@@ -260,8 +260,8 @@ function allocate(metrics: readonly Metric[], rules: readonly CostAllocationRule
         lines.push(line(metric, allocationAmount, allocationKey(target), 'SPLIT', true, target.percentage, rule.id));
       }
     } else {
-      addGroup(bucket, { allocationKey: allocationKey(rule), currency: metric.billingCurrency, cost: metric.billedCost, metricCount: 1, resourceCount: resourceSet(metric), shared: false, ruleId: rule.id, ...target(rule) });
-      lines.push(line(metric, metric.billedCost, allocationKey(rule), 'DIRECT', false, undefined, rule.id));
+      addGroup(bucket, { allocationKey: allocationKey(rule), currency: metric.billingCurrency, cost: metric.billedCost, metricCount: 1, resourceCount: resourceSet(metric), shared: false, percentage: 100, ruleId: rule.id, ...target(rule) });
+      lines.push(line(metric, metric.billedCost, allocationKey(rule), 'DIRECT', false, 100, rule.id));
     }
     byCurrency.set(metric.billingCurrency, bucket);
   }

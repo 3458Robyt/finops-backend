@@ -17,7 +17,7 @@ export class PrismaBudgetRepository implements IBudgetRepository {
       return toBudget(row);
     } catch (error: unknown) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-        throw new FinOpsBaseError('An active budget already exists for this scope and period', 'VALIDATION_ERROR');
+        throw new FinOpsBaseError('Ya existe un presupuesto activo para este alcance y período', 'VALIDATION_ERROR');
       }
       throw error;
     }

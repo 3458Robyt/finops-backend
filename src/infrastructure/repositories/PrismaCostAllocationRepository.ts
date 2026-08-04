@@ -65,7 +65,7 @@ export class PrismaCostAllocationRepository implements ICostAllocationRepository
       const row = await tx.costAllocationRule.create({ data: { tenantId, createdByUserId: userId, ...scalarInput(input) } as Prisma.CostAllocationRuleUncheckedCreateInput });
       await createTargets(tx, tenantId, row.id, input.allocationTargets);
       const result = await tx.costAllocationRule.findUnique({ where: { id: row.id }, include: ruleInclude });
-      if (result === null) throw new FinOpsBaseError('Allocation rule could not be reloaded', 'INTERNAL_ERROR');
+      if (result === null) throw new FinOpsBaseError('No fue posible recargar la regla de asignación', 'INTERNAL_ERROR');
       return toRule(result);
     });
   }
@@ -260,7 +260,7 @@ function allocate(metrics: readonly Metric[], rules: readonly CostAllocationRule
   }
   for (const value of byCurrency.values()) {
     const groupedTotal = [...value.groups.values()].reduce((total, group) => total.plus(group.cost), new Prisma.Decimal(0));
-    if (!groupedTotal.eq(value.total)) throw new FinOpsBaseError('Allocation totals do not balance by currency', 'INTERNAL_ERROR');
+    if (!groupedTotal.eq(value.total)) throw new FinOpsBaseError('Los totales asignados no cuadran por moneda', 'INTERNAL_ERROR');
   }
   const summaries = [...byCurrency.entries()].map(([currency, value]) => ({ period: periodStart.toISOString().slice(0, 7), currency, totalCost: toNumber(value.total), allocatedCost: toNumber(value.allocated.plus(value.shared)), unallocatedCost: toNumber(value.total.minus(value.allocated).minus(value.shared)), sharedCost: toNumber(value.shared), coveragePercent: value.total.isZero() ? 0 : round(toNumber(value.allocated.plus(value.shared).div(value.total).mul(100))), dimensions: [...value.groups.values()].map((group) => ({ ...group, cost: toNumber(group.cost), resourceCount: group.resources.size, resources: undefined })).map(({ resources: _resources, ...group }) => group).sort((a, b) => b.cost - a.cost) }));
   return { summaries, lines };

@@ -39,7 +39,7 @@ export class CostAllocationService {
         : current.configurationVersion + 1,
     };
     const rule = await this.repository.updateRule(actor.tenantId, ruleId, prepared);
-    if (rule === null) throw new FinOpsBaseError('Allocation rule not found or archived', 'NOT_FOUND');
+    if (rule === null) throw new FinOpsBaseError('Regla de asignación no encontrada o archivada', 'NOT_FOUND');
     await this.repository.writeAudit(actor.tenantId, actor.userId, 'COST_ALLOCATION_RULE_UPDATED', rule.id, {
       status: rule.status,
       priority: rule.priority,
@@ -61,7 +61,7 @@ export class CostAllocationService {
   public async archiveRule(actor: AuthContext, ruleId: string): Promise<CostAllocationRule> {
     this.requireManager(actor);
     const rule = await this.repository.archiveRule(actor.tenantId, ruleId, new Date());
-    if (rule === null) throw new FinOpsBaseError('Allocation rule not found or archived', 'NOT_FOUND');
+    if (rule === null) throw new FinOpsBaseError('Regla de asignación no encontrada o archivada', 'NOT_FOUND');
     await this.repository.writeAudit(actor.tenantId, actor.userId, 'COST_ALLOCATION_RULE_ARCHIVED', rule.id, {});
     return rule;
   }
@@ -99,7 +99,7 @@ export class CostAllocationService {
 
   public async closePeriod(actor: AuthContext, input: { period: string; confirmUnallocated: boolean; replacementReason?: string }) {
     this.requireManager(actor);
-    if (input.confirmUnallocated !== true) throw new FinOpsBaseError('You must confirm the treatment of unallocated costs', 'VALIDATION_ERROR');
+    if (input.confirmUnallocated !== true) throw new FinOpsBaseError('Debe confirmar el tratamiento de los costos sin asignar', 'VALIDATION_ERROR');
     const closures = await this.repository.closePeriod(actor.tenantId, actor.userId, parsePeriod(input.period), true, input.replacementReason);
     await Promise.all(closures.map((closure) => this.repository.writeAudit(actor.tenantId, actor.userId, closure.replacementReason === undefined ? 'COST_ALLOCATION_PERIOD_CLOSED' : 'COST_ALLOCATION_PERIOD_REPLACED', closure.id, {
       period: closure.period,
@@ -117,7 +117,7 @@ export class CostAllocationService {
 
   public async getClosure(actor: AuthContext, closureId: string) {
     const closure = await this.repository.getClosure(actor.tenantId, closureId);
-    if (closure === null) throw new FinOpsBaseError('Allocation closure not found', 'NOT_FOUND');
+    if (closure === null) throw new FinOpsBaseError('Cierre de asignación no encontrado', 'NOT_FOUND');
     return closure;
   }
 
@@ -129,12 +129,12 @@ export class CostAllocationService {
 
   private async requireRule(actor: AuthContext, ruleId: string): Promise<CostAllocationRule> {
     const rule = await this.repository.findRule(actor.tenantId, ruleId);
-    if (rule === null) throw new FinOpsBaseError('Allocation rule not found', 'NOT_FOUND');
+    if (rule === null) throw new FinOpsBaseError('Regla de asignación no encontrada', 'NOT_FOUND');
     return rule;
   }
 
   private requireManager(actor: AuthContext): void {
-    if (!managers.has(actor.role)) throw new AuthorizationError('You are not allowed to manage allocation rules');
+    if (!managers.has(actor.role)) throw new AuthorizationError('No está autorizado para administrar reglas de asignación');
   }
 
   private prepare(input: CostAllocationRuleInput, configurationVersion: number): CostAllocationRuleInput {
@@ -165,36 +165,36 @@ export class CostAllocationService {
     const criteria = [input.cloudAccountId, input.provider, input.serviceName, input.regionId, input.resourceId, input.tagKey];
     const directTargets = [input.costCenter, input.businessUnit, input.project, input.team, input.environment];
     const mode: CostAllocationMode = input.allocationMode ?? 'DIRECT';
-    if (criteria.every((value) => value === undefined || value === '')) throw new FinOpsBaseError('At least one allocation criterion is required', 'VALIDATION_ERROR');
-    if (mode === 'DIRECT' && directTargets.every((value) => value === undefined || value === '')) throw new FinOpsBaseError('At least one allocation target is required', 'VALIDATION_ERROR');
+    if (criteria.every((value) => value === undefined || value === '')) throw new FinOpsBaseError('Debe indicar al menos un criterio de asignación', 'VALIDATION_ERROR');
+    if (mode === 'DIRECT' && directTargets.every((value) => value === undefined || value === '')) throw new FinOpsBaseError('Debe indicar al menos un destino de asignación', 'VALIDATION_ERROR');
     if (mode === 'SPLIT') validateSplitTargets(input.allocationTargets);
-    if (input.tagKey !== undefined && (input.tagValue === undefined || input.tagValue === '')) throw new FinOpsBaseError('A tag value is required when tag key is set', 'VALIDATION_ERROR');
-    if (input.priority !== undefined && (!Number.isInteger(input.priority) || input.priority < 0)) throw new FinOpsBaseError('Priority must be a non-negative integer', 'VALIDATION_ERROR');
-    if (input.effectiveFrom !== undefined && input.effectiveTo !== undefined && input.effectiveFrom > input.effectiveTo) throw new FinOpsBaseError('Effective date range is invalid', 'VALIDATION_ERROR');
+    if (input.tagKey !== undefined && (input.tagValue === undefined || input.tagValue === '')) throw new FinOpsBaseError('Debe indicar un valor cuando configura una clave de etiqueta', 'VALIDATION_ERROR');
+    if (input.priority !== undefined && (!Number.isInteger(input.priority) || input.priority < 0)) throw new FinOpsBaseError('La prioridad debe ser un entero no negativo', 'VALIDATION_ERROR');
+    if (input.effectiveFrom !== undefined && input.effectiveTo !== undefined && input.effectiveFrom > input.effectiveTo) throw new FinOpsBaseError('El rango de vigencia no es válido', 'VALIDATION_ERROR');
   }
 }
 
 function parsePeriod(value: string): Date {
-  if (!periodPattern.test(value)) throw new FinOpsBaseError('Period must be YYYY-MM', 'VALIDATION_ERROR');
+  if (!periodPattern.test(value)) throw new FinOpsBaseError('El período debe tener formato YYYY-MM', 'VALIDATION_ERROR');
   const [year, month] = value.split('-').map(Number);
   return new Date(Date.UTC(year!, month! - 1, 1));
 }
 
 function validateSplitTargets(targets: CostAllocationRuleInput['allocationTargets']): void {
-  if (targets === undefined || targets.length < 2) throw new FinOpsBaseError('A split rule requires at least two targets', 'VALIDATION_ERROR');
+  if (targets === undefined || targets.length < 2) throw new FinOpsBaseError('Una regla SPLIT requiere al menos dos destinos', 'VALIDATION_ERROR');
   let total = new Prisma.Decimal(0);
   const keys = new Set<string>();
   for (const target of targets) {
     let percentage: Prisma.Decimal;
-    try { percentage = new Prisma.Decimal(String(target.percentage)); } catch { throw new FinOpsBaseError('Split target percentages must be valid numbers', 'VALIDATION_ERROR'); }
-    if (!percentage.isFinite() || percentage.lte(0) || percentage.gt(100) || percentage.toDecimalPlaces(4).eq(percentage) === false) throw new FinOpsBaseError('Split target percentages must be greater than 0, no more than 100 and use at most 4 decimals', 'VALIDATION_ERROR');
+    try { percentage = new Prisma.Decimal(String(target.percentage)); } catch { throw new FinOpsBaseError('Los porcentajes de los destinos SPLIT deben ser números válidos', 'VALIDATION_ERROR'); }
+    if (!percentage.isFinite() || percentage.lte(0) || percentage.gt(100) || percentage.toDecimalPlaces(4).eq(percentage) === false) throw new FinOpsBaseError('Los porcentajes SPLIT deben ser mayores que 0, no superar 100 y usar máximo 4 decimales', 'VALIDATION_ERROR');
     total = total.plus(percentage);
     const key = [target.costCenter, target.businessUnit, target.project, target.team, target.environment].filter((value): value is string => value !== undefined && value.trim() !== '').join(' · ');
-    if (key === '' || keys.has(key)) throw new FinOpsBaseError('Every split target needs a unique business destination', 'VALIDATION_ERROR');
+    if (key === '' || keys.has(key)) throw new FinOpsBaseError('Cada destino SPLIT debe ser único', 'VALIDATION_ERROR');
     keys.add(key);
   }
-  if (!total.eq(100)) throw new FinOpsBaseError('Split target percentages must sum exactly 100%', 'VALIDATION_ERROR');
-  if (targets.some((target) => [target.costCenter, target.businessUnit, target.project, target.team, target.environment].every((value) => value === undefined || value === ''))) throw new FinOpsBaseError('Every split target needs at least one business dimension', 'VALIDATION_ERROR');
+  if (!total.eq(100)) throw new FinOpsBaseError('Los porcentajes SPLIT deben sumar exactamente 100 %', 'VALIDATION_ERROR');
+  if (targets.some((target) => [target.costCenter, target.businessUnit, target.project, target.team, target.environment].every((value) => value === undefined || value === ''))) throw new FinOpsBaseError('Cada destino SPLIT debe tener al menos una dimensión de negocio', 'VALIDATION_ERROR');
 }
 
 function toInput(rule: CostAllocationRule): CostAllocationRuleInput {

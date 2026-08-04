@@ -107,6 +107,8 @@ export class CostAllocationService {
       version: closure.version,
       sourceHash: closure.sourceHash,
       rulesHash: closure.rulesHash,
+      confirmUnallocated: true,
+      unallocatedTotal: closure.unallocatedTotal,
     })));
     return closures;
   }

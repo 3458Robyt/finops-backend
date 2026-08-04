@@ -43,6 +43,13 @@ describe('CostAllocationService', () => {
     expect(repository.auditActions).toEqual(expect.arrayContaining(['COST_ALLOCATION_RULE_PREVIEWED', 'COST_ALLOCATION_RULE_ACTIVATED']));
   });
 
+  it('records the explicit unallocated confirmation when closing a period', async () => {
+    const repository = new FakeRepository();
+    const service = new CostAllocationService(repository as unknown as ICostAllocationRepository);
+    await service.closePeriod(actor, { period: '2026-05', confirmUnallocated: true });
+    expect(repository.auditMetadata).toEqual(expect.arrayContaining([expect.objectContaining({ confirmUnallocated: true, unallocatedTotal: 12 })]));
+  });
+
   it('keeps preview read-only and never resolves a rule from another tenant', async () => {
     const repository = new FakeRepository();
     const service = new CostAllocationService(repository as unknown as ICostAllocationRepository);
@@ -56,6 +63,7 @@ describe('CostAllocationService', () => {
 
 class FakeRepository {
   public readonly auditActions: string[] = [];
+  public readonly auditMetadata: unknown[] = [];
   public readonly rules: CostAllocationRule[] = [];
   public lastPreviewTenantId: string | undefined;
   public async listRules(): Promise<readonly CostAllocationRule[]> { return this.rules; }
@@ -67,5 +75,6 @@ class FakeRepository {
   public async preview(tenantId: string, input: CostAllocationRuleInput, _period: Date, ruleId?: string) { this.lastPreviewTenantId = tenantId; if (ruleId !== undefined) { const current = this.rules.find((rule) => rule.id === ruleId); if (current !== undefined) this.rules[this.rules.indexOf(current)] = { ...current, lastPreviewedHash: input.configurationHash }; } return { summary: [], previousSummary: [], rulesUsed: [], metricCount: 0, resourceCount: 0, examples: [], financialImpact: { budgets: [], savings: [] } }; }
   public async resourceSummary() { return []; }
   public async unallocated() { return []; }
-  public async writeAudit(_tenantId: string, _userId: string, action: string): Promise<void> { this.auditActions.push(action); }
+  public async closePeriod(): Promise<readonly any[]> { return [{ id: 'closure-1', period: '2026-05', currency: 'USD', version: 1, sourceHash: 'source-hash', rulesHash: 'rules-hash', unallocatedTotal: 12 }]; }
+  public async writeAudit(_tenantId: string, _userId: string, action: string, _entityId: string, metadata: unknown): Promise<void> { this.auditActions.push(action); this.auditMetadata.push(metadata); }
 }

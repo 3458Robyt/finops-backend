@@ -178,7 +178,10 @@ export class PrismaCostAllocationRepository implements ICostAllocationRepository
         _sum: { billedCost: true },
       });
       const sourceTotalAfterAllocation = sourceStateAfterAllocation._sum.billedCost ?? new Prisma.Decimal(0);
-      if (sourceStateAfterAllocation._count._all !== metrics.length || !sourceTotalBeforeAllocation.eq(sourceTotalAfterAllocation)) throw new FinOpsBaseError('La fuente de costos cambió durante el cierre; intente nuevamente', 'VALIDATION_ERROR');
+      const sourceMetricsAfterAllocation = sourceStateAfterAllocation._count._all === metrics.length && sourceTotalBeforeAllocation.eq(sourceTotalAfterAllocation)
+        ? await this.metrics(tenantId, normalizedPeriod, undefined, undefined, undefined, undefined, tx)
+        : [];
+      if (sourceStateAfterAllocation._count._all !== metrics.length || !sourceTotalBeforeAllocation.eq(sourceTotalAfterAllocation) || hashMetrics(sourceMetricsAfterAllocation) !== sourceHashBeforeAllocation) throw new FinOpsBaseError('La fuente de costos cambió durante el cierre; intente nuevamente', 'VALIDATION_ERROR');
       const summaries = allocation.summaries;
       const rulesHash = hashRules(rules);
       const closures: CostAllocationClosure[] = [];
@@ -242,6 +245,7 @@ export function summarize(metrics: readonly Metric[], rules: readonly CostAlloca
 }
 
 function allocate(metrics: readonly Metric[], rules: readonly CostAllocationRule[], periodStart: Date): AllocationResult {
+  validateExecutionRules(rules);
   const byCurrency = new Map<string, CurrencyAccumulator>();
   const lines: AllocationLine[] = [];
   for (const metric of metrics) {
@@ -293,6 +297,24 @@ function splitAmounts(cost: Prisma.Decimal, targets: readonly CostAllocationRule
     allocated = allocated.plus(amount);
     return amount;
   });
+}
+function validateExecutionRules(rules: readonly CostAllocationRule[]): void {
+  for (const rule of rules) {
+    if (rule.allocationMode !== 'SPLIT') continue;
+    if (rule.allocationTargets.length < 2) throw new FinOpsBaseError('La regla SPLIT no tiene suficientes destinos', 'VALIDATION_ERROR');
+    let total = new Prisma.Decimal(0);
+    const destinations = new Set<string>();
+    for (const target of rule.allocationTargets) {
+      let percentage: Prisma.Decimal;
+      try { percentage = new Prisma.Decimal(String(target.percentage)); } catch { throw new FinOpsBaseError('La regla SPLIT contiene un porcentaje inválido', 'VALIDATION_ERROR'); }
+      if (!percentage.isFinite() || percentage.lte(0) || percentage.gt(100) || percentage.toDecimalPlaces(4).eq(percentage) === false) throw new FinOpsBaseError('La regla SPLIT contiene porcentajes inválidos', 'VALIDATION_ERROR');
+      const destination = allocationKey(target);
+      if (destination === 'UNNAMED' || destinations.has(destination)) throw new FinOpsBaseError('La regla SPLIT contiene destinos duplicados o vacíos', 'VALIDATION_ERROR');
+      destinations.add(destination);
+      total = total.plus(percentage);
+    }
+    if (!total.eq(100)) throw new FinOpsBaseError('La regla SPLIT debe sumar exactamente 100 %', 'VALIDATION_ERROR');
+  }
 }
 function matchesAny(metric: Metric, rules: readonly CostAllocationRule[], period: Date): CostAllocationRule | undefined { return rules.find((rule) => matches(metric, rule, period)); }
 function matches(metric: Metric, rule: CostAllocationRule, _period: Date): boolean { if (rule.effectiveFrom !== undefined && metric.chargePeriodStart < rule.effectiveFrom) return false; if (rule.effectiveTo !== undefined && metric.chargePeriodStart > rule.effectiveTo) return false; const tags = asTags(metric.tags); return (rule.cloudAccountId === undefined || rule.cloudAccountId === metric.cloudAccountId) && (rule.provider === undefined || rule.provider === metric.provider) && (rule.serviceName === undefined || rule.serviceName === metric.serviceName) && (rule.regionId === undefined || rule.regionId === metric.regionId) && (rule.resourceId === undefined || rule.resourceId === metric.resourceId) && (rule.tagKey === undefined || tags[rule.tagKey] === rule.tagValue); }

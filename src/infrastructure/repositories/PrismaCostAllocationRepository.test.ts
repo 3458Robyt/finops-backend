@@ -17,6 +17,11 @@ describe('cost allocation summarization', () => {
   it('marks metrics without a rule as UNALLOCATED', () => {
     expect(summarize([metric('USD', '10')], [], period)[0]).toMatchObject({ coveragePercent: 0, unallocatedCost: 10, dimensions: [{ allocationKey: 'UNALLOCATED', cost: 10 }] });
   });
+
+  it('rejects invalid persisted SPLIT rules before calculating allocations', () => {
+    const invalid = { ...rule('shared', 1, 'unused'), allocationMode: 'SPLIT' as const, allocationTargets: [{ percentage: 40, project: 'Platform' }, { percentage: 40, project: 'Product' }] };
+    expect(() => summarize([metric('USD', '10')], [invalid], period)).toThrow('100 %');
+  });
   it('distributes shared cost with Decimal arithmetic and preserves the source total', () => {
     const split: CostAllocationRule = { ...rule('shared', 1, 'unused'), allocationMode: 'SPLIT', allocationTargets: [{ percentage: 33.3333, project: 'Platform' }, { percentage: 66.6667, project: 'Product' }] };
     const summary = summarize([metric('USD', '10.00')], [split], period)[0]!;

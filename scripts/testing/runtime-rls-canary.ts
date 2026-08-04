@@ -22,6 +22,8 @@ const tableNames = [
   'recommendation_decisions',
   'budgets',
   'cost_allocation_rules',
+  'cost_allocation_closures',
+  'cost_allocation_closure_lines',
   'ingestion_jobs',
   'recommendation_analysis_runs',
   'recommendation_savings_measurements',

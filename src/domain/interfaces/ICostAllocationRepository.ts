@@ -32,7 +32,7 @@ export interface ICostAllocationRepository {
   updateRule(tenantId: string, ruleId: string, input: Partial<CostAllocationRuleInput>): Promise<CostAllocationRule | null>;
   archiveRule(tenantId: string, ruleId: string, now: Date): Promise<CostAllocationRule | null>;
   summarize(tenantId: string, periodStart: Date, cloudAccountId?: string, serviceName?: string, allocationKey?: string): Promise<readonly AllocationSummary[]>;
-  preview(tenantId: string, input: CostAllocationRuleInput, periodStart: Date): Promise<AllocationPreview>;
+  preview(tenantId: string, input: CostAllocationRuleInput, periodStart: Date, ruleId?: string): Promise<AllocationPreview>;
   resourceSummary(tenantId: string, resourceId: string, cloudResourceId?: string): Promise<readonly AllocationSummary[]>;
   unallocated(tenantId: string, periodStart: Date, currency?: string, cloudAccountId?: string, serviceName?: string): Promise<readonly UnallocatedCostDetail[]>;
   closePeriod(tenantId: string, userId: string, periodStart: Date, confirmUnallocated: boolean, replacementReason?: string): Promise<readonly CostAllocationClosure[]>;

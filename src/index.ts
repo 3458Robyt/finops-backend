@@ -118,9 +118,9 @@ async function bootstrap(): Promise<void> {
   const costAnalyticsRepository = new PrismaCostAnalyticsRepository(prisma);
   const costRepository = new PrismaCostRepository(prisma);
   const budgetRepository = new PrismaBudgetRepository(prisma);
-  const costAllocationRepository = new PrismaCostAllocationRepository(prisma);
   const recommendationRepository = new PrismaRecommendationRepository(prisma);
   const valueRealizationRepository = new PrismaValueRealizationRepository(prisma);
+  const costAllocationRepository = new PrismaCostAllocationRepository(prisma, valueRealizationRepository);
   const recommendationAnalysisRepository = new PrismaRecommendationAnalysisRunRepository(prisma);
 const resourceMetricRepository = new PrismaResourceMetricRepository(prisma);
 const notificationRepository = new PrismaNotificationRepository(prisma);

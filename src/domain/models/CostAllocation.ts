@@ -27,6 +27,8 @@ export interface CostAllocationRule extends CostAllocationTarget {
   readonly allocationTargets: readonly CostAllocationRuleTarget[];
   readonly configurationVersion: number;
   readonly configurationHash?: string;
+  readonly lastPreviewedHash?: string;
+  readonly lastPreviewedAt?: Date;
   readonly cloudAccountId?: string;
   readonly provider?: AllocationCloudProvider;
   readonly serviceName?: string;
@@ -71,6 +73,12 @@ export interface AllocationPreview {
   readonly metricCount: number;
   readonly resourceCount: number;
   readonly examples: readonly { readonly currency: string; readonly cost: number; readonly cloudAccountId: string; readonly serviceName: string; readonly resourceId?: string }[];
+  readonly financialImpact: AllocationFinancialImpact;
+}
+
+export interface AllocationFinancialImpact {
+  readonly budgets: readonly { readonly allocationKey: string; readonly currency: string; readonly budgetAmount: number; readonly projectedCost: number; readonly remainingBudget: number; readonly consumedPercent: number }[];
+  readonly savings: readonly { readonly allocationKey: string; readonly currency: string; readonly potentialSavings: number; readonly approvedSavings: number; readonly verifiedSavings: number; readonly observedSavings: number; readonly attributedRecommendations: number }[];
 }
 
 export interface CostAllocationClosure {

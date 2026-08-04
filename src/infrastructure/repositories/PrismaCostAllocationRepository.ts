@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import type { CostAllocationRuleInput, ICostAllocationRepository } from '../../domain/interfaces/ICostAllocationRepository.js';
+import type { IValueRealizationRepository } from '../../domain/interfaces/IValueRealizationRepository.js';
 import type { AllocationBreakdown, AllocationPreview, AllocationSummary, CostAllocationClosure, CostAllocationMode, CostAllocationRule, CostAllocationRuleStatus, CostAllocationRuleTarget, CostAllocationTarget, UnallocatedCostDetail } from '../../domain/models/CostAllocation.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
 
@@ -48,7 +49,7 @@ const ruleInclude = { allocationTargets: true } as const;
 const allocationScale = 6;
 
 export class PrismaCostAllocationRepository implements ICostAllocationRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(private readonly prisma: PrismaClient, private readonly valueRealization?: Pick<IValueRealizationRepository, 'listDestinationSummary'>) {}
 
   public async listRules(tenantId: string, status?: CostAllocationRuleStatus): Promise<readonly CostAllocationRule[]> {
     return this.loadRules(this.prisma, tenantId, status);
@@ -71,7 +72,10 @@ export class PrismaCostAllocationRepository implements ICostAllocationRepository
 
   public async updateRule(tenantId: string, ruleId: string, input: Partial<CostAllocationRuleInput>): Promise<CostAllocationRule | null> {
     return this.prisma.$transaction(async (tx) => {
-      const result = await tx.costAllocationRule.updateMany({ where: { tenantId, id: ruleId, status: { not: 'ARCHIVED' } }, data: scalarInput(input) as Prisma.CostAllocationRuleUpdateManyMutationInput });
+      const current = await tx.costAllocationRule.findFirst({ where: { tenantId, id: ruleId, status: { not: 'ARCHIVED' } }, select: { configurationHash: true } });
+      if (current === null) return null;
+      const configurationChanged = input.configurationHash !== undefined && input.configurationHash !== current.configurationHash;
+      const result = await tx.costAllocationRule.updateMany({ where: { tenantId, id: ruleId, status: { not: 'ARCHIVED' } }, data: { ...scalarInput(input), ...(configurationChanged ? { lastPreviewedHash: null, lastPreviewedAt: null } : {}) } as Prisma.CostAllocationRuleUpdateManyMutationInput });
       if (result.count === 0) return null;
       if (input.allocationTargets !== undefined) {
         await tx.costAllocationRuleTarget.deleteMany({ where: { tenantId, ruleId } });
@@ -92,7 +96,7 @@ export class PrismaCostAllocationRepository implements ICostAllocationRepository
     return filterSummary(allocate(metrics, rules, periodStart).summaries, allocationKey);
   }
 
-  public async preview(tenantId: string, input: CostAllocationRuleInput, periodStart: Date): Promise<AllocationPreview> {
+  public async preview(tenantId: string, input: CostAllocationRuleInput, periodStart: Date, ruleId?: string): Promise<AllocationPreview> {
     const [metrics, previousMetrics] = await Promise.all([this.metrics(tenantId, periodStart), this.metrics(tenantId, previousMonth(periodStart))]);
     const rule: CostAllocationRule = {
       id: 'preview', tenantId, createdByUserId: 'preview', createdAt: periodStart, updatedAt: periodStart,
@@ -101,14 +105,30 @@ export class PrismaCostAllocationRepository implements ICostAllocationRepository
       ...(input.configurationHash === undefined ? {} : { configurationHash: input.configurationHash }),
     } as CostAllocationRule;
     const matchingMetrics = metrics.filter((metric) => matches(metric, rule, periodStart));
-    return {
-      summary: summarize(metrics, [rule], periodStart),
+    const proposedSummary = summarize(metrics, [rule], periodStart);
+    const result = {
+      summary: proposedSummary,
       previousSummary: summarize(previousMetrics, [rule], previousMonth(periodStart)),
       rulesUsed: rulesUsed(metrics, [rule], periodStart).map((used) => ({ id: used.id, name: used.name, allocationMode: used.allocationMode, configurationVersion: used.configurationVersion })),
       metricCount: matchingMetrics.length,
       resourceCount: new Set(matchingMetrics.map((metric) => metric.cloudResourceId ?? metric.resourceId).filter(Boolean)).size,
       examples: matchingMetrics.slice(0, 5).map((metric) => ({ currency: metric.billingCurrency, cost: toNumber(metric.billedCost), cloudAccountId: metric.cloudAccountId, serviceName: metric.serviceName, ...(metric.resourceId === '' ? {} : { resourceId: metric.resourceId }) })),
+      financialImpact: await this.previewFinancialImpact(tenantId, periodStart, proposedSummary),
     };
+    if (ruleId !== undefined && input.configurationHash !== undefined) await this.prisma.costAllocationRule.updateMany({ where: { tenantId, id: ruleId, status: { not: 'ARCHIVED' } }, data: { lastPreviewedHash: input.configurationHash, lastPreviewedAt: new Date() } });
+    return result;
+  }
+
+  private async previewFinancialImpact(tenantId: string, periodStart: Date, summary: readonly AllocationSummary[]) {
+    const budgetRowsPromise = 'budget' in this.prisma ? this.prisma.budget.findMany({ where: { tenantId, periodStart, scope: 'ALLOCATION_DESTINATION', status: 'ACTIVE' }, select: { scopeKey: true, currency: true, amount: true } }) : Promise.resolve([]);
+    const savingsPromise = this.valueRealization === undefined ? Promise.resolve([]) : this.valueRealization.listDestinationSummary({ tenantId, period: periodStart });
+    const [budgetRows, savings] = await Promise.all([budgetRowsPromise, savingsPromise]);
+    const budgets = budgetRows.map((row: any) => {
+      const projectedCost = summary.find((item) => item.currency === row.currency)?.dimensions.find((dimension) => dimension.allocationKey === row.scopeKey)?.cost ?? 0;
+      const budgetAmount = Number(row.amount);
+      return { allocationKey: row.scopeKey, currency: row.currency, budgetAmount, projectedCost, remainingBudget: budgetAmount - projectedCost, consumedPercent: budgetAmount === 0 ? 0 : (projectedCost / budgetAmount) * 100 };
+    });
+    return { budgets, savings };
   }
 
   public async resourceSummary(tenantId: string, resourceId: string, cloudResourceId?: string): Promise<readonly AllocationSummary[]> {
@@ -270,7 +290,7 @@ function filterSummary(summary: readonly AllocationSummary[], allocationKey?: st
   const needle = allocationKey.trim().toLowerCase();
   return summary.map((item) => ({ ...item, dimensions: item.dimensions.filter((dimension) => dimension.allocationKey.toLowerCase().includes(needle)) }));
 }
-function toRule(row: any): CostAllocationRule { return { ...row, allocationMode: row.allocationMode ?? 'DIRECT', allocationTargets: (row.allocationTargets ?? []).map((targetRow: any) => ({ id: targetRow.id, percentage: Number(targetRow.percentage), costCenter: targetRow.costCenter ?? undefined, businessUnit: targetRow.businessUnit ?? undefined, project: targetRow.project ?? undefined, team: targetRow.team ?? undefined, environment: targetRow.environment ?? undefined })), configurationVersion: row.configurationVersion ?? 1, configurationHash: row.configurationHash ?? undefined, description: row.description ?? undefined, cloudAccountId: row.cloudAccountId ?? undefined, provider: row.provider ?? undefined, serviceName: row.serviceName ?? undefined, regionId: row.regionId ?? undefined, resourceId: row.resourceId ?? undefined, tagKey: row.tagKey ?? undefined, tagValue: row.tagValue ?? undefined, costCenter: row.costCenter ?? undefined, businessUnit: row.businessUnit ?? undefined, project: row.project ?? undefined, team: row.team ?? undefined, environment: row.environment ?? undefined, effectiveFrom: row.effectiveFrom ?? undefined, effectiveTo: row.effectiveTo ?? undefined, archivedAt: row.archivedAt ?? undefined }; }
+function toRule(row: any): CostAllocationRule { return { ...row, allocationMode: row.allocationMode ?? 'DIRECT', allocationTargets: (row.allocationTargets ?? []).map((targetRow: any) => ({ id: targetRow.id, percentage: Number(targetRow.percentage), costCenter: targetRow.costCenter ?? undefined, businessUnit: targetRow.businessUnit ?? undefined, project: targetRow.project ?? undefined, team: targetRow.team ?? undefined, environment: targetRow.environment ?? undefined })), configurationVersion: row.configurationVersion ?? 1, configurationHash: row.configurationHash ?? undefined, lastPreviewedHash: row.lastPreviewedHash ?? undefined, lastPreviewedAt: row.lastPreviewedAt ?? undefined, description: row.description ?? undefined, cloudAccountId: row.cloudAccountId ?? undefined, provider: row.provider ?? undefined, serviceName: row.serviceName ?? undefined, regionId: row.regionId ?? undefined, resourceId: row.resourceId ?? undefined, tagKey: row.tagKey ?? undefined, tagValue: row.tagValue ?? undefined, costCenter: row.costCenter ?? undefined, businessUnit: row.businessUnit ?? undefined, project: row.project ?? undefined, team: row.team ?? undefined, environment: row.environment ?? undefined, effectiveFrom: row.effectiveFrom ?? undefined, effectiveTo: row.effectiveTo ?? undefined, archivedAt: row.archivedAt ?? undefined }; }
 function toClosure(row: any): CostAllocationClosure { const results = Array.isArray(row.results) ? row.results : []; return { id: row.id, tenantId: row.tenantId, period: row.periodStart.toISOString().slice(0, 7), currency: row.currency, version: row.version, status: row.status, sourceTotal: toNumber(row.sourceTotal), allocatedTotal: toNumber(row.allocatedTotal), sharedTotal: toNumber(row.sharedTotal), unallocatedTotal: toNumber(row.unallocatedTotal), sourceHash: row.sourceHash, rulesHash: row.rulesHash, results: results as CostAllocationClosure['results'], replacementReason: row.replacementReason ?? undefined, closedByUserId: row.closedByUserId, createdAt: row.createdAt }; }
 function nextMonth(value: Date): Date { return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + 1, 1)); }
 function monthStart(value: Date): Date { return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1)); }

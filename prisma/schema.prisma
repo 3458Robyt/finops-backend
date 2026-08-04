@@ -1238,6 +1238,8 @@ model CostAllocationRule {
   allocationMode       CostAllocationMode         @default(DIRECT) @map("allocation_mode")
   configurationVersion Int                        @default(1) @map("configuration_version")
   configurationHash    String?                    @map("configuration_hash") @db.VarChar(64)
+  lastPreviewedHash    String?                    @map("last_previewed_hash") @db.VarChar(64)
+  lastPreviewedAt      DateTime?                  @map("last_previewed_at") @db.Timestamptz(6)
   cloudAccountId       String?                    @map("cloud_account_id")
   provider             CloudProvider?
   serviceName          String?                    @map("service_name")

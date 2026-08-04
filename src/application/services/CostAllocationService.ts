@@ -45,7 +45,11 @@ export class CostAllocationService {
   }
 
   public async activateRule(actor: AuthContext, ruleId: string): Promise<CostAllocationRule> {
-    return this.updateRule(actor, ruleId, { status: 'ACTIVE' });
+    const current = await this.requireRule(actor, ruleId);
+    if (current.configurationHash === undefined || current.lastPreviewedHash !== current.configurationHash) throw new FinOpsBaseError('Previsualice la regla antes de activarla', 'VALIDATION_ERROR');
+    const rule = await this.updateRule(actor, ruleId, { status: 'ACTIVE' });
+    await this.repository.writeAudit(actor.tenantId, actor.userId, 'COST_ALLOCATION_RULE_ACTIVATED', rule.id, { configurationVersion: rule.configurationVersion, configurationHash: rule.configurationHash });
+    return rule;
   }
 
   public async archiveRule(actor: AuthContext, ruleId: string): Promise<CostAllocationRule> {
@@ -56,9 +60,13 @@ export class CostAllocationService {
     return rule;
   }
 
-  public async preview(actor: AuthContext, input: CostAllocationRuleInput, period: string) {
+  public async preview(actor: AuthContext, input: CostAllocationRuleInput, period: string, ruleId?: string) {
     this.requireManager(actor);
-    return this.repository.preview(actor.tenantId, this.prepare(input, input.configurationVersion ?? 1), parsePeriod(period));
+    const prepared = this.prepare(input, input.configurationVersion ?? 1);
+    if (ruleId !== undefined) await this.requireRule(actor, ruleId);
+    const result = await this.repository.preview(actor.tenantId, prepared, parsePeriod(period), ruleId);
+    await this.repository.writeAudit(actor.tenantId, actor.userId, 'COST_ALLOCATION_RULE_PREVIEWED', ruleId ?? `preview:${prepared.configurationHash ?? 'unknown'}`, { period, ruleId, configurationHash: prepared.configurationHash });
+    return result;
   }
 
   public async summary(actor: AuthContext, input: { period: string; cloudAccountId?: string; serviceName?: string; allocationKey?: string }) {
@@ -87,7 +95,7 @@ export class CostAllocationService {
     this.requireManager(actor);
     if (input.confirmUnallocated !== true) throw new FinOpsBaseError('You must confirm the treatment of unallocated costs', 'VALIDATION_ERROR');
     const closures = await this.repository.closePeriod(actor.tenantId, actor.userId, parsePeriod(input.period), true, input.replacementReason);
-    await Promise.all(closures.map((closure) => this.repository.writeAudit(actor.tenantId, actor.userId, 'COST_ALLOCATION_PERIOD_CLOSED', closure.id, {
+    await Promise.all(closures.map((closure) => this.repository.writeAudit(actor.tenantId, actor.userId, closure.replacementReason === undefined ? 'COST_ALLOCATION_PERIOD_CLOSED' : 'COST_ALLOCATION_PERIOD_REPLACED', closure.id, {
       period: closure.period,
       currency: closure.currency,
       version: closure.version,
@@ -127,12 +135,13 @@ export class CostAllocationService {
     this.validate(input);
     const allocationMode = input.allocationMode ?? 'DIRECT';
     const allocationTargets = input.allocationTargets ?? [];
+    const { configurationHash: _providedHash, ...configuration } = input;
     return {
       ...input,
       allocationMode,
       allocationTargets,
       configurationVersion,
-      configurationHash: configurationHash({ ...input, allocationMode, allocationTargets }),
+      configurationHash: configurationHash({ ...configuration, allocationMode, allocationTargets }),
     };
   }
 

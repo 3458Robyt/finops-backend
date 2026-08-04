@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import express, { type Express, type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import { rateLimit } from 'express-rate-limit';
 import type { AuthService } from '../application/services/AuthService.js';
 import type { BudgetService } from '../application/services/BudgetService.js';
 import type { CostAllocationService } from '../application/services/CostAllocationService.js';
@@ -163,7 +162,7 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   app.use(createRequestLogger());
   app.use(express.json());
 
-  const globalApiLimiter = rateLimit({
+  const globalApiLimiter = createRateLimit({
     windowMs: 60 * 1000,
     limit: parsePositiveIntegerEnv('API_RATE_LIMIT_PER_MINUTE', 600),
     standardHeaders: true,
@@ -176,7 +175,7 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   });
 
   // Limitador anti fuerza bruta para el login (POST /api/v1/auth/login).
-  const authLoginLimiter = rateLimit({
+  const authLoginLimiter = createRateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutos
     limit: 10, // 10 intentos por ventana por IP
     standardHeaders: true,
@@ -189,14 +188,14 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   });
 
   // Limitador anti flood para el webhook de Telegram (POST /api/v1/telegram/webhook).
-  const telegramWebhookLimiter = rateLimit({
+  const telegramWebhookLimiter = createRateLimit({
     windowMs: 60 * 1000, // 1 minuto
     limit: 120, // 120 updates por minuto por IP
     standardHeaders: true,
     legacyHeaders: false,
   });
 
-  const aiLimiter = rateLimit({
+  const aiLimiter = createRateLimit({
     windowMs: 60 * 1000,
     limit: parsePositiveIntegerEnv('AI_RATE_LIMIT_PER_MINUTE', 30),
     standardHeaders: true,
@@ -312,6 +311,29 @@ function parsePositiveIntegerEnv(name: string, fallback: number): number {
 
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function createRateLimit(options: { readonly windowMs: number; readonly limit: number; readonly message?: unknown; readonly standardHeaders?: boolean; readonly legacyHeaders?: boolean }): RequestHandler {
+  const buckets = new Map<string, { count: number; resetAt: number }>();
+  return (req, res, next): void => {
+    const now = Date.now();
+    const key = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+    const current = buckets.get(key);
+    const bucket = current === undefined || current.resetAt <= now ? { count: 0, resetAt: now + options.windowMs } : current;
+    bucket.count += 1;
+    buckets.set(key, bucket);
+    if (buckets.size > 10_000) {
+      for (const [bucketKey, value] of buckets) if (value.resetAt <= now) buckets.delete(bucketKey);
+    }
+    res.setHeader('RateLimit-Limit', options.limit);
+    res.setHeader('RateLimit-Remaining', Math.max(0, options.limit - bucket.count));
+    res.setHeader('RateLimit-Reset', Math.ceil((bucket.resetAt - now) / 1000));
+    if (bucket.count > options.limit) {
+      res.status(429).json(options.message ?? { success: false, code: 'RATE_LIMITED' });
+      return;
+    }
+    next();
+  };
 }
 
 function createRequestLogger() {

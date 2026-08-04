@@ -115,7 +115,7 @@ export class PrismaCostAllocationRepository implements ICostAllocationRepository
       examples: matchingMetrics.slice(0, 5).map((metric) => ({ currency: metric.billingCurrency, cost: toNumber(metric.billedCost), cloudAccountId: metric.cloudAccountId, serviceName: metric.serviceName, ...(metric.resourceId === '' ? {} : { resourceId: metric.resourceId }) })),
       financialImpact: await this.previewFinancialImpact(tenantId, periodStart, proposedSummary),
     };
-    if (ruleId !== undefined && input.configurationHash !== undefined) await this.prisma.costAllocationRule.updateMany({ where: { tenantId, id: ruleId, status: { not: 'ARCHIVED' } }, data: { lastPreviewedHash: input.configurationHash, lastPreviewedAt: new Date() } });
+    if (ruleId !== undefined && input.configurationHash !== undefined) await this.prisma.costAllocationRule.updateMany({ where: { tenantId, id: ruleId, status: { not: 'ARCHIVED' } }, data: { configurationHash: input.configurationHash, lastPreviewedHash: input.configurationHash, lastPreviewedAt: new Date() } });
     return result;
   }
 
@@ -141,14 +141,23 @@ export class PrismaCostAllocationRepository implements ICostAllocationRepository
 
   public async unallocated(tenantId: string, periodStart: Date, currency?: string, cloudAccountId?: string, serviceName?: string): Promise<readonly UnallocatedCostDetail[]> {
     const [rules, metrics] = await Promise.all([this.listRules(tenantId, 'ACTIVE'), this.metrics(tenantId, periodStart, cloudAccountId, serviceName)]);
-    const groups = new Map<string, UnallocatedCostDetail>();
+    const groups = new Map<string, { readonly currency: string; readonly cost: Prisma.Decimal; readonly metricCount: number; readonly resourceId?: string; readonly cloudResourceId?: string; readonly serviceName: string; readonly cloudAccountId: string; readonly suggestedCriteria: readonly string[] }>();
     for (const metric of metrics) {
       if ((currency !== undefined && metric.billingCurrency !== currency) || matchesAny(metric, rules, periodStart) !== undefined) continue;
-      const key = [metric.billingCurrency, metric.cloudAccountId, metric.serviceName, metric.resourceId].join('|');
+      const key = [metric.billingCurrency, metric.cloudAccountId, metric.serviceName, metric.cloudResourceId ?? metric.resourceId].join('|');
       const current = groups.get(key);
-      groups.set(key, { currency: metric.billingCurrency, cost: round((current?.cost ?? 0) + toNumber(metric.billedCost)), metricCount: (current?.metricCount ?? 0) + 1, ...(metric.resourceId === '' ? {} : { resourceId: metric.resourceId }), serviceName: metric.serviceName, cloudAccountId: metric.cloudAccountId, suggestedCriteria: suggestions(metric) });
+      groups.set(key, {
+        currency: metric.billingCurrency,
+        cost: (current?.cost ?? new Prisma.Decimal(0)).plus(metric.billedCost),
+        metricCount: (current?.metricCount ?? 0) + 1,
+        ...(metric.resourceId === '' ? {} : { resourceId: metric.resourceId }),
+        ...(metric.cloudResourceId === null ? {} : { cloudResourceId: metric.cloudResourceId }),
+        serviceName: metric.serviceName,
+        cloudAccountId: metric.cloudAccountId,
+        suggestedCriteria: current?.suggestedCriteria ?? suggestions(metric),
+      });
     }
-    return [...groups.values()].sort((a, b) => b.cost - a.cost);
+    return [...groups.values()].map((item) => ({ ...item, cost: toNumber(item.cost) })).sort((a, b) => b.cost - a.cost);
   }
 
   public async closePeriod(tenantId: string, userId: string, periodStart: Date, _confirmUnallocated: boolean, replacementReason?: string): Promise<readonly CostAllocationClosure[]> {
@@ -159,7 +168,10 @@ export class PrismaCostAllocationRepository implements ICostAllocationRepository
       if (activeJobs > 0) throw new FinOpsBaseError('El período todavía tiene trabajos de ingesta de facturación activos', 'VALIDATION_ERROR');
       const [rules, metrics] = await Promise.all([this.loadRules(tx, tenantId, 'ACTIVE'), this.metrics(tenantId, normalizedPeriod, undefined, undefined, undefined, undefined, tx)]);
       if (metrics.length === 0) throw new FinOpsBaseError('No hay costos disponibles para este período', 'VALIDATION_ERROR');
+      const sourceHashBeforeAllocation = hashMetrics(metrics);
       const allocation = allocate(metrics, rules, normalizedPeriod);
+      const sourceHashAfterAllocation = hashMetrics(await this.metrics(tenantId, normalizedPeriod, undefined, undefined, undefined, undefined, tx));
+      if (sourceHashBeforeAllocation !== sourceHashAfterAllocation) throw new FinOpsBaseError('La fuente de costos cambió durante el cierre; intente nuevamente', 'VALIDATION_ERROR');
       const summaries = allocation.summaries;
       const rulesHash = hashRules(rules);
       const closures: CostAllocationClosure[] = [];
@@ -246,6 +258,10 @@ function allocate(metrics: readonly Metric[], rules: readonly CostAllocationRule
     }
     byCurrency.set(metric.billingCurrency, bucket);
   }
+  for (const value of byCurrency.values()) {
+    const groupedTotal = [...value.groups.values()].reduce((total, group) => total.plus(group.cost), new Prisma.Decimal(0));
+    if (!groupedTotal.eq(value.total)) throw new FinOpsBaseError('Allocation totals do not balance by currency', 'INTERNAL_ERROR');
+  }
   const summaries = [...byCurrency.entries()].map(([currency, value]) => ({ period: periodStart.toISOString().slice(0, 7), currency, totalCost: toNumber(value.total), allocatedCost: toNumber(value.allocated.plus(value.shared)), unallocatedCost: toNumber(value.total.minus(value.allocated).minus(value.shared)), sharedCost: toNumber(value.shared), coveragePercent: value.total.isZero() ? 0 : round(toNumber(value.allocated.plus(value.shared).div(value.total).mul(100))), dimensions: [...value.groups.values()].map((group) => ({ ...group, cost: toNumber(group.cost), resourceCount: group.resources.size, resources: undefined })).map(({ resources: _resources, ...group }) => group).sort((a, b) => b.cost - a.cost) }));
   return { summaries, lines };
 }
@@ -311,7 +327,7 @@ function hashMetrics(metrics: readonly Metric[]): string {
     Object.entries(asTags(metric.tags)).sort(([left], [right]) => left.localeCompare(right)),
   ])).sort().join('\n')).digest('hex');
 }
-function hashRules(rules: readonly CostAllocationRule[]): string { return createHash('sha256').update(rules.map((rule) => rule.configurationHash ?? rule.id).sort().join('|')).digest('hex'); }
+function hashRules(rules: readonly CostAllocationRule[]): string { return createHash('sha256').update(rules.map((rule) => JSON.stringify([rule.id, rule.priority, rule.configurationHash ?? rule.id])).join('\n')).digest('hex'); }
 function rulesUsed(metrics: readonly Metric[], rules: readonly CostAllocationRule[], period: Date): readonly CostAllocationRule[] { return rules.filter((rule) => metrics.some((metric) => matches(metric, rule, period))); }
 function toNumber(value: Prisma.Decimal | number): number { return typeof value === 'number' ? value : Number(value.toDecimalPlaces(allocationScale).toString()); }
 function round(value: number): number { return Math.round(value * 100) / 100; }

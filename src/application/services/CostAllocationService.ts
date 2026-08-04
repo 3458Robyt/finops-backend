@@ -3,7 +3,7 @@ import { Prisma } from '../../generated/prisma/client.js';
 import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { CostAllocationRuleInput, ICostAllocationRepository } from '../../domain/interfaces/ICostAllocationRepository.js';
 import type { AuthContext } from '../../domain/models/AuthContext.js';
-import type { CostAllocationMode, CostAllocationRule, CostAllocationRuleStatus } from '../../domain/models/CostAllocation.js';
+import type { CostAllocationMode, CostAllocationRule, CostAllocationRuleStatus, CostAllocationRuleTarget } from '../../domain/models/CostAllocation.js';
 
 const managers = new Set<AuthContext['role']>(['MASTER_ADMIN', 'OPERATOR_ADMIN', 'ADMIN', 'FINOPS_TECHNICIAN']);
 const periodPattern = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -31,7 +31,13 @@ export class CostAllocationService {
   public async updateRule(actor: AuthContext, ruleId: string, input: Partial<CostAllocationRuleInput>): Promise<CostAllocationRule> {
     this.requireManager(actor);
     const current = await this.requireRule(actor, ruleId);
-    const prepared = this.prepare({ ...toInput(current), ...input }, current.configurationVersion + 1);
+    const preparedCandidate = this.prepare({ ...toInput(current), ...input }, current.configurationVersion);
+    const prepared = {
+      ...preparedCandidate,
+      configurationVersion: preparedCandidate.configurationHash === current.configurationHash
+        ? current.configurationVersion
+        : current.configurationVersion + 1,
+    };
     const rule = await this.repository.updateRule(actor.tenantId, ruleId, prepared);
     if (rule === null) throw new FinOpsBaseError('Allocation rule not found or archived', 'NOT_FOUND');
     await this.repository.writeAudit(actor.tenantId, actor.userId, 'COST_ALLOCATION_RULE_UPDATED', rule.id, {
@@ -134,14 +140,24 @@ export class CostAllocationService {
   private prepare(input: CostAllocationRuleInput, configurationVersion: number): CostAllocationRuleInput {
     this.validate(input);
     const allocationMode = input.allocationMode ?? 'DIRECT';
-    const allocationTargets = input.allocationTargets ?? [];
-    const { configurationHash: _providedHash, ...configuration } = input;
+    const allocationTargets = allocationMode === 'SPLIT'
+      ? input.allocationTargets ?? []
+      : [
+          {
+            percentage: 100,
+            ...(input.costCenter === undefined ? {} : { costCenter: input.costCenter }),
+            ...(input.businessUnit === undefined ? {} : { businessUnit: input.businessUnit }),
+            ...(input.project === undefined ? {} : { project: input.project }),
+            ...(input.team === undefined ? {} : { team: input.team }),
+            ...(input.environment === undefined ? {} : { environment: input.environment }),
+          },
+        ];
     return {
       ...input,
       allocationMode,
       allocationTargets,
       configurationVersion,
-      configurationHash: configurationHash({ ...configuration, allocationMode, allocationTargets }),
+      configurationHash: configurationHash({ ...input, allocationMode, allocationTargets }),
     };
   }
 
@@ -207,6 +223,34 @@ function toInput(rule: CostAllocationRule): CostAllocationRuleInput {
   };
 }
 
-function configurationHash(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(value, (_key, item: unknown) => item instanceof Date ? item.toISOString() : item)).digest('hex');
+function configurationHash(input: CostAllocationRuleInput & { readonly allocationMode: CostAllocationMode; readonly allocationTargets: readonly CostAllocationRuleTarget[] }): string {
+  const canonical = {
+    name: input.name,
+    description: input.description ?? null,
+    priority: input.priority,
+    allocationMode: input.allocationMode,
+    allocationTargets: input.allocationTargets.map((target) => ({
+      percentage: String(target.percentage),
+      costCenter: target.costCenter ?? null,
+      businessUnit: target.businessUnit ?? null,
+      project: target.project ?? null,
+      team: target.team ?? null,
+      environment: target.environment ?? null,
+    })),
+    cloudAccountId: input.cloudAccountId ?? null,
+    provider: input.provider ?? null,
+    serviceName: input.serviceName ?? null,
+    regionId: input.regionId ?? null,
+    resourceId: input.resourceId ?? null,
+    tagKey: input.tagKey ?? null,
+    tagValue: input.tagValue ?? null,
+    costCenter: input.costCenter ?? null,
+    businessUnit: input.businessUnit ?? null,
+    project: input.project ?? null,
+    team: input.team ?? null,
+    environment: input.environment ?? null,
+    effectiveFrom: input.effectiveFrom?.toISOString() ?? null,
+    effectiveTo: input.effectiveTo?.toISOString() ?? null,
+  };
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
 }

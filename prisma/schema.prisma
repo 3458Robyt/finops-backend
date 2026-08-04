@@ -1307,6 +1307,7 @@ model CostAllocationClosure {
   closedBy          User                        @relation("CostAllocationClosureClosedBy", fields: [closedByUserId], references: [id], onDelete: Restrict)
   lines             CostAllocationClosureLine[]
 
+  @@unique([id, tenantId], map: "cost_allocation_closures_id_tenant_id_key")
   @@unique([tenantId, periodStart, currency, version])
   @@index([tenantId, periodStart, status])
   @@index([tenantId, sourceHash])
@@ -1336,7 +1337,7 @@ model CostAllocationClosureLine {
   resourceLinkReason String?               @map("resource_link_reason")
   createdAt          DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
   tenant             Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  closure            CostAllocationClosure @relation(fields: [closureId], references: [id], onDelete: Cascade)
+  closure            CostAllocationClosure @relation(fields: [closureId, tenantId], references: [id, tenantId], onDelete: Cascade)
 
   @@unique([closureId, chargePeriodStart, metricIdentityHash, allocationKey], map: "cost_allocation_closure_lines_identity_key")
   @@index([tenantId, closureId, allocationKey, currency])

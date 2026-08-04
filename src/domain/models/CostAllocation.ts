@@ -110,6 +110,7 @@ export interface UnallocatedCostDetail {
   readonly cost: number;
   readonly metricCount: number;
   readonly resourceId?: string;
+  readonly cloudResourceId?: string;
   readonly serviceName: string;
   readonly cloudAccountId: string;
   readonly suggestedCriteria: readonly string[];

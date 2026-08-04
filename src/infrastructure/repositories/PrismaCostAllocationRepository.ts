@@ -47,6 +47,7 @@ type AllocationResult = {
 
 const ruleInclude = { allocationTargets: true } as const;
 const allocationScale = 6;
+const bulkClosureLineThreshold = 500;
 
 export class PrismaCostAllocationRepository implements ICostAllocationRepository {
   constructor(private readonly prisma: PrismaClient, private readonly valueRealization?: Pick<IValueRealizationRepository, 'listDestinationSummary'>) {}
@@ -169,9 +170,15 @@ export class PrismaCostAllocationRepository implements ICostAllocationRepository
       const [rules, metrics] = await Promise.all([this.loadRules(tx, tenantId, 'ACTIVE'), this.metrics(tenantId, normalizedPeriod, undefined, undefined, undefined, undefined, tx)]);
       if (metrics.length === 0) throw new FinOpsBaseError('No hay costos disponibles para este período', 'VALIDATION_ERROR');
       const sourceHashBeforeAllocation = hashMetrics(metrics);
+      const sourceTotalBeforeAllocation = metrics.reduce((total, metric) => total.plus(metric.billedCost), new Prisma.Decimal(0));
       const allocation = allocate(metrics, rules, normalizedPeriod);
-      const sourceHashAfterAllocation = hashMetrics(await this.metrics(tenantId, normalizedPeriod, undefined, undefined, undefined, undefined, tx));
-      if (sourceHashBeforeAllocation !== sourceHashAfterAllocation) throw new FinOpsBaseError('La fuente de costos cambió durante el cierre; intente nuevamente', 'VALIDATION_ERROR');
+      const sourceStateAfterAllocation = await tx.costMetric.aggregate({
+        where: { tenantId, chargePeriodStart: { gte: normalizedPeriod, lt: end } },
+        _count: { _all: true },
+        _sum: { billedCost: true },
+      });
+      const sourceTotalAfterAllocation = sourceStateAfterAllocation._sum.billedCost ?? new Prisma.Decimal(0);
+      if (sourceStateAfterAllocation._count._all !== metrics.length || !sourceTotalBeforeAllocation.eq(sourceTotalAfterAllocation)) throw new FinOpsBaseError('La fuente de costos cambió durante el cierre; intente nuevamente', 'VALIDATION_ERROR');
       const summaries = allocation.summaries;
       const rulesHash = hashRules(rules);
       const closures: CostAllocationClosure[] = [];
@@ -195,7 +202,7 @@ export class PrismaCostAllocationRepository implements ICostAllocationRepository
         closures.push(toClosure(created));
       }
       return closures;
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 10_000, timeout: 120_000 });
   }
 
   public async listClosures(tenantId: string, period?: Date): Promise<readonly CostAllocationClosure[]> {
@@ -297,7 +304,52 @@ function scalarInput(input: Partial<CostAllocationRuleInput>): Record<string, un
 async function createTargets(tx: any, tenantId: string, ruleId: string, targets: readonly CostAllocationRuleTarget[] | undefined): Promise<void> { if (targets === undefined || targets.length === 0) return; await tx.costAllocationRuleTarget.createMany({ data: targets.map((target) => ({ tenantId, ruleId, percentage: target.percentage, costCenter: target.costCenter, businessUnit: target.businessUnit, project: target.project, team: target.team, environment: target.environment })) }); }
 async function createClosureLines(tx: any, tenantId: string, closureId: string, lines: readonly AllocationLine[]): Promise<void> {
   if (lines.length === 0) return;
-  await tx.costAllocationClosureLine.createMany({ data: lines.map((item) => ({ id: lineId(closureId, item), tenantId, closureId, chargePeriodStart: item.chargePeriodStart, metricIdentityHash: item.metricIdentityHash, currency: item.currency, sourceAmount: item.sourceAmount, allocationAmount: item.allocationAmount, allocationKey: item.allocationKey, allocationMode: item.allocationMode, shared: item.shared, ...(item.percentage === undefined ? {} : { percentage: item.percentage }), ...(item.ruleId === undefined ? {} : { ruleId: item.ruleId }), cloudAccountId: item.cloudAccountId, provider: item.provider, serviceName: item.serviceName, ...(item.regionId === null ? {} : { regionId: item.regionId }), ...(item.resourceId === '' ? {} : { resourceId: item.resourceId }), ...(item.cloudResourceId === null ? {} : { cloudResourceId: item.cloudResourceId }), ...(item.resourceLinkReason === null ? {} : { resourceLinkReason: item.resourceLinkReason }) })) });
+  const data = lines.map((item) => ({ id: lineId(closureId, item), tenantId, closureId, chargePeriodStart: item.chargePeriodStart, metricIdentityHash: item.metricIdentityHash, currency: item.currency, sourceAmount: item.sourceAmount, allocationAmount: item.allocationAmount, allocationKey: item.allocationKey, allocationMode: item.allocationMode, shared: item.shared, ...(item.percentage === undefined ? {} : { percentage: item.percentage }), ...(item.ruleId === undefined ? {} : { ruleId: item.ruleId }), cloudAccountId: item.cloudAccountId, provider: item.provider, serviceName: item.serviceName, ...(item.regionId === null ? {} : { regionId: item.regionId }), ...(item.resourceId === '' ? {} : { resourceId: item.resourceId }), ...(item.cloudResourceId === null ? {} : { cloudResourceId: item.cloudResourceId }), ...(item.resourceLinkReason === null ? {} : { resourceLinkReason: item.resourceLinkReason }) }));
+  if (lines.length <= bulkClosureLineThreshold) {
+    await tx.costAllocationClosureLine.createMany({ data });
+    return;
+  }
+  const payload = JSON.stringify(data.map((item) => ({
+    id: item.id,
+    tenant_id: item.tenantId,
+    closure_id: item.closureId,
+    charge_period_start: item.chargePeriodStart.toISOString(),
+    metric_identity_hash: item.metricIdentityHash,
+    currency: item.currency,
+    source_amount: item.sourceAmount.toString(),
+    allocation_amount: item.allocationAmount.toString(),
+    allocation_key: item.allocationKey,
+    allocation_mode: item.allocationMode,
+    shared: item.shared,
+    percentage: item.percentage ?? null,
+    rule_id: item.ruleId ?? null,
+    cloud_account_id: item.cloudAccountId,
+    provider: item.provider,
+    service_name: item.serviceName,
+    region_id: item.regionId,
+    resource_id: item.resourceId === '' ? null : item.resourceId,
+    cloud_resource_id: item.cloudResourceId,
+    resource_link_reason: item.resourceLinkReason,
+  })));
+  await tx.$executeRaw(Prisma.sql`
+    INSERT INTO "cost_allocation_closure_lines" (
+      "id", "tenant_id", "closure_id", "charge_period_start", "metric_identity_hash", "currency",
+      "source_amount", "allocation_amount", "allocation_key", "allocation_mode", "shared", "percentage",
+      "rule_id", "cloud_account_id", "provider", "service_name", "region_id", "resource_id",
+      "cloud_resource_id", "resource_link_reason"
+    )
+    SELECT item.id, item.tenant_id, item.closure_id, item.charge_period_start, item.metric_identity_hash, item.currency,
+      item.source_amount, item.allocation_amount, item.allocation_key, item.allocation_mode::"CostAllocationMode",
+      item.shared, item.percentage, item.rule_id, item.cloud_account_id, item.provider::"CloudProvider", item.service_name,
+      item.region_id, item.resource_id, item.cloud_resource_id, item.resource_link_reason
+    FROM jsonb_to_recordset(CAST(${payload} AS jsonb)) AS item(
+      id text, tenant_id text, closure_id text, charge_period_start timestamptz, metric_identity_hash text,
+      currency text, source_amount numeric, allocation_amount numeric, allocation_key text, allocation_mode text,
+      shared boolean, percentage numeric, rule_id text, cloud_account_id text, provider text, service_name text,
+      region_id text, resource_id text, cloud_resource_id text, resource_link_reason text
+    )
+    ON CONFLICT ("id") DO NOTHING
+  `);
 }
 function line(metric: Metric, allocationAmount: Prisma.Decimal, allocationKeyValue: string, mode: CostAllocationMode, shared: boolean, percentage?: number, ruleId?: string): AllocationLine { return { chargePeriodStart: metric.chargePeriodStart, metricIdentityHash: metric.metricIdentityHash, sourceAmount: metric.billedCost, allocationAmount, allocationKey: allocationKeyValue, currency: metric.billingCurrency, allocationMode: mode, shared, ...(percentage === undefined ? {} : { percentage }), ...(ruleId === undefined ? {} : { ruleId }), cloudAccountId: metric.cloudAccountId, provider: metric.provider, serviceName: metric.serviceName, regionId: metric.regionId, resourceId: metric.resourceId, cloudResourceId: metric.cloudResourceId, resourceLinkReason: metric.resourceLinkReason }; }
 function lineId(closureId: string, item: AllocationLine): string { return createHash('sha256').update([closureId, item.chargePeriodStart.toISOString(), item.metricIdentityHash, item.allocationKey].join('|')).digest('hex'); }

@@ -34,15 +34,16 @@ await check('health', `${apiBaseUrl.replace(/\/api\/v1$/, '')}/health`);
 await check('auth tenants', '/auth/tenants', token);
 await check('kpis savings', '/kpis/savings', token);
 await check('costs', '/costs', token);
+const allocationRuleInput = { name: 'E2E compute allocation', priority: 10, status: 'DRAFT', serviceName: 'Amazon Elastic Compute Cloud', costCenter: 'E2E-CC' };
 const allocationRule = await request('/cost-allocation/rules', {
   method: 'POST', token,
-  body: JSON.stringify({ name: 'E2E compute allocation', priority: 10, status: 'DRAFT', serviceName: 'Amazon Elastic Compute Cloud', costCenter: 'E2E-CC' }),
+  body: JSON.stringify(allocationRuleInput),
 });
 assertOk(allocationRule, 'create allocation rule');
 const allocationRuleBody = await allocationRule.response.json() as { readonly rule: { readonly id: string } };
 const allocationPreview = await request('/cost-allocation/preview', {
   method: 'POST', token,
-  body: JSON.stringify({ period: billingPeriod, rule: { name: 'E2E preview', priority: 10, status: 'DRAFT', serviceName: 'Amazon Elastic Compute Cloud', costCenter: 'E2E-CC' } }),
+  body: JSON.stringify({ period: billingPeriod, rule: allocationRuleInput, ruleId: allocationRuleBody.rule.id }),
 });
 assertOk(allocationPreview, 'preview allocation rule');
 const allocationPreviewBody = await allocationPreview.response.json() as { readonly preview: { readonly metricCount: number } };

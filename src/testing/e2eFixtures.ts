@@ -341,7 +341,7 @@ async function seedTenantData(
       serviceName: input.serviceName,
       groupBy: 'service',
       groupKey: input.serviceName,
-      forecastMonth: periodStart,
+      forecastMonth: new Date(Date.UTC(periodStart.getUTCFullYear(), periodStart.getUTCMonth(), 1)),
       predictedCost: new Prisma.Decimal(180),
       lowerBound: new Prisma.Decimal(160),
       upperBound: new Prisma.Decimal(200),

@@ -109,6 +109,15 @@ readonly opcNextPage?: string;
 interface OciIdentityClient {
   close?(): void;
   getUser(request: unknown): Promise<unknown>;
+  listCompartments(request: unknown): Promise<{
+    readonly items?: readonly OciCompartment[];
+    readonly opcNextPage?: string;
+  }>;
+}
+
+interface OciCompartment {
+  readonly id?: string;
+  readonly lifecycleState?: string;
 }
 
 interface OciUsageClient {
@@ -709,9 +718,10 @@ private async collectComputeInventoryResources(
 job: CloudIngestionJobContext,
 ): Promise<{ readonly apiCallCount: number; readonly resources: readonly NormalizedCloudResource[] }> {
 const client = this.createComputeClient(job);
-const compartmentIds = this.readInventoryCompartments(job);
+const compartmentDiscovery = await this.listInventoryCompartmentIds(job);
+const compartmentIds = compartmentDiscovery.compartmentIds;
 const resources: NormalizedCloudResource[] = [];
-let apiCallCount = 0;
+let apiCallCount = compartmentDiscovery.apiCallCount;
 
 try {
 for (const compartmentId of compartmentIds) {
@@ -787,7 +797,51 @@ return 'ACTIVE';
 return 'UNKNOWN';
 }
 
-private readInventoryCompartments(job: CloudIngestionJobContext): readonly string[] {
+private async listInventoryCompartmentIds(
+job: CloudIngestionJobContext,
+): Promise<{ readonly compartmentIds: readonly string[]; readonly apiCallCount: number }> {
+const compartmentIds = new Set(this.readConfiguredInventoryCompartments(job));
+if (getCredential(job.connection.credentials, [
+'INVENTORY_READ',
+'OPERATIONAL',
+]) === undefined) {
+return { compartmentIds: [...compartmentIds], apiCallCount: 0 };
+}
+const client = this.createIdentityClient(this.createAuthProvider(job));
+let apiCallCount = 0;
+let page: string | undefined;
+
+try {
+do {
+apiCallCount += 1;
+const response = await this.withProviderRetry(() => client.listCompartments({
+compartmentId: job.connection.rootExternalId,
+compartmentIdInSubtree: true,
+accessLevel: 'ACCESSIBLE',
+lifecycleState: 'ACTIVE',
+limit: 1000,
+...(page !== undefined ? { page } : {}),
+}));
+for (const compartment of response.items ?? []) {
+if (compartment.id !== undefined && compartment.lifecycleState?.toUpperCase() === 'ACTIVE') {
+compartmentIds.add(compartment.id);
+}
+}
+page = response.opcNextPage;
+} while (page !== undefined);
+} catch {
+// The identity policy may not allow compartment discovery. Keep explicitly
+// configured compartments as a safe, deterministic fallback and let the
+// inventory result report the reduced scope through its source/warnings.
+return { compartmentIds: [...compartmentIds], apiCallCount };
+} finally {
+client.close?.();
+}
+
+return { compartmentIds: [...compartmentIds], apiCallCount };
+}
+
+private readConfiguredInventoryCompartments(job: CloudIngestionJobContext): readonly string[] {
 const configured = readStringArray(job.connection.metadata?.['ociInventoryCompartments']);
 const metricCompartments = this.readMetricDefinitions(job).map((definition) => definition.compartmentId);
 return [...new Set([...configured, ...metricCompartments, job.connection.rootExternalId])];

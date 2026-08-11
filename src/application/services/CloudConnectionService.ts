@@ -87,7 +87,6 @@ export interface ConfigureFocusSourceInput {
   readonly values: Readonly<Record<string, string>>;
   readonly replace: boolean;
 }
-
 export interface ManageIngestionJobsInput {
   readonly tenantId: string;
   readonly userId: string;

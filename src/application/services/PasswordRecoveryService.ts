@@ -15,12 +15,18 @@ export interface PasswordResetResult {
   readonly emailSent: boolean;
 }
 
+export interface PasswordRecoveryOptions {
+  readonly resetUrl?: string;
+  readonly resetTtlSeconds?: number;
+}
+
 export class PasswordRecoveryService {
   public constructor(
     private readonly repository: IAccountRecoveryRepository,
     private readonly passwordHasher: IPasswordHasher,
     private readonly sessions: IAuthSessionRepository,
     private readonly emailClient: IEmailClient,
+    private readonly options: PasswordRecoveryOptions = {},
   ) {}
 
   public async requestReset(input: PasswordResetRequestInput): Promise<PasswordResetResult> {
@@ -31,7 +37,7 @@ export class PasswordRecoveryService {
     }
 
     const token = randomBytes(32).toString('base64url');
-    const expiresAt = new Date(Date.now() + readResetTtlSeconds() * 1000);
+    const expiresAt = new Date(Date.now() + (this.options.resetTtlSeconds ?? 900) * 1000);
     await this.repository.createPasswordResetToken({
       userId: target.userId,
       tokenHash: hashToken(token),
@@ -44,7 +50,7 @@ export class PasswordRecoveryService {
     }
 
     try {
-      const resetUrl = `${process.env['PASSWORD_RESET_URL'] ?? 'http://localhost:5173/reset-password'}?token=${encodeURIComponent(token)}`;
+      const resetUrl = `${this.options.resetUrl ?? 'http://localhost:5173/reset-password'}?token=${encodeURIComponent(token)}`;
       await this.emailClient.send({
         to: target.email,
         subject: 'Restablece tu contraseña de FinOps Inteligente',
@@ -97,9 +103,4 @@ function validatePassword(value: string): string {
     throw new FinOpsBaseError('La contraseña debe incluir minúsculas, mayúsculas y números.', 'VALIDATION_ERROR');
   }
   return value;
-}
-
-function readResetTtlSeconds(): number {
-  const parsed = Number.parseInt(process.env['PASSWORD_RESET_TTL_SECONDS'] ?? '900', 10);
-  return Number.isInteger(parsed) && parsed >= 300 && parsed <= 3600 ? parsed : 900;
 }

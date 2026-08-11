@@ -4,7 +4,7 @@ import type { IAuthSecurityRepository } from '../../domain/interfaces/IAuthSecur
 import { AuthenticationError } from '../../domain/errors/errors.js';
 import type { AuthDatabaseContextRunner, LoginResult } from './authTypes.js';
 import { AuthSessionIssuer } from './AuthSessionIssuer.js';
-import { createOpaqueToken, hashOpaqueToken } from './opaqueToken.js';
+import { createOpaqueToken, DEFAULT_REFRESH_TOKEN_TTL_SECONDS, hashOpaqueToken } from './opaqueToken.js';
 
 export class AuthRefreshService {
   public constructor(
@@ -13,6 +13,7 @@ export class AuthRefreshService {
     private readonly security: IAuthSecurityRepository | undefined,
     private readonly issuer: AuthSessionIssuer,
     private readonly runInDatabaseContext: AuthDatabaseContextRunner,
+    private readonly refreshTokenTtlSeconds = DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
   ) {}
 
   public async refresh(input: {
@@ -52,7 +53,7 @@ export class AuthRefreshService {
         email: user.email,
         role: user.role,
       });
-      const replacement = createOpaqueToken();
+      const replacement = createOpaqueToken(this.refreshTokenTtlSeconds);
       const rotated = await this.security!.rotateRefreshToken({
         tokenHash,
         replacementTokenHash: hashOpaqueToken(replacement.value),

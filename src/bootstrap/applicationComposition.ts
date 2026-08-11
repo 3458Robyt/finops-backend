@@ -121,6 +121,7 @@ export function createApplicationComposition(
     runWithDatabaseContext,
     mfaService,
     config.security.mfaRequiredForPrivileged,
+    config.security.refreshTokenTtlSeconds,
   );
   const masterAdminService = new MasterAdminService(masterAdminRepository, passwordHasher);
   const ingestionProviders = [new AwsSdkIngestionProvider(), new OciSdkIngestionProvider()];
@@ -130,7 +131,9 @@ export function createApplicationComposition(
     new PrismaResourceLinkageReadinessRepository(prisma),
   );
   const technicalRecommendationEvidenceService = new TechnicalRecommendationEvidenceService(resourceMetricRepository);
-  const analyticsService = new CostAnalyticsService(costAnalyticsRepository);
+  const analyticsService = new CostAnalyticsService(costAnalyticsRepository, {
+    anomalyThresholds: { minAbsoluteDelta: config.finops.anomalyMinDeltaUsd },
+  });
   const budgetService = new BudgetService(
     budgetRepository,
     notificationRepository,
@@ -183,6 +186,10 @@ export function createApplicationComposition(
     passwordHasher,
     authSessionRepository,
     emailClient,
+    {
+      resetUrl: config.security.passwordResetUrl,
+      resetTtlSeconds: config.security.passwordResetTtlSeconds,
+    },
   );
   const telegramLinkService = new TelegramLinkService(telegramRepository, telegramClient);
   const telegramBotService = new TelegramBotService(

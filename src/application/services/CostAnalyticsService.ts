@@ -51,15 +51,12 @@ export interface AnalyticsRecomputeResult {
   readonly insufficientData: boolean;
 }
 
-/**
- * Umbrales de detección de anomalías, resueltos desde el entorno.
- *
- * El delta absoluto mínimo es configurable vía `ANOMALY_MIN_DELTA_USD`
- * (evita ruido por variaciones triviales); los umbrales porcentuales de
- * severidad son constantes del dominio.
- */
-const anomalyThresholds: AnomalyThresholds = {
-  minAbsoluteDelta: Number.parseFloat(process.env['ANOMALY_MIN_DELTA_USD'] ?? '10'),
+export interface CostAnalyticsOptions {
+  readonly anomalyThresholds?: Partial<AnomalyThresholds>;
+}
+
+const DEFAULT_ANOMALY_THRESHOLDS: AnomalyThresholds = {
+  minAbsoluteDelta: 1,
   mediumDeltaPercent: 25,
   highDeltaPercent: 50,
   criticalDeltaPercent: 100,
@@ -85,11 +82,17 @@ export class CostAnalyticsService {
    * concurrentes que se pisen entre sí (ver {@link recompute}).
    */
   private readonly recomputeQueues = new Map<string, Promise<AnalyticsRecomputeResult>>();
+  private readonly anomalyThresholds: AnomalyThresholds;
 
   /**
    * @param analyticsRepository - Repositorio de analítica de costos.
    */
-  constructor(private readonly analyticsRepository: ICostAnalyticsRepository) {}
+  constructor(
+    private readonly analyticsRepository: ICostAnalyticsRepository,
+    options: CostAnalyticsOptions = {},
+  ) {
+    this.anomalyThresholds = { ...DEFAULT_ANOMALY_THRESHOLDS, ...options.anomalyThresholds };
+  }
 
   /**
    * Obtiene las anomalías de costo persistidas para una consulta.
@@ -209,7 +212,7 @@ export class CostAnalyticsService {
     });
     const anomalies = await this.analyticsRepository.replaceAnomalies(
       query.tenantId,
-      detectAnomalies(query.tenantId, series, anomalyThresholds),
+      detectAnomalies(query.tenantId, series, this.anomalyThresholds),
     );
     const forecasts = await this.analyticsRepository.replaceForecasts(
       query.tenantId,

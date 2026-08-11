@@ -18,6 +18,7 @@ import type {
 } from '../auth/authTypes.js';
 import { AuthRefreshService } from '../auth/AuthRefreshService.js';
 import { AuthSessionIssuer } from '../auth/AuthSessionIssuer.js';
+import { DEFAULT_REFRESH_TOKEN_TTL_SECONDS } from '../auth/opaqueToken.js';
 export { hashOpaqueToken } from '../auth/opaqueToken.js';
 export type {
   AuthDatabaseContextRunner,
@@ -43,10 +44,18 @@ export class AuthService {
     private readonly runInDatabaseContext: AuthDatabaseContextRunner = (_context, callback) => callback(),
     private readonly mfa?: IMfaAuthenticationService,
     mfaRequiredForPrivileged = false,
+    refreshTokenTtlSeconds = DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
   ) {
     this.mfaRequiredForPrivileged = mfaRequiredForPrivileged;
-    this.issuer = new AuthSessionIssuer(users, tokenService, security);
-    this.refreshService = new AuthRefreshService(users, tokenService, security, this.issuer, this.runInDatabaseContext);
+    this.issuer = new AuthSessionIssuer(users, tokenService, security, refreshTokenTtlSeconds);
+    this.refreshService = new AuthRefreshService(
+      users,
+      tokenService,
+      security,
+      this.issuer,
+      this.runInDatabaseContext,
+      refreshTokenTtlSeconds,
+    );
   }
 
   public async login(input: LoginInput): Promise<AuthLoginResult> {

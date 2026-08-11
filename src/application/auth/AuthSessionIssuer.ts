@@ -3,7 +3,7 @@ import type { AccessibleTenant, AuthUser, IUserRepository } from '../../domain/i
 import type { ITokenService, TokenIssueResult } from '../../domain/interfaces/ITokenService.js';
 import type { IAuthSecurityRepository } from '../../domain/interfaces/IAuthSecurityRepository.js';
 import type { AuthTenant, LoginResult } from './authTypes.js';
-import { createOpaqueToken, hashOpaqueToken } from './opaqueToken.js';
+import { createOpaqueToken, DEFAULT_REFRESH_TOKEN_TTL_SECONDS, hashOpaqueToken } from './opaqueToken.js';
 import { AuthorizationError } from '../../domain/errors/errors.js';
 
 export class AuthSessionIssuer {
@@ -11,6 +11,7 @@ export class AuthSessionIssuer {
     private readonly users: IUserRepository,
     private readonly tokenService: ITokenService,
     private readonly security?: IAuthSecurityRepository,
+    private readonly refreshTokenTtlSeconds = DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
   ) {}
 
   public async issue(input: {
@@ -29,7 +30,7 @@ export class AuthSessionIssuer {
       email: input.user.email,
       role: input.user.role,
     });
-    const refresh = this.security === undefined ? undefined : createOpaqueToken();
+    const refresh = this.security === undefined ? undefined : createOpaqueToken(this.refreshTokenTtlSeconds);
 
     await this.users.createSession({
       userId: input.user.id,

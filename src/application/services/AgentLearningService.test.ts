@@ -96,6 +96,7 @@ class FakeAgentLearningRepository implements IAgentLearningRepository {
   public eventInput: CreateAgentLearningEventInput | null = null;
   public completed: CompleteAgentLearningEventInput | null = null;
   public memoryInput: CreateAgentMemoryInput | null = null;
+  public recordedApproved: RecordApprovedLearningInput | null = null;
   public retryInput: { readonly eventId: string; readonly workerId: string; readonly errorMessage: string } | null = null;
 
   public async createEvent(input: CreateAgentLearningEventInput): Promise<AgentLearningEvent> {
@@ -194,6 +195,7 @@ class FakeAgentLearningRepository implements IAgentLearningRepository {
   }
 
   public async recordApprovedLearning(input: RecordApprovedLearningInput): Promise<AgentLearningEvent> {
+    this.recordedApproved = input;
     this.memoryInput = input.memories[0] ?? null;
     this.completed = {
       eventId: input.eventId,
@@ -269,6 +271,7 @@ describe('AgentLearningService', () => {
       auditVerdict: 'APPROVED',
       auditScore: 91,
     });
+    expect(learningRepository.recordedApproved?.memories).toHaveLength(1);
   });
 
   test('marks auditor timeouts as skipped learning instead of internal errors', async () => {

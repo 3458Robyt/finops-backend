@@ -87,6 +87,28 @@ describe('TechnicalOptimizationRuleEngine', () => {
     expect(result?.evidenceStrength).toBe('LOW');
     expect(result?.blockers).toContain('INSUFFICIENT_TECHNICAL_COVERAGE');
   });
+
+  it('does not treat non-utilization values below 100 as percentage saturation', () => {
+    const result = evaluateTechnicalOptimizationRules({
+      referenceDate,
+      summaries: [
+        summary('NetworkBytesIn', {
+          metricUnit: 'Bytes',
+          avg: 70,
+          p95: 95,
+          p99: 99,
+          max: 99,
+          highUtilizationSampleCount: 0,
+          highUtilizationRatio: 0,
+        }),
+        summary('CpuUtilization', { avg: 12, p95: 35, p99: 45 }),
+        summary('MemoryUtilization', { avg: 24, p95: 45, p99: 55 }),
+      ],
+    });
+
+    expect(result[0]?.blockers).not.toContain('NETWORK_SATURATION_RISK');
+    expect(result[0]?.ruleMatches).not.toContain('NETWORK_HIGH_UTILIZATION');
+  });
 });
 
 function summary(

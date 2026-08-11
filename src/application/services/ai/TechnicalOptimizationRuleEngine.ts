@@ -216,7 +216,12 @@ function normalizeMetricName(metricName: string): string {
 }
 
 function isPercentMetric(summary: TechnicalMetricSummaryItem): boolean {
-  return summary.metricUnit?.toLowerCase().includes('percent') === true || summary.max <= 100;
+  const unit = summary.metricUnit?.toLowerCase().replace(/\s+/g, '') ?? '';
+  const name = normalizeMetricName(summary.metricName);
+  return unit === '%'
+    || unit.includes('percent')
+    || unit.includes('percentage')
+    || /cpu|memory|mem|utilization|util|percent|pct/.test(name);
 }
 
 function metricFact(label: string, summary: TechnicalMetricSummaryItem): string {

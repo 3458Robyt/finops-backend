@@ -568,8 +568,24 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
         percentile_cont(0.50) WITHIN GROUP (ORDER BY rms.value)::float8 AS p50_value,
         percentile_cont(0.95) WITHIN GROUP (ORDER BY rms.value)::float8 AS p95_value,
         percentile_cont(0.99) WITHIN GROUP (ORDER BY rms.value)::float8 AS p99_value,
-        count(*) FILTER (WHERE rms.value >= 80)::int AS high_utilization_sample_count,
-        (count(*) FILTER (WHERE rms.value >= 80)::float8 / nullif(count(*)::float8, 0)) AS high_utilization_ratio,
+        count(*) FILTER (WHERE (
+          (
+            lower(coalesce(rms.metric_unit, '')) LIKE '%percent%'
+            OR lower(coalesce(rms.metric_unit, '')) LIKE '%percentage%'
+            OR lower(coalesce(rms.metric_unit, '')) = '%'
+            OR lower(rms.metric_name) ~ '(cpu|memory|mem|utilization|util|percent|pct)'
+          )
+          AND rms.value >= 80
+        ))::int AS high_utilization_sample_count,
+        (count(*) FILTER (WHERE (
+          (
+            lower(coalesce(rms.metric_unit, '')) LIKE '%percent%'
+            OR lower(coalesce(rms.metric_unit, '')) LIKE '%percentage%'
+            OR lower(coalesce(rms.metric_unit, '')) = '%'
+            OR lower(rms.metric_name) ~ '(cpu|memory|mem|utilization|util|percent|pct)'
+          )
+          AND rms.value >= 80
+        ))::float8 / nullif(count(*)::float8, 0)) AS high_utilization_ratio,
         min(rms.sampled_at) AS first_sampled_at,
         max(rms.sampled_at) AS latest_sampled_at,
         max(latest.latest_value)::float8 AS latest_value

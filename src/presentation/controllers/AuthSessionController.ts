@@ -3,13 +3,17 @@ import { z } from 'zod';
 import { AuthService, hashOpaqueToken, type LoginResult } from '../../application/services/AuthService.js';
 import { AuthenticationError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
-import { clearRefreshCookie, readRefreshCookie, setRefreshCookie } from '../auth/authCookie.js';
+import { clearRefreshCookie, readRefreshCookie, setRefreshCookie, type AuthCookieConfig } from '../auth/authCookie.js';
 
 const switchTenantSchema = z.object({ tenantId: z.string().min(1) });
 
 /** HTTP handlers for the already-authenticated session lifecycle. */
 export class AuthSessionController {
-  public constructor(private readonly authService: AuthService) {}
+  public constructor(
+    private readonly authService: AuthService,
+    private readonly cookieConfig: AuthCookieConfig,
+    private readonly refreshTokenTtlSeconds: number,
+  ) {}
 
   public listTenants = async (req: Request, res: Response): Promise<void> => {
     if (req.auth === undefined) return this.authenticationRequired(res);
@@ -39,7 +43,7 @@ export class AuthSessionController {
         ...(req.ip === undefined ? {} : { ipAddress: req.ip }),
         ...(req.header('user-agent') === undefined ? {} : { userAgent: req.header('user-agent')! }),
       });
-      setRefreshCookieIfPresent(res, result);
+      setRefreshCookieIfPresent(res, result, this.cookieConfig, this.refreshTokenTtlSeconds);
       res.status(200).json(toPublicLoginResult(result));
     } catch (error: unknown) {
       this.respondWithAuthError(res, error);
@@ -50,7 +54,7 @@ export class AuthSessionController {
     if (req.auth === undefined) return this.authenticationRequired(res);
     try {
       await this.authService.logout(req.auth);
-      clearRefreshCookie(res);
+      clearRefreshCookie(res, this.cookieConfig);
       res.status(200).json({ success: true });
     } catch (error: unknown) {
       this.respondWithAuthError(res, error);
@@ -60,7 +64,7 @@ export class AuthSessionController {
   public refresh = async (req: Request, res: Response): Promise<void> => {
     const refreshToken = readRefreshCookie(req.header('cookie'));
     if (refreshToken === undefined) {
-      clearRefreshCookie(res);
+      clearRefreshCookie(res, this.cookieConfig);
       res.status(401).json({ success: false, error: 'La sesión de renovación no está disponible.', code: 'AUTHENTICATION_REQUIRED' });
       return;
     }
@@ -73,10 +77,10 @@ export class AuthSessionController {
         ...(req.ip === undefined ? {} : { ipAddress: req.ip }),
         ...(req.header('user-agent') === undefined ? {} : { userAgent: req.header('user-agent')! }),
       }));
-      setRefreshCookieIfPresent(res, result);
+      setRefreshCookieIfPresent(res, result, this.cookieConfig, this.refreshTokenTtlSeconds);
       res.status(200).json(toPublicLoginResult(result));
     } catch (error: unknown) {
-      clearRefreshCookie(res);
+      clearRefreshCookie(res, this.cookieConfig);
       this.respondWithAuthError(res, error);
     }
   };
@@ -85,7 +89,7 @@ export class AuthSessionController {
     if (req.auth === undefined) return this.authenticationRequired(res);
     try {
       await this.authService.logoutAll(req.auth);
-      clearRefreshCookie(res);
+      clearRefreshCookie(res, this.cookieConfig);
       res.status(200).json({ success: true });
     } catch (error: unknown) {
       this.respondWithAuthError(res, error);
@@ -133,8 +137,8 @@ export class AuthSessionController {
   }
 }
 
-function setRefreshCookieIfPresent(res: Response, result: LoginResult): void {
-  if (result.refreshToken !== undefined) setRefreshCookie(res, result.refreshToken, refreshCookieExpiry());
+function setRefreshCookieIfPresent(res: Response, result: LoginResult, config: AuthCookieConfig, ttlSeconds: number): void {
+  if (result.refreshToken !== undefined) setRefreshCookie(res, result.refreshToken, refreshCookieExpiry(ttlSeconds), config);
 }
 
 function toPublicLoginResult(result: LoginResult): object {
@@ -148,8 +152,6 @@ function toPublicLoginResult(result: LoginResult): object {
   };
 }
 
-function refreshCookieExpiry(): Date {
-  const parsed = Number.parseInt(process.env['AUTH_REFRESH_TOKEN_TTL_SECONDS'] ?? '', 10);
-  const seconds = Number.isInteger(parsed) && parsed >= 300 && parsed <= 90 * 24 * 60 * 60 ? parsed : 30 * 24 * 60 * 60;
-  return new Date(Date.now() + seconds * 1000);
+function refreshCookieExpiry(ttlSeconds: number): Date {
+  return new Date(Date.now() + ttlSeconds * 1000);
 }

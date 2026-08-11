@@ -42,10 +42,11 @@ import { createTechnicalMetricsRoutes } from './routes/technicalMetricsRoutes.js
 import { createTelegramRoutes } from './routes/telegramRoutes.js';
 import { createValueRealizationRoutes } from './routes/valueRealizationRoutes.js';
 import { rolesForPermission } from '../domain/security/AuthorizationPolicy.js';
+import { type AuthCookieConfig } from './auth/authCookie.js';
 
 export function registerApiRoutes(app: Express, dependencies: ServerDependencies): void {
   const config = dependencies.runtimeConfig ?? loadRuntimeConfig();
-  const controllers = createControllers(dependencies);
+  const controllers = createControllers(dependencies, config);
   const requireAuth = createAuthMiddleware(dependencies.tokenService, dependencies.authSessionRepository);
   const requireCloudManager = requireRole(rolesForPermission('CLOUD_MANAGE'));
   const requireIngestionManager = requireRole(rolesForPermission('INGESTION_MANAGE'));
@@ -102,7 +103,14 @@ export function registerApiRoutes(app: Express, dependencies: ServerDependencies
   app.use('/api/v1/analytics', createAnalyticsRoutes(controllers.analytics, requireAuth));
   app.use('/api/v1/budgets', createBudgetRoutes(controllers.budget, requireAuth));
   app.use('/api/v1/cost-allocation', createCostAllocationRoutes(controllers.costAllocation, requireAuth));
-  app.use('/api/v1/auth', createAuthRoutes(controllers.auth, controllers.authSession, requireAuth, controllers.passwordRecovery, controllers.mfa));
+  app.use('/api/v1/auth', createAuthRoutes(
+    controllers.auth,
+    controllers.authSession,
+    requireAuth,
+    controllers.passwordRecovery,
+    controllers.mfa,
+    config.http.corsOrigins,
+  ));
   app.use('/api/v1/cloud-connections', createCloudConnectionRoutes(controllers.cloudConnection, requireAuth, requireCloudManager));
   app.use('/api/v1/costs', createCostRoutes(controllers.cost, requireAuth));
   app.use('/api/v1/ingestion', createIngestionRoutes(controllers.cloudConnection, requireAuth, requireIngestionManager, controllers.resourceLinkage));
@@ -116,14 +124,18 @@ export function registerApiRoutes(app: Express, dependencies: ServerDependencies
   app.use('/api/v1/value-realization', createValueRealizationRoutes(controllers.valueRealization, requireAuth, requireValueRealizationReconcile));
 }
 
-function createControllers(dependencies: ServerDependencies) {
+function createControllers(dependencies: ServerDependencies, config: NonNullable<ServerDependencies['runtimeConfig']>) {
+  const authCookieConfig: AuthCookieConfig = {
+    secure: config.environment.isProduction,
+    sameSite: config.security.cookieSameSite,
+  };
   return {
     agent: new AgentController(dependencies.agentInstructionService, dependencies.agentContextRepository, dependencies.contextSummaryBuilderService),
     ai: new AiController(dependencies.aiService, dependencies.learningService),
     analysis: new RecommendationAnalysisController(dependencies.recommendationAnalysisService),
     analytics: new AnalyticsController(dependencies.analyticsService),
-    auth: new AuthController(dependencies.authService),
-    authSession: new AuthSessionController(dependencies.authService),
+    auth: new AuthController(dependencies.authService, authCookieConfig, config.security.refreshTokenTtlSeconds),
+    authSession: new AuthSessionController(dependencies.authService, authCookieConfig, config.security.refreshTokenTtlSeconds),
     passwordRecovery: new PasswordRecoveryController(dependencies.passwordRecoveryService),
     mfa: new MfaController(dependencies.mfaService),
     budget: new BudgetController(dependencies.budgetService),

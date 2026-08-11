@@ -1,22 +1,28 @@
 import type { Response } from 'express';
+import type { SameSitePolicy } from '../../infrastructure/config/runtimeConfigTypes.js';
 
 export const REFRESH_COOKIE_NAME = 'finops_refresh';
 
-export function setRefreshCookie(res: Response, token: string, expiresAt: Date): void {
+export interface AuthCookieConfig {
+  readonly secure: boolean;
+  readonly sameSite: SameSitePolicy;
+}
+
+export function setRefreshCookie(res: Response, token: string, expiresAt: Date, config: AuthCookieConfig): void {
   res.cookie(REFRESH_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: process.env['NODE_ENV'] === 'production',
-    sameSite: readSameSitePolicy(),
+    secure: config.secure,
+    sameSite: config.sameSite,
     path: '/api/v1/auth',
     expires: expiresAt,
   });
 }
 
-export function clearRefreshCookie(res: Response): void {
+export function clearRefreshCookie(res: Response, config: AuthCookieConfig): void {
   res.clearCookie(REFRESH_COOKIE_NAME, {
     httpOnly: true,
-    secure: process.env['NODE_ENV'] === 'production',
-    sameSite: readSameSitePolicy(),
+    secure: config.secure,
+    sameSite: config.sameSite,
     path: '/api/v1/auth',
   });
 }
@@ -37,9 +43,4 @@ export function readRefreshCookie(header: string | undefined): string | undefine
     }
   }
   return undefined;
-}
-
-function readSameSitePolicy(): 'strict' | 'lax' | 'none' {
-  const value = process.env['AUTH_COOKIE_SAME_SITE']?.trim().toLowerCase();
-  return value === 'strict' || value === 'none' ? value : 'lax';
 }

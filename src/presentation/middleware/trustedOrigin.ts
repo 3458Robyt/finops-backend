@@ -5,8 +5,8 @@ import type { RequestHandler } from 'express';
  * the HttpOnly refresh cookie. Requests without an Origin header remain
  * possible for CLI/server clients; browser origins must be explicitly listed.
  */
-export function createTrustedOriginGuard(): RequestHandler {
-  const allowedOrigins = readAllowedOrigins();
+export function createTrustedOriginGuard(configuredOrigins: readonly string[] = ['http://localhost:5173']): RequestHandler {
+  const allowedOrigins = new Set(configuredOrigins.filter((origin) => origin.trim().length > 0));
 
   return (req, res, next): void => {
     const origin = req.header('origin');
@@ -26,12 +26,4 @@ export function createTrustedOriginGuard(): RequestHandler {
       code: 'CSRF_ORIGIN_REJECTED',
     });
   };
-}
-
-function readAllowedOrigins(): ReadonlySet<string> {
-  const configured = process.env['CORS_ORIGIN']
-    ?.split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean) ?? [];
-  return new Set(configured.length > 0 ? configured : ['http://localhost:5173']);
 }

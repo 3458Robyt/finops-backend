@@ -1,25 +1,19 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createTrustedOriginGuard } from './trustedOrigin.js';
 
 describe('createTrustedOriginGuard', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   it('allows requests without an Origin header for non-browser clients', () => {
-    vi.stubEnv('CORS_ORIGIN', 'https://finops.example.com');
     const next = vi.fn();
     const response = responseDouble();
 
-    createTrustedOriginGuard()(requestDouble(undefined), response, next);
+    createTrustedOriginGuard(['https://finops.example.com'])(requestDouble(undefined), response, next);
 
     expect(next).toHaveBeenCalledOnce();
     expect(response.status).not.toHaveBeenCalled();
   });
 
   it('allows only explicitly configured browser origins', () => {
-    vi.stubEnv('CORS_ORIGIN', 'https://finops.example.com,https://admin.example.com');
-    const guard = createTrustedOriginGuard();
+    const guard = createTrustedOriginGuard(['https://finops.example.com', 'https://admin.example.com']);
     const next = vi.fn();
     const response = responseDouble();
 

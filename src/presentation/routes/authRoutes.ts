@@ -27,9 +27,10 @@ export function createAuthRoutes(
   requireAuth: RequestHandler,
   passwordRecoveryController?: PasswordRecoveryController,
   mfaController?: MfaController,
+  allowedOrigins: readonly string[] = ['http://localhost:5173'],
 ): Router {
   const router = Router();
-  const trustedOrigin = createTrustedOriginGuard();
+  const trustedOrigin = createTrustedOriginGuard(allowedOrigins);
 
   router.post('/login', authController.login);
   router.post('/refresh', trustedOrigin, authSessionController.refresh);

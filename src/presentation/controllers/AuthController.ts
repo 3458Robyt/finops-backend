@@ -5,7 +5,7 @@ import { hashMfaChallengeToken } from '../../application/services/MfaService.js'
 import { isMfaRecoveryCode } from '../../application/services/security/mfaRecoveryCodes.js';
 import { AuthenticationError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
-import { setRefreshCookie } from '../auth/authCookie.js';
+import { setRefreshCookie, type AuthCookieConfig } from '../auth/authCookie.js';
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -19,7 +19,11 @@ const mfaCompleteSchema = z.object({
 
 /** Public credential exchange and pre-session MFA challenge handlers. */
 export class AuthController {
-  public constructor(private readonly authService: AuthService) {}
+  public constructor(
+    private readonly authService: AuthService,
+    private readonly cookieConfig: AuthCookieConfig,
+    private readonly refreshTokenTtlSeconds: number,
+  ) {}
 
   public login = async (req: Request, res: Response): Promise<void> => {
     const parsed = loginSchema.safeParse(req.body);
@@ -53,7 +57,7 @@ export class AuthController {
         return;
       }
 
-      setRefreshCookieIfPresent(res, result);
+      setRefreshCookieIfPresent(res, result, this.cookieConfig, this.refreshTokenTtlSeconds);
       res.status(200).json(toPublicLoginResult(result));
     } catch (error: unknown) {
       this.respondLoginError(res, error);
@@ -73,7 +77,7 @@ export class AuthController {
         ...(req.ip === undefined ? {} : { ipAddress: req.ip }),
         ...(req.header('user-agent') === undefined ? {} : { userAgent: req.header('user-agent')! }),
       }));
-      setRefreshCookieIfPresent(res, result);
+      setRefreshCookieIfPresent(res, result, this.cookieConfig, this.refreshTokenTtlSeconds);
       res.status(200).json(toPublicLoginResult(result));
     } catch (error: unknown) {
       this.respondWithAuthError(res, error);
@@ -93,7 +97,7 @@ export class AuthController {
         ...(req.ip === undefined ? {} : { ipAddress: req.ip }),
         ...(req.header('user-agent') === undefined ? {} : { userAgent: req.header('user-agent')! }),
       }));
-      setRefreshCookieIfPresent(res, result);
+      setRefreshCookieIfPresent(res, result, this.cookieConfig, this.refreshTokenTtlSeconds);
       res.status(200).json(toPublicLoginResult(result));
     } catch (error: unknown) {
       this.respondWithAuthError(res, error);
@@ -129,8 +133,8 @@ export class AuthController {
   }
 }
 
-function setRefreshCookieIfPresent(res: Response, result: LoginResult): void {
-  if (result.refreshToken !== undefined) setRefreshCookie(res, result.refreshToken, refreshCookieExpiry());
+function setRefreshCookieIfPresent(res: Response, result: LoginResult, config: AuthCookieConfig, ttlSeconds: number): void {
+  if (result.refreshToken !== undefined) setRefreshCookie(res, result.refreshToken, refreshCookieExpiry(ttlSeconds), config);
 }
 
 function toPublicLoginResult(result: LoginResult): object {
@@ -145,8 +149,6 @@ function toPublicLoginResult(result: LoginResult): object {
   };
 }
 
-function refreshCookieExpiry(): Date {
-  const parsed = Number.parseInt(process.env['AUTH_REFRESH_TOKEN_TTL_SECONDS'] ?? '', 10);
-  const seconds = Number.isInteger(parsed) && parsed >= 300 && parsed <= 90 * 24 * 60 * 60 ? parsed : 30 * 24 * 60 * 60;
-  return new Date(Date.now() + seconds * 1000);
+function refreshCookieExpiry(ttlSeconds: number): Date {
+  return new Date(Date.now() + ttlSeconds * 1000);
 }

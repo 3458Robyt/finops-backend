@@ -4,6 +4,12 @@
 > de refactorización y no es una lista de trabajo activa. El estado vigente está en
 > `docs/ESTADO_ACTUAL_FINOPS.md`, `docs/ROADMAP_PRODUCTO.md` y `docs/DEUDA_TECNICA.md`.
 
+> **Nota de mantenimiento:** las cifras, listas T-xx y el objetivo de 41 pruebas que aparecen abajo
+> corresponden al corte del 2026-07-31. No deben interpretarse como faltantes actuales ni como una
+> obligación de llevar cada archivo a menos de 200 líneas mediante troceo artificial. La regla vigente
+> es modularizar por responsabilidad, preservar contratos y justificar excepciones; el estado actual
+> de esa deuda se registra en `MOD-001`.
+
 > Documento autocontenido. Objetivo: dejar **todos los archivos de código propio bajo 200 líneas efectivas** (código real, sin comentarios JSDoc ni líneas en blanco), sin cambiar comportamiento funcional, preservando contratos de API y dejando typecheck + tests en verde.
 
 ---

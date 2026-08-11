@@ -106,7 +106,13 @@ function isHttpUrl(value: string | undefined): boolean {
 function validateCorsOrigins(value: string | undefined, issues: RuntimeValidationIssue[]): void {
   if (isBlank(value)) return;
 
-  for (const origin of value!.split(',').map((item) => item.trim()).filter(Boolean)) {
+  const origins = value!.split(',').map((item) => item.trim()).filter(Boolean);
+  if (origins.length === 0) {
+    issues.push({ key: 'CORS_ORIGIN', message: 'Debe declarar al menos un origen HTTP(S).' });
+    return;
+  }
+
+  for (const origin of origins) {
     if (origin.includes('*')) {
       issues.push({ key: 'CORS_ORIGIN', message: 'No debe usar comodines en produccion.' });
       continue;

@@ -19,71 +19,15 @@
 
 import 'dotenv/config';
 
-import { AuthService } from './application/services/AuthService.js';
-import { PasswordRecoveryService } from './application/services/PasswordRecoveryService.js';
-import { MfaService } from './application/services/MfaService.js';
-import { safeErrorMessage } from './application/observability/safeError.js';
-import { MetricsRegistry } from './application/observability/MetricsRegistry.js';
-import { BudgetService } from './application/services/BudgetService.js';
-import { CostAllocationService } from './application/services/CostAllocationService.js';
-import { AgentInstructionService } from './application/services/AgentInstructionService.js';
-import { AgentLearningService } from './application/services/AgentLearningService.js';
-import { AiObservabilityService } from './application/services/AiObservabilityService.js';
-import { CloudConnectionService } from './application/services/CloudConnectionService.js';
-import { ContextEngineService } from './application/services/ContextEngineService.js';
-import { ContextSummaryBuilderService } from './application/services/ContextSummaryBuilderService.js';
-import { CostAnalyticsService } from './application/services/CostAnalyticsService.js';
-import { EmailClient } from './application/services/EmailClient.js';
-import { FinOpsAiService } from './application/services/FinOpsAiService.js';
-import { RecommendationAnalysisService } from './application/services/RecommendationAnalysisService.js';
-import { MasterAdminService } from './application/services/MasterAdminService.js';
 import { OutboundMessageScheduler } from './application/services/OutboundMessageScheduler.js';
-import { OutboundMessageService } from './application/services/OutboundMessageService.js';
-import { SavingsReminderService } from './application/services/SavingsReminderService.js';
-import { TechnicalMetricsService } from './application/services/TechnicalMetricsService.js';
-import { TechnicalRecommendationEvidenceService } from './application/services/ai/TechnicalRecommendationEvidenceService.js';
-import { ResourceLinkageReadinessService } from './application/services/ResourceLinkageReadinessService.js';
-import { ValueRealizationService } from './application/services/ValueRealizationService.js';
-import { TelegramBotService } from './application/services/TelegramBotService.js';
-import { TelegramClient } from './application/services/TelegramClient.js';
-import { TelegramLinkService } from './application/services/TelegramLinkService.js';
-import { TelegramMessageFormatter } from './application/services/TelegramMessageFormatter.js';
-import { CloudIngestionWorkerService } from './application/services/CloudIngestionWorkerService.js';
-import { startNonOverlappingLoop } from './application/services/NonOverlappingLoop.js';
-import { getPrismaClient } from './infrastructure/database/prisma.js';
-import { OpenAiCompatibleAiGateway } from './infrastructure/ai/OpenAiCompatibleAiGateway.js';
-import { AwsSdkIngestionProvider } from './infrastructure/ingestion/AwsSdkIngestionProvider.js';
-import { OciSdkIngestionProvider } from './infrastructure/ingestion/OciSdkIngestionProvider.js';
-import { PrismaCloudIngestionJobRepository } from './infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
-import { runPrismaIngestionJobScheduler } from './infrastructure/ingestion/PrismaIngestionJobScheduler.js';
-import { PrismaAgentContextRepository } from './infrastructure/repositories/PrismaAgentContextRepository.js';
-import { PrismaAuthSessionRepository } from './infrastructure/repositories/PrismaAuthSessionRepository.js';
-import { PrismaAuthSecurityRepository } from './infrastructure/repositories/PrismaAuthSecurityRepository.js';
-import { PrismaAccountRecoveryRepository } from './infrastructure/repositories/PrismaAccountRecoveryRepository.js';
-import { PrismaMfaRepository } from './infrastructure/repositories/PrismaMfaRepository.js';
-import { PrismaMfaRecoveryCodeRepository } from './infrastructure/repositories/PrismaMfaRecoveryCodeRepository.js';
-import { PrismaBudgetRepository } from './infrastructure/repositories/PrismaBudgetRepository.js';
-import { PrismaCostAllocationRepository } from './infrastructure/repositories/PrismaCostAllocationRepository.js';
-import { PrismaAgentLearningRepository } from './infrastructure/repositories/PrismaAgentLearningRepository.js';
-import { PrismaCloudConnectionRepository } from './infrastructure/repositories/PrismaCloudConnectionRepository.js';
-import { PrismaCostAnalyticsRepository } from './infrastructure/repositories/PrismaCostAnalyticsRepository.js';
-import { PrismaCostRepository } from './infrastructure/repositories/PrismaCostRepository.js';
-import { PrismaMasterAdminRepository } from './infrastructure/repositories/PrismaMasterAdminRepository.js';
-import { PrismaNotificationRepository } from './infrastructure/repositories/PrismaNotificationRepository.js';
-import { PrismaOutboundMessageRepository } from './infrastructure/repositories/PrismaOutboundMessageRepository.js';
-import { PrismaRecommendationRepository } from './infrastructure/repositories/PrismaRecommendationRepository.js';
-import { PrismaRecommendationAnalysisRunRepository } from './infrastructure/repositories/PrismaRecommendationAnalysisRunRepository.js';
-import { queueRecommendationAnalysisAfterIngestion } from './infrastructure/repositories/PrismaRecommendationAnalysisScheduler.js';
-import { PrismaResourceMetricRepository } from './infrastructure/repositories/PrismaResourceMetricRepository.js';
-import { PrismaResourceLinkageReadinessRepository } from './infrastructure/repositories/PrismaResourceLinkageReadinessRepository.js';
-import { PrismaTelegramRepository } from './infrastructure/repositories/PrismaTelegramRepository.js';
-import { PrismaUserRepository } from './infrastructure/repositories/PrismaUserRepository.js';
-import { PrismaValueRealizationRepository } from './infrastructure/repositories/PrismaValueRealizationRepository.js';
-import { validateRuntimeConfig } from './infrastructure/config/runtimeConfig.js';
-import { Argon2PasswordHasher } from './infrastructure/security/Argon2PasswordHasher.js';
-import { CredentialCipher } from './infrastructure/security/CredentialCipher.js';
-import { JwtTokenService } from './infrastructure/security/JwtTokenService.js';
+import { safeErrorMessage } from './application/observability/safeError.js';
+import { createApplicationComposition } from './bootstrap/applicationComposition.js';
 import { runWithDatabaseContext } from './infrastructure/database/tenantContext.js';
+import { runPrismaIngestionJobScheduler } from './infrastructure/ingestion/PrismaIngestionJobScheduler.js';
+import { createExpressServer } from './presentation/server.js';
+import { queueRecommendationAnalysisAfterIngestion } from './infrastructure/repositories/PrismaRecommendationAnalysisScheduler.js';
+import { startNonOverlappingLoop } from './application/services/NonOverlappingLoop.js';
+
 
 /**
  * Composición Raíz (Composition Root) — Configuración y arranque de la aplicación.
@@ -109,224 +53,39 @@ import { runWithDatabaseContext } from './infrastructure/database/tenantContext.
  * @returns Promesa que se resuelve una vez el servidor HTTP queda escuchando.
  */
 async function bootstrap(): Promise<void> {
-  validateRuntimeConfig();
-  const metricsRegistry = new MetricsRegistry();
   const processRole = readProcessRole();
   const runsApi = processRole === 'api' || processRole === 'all';
   const runsWorkers = processRole === 'worker' || processRole === 'all';
   const runsSchedulers = processRole === 'scheduler' || processRole === 'all';
 
-  console.log(`
-╔═══════════════════════════════════════════════════════════════╗
-║   FinOps Inteligente — Optimizador de Costos en la Nube      ║
-║   FinOps Demo © 2026                                        ║
-║   Providers: AWS + Oracle Cloud (OCI)                        ║
-╚═══════════════════════════════════════════════════════════════╝
-  `);
+  console.log('\nFinOps Inteligente — Optimizador de Costos en la Nube\nFinOps Demo © 2026\nProviders: AWS + Oracle Cloud (OCI)\n');
 
-  const prisma = getPrismaClient();
-  const credentialCipher = process.env['CREDENTIAL_ENCRYPTION_KEY']?.trim()
-    ? new CredentialCipher()
-    : undefined;
-  const cloudConnectionRepository = new PrismaCloudConnectionRepository(prisma, credentialCipher);
-  const costAnalyticsRepository = new PrismaCostAnalyticsRepository(prisma);
-  const costRepository = new PrismaCostRepository(prisma);
-  const budgetRepository = new PrismaBudgetRepository(prisma);
-  const recommendationRepository = new PrismaRecommendationRepository(prisma);
-  const valueRealizationRepository = new PrismaValueRealizationRepository(prisma);
-  const costAllocationRepository = new PrismaCostAllocationRepository(prisma, valueRealizationRepository);
-  const recommendationAnalysisRepository = new PrismaRecommendationAnalysisRunRepository(prisma);
-const resourceMetricRepository = new PrismaResourceMetricRepository(prisma);
-const notificationRepository = new PrismaNotificationRepository(prisma);
-const outboundMessageRepository = new PrismaOutboundMessageRepository(prisma);
-const telegramRepository = new PrismaTelegramRepository(prisma);
-  const agentContextRepository = new PrismaAgentContextRepository(prisma);
-  const agentLearningRepository = new PrismaAgentLearningRepository(prisma);
-  const userRepository = new PrismaUserRepository(prisma);
-  const authSecurityRepository = new PrismaAuthSecurityRepository(prisma);
-  const accountRecoveryRepository = new PrismaAccountRecoveryRepository(prisma);
-  const mfaRepository = new PrismaMfaRepository(prisma);
-  const mfaRecoveryCodeRepository = new PrismaMfaRecoveryCodeRepository(prisma);
-  const authSessionRepository = new PrismaAuthSessionRepository(prisma, authSecurityRepository);
-  const masterAdminRepository = new PrismaMasterAdminRepository(prisma);
-  const passwordHasher = new Argon2PasswordHasher();
-  const tokenService = new JwtTokenService();
-  const mfaService = new MfaService(mfaRepository, credentialCipher, mfaRecoveryCodeRepository);
-  const authService = new AuthService(
-    userRepository,
-    passwordHasher,
-    tokenService,
-    authSessionRepository,
-    authSecurityRepository,
-    runWithDatabaseContext,
-    mfaService,
-  );
-  const masterAdminService = new MasterAdminService(masterAdminRepository, passwordHasher);
-  const ingestionProviders = [new AwsSdkIngestionProvider(), new OciSdkIngestionProvider()];
-  const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository, ingestionProviders);
-const technicalMetricsService = new TechnicalMetricsService(resourceMetricRepository);
-const resourceLinkageReadinessService = new ResourceLinkageReadinessService(new PrismaResourceLinkageReadinessRepository(prisma));
-const technicalRecommendationEvidenceService = new TechnicalRecommendationEvidenceService(resourceMetricRepository);
-const analyticsService = new CostAnalyticsService(costAnalyticsRepository);
-  const budgetService = new BudgetService(budgetRepository, notificationRepository, outboundMessageRepository, telegramRepository);
-  const costAllocationService = new CostAllocationService(costAllocationRepository);
-  const savingsReminderService = new SavingsReminderService(recommendationRepository, notificationRepository);
-  const aiGateway = new OpenAiCompatibleAiGateway(metricsRegistry);
-  const agentInstructionService = new AgentInstructionService(agentContextRepository);
-  const learningService = new AgentLearningService(
-    recommendationRepository,
-    agentLearningRepository,
-    aiGateway,
-  );
-  const contextEngineService = new ContextEngineService(
-    agentContextRepository,
-    agentInstructionService,
-    learningService,
-  );
-  const aiObservabilityService = new AiObservabilityService(agentContextRepository);
-  const contextSummaryBuilderService = new ContextSummaryBuilderService(agentContextRepository);
-  const aiService = new FinOpsAiService(
-    costAnalyticsRepository,
-    recommendationRepository,
-aiGateway,
-learningService,
-contextEngineService,
-aiObservabilityService,
-technicalRecommendationEvidenceService,
-);
-  const recommendationAnalysisService = new RecommendationAnalysisService(
+  const composition = createApplicationComposition(runsWorkers);
+  const {
+    prisma,
+    metricsRegistry,
+    serverDependencies,
     recommendationAnalysisRepository,
-    aiService,
-    notificationRepository,
-  );
-const telegramEnabled = process.env['TELEGRAM_ENABLED'] === 'true';
-const telegramClient = new TelegramClient(process.env['TELEGRAM_BOT_TOKEN'], telegramEnabled);
-const telegramMessageFormatter = new TelegramMessageFormatter();
-const emailClient = new EmailClient();
-const passwordRecoveryService = new PasswordRecoveryService(
-  accountRecoveryRepository,
-  passwordHasher,
-  authSessionRepository,
-  emailClient,
-);
-const telegramLinkService = new TelegramLinkService(telegramRepository, telegramClient);
-const telegramBotService = new TelegramBotService(
-    telegramRepository,
-    telegramClient,
-    telegramMessageFormatter,
-    aiService,
-    savingsReminderService,
-    recommendationRepository,
-  costAnalyticsRepository,
-  process.env['TELEGRAM_BOT_USERNAME'],
-);
-  const outboundMessageService = new OutboundMessageService(
-  outboundMessageRepository,
-  telegramRepository,
-  telegramClient,
-  emailClient,
-  savingsReminderService,
-  recommendationRepository,
-  {
-    telegramEnabled,
-    ...(process.env['TELEGRAM_BOT_USERNAME'] !== undefined ? { telegramBotUsername: process.env['TELEGRAM_BOT_USERNAME'] } : {}),
-    ...(process.env['TELEGRAM_WEBHOOK_SECRET'] !== undefined ? { telegramWebhookSecret: process.env['TELEGRAM_WEBHOOK_SECRET'] } : {}),
-  },
-  );
-  const valueRealizationService = new ValueRealizationService(
-    valueRealizationRepository,
-    recommendationRepository,
-    notificationRepository,
-    outboundMessageRepository,
-    process.env['VALUE_REALIZATION_OUTBOUND_ENABLED'] === 'true'
-      ? (measurement) => outboundMessageService.sendValueRealizationUpdate(measurement.tenantId, {
-        recommendationId: measurement.recommendationId,
-        measurementId: measurement.id,
-        status: measurement.status,
-        currency: measurement.currency,
-        observationStart: measurement.observationStart,
-        observationEnd: measurement.observationEnd,
-      })
-      : undefined,
-  );
-  const ingestionWorker = runsWorkers && process.env['INGESTION_WORKER_ENABLED'] === 'true'
-    ? new CloudIngestionWorkerService(
-      new PrismaCloudIngestionJobRepository(prisma, credentialCipher ?? new CredentialCipher()),
-      ingestionProviders,
-      process.env['SAVINGS_RECONCILIATION_ENABLED'] === 'true'
-        ? ({ tenantId }) => valueRealizationService.reconcile(tenantId, parsePositiveIntegerEnv('SAVINGS_RECONCILIATION_BATCH_SIZE', 50)).then(() => undefined)
-        : undefined,
-      metricsRegistry,
-    )
-    : null;
+    recommendationAnalysisService,
+    valueRealizationService,
+    learningService,
+    ingestionWorker,
+  } = composition;
+  const { outboundMessageService, recommendationRepository } = serverDependencies;
+  const app = runsApi ? createExpressServer(serverDependencies) : undefined;
 
   // ── 4. Iniciar Servidor RESTful ───────────────────────────────────
+  const PORT = process.env['PORT'] || 3000;
 
-  const { createExpressServer } = await import('./presentation/server.js');
- const app = runsApi ? createExpressServer({
-    authService,
-    passwordRecoveryService,
-    mfaService,
-    cloudConnectionService,
-    technicalMetricsService,
-    resourceLinkageReadinessService,
-    analyticsService,
-    budgetService,
-    costAllocationService,
-    aiService,
-    recommendationAnalysisService,
-    agentInstructionService,
-    agentContextRepository,
-    contextSummaryBuilderService,
-    savingsReminderService,
-    outboundMessageService,
-    telegramBotService,
-    telegramLinkService,
-    masterAdminService,
-    ...(process.env['TELEGRAM_WEBHOOK_SECRET'] !== undefined
-      ? { telegramWebhookSecret: process.env['TELEGRAM_WEBHOOK_SECRET'] }
-      : {}),
-    telegramEnabled,
-    learningService,
-    costRepository,
-  recommendationRepository,
-    tokenService,
-    authSessionRepository,
-    valueRealizationService,
-    readinessCheck: async () => {
-      await prisma.$queryRaw`SELECT 1`;
-    },
-    metricsRegistry,
-  }) : undefined;
-
- if (runsSchedulers && process.env['MESSAGE_SCHEDULER_ENABLED'] === 'true') {
-  const schedulerTenantId = process.env['MESSAGE_SCHEDULER_TENANT_ID'];
-  const schedulerUserId = process.env['MESSAGE_SCHEDULER_USER_ID'];
-  if (schedulerTenantId !== undefined && schedulerUserId !== undefined) {
-    const scheduler = new OutboundMessageScheduler(
-      outboundMessageService,
-      {
-        tenantId: schedulerTenantId,
-        userId: schedulerUserId,
-        email: 'scheduler@system.local',
-        role: 'MASTER_ADMIN',
-        jwtId: 'scheduler',
-      },
-      Number.parseInt(process.env['MESSAGE_SCHEDULER_INTERVAL_MINUTES'] ?? '1440', 10),
-    );
-    scheduler.start();
-  }
-}
-
-const PORT = process.env['PORT'] || 3000;
-  
   const httpServer = app?.listen(PORT, () => {
-    console.log(`\n🚀 FinOps Backend API running on http://localhost:${PORT}`);
-    console.log('   Ingestion providers: AWS SDK + OCI SDK');
-    console.log(`   Auth: POST http://localhost:${PORT}/api/v1/auth/login`);
-    console.log(`   Cloud Connections: GET http://localhost:${PORT}/api/v1/cloud-connections`);
-    console.log(`   Costs: GET http://localhost:${PORT}/api/v1/costs?provider=oci&startDate=...&endDate=...`);
-    console.log(`   Recommendations: GET http://localhost:${PORT}/api/v1/recommendations`);
+    console.log(
+      '\nFinOps Backend API running on http://localhost:' + PORT +
+      '\nIngestion providers: AWS SDK + OCI SDK' +
+      '\nAuth: POST http://localhost:' + PORT + '/api/v1/auth/login' +
+      '\nCloud Connections: GET http://localhost:' + PORT + '/api/v1/cloud-connections' +
+      '\nCosts: GET http://localhost:' + PORT + '/api/v1/costs?provider=oci&startDate=...&endDate=...' +
+      '\nRecommendations: GET http://localhost:' + PORT + '/api/v1/recommendations',
+    );
   });
   if (httpServer !== undefined) {
     httpServer.requestTimeout = parsePositiveIntegerEnv('HTTP_REQUEST_TIMEOUT_MS', 120_000);
@@ -336,7 +95,7 @@ const PORT = process.env['PORT'] || 3000;
     );
     httpServer.keepAliveTimeout = parsePositiveIntegerEnv('HTTP_KEEP_ALIVE_TIMEOUT_MS', 5_000);
   } else {
-    console.log(`   Process role: ${processRole} (HTTP API disabled)`);
+    console.log('   Process role: ' + processRole + ' (HTTP API disabled)');
   }
 
   let shuttingDown = false;
@@ -364,12 +123,28 @@ const PORT = process.env['PORT'] || 3000;
       disconnect();
       return;
     }
-    httpServer.close(() => {
-      disconnect();
-    });
+    httpServer.close(disconnect);
   };
   process.once('SIGTERM', () => shutdown('SIGTERM'));
   process.once('SIGINT', () => shutdown('SIGINT'));
+if (runsSchedulers && process.env['MESSAGE_SCHEDULER_ENABLED'] === 'true') {
+  const schedulerTenantId = process.env['MESSAGE_SCHEDULER_TENANT_ID'];
+  const schedulerUserId = process.env['MESSAGE_SCHEDULER_USER_ID'];
+  if (schedulerTenantId !== undefined && schedulerUserId !== undefined) {
+    const scheduler = new OutboundMessageScheduler(
+      outboundMessageService,
+      {
+        tenantId: schedulerTenantId,
+        userId: schedulerUserId,
+        email: 'scheduler@system.local',
+        role: 'MASTER_ADMIN',
+        jwtId: 'scheduler',
+      },
+      Number.parseInt(process.env['MESSAGE_SCHEDULER_INTERVAL_MINUTES'] ?? '1440', 10),
+    );
+    scheduler.start();
+  }
+}
 
   if (ingestionWorker !== null) {
     const workerId = process.env['INGESTION_WORKER_ID'] ?? `finops-worker-${process.pid}`;

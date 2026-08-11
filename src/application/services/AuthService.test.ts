@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { AuthService } from './AuthService.js';
+import { AuthService, hashOpaqueToken } from './AuthService.js';
 import type { IPasswordHasher } from '../../domain/interfaces/IPasswordHasher.js';
 import type { ITokenService, TokenIssueResult } from '../../domain/interfaces/ITokenService.js';
 import type {
@@ -10,6 +10,12 @@ import type {
 } from '../../domain/interfaces/IUserRepository.js';
 import type { AuthContext } from '../../domain/models/AuthContext.js';
 import type { AuthSessionSummary, IAuthSessionRepository } from '../../domain/interfaces/IAuthSessionRepository.js';
+import type {
+  AuthRefreshTokenRecord,
+  CreateRefreshTokenInput,
+  IAuthSecurityRepository,
+  RotateRefreshTokenInput,
+} from '../../domain/interfaces/IAuthSecurityRepository.js';
 import { AuthenticationError, AuthorizationError } from '../../domain/errors/errors.js';
 
 class FakeUserRepository implements IUserRepository {
@@ -87,6 +93,39 @@ class FakeAuthSessionRepository implements IAuthSessionRepository {
   public async revokeAll(): Promise<number> { this.revokedAll += 1; return 1; }
   public async listActive(): Promise<readonly AuthSessionSummary[]> { return this.sessions; }
   public async revokeById(_userId: string, sessionId: string): Promise<boolean> { this.revokedSession = sessionId; return true; }
+}
+
+class FakeAuthSecurityRepository implements IAuthSecurityRepository {
+  public created: CreateRefreshTokenInput | null = null;
+  public current: AuthRefreshTokenRecord | null = null;
+  public rotated: RotateRefreshTokenInput | null = null;
+  public revokedFamily: string | null = null;
+
+  public async findRefreshToken(): Promise<AuthRefreshTokenRecord | null> {
+    return this.current;
+  }
+
+  public async createRefreshToken(input: CreateRefreshTokenInput): Promise<void> {
+    this.created = input;
+  }
+
+  public async rotateRefreshToken(input: RotateRefreshTokenInput): Promise<boolean> {
+    this.rotated = input;
+    if (this.current === null) return false;
+    this.current = {
+      ...this.current,
+      tokenHash: input.replacementTokenHash,
+      usedAt: new Date(),
+    };
+    return true;
+  }
+
+  public async revokeRefreshFamily(familyId: string): Promise<void> {
+    this.revokedFamily = familyId;
+  }
+
+  public async revokeRefreshTokensForSession(): Promise<void> {}
+  public async revokeRefreshTokensForUser(): Promise<void> {}
 }
 
 const activeUser: AuthUser = {
@@ -188,6 +227,32 @@ describe('AuthService', () => {
     await expect(service.login({ email: 'admin@example.com', password: 'secret' }))
       .rejects
       .toBeInstanceOf(AuthenticationError);
+  });
+
+  test('issues and rotates an opaque refresh token without exposing its hash', async () => {
+    const users = new FakeUserRepository(activeUser);
+    const security = new FakeAuthSecurityRepository();
+    const service = new AuthService(users, new FakePasswordHasher(true), new FakeTokenService(), new FakeAuthSessionRepository(), security);
+
+    const loggedIn = await service.login({ email: activeUser.email, password: 'secret' });
+    expect(loggedIn.refreshToken).toBeDefined();
+    expect(security.created?.tokenHash).toBe(hashOpaqueToken(loggedIn.refreshToken!));
+    expect(security.created?.tokenHash).not.toBe(loggedIn.refreshToken);
+
+    security.current = {
+      id: 'refresh-1',
+      sessionId: 'session-1',
+      userId: activeUser.id,
+      tenantId: activeUser.tenantId,
+      familyId: 'family-1',
+      tokenHash: security.created!.tokenHash,
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+    const refreshed = await service.refresh({ refreshToken: loggedIn.refreshToken! });
+
+    expect(refreshed.refreshToken).toBeDefined();
+    expect(security.rotated?.tokenHash).toBe(security.created!.tokenHash);
+    expect(security.rotated?.replacementTokenHash).toBe(hashOpaqueToken(refreshed.refreshToken!));
   });
 
   test('revokes all sessions and exposes session management operations', async () => {

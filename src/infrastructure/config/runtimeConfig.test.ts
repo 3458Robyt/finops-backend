@@ -13,6 +13,7 @@ const productionEnv: NodeJS.ProcessEnv = {
   AI_BASE_URL: 'https://ai.example.com/v1',
   AI_MODEL: 'gpt-5.4-mini',
   AI_AUDITOR_MODEL: 'gpt-5.4-mini',
+  MFA_REQUIRED_FOR_PRIVILEGED: 'true',
 };
 
 describe('validateRuntimeConfig', () => {

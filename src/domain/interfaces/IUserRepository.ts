@@ -26,6 +26,7 @@ export interface AccessibleTenant {
 
 export interface CreateSessionInput {
   readonly userId: string;
+  readonly tenantId: string;
   readonly jwtId: string;
   readonly expiresAt: Date;
   readonly ipAddress?: string;

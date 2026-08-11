@@ -1,8 +1,14 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { AuthService } from '../../application/services/AuthService.js';
+import {
+  AuthService,
+  hashOpaqueToken,
+  type LoginResult,
+} from '../../application/services/AuthService.js';
+import { hashMfaChallengeToken } from '../../application/services/MfaService.js';
 import { AuthenticationError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
+import { clearRefreshCookie, readRefreshCookie, setRefreshCookie } from '../auth/authCookie.js';
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -11,6 +17,11 @@ const loginSchema = z.object({
 
 const switchTenantSchema = z.object({
   tenantId: z.string().min(1),
+});
+
+const mfaCompleteSchema = z.object({
+  challengeToken: z.string().min(32),
+  code: z.string().regex(/^\d{6}$/),
 });
 
 /**
@@ -70,14 +81,22 @@ export class AuthController {
         ...(userAgent !== undefined ? { userAgent } : {}),
       }));
 
-      res.status(200).json({
-        success: true,
-        accessToken: result.accessToken,
-        expiresAt: result.expiresAt.toISOString(),
-        user: result.user,
-        activeTenant: result.activeTenant,
-        availableTenants: result.availableTenants,
-      });
+      if ('mfaRequired' in result) {
+        res.status(200).json({
+          success: true,
+          mfaRequired: true,
+          ...(result.mfaSetupRequired === undefined ? {} : { mfaSetupRequired: true }),
+          challengeToken: result.challengeToken,
+          expiresAt: result.expiresAt.toISOString(),
+          ...(result.secret === undefined ? {} : { secret: result.secret }),
+          ...(result.otpauthUri === undefined ? {} : { otpauthUri: result.otpauthUri }),
+          user: result.user,
+        });
+        return;
+      }
+
+      this.setRefreshCookieIfPresent(res, result);
+      res.status(200).json(toPublicLoginResult(result));
     } catch (error: unknown) {
       if (error instanceof AuthenticationError) {
         res.status(401).json({
@@ -155,14 +174,58 @@ export class AuthController {
         ...(userAgent !== undefined ? { userAgent } : {}),
       });
 
-      res.status(200).json({
-        success: true,
-        accessToken: result.accessToken,
-        expiresAt: result.expiresAt.toISOString(),
-        user: result.user,
-        activeTenant: result.activeTenant,
-        availableTenants: result.availableTenants,
-      });
+      this.setRefreshCookieIfPresent(res, result);
+      res.status(200).json(toPublicLoginResult(result));
+    } catch (error: unknown) {
+      this.respondWithAuthError(res, error);
+    }
+  };
+
+  public completeMfa = async (req: Request, res: Response): Promise<void> => {
+    const parsed = mfaCompleteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, error: 'El desafío MFA no es válido.', code: 'VALIDATION_ERROR' });
+      return;
+    }
+
+    try {
+      const userAgent = req.header('user-agent');
+      const result = await runWithDatabaseContext({
+        mfaChallengeTokenHash: hashMfaChallengeToken(parsed.data.challengeToken),
+        requestId: res.locals.requestId,
+      }, () => this.authService.completeMfaLogin({
+        challengeToken: parsed.data.challengeToken,
+        code: parsed.data.code,
+        ...(req.ip === undefined ? {} : { ipAddress: req.ip }),
+        ...(userAgent === undefined ? {} : { userAgent }),
+      }));
+      this.setRefreshCookieIfPresent(res, result);
+      res.status(200).json(toPublicLoginResult(result));
+    } catch (error: unknown) {
+      this.respondWithAuthError(res, error);
+    }
+  };
+
+  public completeMfaEnrollment = async (req: Request, res: Response): Promise<void> => {
+    const parsed = mfaCompleteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, error: 'El desafío MFA no es válido.', code: 'VALIDATION_ERROR' });
+      return;
+    }
+
+    try {
+      const userAgent = req.header('user-agent');
+      const result = await runWithDatabaseContext({
+        mfaChallengeTokenHash: hashMfaChallengeToken(parsed.data.challengeToken),
+        requestId: res.locals.requestId,
+      }, () => this.authService.completeMfaEnrollment({
+        challengeToken: parsed.data.challengeToken,
+        code: parsed.data.code,
+        ...(req.ip === undefined ? {} : { ipAddress: req.ip }),
+        ...(userAgent === undefined ? {} : { userAgent }),
+      }));
+      this.setRefreshCookieIfPresent(res, result);
+      res.status(200).json(toPublicLoginResult(result));
     } catch (error: unknown) {
       this.respondWithAuthError(res, error);
     }
@@ -176,8 +239,40 @@ export class AuthController {
 
     try {
       await this.authService.logout(req.auth);
+      clearRefreshCookie(res);
       res.status(200).json({ success: true });
     } catch (error: unknown) {
+      this.respondWithAuthError(res, error);
+    }
+  };
+
+  public refresh = async (req: Request, res: Response): Promise<void> => {
+    const refreshToken = readRefreshCookie(req.header('cookie'));
+    if (refreshToken === undefined) {
+      clearRefreshCookie(res);
+      res.status(401).json({
+        success: false,
+        error: 'La sesión de renovación no está disponible.',
+        code: 'AUTHENTICATION_REQUIRED',
+      });
+      return;
+    }
+
+    try {
+      const userAgent = req.header('user-agent');
+      const result = await runWithDatabaseContext({
+        refreshTokenHash: hashOpaqueToken(refreshToken),
+        requestId: res.locals.requestId,
+      }, () => this.authService.refresh({
+        refreshToken,
+        ...(req.ip !== undefined ? { ipAddress: req.ip } : {}),
+        ...(userAgent !== undefined ? { userAgent } : {}),
+      }));
+
+      this.setRefreshCookieIfPresent(res, result);
+      res.status(200).json(toPublicLoginResult(result));
+    } catch (error: unknown) {
+      clearRefreshCookie(res);
       this.respondWithAuthError(res, error);
     }
   };
@@ -190,6 +285,7 @@ export class AuthController {
 
     try {
       await this.authService.logoutAll(req.auth);
+      clearRefreshCookie(res);
       res.status(200).json({ success: true });
     } catch (error: unknown) {
       this.respondWithAuthError(res, error);
@@ -267,4 +363,30 @@ export class AuthController {
       code: 'AUTHENTICATION_REQUIRED',
     });
   }
+
+  private setRefreshCookieIfPresent(res: Response, result: LoginResult): void {
+    if (result.refreshToken !== undefined) {
+      setRefreshCookie(res, result.refreshToken, refreshCookieExpiry());
+    }
+  }
+}
+
+function toPublicLoginResult(result: LoginResult): object {
+  return {
+    success: true,
+    accessToken: result.accessToken,
+    expiresAt: result.expiresAt.toISOString(),
+    user: result.user,
+    activeTenant: result.activeTenant,
+    availableTenants: result.availableTenants,
+  };
+}
+
+function refreshCookieExpiry(): Date {
+  const raw = process.env['AUTH_REFRESH_TOKEN_TTL_SECONDS'];
+  const parsed = raw === undefined ? NaN : Number.parseInt(raw, 10);
+  const seconds = Number.isInteger(parsed) && parsed >= 300 && parsed <= 90 * 24 * 60 * 60
+    ? parsed
+    : 30 * 24 * 60 * 60;
+  return new Date(Date.now() + seconds * 1000);
 }

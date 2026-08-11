@@ -27,6 +27,11 @@ enum UserStatus {
   DISABLED
 }
 
+enum MfaChallengePurpose {
+  LOGIN
+  ENROLLMENT
+}
+
 enum CloudProvider {
   AWS
   OCI
@@ -407,6 +412,8 @@ model Tenant {
   costAllocationClosures      CostAllocationClosure[]
   costAllocationClosureLines  CostAllocationClosureLine[]
   recommendationAnalysisRuns  RecommendationAnalysisRun[]
+  authSessions                AuthSession[]
+  authRefreshTokens           AuthRefreshToken[]
 
   @@index([operatorOrganizationId, status])
   @@map("tenants")
@@ -426,6 +433,10 @@ model User {
   updatedAt                           DateTime                           @updatedAt @map("updated_at") @db.Timestamptz(6)
   tenant                              Tenant                             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   sessions                            AuthSession[]
+  refreshTokens                       AuthRefreshToken[]
+  passwordResetTokens                 PasswordResetToken[]
+  mfaChallenges                       MfaChallenge[]
+  mfa                                UserMfa?
   decisions                           RecommendationDecision[]
   executionPlans                      RecommendationExecutionPlan[]
   manualExecutions                    RecommendationManualExecution[]
@@ -601,6 +612,7 @@ model CloudExportConfig {
 model AuthSession {
   id        String    @id @default(cuid())
   userId    String    @map("user_id")
+  tenantId  String    @map("tenant_id")
   jwtId     String    @unique @map("jwt_id")
   issuedAt  DateTime  @default(now()) @map("issued_at") @db.Timestamptz(6)
   expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
@@ -608,9 +620,82 @@ model AuthSession {
   ipAddress String?   @map("ip_address")
   userAgent String?   @map("user_agent")
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  refreshTokens AuthRefreshToken[]
 
   @@index([userId, expiresAt])
+  @@index([tenantId, revokedAt])
   @@map("auth_sessions")
+}
+
+model AuthRefreshToken {
+  id          String      @id @default(cuid())
+  sessionId   String      @map("session_id")
+  userId      String      @map("user_id")
+  tenantId    String      @map("tenant_id")
+  familyId    String      @map("family_id")
+  tokenHash   String      @unique @map("token_hash")
+  issuedAt    DateTime    @default(now()) @map("issued_at") @db.Timestamptz(6)
+  expiresAt   DateTime    @map("expires_at") @db.Timestamptz(6)
+  usedAt      DateTime?   @map("used_at") @db.Timestamptz(6)
+  revokedAt   DateTime?   @map("revoked_at") @db.Timestamptz(6)
+  ipAddress   String?     @map("ip_address")
+  userAgent   String?     @map("user_agent")
+  session     AuthSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, revokedAt])
+  @@index([userId, revokedAt, expiresAt])
+  @@index([familyId, revokedAt])
+  @@map("auth_refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  ipAddress String?   @map("ip_address")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("password_reset_tokens")
+}
+
+model UserMfa {
+  id                   String    @id @default(cuid())
+  userId               String    @unique @map("user_id")
+  encryptedSecret      String    @map("encrypted_secret") @db.Text
+  encryptionIv         String    @map("encryption_iv")
+  encryptionAuthTag    String    @map("encryption_auth_tag")
+  encryptionAlgorithm  String    @default("aes-256-gcm") @map("encryption_algorithm")
+  encryptionKeyVersion String    @default("v1") @map("encryption_key_version")
+  enabledAt            DateTime? @map("enabled_at") @db.Timestamptz(6)
+  lastUsedStep         BigInt?   @map("last_used_step")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_mfa")
+}
+
+model MfaChallenge {
+  id          String              @id @default(cuid())
+  userId      String              @map("user_id")
+  tokenHash   String              @unique @map("token_hash")
+  purpose     MfaChallengePurpose
+  expiresAt   DateTime            @map("expires_at") @db.Timestamptz(6)
+  consumedAt  DateTime?           @map("consumed_at") @db.Timestamptz(6)
+  createdAt   DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  ipAddress   String?             @map("ip_address")
+  userAgent   String?             @map("user_agent")
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose, expiresAt])
+  @@map("mfa_challenges")
 }
 
 model CloudAccount {

@@ -20,6 +20,8 @@
 import 'dotenv/config';
 
 import { AuthService } from './application/services/AuthService.js';
+import { PasswordRecoveryService } from './application/services/PasswordRecoveryService.js';
+import { MfaService } from './application/services/MfaService.js';
 import { safeErrorMessage } from './application/observability/safeError.js';
 import { BudgetService } from './application/services/BudgetService.js';
 import { CostAllocationService } from './application/services/CostAllocationService.js';
@@ -55,6 +57,9 @@ import { PrismaCloudIngestionJobRepository } from './infrastructure/ingestion/Pr
 import { runPrismaIngestionJobScheduler } from './infrastructure/ingestion/PrismaIngestionJobScheduler.js';
 import { PrismaAgentContextRepository } from './infrastructure/repositories/PrismaAgentContextRepository.js';
 import { PrismaAuthSessionRepository } from './infrastructure/repositories/PrismaAuthSessionRepository.js';
+import { PrismaAuthSecurityRepository } from './infrastructure/repositories/PrismaAuthSecurityRepository.js';
+import { PrismaAccountRecoveryRepository } from './infrastructure/repositories/PrismaAccountRecoveryRepository.js';
+import { PrismaMfaRepository } from './infrastructure/repositories/PrismaMfaRepository.js';
 import { PrismaBudgetRepository } from './infrastructure/repositories/PrismaBudgetRepository.js';
 import { PrismaCostAllocationRepository } from './infrastructure/repositories/PrismaCostAllocationRepository.js';
 import { PrismaAgentLearningRepository } from './infrastructure/repositories/PrismaAgentLearningRepository.js';
@@ -131,11 +136,23 @@ const telegramRepository = new PrismaTelegramRepository(prisma);
   const agentContextRepository = new PrismaAgentContextRepository(prisma);
   const agentLearningRepository = new PrismaAgentLearningRepository(prisma);
   const userRepository = new PrismaUserRepository(prisma);
-  const authSessionRepository = new PrismaAuthSessionRepository(prisma);
+  const authSecurityRepository = new PrismaAuthSecurityRepository(prisma);
+  const accountRecoveryRepository = new PrismaAccountRecoveryRepository(prisma);
+  const mfaRepository = new PrismaMfaRepository(prisma);
+  const authSessionRepository = new PrismaAuthSessionRepository(prisma, authSecurityRepository);
   const masterAdminRepository = new PrismaMasterAdminRepository(prisma);
   const passwordHasher = new Argon2PasswordHasher();
   const tokenService = new JwtTokenService();
-  const authService = new AuthService(userRepository, passwordHasher, tokenService, authSessionRepository);
+  const mfaService = new MfaService(mfaRepository, credentialCipher);
+  const authService = new AuthService(
+    userRepository,
+    passwordHasher,
+    tokenService,
+    authSessionRepository,
+    authSecurityRepository,
+    runWithDatabaseContext,
+    mfaService,
+  );
   const masterAdminService = new MasterAdminService(masterAdminRepository, passwordHasher);
   const ingestionProviders = [new AwsSdkIngestionProvider(), new OciSdkIngestionProvider()];
   const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository, ingestionProviders);
@@ -178,6 +195,12 @@ const telegramEnabled = process.env['TELEGRAM_ENABLED'] === 'true';
 const telegramClient = new TelegramClient(process.env['TELEGRAM_BOT_TOKEN'], telegramEnabled);
 const telegramMessageFormatter = new TelegramMessageFormatter();
 const emailClient = new EmailClient();
+const passwordRecoveryService = new PasswordRecoveryService(
+  accountRecoveryRepository,
+  passwordHasher,
+  authSessionRepository,
+  emailClient,
+);
 const telegramLinkService = new TelegramLinkService(telegramRepository, telegramClient);
 const telegramBotService = new TelegramBotService(
     telegramRepository,
@@ -233,6 +256,8 @@ const telegramBotService = new TelegramBotService(
   const { createExpressServer } = await import('./presentation/server.js');
 const app = createExpressServer({
     authService,
+    passwordRecoveryService,
+    mfaService,
     cloudConnectionService,
     technicalMetricsService,
     resourceLinkageReadinessService,

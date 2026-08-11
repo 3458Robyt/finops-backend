@@ -14,6 +14,7 @@ const productionOnlyRequired = [
   'AI_BASE_URL',
   'AI_MODEL',
   'AI_AUDITOR_MODEL',
+  'MFA_REQUIRED_FOR_PRIVILEGED',
 ] as const;
 
 export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): void {
@@ -47,6 +48,10 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
       issues.push({ key: 'DB_RUNTIME_ROLE', message: 'Debe ser finops_runtime en produccion.' });
     }
 
+    if (env['MFA_REQUIRED_FOR_PRIVILEGED'] !== 'true') {
+      issues.push({ key: 'MFA_REQUIRED_FOR_PRIVILEGED', message: 'Debe ser true en produccion.' });
+    }
+
     if (!isHttpUrl(env['AI_BASE_URL'])) {
       issues.push({ key: 'AI_BASE_URL', message: 'Debe ser una URL HTTP(S) válida.' });
     }
@@ -55,6 +60,11 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
     validatePositiveBound(env, 'HTTP_REQUEST_TIMEOUT_MS', 1_000, 300_000, issues);
     validatePositiveBound(env, 'HTTP_HEADERS_TIMEOUT_MS', 1_000, 120_000, issues);
     validatePositiveBound(env, 'HTTP_KEEP_ALIVE_TIMEOUT_MS', 1_000, 120_000, issues);
+    validatePositiveBound(env, 'AUTH_REFRESH_TOKEN_TTL_SECONDS', 300, 90 * 24 * 60 * 60, issues);
+    validatePositiveBound(env, 'PASSWORD_RESET_TTL_SECONDS', 300, 3600, issues);
+    if (env['EMAIL_ENABLED'] === 'true' && !isHttpUrl(env['PASSWORD_RESET_URL'])) {
+      issues.push({ key: 'PASSWORD_RESET_URL', message: 'Debe ser una URL HTTP(S) válida cuando el correo está habilitado.' });
+    }
     validatePositiveBound(env, 'INGESTION_SCHEDULER_VALIDATION_MAX_AGE_MINUTES', 5, 7 * 24 * 60, issues);
   }
 

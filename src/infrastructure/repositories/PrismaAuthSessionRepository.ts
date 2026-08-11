@@ -4,15 +4,21 @@ import type {
   IAuthSessionRepository,
 } from '../../domain/interfaces/IAuthSessionRepository.js';
 import type { AuthContext } from '../../domain/models/AuthContext.js';
+import type { IAuthSecurityRepository } from '../../domain/interfaces/IAuthSecurityRepository.js';
 
 export class PrismaAuthSessionRepository implements IAuthSessionRepository {
-  public constructor(private readonly prisma: PrismaClient) {}
+  public constructor(
+    private readonly prisma: PrismaClient,
+    private readonly security?: IAuthSecurityRepository,
+  ) {}
 
   public async isActive(input: AuthContext): Promise<boolean> {
     const session = await this.prisma.authSession.findUnique({
       where: { jwtId: input.jwtId },
       select: {
+        id: true,
         userId: true,
+        tenantId: true,
         expiresAt: true,
         revokedAt: true,
         user: {
@@ -32,6 +38,7 @@ export class PrismaAuthSessionRepository implements IAuthSessionRepository {
       || session.expiresAt <= new Date()
       || session.user.status !== 'ACTIVE'
       || session.user.role !== input.role
+      || session.tenantId !== input.tenantId
     ) {
       return false;
     }
@@ -67,6 +74,16 @@ export class PrismaAuthSessionRepository implements IAuthSessionRepository {
       data: { revokedAt: new Date() },
     });
 
+    if (result.count > 0) {
+      const session = await this.prisma.authSession.findUnique({
+        where: { jwtId: actor.jwtId },
+        select: { id: true },
+      });
+      if (session !== null) {
+        await this.security?.revokeRefreshTokensForSession(session.id);
+      }
+    }
+
     return result.count > 0;
   }
 
@@ -79,6 +96,8 @@ export class PrismaAuthSessionRepository implements IAuthSessionRepository {
       },
       data: { revokedAt: new Date() },
     });
+
+    await this.security?.revokeRefreshTokensForUser(userId);
 
     return result.count;
   }

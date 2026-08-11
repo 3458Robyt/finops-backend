@@ -97,6 +97,7 @@ export class PrismaUserRepository implements IUserRepository {
     await this.prisma.authSession.create({
       data: {
         userId: input.userId,
+        tenantId: input.tenantId,
         jwtId: input.jwtId,
         expiresAt: input.expiresAt,
         ...(input.ipAddress !== undefined ? { ipAddress: input.ipAddress } : {}),

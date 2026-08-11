@@ -8,12 +8,15 @@ export interface DatabaseContext {
   readonly userId?: string;
   readonly role?: UserRole;
   readonly loginEmail?: string;
+  readonly refreshTokenHash?: string;
+  readonly passwordResetTokenHash?: string;
+  readonly mfaChallengeTokenHash?: string;
   readonly requestId?: string;
   readonly workerId?: string;
 }
 
 const contextStorage = new AsyncLocalStorage<DatabaseContext>();
-const contextKeys = ['app.tenant_id', 'app.user_id', 'app.user_role', 'app.login_email', 'app.request_id', 'app.worker_id'] as const;
+const contextKeys = ['app.tenant_id', 'app.user_id', 'app.user_role', 'app.login_email', 'app.refresh_token_hash', 'app.password_reset_token_hash', 'app.mfa_challenge_token_hash', 'app.request_id', 'app.worker_id'] as const;
 
 export function runWithDatabaseContext<T>(context: DatabaseContext, callback: () => T): T {
   return contextStorage.run({ ...context }, callback);
@@ -183,6 +186,9 @@ function contextEntries(context: DatabaseContext | undefined): readonly [string,
     ['app.user_id', context?.userId ?? ''],
     ['app.user_role', context?.role ?? ''],
     ['app.login_email', context?.loginEmail ?? ''],
+    ['app.refresh_token_hash', context?.refreshTokenHash ?? ''],
+    ['app.password_reset_token_hash', context?.passwordResetTokenHash ?? ''],
+    ['app.mfa_challenge_token_hash', context?.mfaChallengeTokenHash ?? ''],
     ['app.request_id', context?.requestId ?? ''],
     ['app.worker_id', context?.workerId ?? ''],
   ];

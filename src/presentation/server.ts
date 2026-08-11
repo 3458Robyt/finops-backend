@@ -3,6 +3,8 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import cors from 'cors';
 import helmet from 'helmet';
 import type { AuthService } from '../application/services/AuthService.js';
+import type { PasswordRecoveryService } from '../application/services/PasswordRecoveryService.js';
+import type { MfaService } from '../application/services/MfaService.js';
 import type { BudgetService } from '../application/services/BudgetService.js';
 import type { CostAllocationService } from '../application/services/CostAllocationService.js';
 import type { CloudConnectionService } from '../application/services/CloudConnectionService.js';
@@ -31,6 +33,8 @@ import { CostAllocationController } from './controllers/CostAllocationController
 import { AiController } from './controllers/AiController.js';
 import { AnalyticsController } from './controllers/AnalyticsController.js';
 import { AuthController } from './controllers/AuthController.js';
+import { PasswordRecoveryController } from './controllers/PasswordRecoveryController.js';
+import { MfaController } from './controllers/MfaController.js';
 import { CloudConnectionController } from './controllers/CloudConnectionController.js';
 import { CostController } from './controllers/CostController.js';
 import { KpiController } from './controllers/KpiController.js';
@@ -75,6 +79,8 @@ import { createValueRealizationRoutes } from './routes/valueRealizationRoutes.js
 interface ServerDependencies {
   /** Servicio de autenticación (login, emisión de credenciales). */
   readonly authService: AuthService;
+  readonly passwordRecoveryService: PasswordRecoveryService;
+  readonly mfaService: MfaService;
   readonly budgetService: BudgetService;
   readonly costAllocationService: CostAllocationService;
   /** Servicio de gestión de conexiones a proveedores de nube. */
@@ -195,6 +201,30 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
     },
   });
 
+  const authRefreshLimiter = createRateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+      success: false,
+      code: 'RATE_LIMITED',
+      message: 'Demasiadas renovaciones de sesión. Inicia sesión nuevamente más tarde.',
+    },
+  });
+
+  const authSensitiveLimiter = createRateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+      success: false,
+      code: 'RATE_LIMITED',
+      message: 'Demasiadas solicitudes de seguridad. Intenta de nuevo más tarde.',
+    },
+  });
+
   // Limitador anti flood para el webhook de Telegram (POST /api/v1/telegram/webhook).
   const telegramWebhookLimiter = createRateLimit({
     windowMs: 60 * 1000, // 1 minuto
@@ -228,6 +258,8 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   );
   const analyticsController = new AnalyticsController(dependencies.analyticsService);
   const authController = new AuthController(dependencies.authService);
+  const passwordRecoveryController = new PasswordRecoveryController(dependencies.passwordRecoveryService);
+  const mfaController = new MfaController(dependencies.mfaService);
   const cloudConnectionController = new CloudConnectionController(
     dependencies.cloudConnectionService,
   );
@@ -273,6 +305,9 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   // Limitadores específicos montados ANTES de sus routers para ejecutarse primero.
   app.use('/api/v1', globalApiLimiter);
   app.use('/api/v1/auth/login', authLoginLimiter);
+  app.use('/api/v1/auth/refresh', authRefreshLimiter);
+  app.use('/api/v1/auth/mfa', authSensitiveLimiter);
+  app.use('/api/v1/auth/password-reset', authSensitiveLimiter);
   app.use('/api/v1/ai', aiLimiter);
   app.use('/api/v1/telegram/webhook', telegramWebhookLimiter);
 
@@ -284,7 +319,7 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   app.use('/api/v1/analytics', createAnalyticsRoutes(analyticsController, requireAuth));
   app.use('/api/v1/budgets', createBudgetRoutes(budgetController, requireAuth));
   app.use('/api/v1/cost-allocation', createCostAllocationRoutes(costAllocationController, requireAuth));
-  app.use('/api/v1/auth', createAuthRoutes(authController, requireAuth));
+  app.use('/api/v1/auth', createAuthRoutes(authController, requireAuth, passwordRecoveryController, mfaController));
   app.use('/api/v1/cloud-connections', createCloudConnectionRoutes(cloudConnectionController, requireAuth, requireCloudManager));
   app.use('/api/v1/costs', createCostRoutes(costController, requireAuth));
   app.use('/api/v1/ingestion', createIngestionRoutes(cloudConnectionController, requireAuth, requireCloudManager, resourceLinkageController));

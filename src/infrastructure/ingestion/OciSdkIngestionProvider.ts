@@ -16,7 +16,6 @@ import type {
   NormalizedCloudResource,
   NormalizedFocusCostLineItem,
   NormalizedProviderCostLineItem,
-  NormalizedResourceMetricSample,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import { parseFocusCsvStream, toAsyncByteChunks } from './focusCsvIngestion.js';
 import {
@@ -28,241 +27,43 @@ import {
   requireString,
 } from './providerConfig.js';
 import { resolveBillingSource } from './billingSourceMode.js';
-
-interface OciMetricDefinition {
-  readonly compartmentId: string;
-  readonly namespace: string;
-  readonly metricName: string;
-  readonly resourceId: string;
-  readonly query?: string;
-  readonly unit?: string;
-}
-
-interface OciFocusReportObject {
-  readonly namespaceName: string;
-  readonly bucketName: string;
-  readonly objectName: string;
-  readonly focusVersion: string;
-  readonly sizeBytes?: number;
-  readonly lastModified?: Date;
-}
-
-interface OciFocusReportLocation {
-  readonly namespaceName: string;
-  readonly bucketName: string;
-  readonly prefix: string;
-  readonly focusVersion: string;
-  readonly maxObjects: number;
-}
-
-interface OciMonitoringClient {
-  close?(): void;
-  listMetrics(request: unknown): Promise<unknown>;
-  summarizeMetricsData(request: unknown): Promise<{
-    readonly items?: readonly {
-      readonly namespace?: string;
-      readonly name?: string;
-      readonly dimensions?: Record<string, string>;
-      readonly aggregatedDatapoints?: readonly {
-        readonly timestamp?: Date | string;
-        readonly value?: number;
-      }[];
-    }[];
-    readonly summarizedMetricsData?: readonly {
-      readonly namespace?: string;
-      readonly name?: string;
-      readonly dimensions?: Record<string, string>;
-      readonly aggregatedDatapoints?: readonly {
-        readonly timestamp?: Date | string;
-        readonly value?: number;
-      }[];
-    }[];
-  }>;
-}
-
-interface OciObjectStorageClient {
-close?(): void;
-getObject(request: unknown): Promise<{
-readonly getObjectBody?: unknown;
-readonly value?: unknown;
-}>;
-  listObjects(request: unknown): Promise<{
-    readonly listObjects?: {
-      readonly objects?: readonly {
-        readonly name?: string;
-        readonly size?: number;
-        readonly timeModified?: Date;
-      }[];
-      readonly nextStartWith?: string;
-    };
-}>;
-}
-
-interface OciComputeClient {
-close?(): void;
-listInstances(request: unknown): Promise<{
-readonly items?: readonly OciComputeInstance[];
-readonly opcNextPage?: string;
-}>;
-}
-
-interface OciIdentityClient {
-  close?(): void;
-  getUser(request: unknown): Promise<unknown>;
-  listCompartments(request: unknown): Promise<{
-    readonly items?: readonly OciCompartment[];
-    readonly opcNextPage?: string;
-  }>;
-}
-
-interface OciCompartment {
-  readonly id?: string;
-  readonly lifecycleState?: string;
-}
-
-interface OciUsageClient {
-  close?(): void;
-  requestSummarizedUsages(request: unknown): Promise<{
-    readonly usageAggregation?: { readonly items?: readonly {
-      readonly service?: string;
-      readonly computedAmount?: number;
-      readonly currency?: string;
-      readonly computedQuantity?: number;
-      readonly resourceId?: string;
-      readonly region?: string;
-      readonly compartmentId?: string;
-    }[] };
-  }>;
-}
-
-interface OciComputeInstance {
-readonly id?: string;
-readonly displayName?: string;
-readonly lifecycleState?: string;
-readonly region?: string;
-readonly shape?: string;
-readonly freeformTags?: Readonly<Record<string, unknown>>;
-readonly definedTags?: Readonly<Record<string, unknown>>;
-}
-
-async function withOciClient<TClient extends { close?(): void }, TResult>(
-  client: TClient,
-  operation: (client: TClient) => Promise<TResult>,
-): Promise<TResult> {
-  try {
-    return await operation(client);
-  } finally {
-    client.close?.();
-  }
-}
+import {
+  collectOciTechnicalMetrics,
+  readOciMetricDefinitions,
+} from './oci/OciMonitoringCollector.js';
+import {
+  buildOciValidationJob,
+  safeOciProviderError,
+  validateOciCall,
+  validateOciCapabilities,
+  withOciClient,
+} from './oci/OciCapabilityValidator.js';
+import type {
+  OciComputeClient,
+  OciFocusReportLocation,
+  OciFocusReportObject,
+  OciIdentityClient,
+  OciMonitoringClient,
+  OciObjectStorageClient,
+  OciUsageClient,
+} from './oci/OciSdkContracts.js';
 
 export class OciSdkIngestionProvider implements CloudIngestionProvider {
   public readonly providerCode = 'oci';
 
   public async validate(connection: CloudIngestionConnection): Promise<CloudConnectionValidationResult> {
-    const checkedAt = new Date();
-    const credential = getCredential(connection.credentials, [
-      'OPERATIONAL',
-      'INVENTORY_READ',
-      'METRICS_READ',
-      'BILLING_EXPORT_READ',
-      'STORAGE_READ',
-    ]);
-    if (credential === undefined) {
-      return {
-        providerCode: this.providerCode,
-        capabilities: missingOciCredentialCapabilities(checkedAt),
-      };
-    }
-
-    const job = buildValidationJob(connection);
-    let authProvider: common.AuthenticationDetailsProvider;
-    try {
-      authProvider = this.createAuthProvider(job);
-    } catch (error) {
-      const failure = failedOciCapability('IDENTITY', error, checkedAt);
-      return {
-        providerCode: this.providerCode,
-        capabilities: [
-          failure,
-          ...(['INVENTORY', 'COSTS', 'METRICS', 'STORAGE'] as const).map((capability) => ({
-            capability,
-            status: failure.status,
-            message: 'No se puede comprobar esta capacidad porque la credencial OCI no es válida.',
-            checkedAt,
-          })),
-        ],
-      };
-    }
-
-    const userId = requireString(credential.payload['userId'], 'OCI userId');
-    const identity = await validateOciCall('IDENTITY', checkedAt, () => withOciClient(
-      this.createIdentityClient(authProvider),
-      async (client) => {
-      await client.getUser({ userId });
-      return { message: 'Firma OCI e identidad de usuario validadas.', metadata: { userId } };
-      },
-    ));
-
-    const inventory = await validateOciCall('INVENTORY', checkedAt, () => withOciClient(
-      this.createComputeClient(job),
-      async (client) => {
-      await client.listInstances({ compartmentId: connection.rootExternalId, limit: 1 });
-      return { message: 'Lectura de inventario OCI Compute disponible.' };
-      },
-    ));
-
-    const costs = await validateOciCall('COSTS', checkedAt, () => withOciClient(
-      new usageapi.UsageapiClient({ authenticationDetailsProvider: authProvider }) as unknown as OciUsageClient,
-      async (client) => {
-      const end = new Date();
-      const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
-      await client.requestSummarizedUsages({
-        requestSummarizedUsagesDetails: {
-          tenantId: connection.rootExternalId,
-          timeUsageStarted: start,
-          timeUsageEnded: end,
-          granularity: 'DAILY',
-          queryType: 'COST',
-        },
-      });
-      return { message: 'OCI Usage API disponible.' };
-      },
-    ));
-
-    const metrics = await validateOciCall('METRICS', checkedAt, () => withOciClient(
-      this.createMonitoringClient(job),
-      async (client) => {
-      const definition = this.readMetricDefinitions(job)[0];
-      if (definition === undefined) {
-        await client.listMetrics({
-          compartmentId: connection.rootExternalId,
-          compartmentIdInSubtree: true,
-          listMetricsDetails: { groupBy: ['namespace'] },
-          limit: 1,
-        });
-      } else {
-        await client.summarizeMetricsData({
-          compartmentId: definition.compartmentId,
-          summarizeMetricsDataDetails: {
-            namespace: definition.namespace,
-            query: definition.query ?? this.buildResourceMetricQuery(definition),
-            startTime: new Date(checkedAt.getTime() - 5 * 60 * 1000),
-            endTime: checkedAt,
-            resolution: '5m',
-          },
-        });
-      }
-      return { message: 'Lectura de métricas OCI Monitoring disponible.' };
-      },
-    ));
-
-    const storage = await this.validateStorageCapability(connection, job, checkedAt);
-    return { providerCode: this.providerCode, capabilities: [identity, inventory, costs, metrics, storage] };
+    return validateOciCapabilities(connection, {
+      providerCode: this.providerCode,
+      createAuthProvider: (job) => this.createAuthProvider(job),
+      createIdentityClient: (provider) => this.createIdentityClient(provider),
+      createComputeClient: (job) => this.createComputeClient(job),
+      createMonitoringClient: (job) => this.createMonitoringClient(job),
+      validateStorage: (target, job, checkedAt) => this.validateStorageCapability(target, job, checkedAt),
+    });
   }
 
   public async previewFocus(connection: CloudIngestionConnection, limit: number): Promise<FocusSourcePreviewResult> {
-    const job = buildValidationJob(connection);
+    const job = buildOciValidationJob(connection);
     const client = this.createObjectStorageClient(job);
     try {
       const configured = this.readFocusObjects(job);
@@ -316,83 +117,10 @@ resources: inventory.resources.length,
       return this.emptyResult(0, [`Unsupported OCI ingestion source ${job.sourceType}`], {});
     }
 
-    const definitions = this.readMetricDefinitions(job);
-    if (definitions.length === 0) {
-      return this.emptyResult(0, [
-        'No OCI metric definitions configured in cloud connection metadata key ociMetricDefinitions.',
-      ], {
-        metricDefinitions: 0,
-        supportedNamespaces: ['oci_computeagent', 'oci_vmi_resource_utilization'],
-      });
-    }
-
-    const monitoringClient = this.createMonitoringClient(job);
-    const samples: NormalizedResourceMetricSample[] = [];
-    let apiCallCount = 0;
-
-    try {
-    for (const definition of definitions) {
-      apiCallCount += 1;
-      const query = definition.query ?? this.buildResourceMetricQuery(definition);
-      const response = await this.withProviderRetry(() => monitoringClient.summarizeMetricsData({
-        compartmentId: definition.compartmentId,
-        summarizeMetricsDataDetails: {
-          namespace: definition.namespace,
-          query,
-          startTime: job.targetStart,
-          endTime: job.targetEnd,
-          resolution: '30m',
-        },
-      }));
-
-      for (const metric of response.items ?? response.summarizedMetricsData ?? []) {
-        const externalResourceId = metric.dimensions?.['resourceId'] ?? definition.resourceId;
-        for (const point of metric.aggregatedDatapoints ?? []) {
-          if (point.timestamp === undefined || point.value === undefined) {
-            continue;
-          }
-
-          samples.push({
-            tenantId: job.tenantId,
-            cloudConnectionId: job.cloudConnectionId,
-            provider: 'OCI',
-            externalResourceId,
-            metricName: metric.name ?? definition.metricName,
-            value: point.value,
-            sampledAt: point.timestamp instanceof Date ? point.timestamp : new Date(point.timestamp),
-            granularitySeconds: 1800,
-            ...(definition.unit !== undefined ? { metricUnit: definition.unit } : {}),
-            rawMetric: {
-              namespace: metric.namespace ?? definition.namespace,
-              query,
-              compartmentId: definition.compartmentId,
-            },
-          });
-        }
-      }
-    }
-    } finally {
-      monitoringClient.close?.();
-    }
-
-    return {
-      apiCallCount,
-      objectsProcessed: 0,
-      focusRows: [],
-      resources: [],
-      metricSamples: samples,
-      warnings: samples.length === 0 ? ['OCI Monitoring returned no datapoints for the configured metric definitions.'] : [],
-      coverage: {
-        requestedStart: job.targetStart.toISOString(),
-        requestedEnd: job.targetEnd.toISOString(),
-        granularitySeconds: 1800,
-        datapointsReturned: samples.length,
-        metricDefinitions: definitions.length,
-        samples: samples.length,
-        memoryRequiresComputeAgent: true,
-        agentlessCpuNamespace: 'oci_vmi_resource_utilization',
-      },
-    };
+    return collectOciTechnicalMetrics(job, {
+      createClient: (context) => this.createMonitoringClient(context),
+      withRetry: (operation) => this.withProviderRetry(operation),
+    });
   }
 
   private async collectBillingExport(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {
@@ -626,24 +354,6 @@ const credential = getCredential(job.connection.credentials, [
     );
   }
 
-  private readMetricDefinitions(job: CloudIngestionJobContext): readonly OciMetricDefinition[] {
-    return readObjectArray(job.connection.metadata, 'ociMetricDefinitions').map((item) => {
-      const query = optionalString(item['query']);
-      const unit = optionalString(item['unit']);
-
-      return {
-        compartmentId: requireString(item['compartmentId'], 'ociMetricDefinitions.compartmentId'),
-        namespace: optionalString(item['namespace']) ?? 'oci_computeagent',
-        metricName: requireString(item['metricName'], 'ociMetricDefinitions.metricName'),
-        resourceId: optionalString(item['resourceId'])
-          ?? readStringArray(item['resourceIds'])[0]
-          ?? job.connection.rootExternalId,
-        ...(query !== undefined ? { query } : {}),
-        ...(unit !== undefined ? { unit } : {}),
-      };
-    });
-  }
-
 private async collectInventoryResources(job: CloudIngestionJobContext): Promise<{
 readonly apiCallCount: number;
 readonly resources: readonly NormalizedCloudResource[];
@@ -672,7 +382,7 @@ const explicit = readObjectArray(job.connection.metadata, 'ociInventoryResources
       };
     });
 
-    const inferred = this.readMetricDefinitions(job).map((definition) => ({
+    const inferred = readOciMetricDefinitions(job).map((definition) => ({
       tenantId: job.tenantId,
       cloudConnectionId: job.cloudConnectionId,
       provider: 'OCI' as const,
@@ -900,7 +610,7 @@ discoveredCompartmentCount,
 
 private readConfiguredInventoryCompartments(job: CloudIngestionJobContext): readonly string[] {
 const configured = readStringArray(job.connection.metadata?.['ociInventoryCompartments']);
-const metricCompartments = this.readMetricDefinitions(job).map((definition) => definition.compartmentId);
+const metricCompartments = readOciMetricDefinitions(job).map((definition) => definition.compartmentId);
 return [...new Set([...configured, ...metricCompartments, job.connection.rootExternalId])];
 }
 
@@ -1011,10 +721,6 @@ return readObjectArray(job.connection.metadata, 'ociFocusReportObjects').map((it
     return lower.endsWith('.csv') || lower.endsWith('.csv.gz');
   }
 
-  private buildResourceMetricQuery(definition: OciMetricDefinition): string {
-    return `${definition.metricName}[30m]{resourceId = "${definition.resourceId}"}.mean()`;
-  }
-
   private async withProviderRetry<T>(operation: () => Promise<T>): Promise<T> {
     const delaysMs = [1000, 2500, 5000];
     let lastError: unknown;
@@ -1047,20 +753,6 @@ return readObjectArray(job.connection.metadata, 'ociFocusReportObjects').map((it
   }
 }
 
-function buildValidationJob(connection: CloudIngestionConnection): CloudIngestionJobContext {
-  const targetEnd = new Date();
-  return {
-    id: `validation-${connection.id}`,
-    tenantId: connection.tenantId,
-    cloudConnectionId: connection.id,
-    sourceType: 'INVENTORY',
-    targetStart: new Date(targetEnd.getTime() - 24 * 60 * 60 * 1000),
-    targetEnd,
-    attempt: 0,
-    connection,
-  };
-}
-
 function buildOciFocusPreviewResult(
   configuredLocations: number,
   configuredObjects: number,
@@ -1084,57 +776,4 @@ function buildOciFocusPreviewResult(
     } : {}),
     objects,
   };
-}
-
-async function validateOciCall(
-  capability: CloudCapabilityValidation['capability'],
-  checkedAt: Date,
-  operation: () => Promise<{
-    readonly message: string;
-    readonly metadata?: Readonly<Record<string, string | number | boolean>>;
-  }>,
-): Promise<CloudCapabilityValidation> {
-  try {
-    const result = await operation();
-    return {
-      capability,
-      status: 'AVAILABLE',
-      message: result.message,
-      checkedAt,
-      ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
-    };
-  } catch (error) {
-    return failedOciCapability(capability, error, checkedAt);
-  }
-}
-
-function failedOciCapability(
-  capability: CloudCapabilityValidation['capability'],
-  error: unknown,
-  checkedAt: Date,
-): CloudCapabilityValidation {
-  const message = safeOciProviderError(error);
-  const denied = /not.?authorized|notauthenticated|authorization failed|forbidden|401|403/i.test(message);
-  return {
-    capability,
-    status: denied ? 'DENIED' : 'ERROR',
-    message: denied
-      ? 'OCI rechazó esta lectura. Revisa las policies de solo lectura para la capacidad indicada.'
-      : message,
-    checkedAt,
-  };
-}
-
-function missingOciCredentialCapabilities(checkedAt: Date): readonly CloudCapabilityValidation[] {
-  return (['IDENTITY', 'INVENTORY', 'COSTS', 'METRICS', 'STORAGE'] as const).map((capability) => ({
-    capability,
-    status: 'NOT_CONFIGURED',
-    message: 'No hay una credencial OCI de lectura activa.',
-    checkedAt,
-  }));
-}
-
-function safeOciProviderError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/(passphrase|privateKey|token|key)\s*[=:]\s*\S+/gi, '$1=[REDACTED]').slice(0, 300);
 }

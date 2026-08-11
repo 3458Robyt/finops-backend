@@ -24,6 +24,7 @@ export class CloudIngestionWorkerService {
     providers: readonly CloudIngestionProvider[],
     onSuccessfulIngestion?: (input: { readonly tenantId: string; readonly jobId: string; readonly providerCode: string }) => Promise<void>,
     private readonly metrics?: MetricsRegistry,
+    private readonly heartbeatMs = 60_000,
   ) {
     this.providers = new Map(providers.map((provider) => [provider.providerCode, provider]));
     this.onSuccessfulIngestion = onSuccessfulIngestion;
@@ -79,13 +80,12 @@ export class CloudIngestionWorkerService {
       };
     }
 
-    const heartbeatMs = readPositiveIntegerEnv('INGESTION_JOB_HEARTBEAT_MS', 60_000);
     let leaseLost = false;
     const heartbeat = setInterval(() => {
       void this.jobs.refreshJobLease(job.id, workerId, job.attempt)
         .then((renewed) => { leaseLost ||= !renewed; })
         .catch(() => { leaseLost = true; });
-    }, heartbeatMs);
+    }, this.heartbeatMs);
 
     try {
       const result = await provider.collect(job);
@@ -132,9 +132,4 @@ export class CloudIngestionWorkerService {
       clearInterval(heartbeat);
     }
   }
-}
-
-function readPositiveIntegerEnv(key: string, defaultValue: number): number {
-  const parsed = Number.parseInt(process.env[key] ?? '', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
 }

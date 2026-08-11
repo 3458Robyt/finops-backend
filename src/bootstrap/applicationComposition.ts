@@ -120,6 +120,7 @@ export function createApplicationComposition(
     authSecurityRepository,
     runWithDatabaseContext,
     mfaService,
+    config.security.mfaRequiredForPrivileged,
   );
   const masterAdminService = new MasterAdminService(masterAdminRepository, passwordHasher);
   const ingestionProviders = [new AwsSdkIngestionProvider(), new OciSdkIngestionProvider()];
@@ -225,7 +226,11 @@ export function createApplicationComposition(
   );
   const ingestionWorker = runsWorkers && config.workers.ingestion.enabled
     ? new CloudIngestionWorkerService(
-      new PrismaCloudIngestionJobRepository(prisma, credentialCipher ?? new CredentialCipher()),
+      new PrismaCloudIngestionJobRepository(
+        prisma,
+        credentialCipher ?? new CredentialCipher(),
+        config.workers.ingestion.jobLeaseMs,
+      ),
       ingestionProviders,
       config.finops.savingsReconciliationEnabled
         ? ({ tenantId }) => valueRealizationService.reconcile(
@@ -234,6 +239,7 @@ export function createApplicationComposition(
         ).then(() => undefined)
         : undefined,
       metricsRegistry,
+      config.workers.ingestion.jobHeartbeatMs,
     )
     : null;
 

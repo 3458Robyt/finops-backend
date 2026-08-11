@@ -17,6 +17,7 @@ import {
 import type { ResourceLinkReasonCode } from '../../domain/models/ResourceLinkage.js';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { CostBillingSource, Prisma } from '../../generated/prisma/client.js';
+import { loadRuntimeConfig } from '../config/runtimeConfigReader.js';
 import { CredentialCipher, type EncryptedCredentialPayload } from '../security/CredentialCipher.js';
 import {
   insertHistoricalCloudResources,
@@ -90,11 +91,12 @@ export class PrismaCloudIngestionJobRepository {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly credentialCipher: CredentialCipher,
+    private readonly jobLeaseMs = loadRuntimeConfig().workers.ingestion.jobLeaseMs,
   ) {}
 
   public async claimNextPendingJob(workerId: string): Promise<CloudIngestionJobContext | null> {
     const now = new Date();
-    const leaseExpiredBefore = new Date(now.getTime() - readPositiveIntegerEnv('INGESTION_JOB_LEASE_MS', 300_000));
+    const leaseExpiredBefore = new Date(now.getTime() - this.jobLeaseMs);
 
     return this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`
@@ -877,11 +879,6 @@ export class PrismaCloudIngestionJobRepository {
   private isJsonObject(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
   }
-}
-
-function readPositiveIntegerEnv(key: string, defaultValue: number): number {
-  const parsed = Number.parseInt(process.env[key] ?? '', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
 }
 
 function chunkArray<T>(values: readonly T[], size: number): readonly (readonly T[])[] {

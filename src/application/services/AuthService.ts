@@ -32,6 +32,7 @@ export type {
 export class AuthService {
   private readonly issuer: AuthSessionIssuer;
   private readonly refreshService: AuthRefreshService;
+  private readonly mfaRequiredForPrivileged: boolean;
 
   constructor(
     private readonly users: IUserRepository,
@@ -41,7 +42,9 @@ export class AuthService {
     security: IAuthSecurityRepository | undefined = undefined,
     private readonly runInDatabaseContext: AuthDatabaseContextRunner = (_context, callback) => callback(),
     private readonly mfa?: IMfaAuthenticationService,
+    mfaRequiredForPrivileged = false,
   ) {
+    this.mfaRequiredForPrivileged = mfaRequiredForPrivileged;
     this.issuer = new AuthSessionIssuer(users, tokenService, security);
     this.refreshService = new AuthRefreshService(users, tokenService, security, this.issuer, this.runInDatabaseContext);
   }
@@ -79,7 +82,7 @@ export class AuthService {
       };
     }
 
-    if (this.mfa !== undefined && requiresPrivilegedMfa(user.role)) {
+    if (this.mfa !== undefined && requiresPrivilegedMfa(user.role, this.mfaRequiredForPrivileged)) {
       const enrollment = await this.mfa.beginEnrollment({
         userId: user.id,
         email: user.email,
@@ -213,7 +216,6 @@ export class AuthService {
 
 }
 
-function requiresPrivilegedMfa(role: AuthContext['role']): boolean {
-  return process.env['MFA_REQUIRED_FOR_PRIVILEGED'] === 'true'
-    && isPrivilegedRole(role);
+function requiresPrivilegedMfa(role: AuthContext['role'], enabled: boolean): boolean {
+  return enabled && isPrivilegedRole(role);
 }

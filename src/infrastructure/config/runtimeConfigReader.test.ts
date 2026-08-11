@@ -23,7 +23,13 @@ describe('loadRuntimeConfig', () => {
     expect(config.http.port).toBe(4100);
     expect(config.http.corsOrigins).toEqual(['http://localhost:5173', 'http://localhost:4173']);
     expect(config.database.runtimeEnforce).toBe(true);
-    expect(config.workers.ingestion).toEqual({ enabled: true, id: 'worker-test', intervalMs: 1500 });
+    expect(config.workers.ingestion).toMatchObject({
+      enabled: true,
+      id: 'worker-test',
+      intervalMs: 1500,
+      jobLeaseMs: 300000,
+      jobHeartbeatMs: 60000,
+    });
     expect(config.ai.maxRetries).toBe(2);
     expect(config.cloud.requiredTagKeys).toEqual(['environment', 'owner']);
 

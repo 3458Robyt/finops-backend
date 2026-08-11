@@ -67,7 +67,13 @@ export interface RuntimeConfig {
     readonly webhookSecret: string | undefined;
   };
   readonly workers: {
-    readonly ingestion: { readonly enabled: boolean; readonly id: string | undefined; readonly intervalMs: number };
+    readonly ingestion: {
+      readonly enabled: boolean;
+      readonly id: string | undefined;
+      readonly intervalMs: number;
+      readonly jobLeaseMs: number;
+      readonly jobHeartbeatMs: number;
+    };
     readonly learning: { readonly enabled: boolean; readonly id: string | undefined; readonly intervalMs: number; readonly leaseMs: number };
     readonly recommendationAnalysis: {
       readonly enabled: boolean;

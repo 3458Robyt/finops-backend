@@ -82,6 +82,8 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
         enabled: readBoolean(env['INGESTION_WORKER_ENABLED'], false),
         id: readOptionalString(env['INGESTION_WORKER_ID']),
         intervalMs: readPositiveInteger(env['INGESTION_WORKER_INTERVAL_MS'], 30_000),
+        jobLeaseMs: readPositiveInteger(env['INGESTION_JOB_LEASE_MS'], 300_000),
+        jobHeartbeatMs: readPositiveInteger(env['INGESTION_JOB_HEARTBEAT_MS'], 60_000),
       },
       learning: {
         enabled: readBoolean(env['AGENT_LEARNING_WORKER_ENABLED'], false),

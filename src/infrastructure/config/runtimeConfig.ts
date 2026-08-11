@@ -37,10 +37,7 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
       issues.push({ key: 'CREDENTIAL_ENCRYPTION_KEY', message: 'Debe ser una clave base64 que decodifique a 32 bytes.' });
     }
 
-    const corsOrigin = env['CORS_ORIGIN'];
-    if (corsOrigin !== undefined && corsOrigin.includes('*')) {
-      issues.push({ key: 'CORS_ORIGIN', message: 'No debe usar comodines en produccion.' });
-    }
+    validateCorsOrigins(env['CORS_ORIGIN'], issues);
 
     if (env['DB_RUNTIME_ENFORCE'] !== 'true') {
       issues.push({ key: 'DB_RUNTIME_ENFORCE', message: 'Debe ser true en produccion.' });
@@ -103,6 +100,28 @@ function isHttpUrl(value: string | undefined): boolean {
     return url.protocol === 'https:' || url.protocol === 'http:';
   } catch {
     return false;
+  }
+}
+
+function validateCorsOrigins(value: string | undefined, issues: RuntimeValidationIssue[]): void {
+  if (isBlank(value)) return;
+
+  for (const origin of value!.split(',').map((item) => item.trim()).filter(Boolean)) {
+    if (origin.includes('*')) {
+      issues.push({ key: 'CORS_ORIGIN', message: 'No debe usar comodines en produccion.' });
+      continue;
+    }
+
+    try {
+      const url = new URL(origin);
+      const hasPathOrCredentials = url.pathname !== '/' || url.search !== '' || url.hash !== ''
+        || url.username !== '' || url.password !== '';
+      if ((url.protocol !== 'https:' && url.protocol !== 'http:') || hasPathOrCredentials) {
+        issues.push({ key: 'CORS_ORIGIN', message: 'Debe contener únicamente orígenes HTTP(S) sin rutas ni credenciales.' });
+      }
+    } catch {
+      issues.push({ key: 'CORS_ORIGIN', message: 'Debe contener orígenes HTTP(S) válidos separados por coma.' });
+    }
   }
 }
 

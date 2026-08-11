@@ -35,4 +35,16 @@ describe('validateRuntimeConfig', () => {
     expect(() => validateRuntimeConfig({ NODE_ENV: 'development' })).not.toThrow();
     warning.mockRestore();
   });
+
+  it.each(['*', 'https://finops.example.com/app', 'https://user:password@finops.example.com'])('rejects an unsafe production CORS origin: %s', (origin) => {
+    expect(() => validateRuntimeConfig({ ...productionEnv, CORS_ORIGIN: origin }))
+      .toThrow(`Configuracion runtime invalida.`);
+  });
+
+  it('accepts multiple explicit HTTP(S) origins without paths', () => {
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      CORS_ORIGIN: 'https://finops.example.com,https://admin.example.com',
+    })).not.toThrow();
+  });
 });

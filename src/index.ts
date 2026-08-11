@@ -292,6 +292,12 @@ const PORT = process.env['PORT'] || 3000;
     console.log(`   Costs: GET http://localhost:${PORT}/api/v1/costs?provider=oci&startDate=...&endDate=...`);
     console.log(`   Recommendations: GET http://localhost:${PORT}/api/v1/recommendations`);
   });
+  httpServer.requestTimeout = parsePositiveIntegerEnv('HTTP_REQUEST_TIMEOUT_MS', 120_000);
+  httpServer.headersTimeout = Math.min(
+    parsePositiveIntegerEnv('HTTP_HEADERS_TIMEOUT_MS', 15_000),
+    httpServer.requestTimeout,
+  );
+  httpServer.keepAliveTimeout = parsePositiveIntegerEnv('HTTP_KEEP_ALIVE_TIMEOUT_MS', 5_000);
 
   let shuttingDown = false;
   const shutdown = (signal: string): void => {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import express, { type Express, type NextFunction, type Request, type RequestHandler, type Response } from 'express';
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import type { AuthService } from '../application/services/AuthService.js';
@@ -45,6 +45,7 @@ import { ValueRealizationController } from './controllers/ValueRealizationContro
 import { ResourceLinkageController } from './controllers/ResourceLinkageController.js';
 import { createAuthMiddleware, requireRole } from './middleware/authMiddleware.js';
 import { createHttpErrorHandler, createNotFoundHandler } from './middleware/httpErrorHandler.js';
+import { createRateLimit } from './middleware/rateLimit.js';
 import { createAgentRoutes } from './routes/agentRoutes.js';
 import { createBudgetRoutes } from './routes/budgetRoutes.js';
 import { createCostAllocationRoutes } from './routes/costAllocationRoutes.js';
@@ -157,6 +158,7 @@ interface ServerDependencies {
  */
 export function createExpressServer(dependencies: ServerDependencies): Express {
   const app = express();
+  app.set('trust proxy', parseTrustProxy(process.env['TRUST_PROXY']));
 
   // Cabeceras de seguridad HTTP (X-Content-Type-Options, HSTS, etc.).
   // Se monta antes de CORS; helmet no interfiere con las cabeceras CORS.
@@ -344,29 +346,6 @@ function parseBodyLimit(value: string | undefined): string {
   return normalized === undefined || normalized === '' ? '1mb' : normalized;
 }
 
-function createRateLimit(options: { readonly windowMs: number; readonly limit: number; readonly message?: unknown; readonly standardHeaders?: boolean; readonly legacyHeaders?: boolean }): RequestHandler {
-  const buckets = new Map<string, { count: number; resetAt: number }>();
-  return (req, res, next): void => {
-    const now = Date.now();
-    const key = req.ip ?? req.socket.remoteAddress ?? 'unknown';
-    const current = buckets.get(key);
-    const bucket = current === undefined || current.resetAt <= now ? { count: 0, resetAt: now + options.windowMs } : current;
-    bucket.count += 1;
-    buckets.set(key, bucket);
-    if (buckets.size > 10_000) {
-      for (const [bucketKey, value] of buckets) if (value.resetAt <= now) buckets.delete(bucketKey);
-    }
-    res.setHeader('RateLimit-Limit', options.limit);
-    res.setHeader('RateLimit-Remaining', Math.max(0, options.limit - bucket.count));
-    res.setHeader('RateLimit-Reset', Math.ceil((bucket.resetAt - now) / 1000));
-    if (bucket.count > options.limit) {
-      res.status(429).json(options.message ?? { success: false, code: 'RATE_LIMITED' });
-      return;
-    }
-    next();
-  };
-}
-
 function createRequestLogger() {
   return (req: Request, res: Response, next: NextFunction): void => {
     const requestId = req.header('x-request-id') ?? randomUUID();
@@ -388,4 +367,12 @@ function createRequestLogger() {
 
     next();
   };
+}
+
+function parseTrustProxy(value: string | undefined): boolean | number | string {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === undefined || normalized === '' || normalized === 'false') return false;
+  if (normalized === 'true') return true;
+  const hops = Number.parseInt(normalized, 10);
+  return Number.isInteger(hops) && hops >= 0 ? hops : value!.trim();
 }

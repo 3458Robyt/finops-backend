@@ -55,6 +55,9 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
     }
     validatePositiveBound(env, 'AI_TIMEOUT_MS', 5_000, 120_000, issues);
     validateIntegerBound(env, 'AI_MAX_RETRIES', 0, 2, issues);
+    validatePositiveBound(env, 'HTTP_REQUEST_TIMEOUT_MS', 1_000, 300_000, issues);
+    validatePositiveBound(env, 'HTTP_HEADERS_TIMEOUT_MS', 1_000, 120_000, issues);
+    validatePositiveBound(env, 'HTTP_KEEP_ALIVE_TIMEOUT_MS', 1_000, 120_000, issues);
   }
 
   if (issues.length > 0) {

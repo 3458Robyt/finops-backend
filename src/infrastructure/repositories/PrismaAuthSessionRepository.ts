@@ -145,6 +145,10 @@ export class PrismaAuthSessionRepository implements IAuthSessionRepository {
       data: { revokedAt: new Date() },
     });
 
+    if (result.count > 0) {
+      await this.security?.revokeRefreshTokensForSession(sessionId);
+    }
+
     return result.count > 0;
   }
 

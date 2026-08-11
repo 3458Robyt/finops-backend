@@ -60,11 +60,15 @@ describe.skipIf(!integrationEnabled)('normalized resource lineage integration', 
     const readiness = await new PrismaResourceLinkageReadinessRepository(prisma).getForTenant(tenantId, 10);
     expect(readiness.inventoryResources).toBeGreaterThan(0);
     expect(readiness.costs.linked).toBeGreaterThan(0);
+    expect(readiness.costs.eligible).toBe(readiness.costs.linked);
+    expect(readiness.costClassifications.counts.RESOURCE_FOUND).toBeGreaterThan(0);
+    expect(readiness.costClassifications.counts.HISTORICAL_RESOURCE).toBe(0);
     expect(readiness.metrics.linked).toBeGreaterThan(0);
     expect(readiness.connections).toHaveLength(1);
     expect(readiness.resources[0]?.evidenceStatus).toBe('EVIDENCE_COMPLETE');
     expect(readiness.resources[0]?.freshness.inventory.status).toBe('FRESH');
     expect(readiness.technicalRecommendationBlockers).not.toContain('NO_NORMALIZED_INVENTORY');
+    expect(readiness.connections[0]?.costClassifications.counts.RESOURCE_FOUND).toBeGreaterThan(0);
   }, 120_000);
 
   it('resolves the same external id independently per connection', async () => {

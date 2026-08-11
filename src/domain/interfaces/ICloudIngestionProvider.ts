@@ -129,6 +129,8 @@ export interface NormalizedCloudResource {
   readonly status: 'ACTIVE' | 'STOPPED' | 'TERMINATED' | 'UNKNOWN';
   readonly tags?: Readonly<Record<string, unknown>>;
   readonly rawResource?: Readonly<Record<string, unknown>>;
+  readonly firstSeenAt?: Date;
+  readonly lastSeenAt?: Date;
 }
 
 export interface NormalizedResourceMetricSample {

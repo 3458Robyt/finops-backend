@@ -19,6 +19,11 @@ import type { PrismaClient } from '../../generated/prisma/client.js';
 import { CostBillingSource, Prisma } from '../../generated/prisma/client.js';
 import { CredentialCipher, type EncryptedCredentialPayload } from '../security/CredentialCipher.js';
 import {
+  insertHistoricalCloudResources,
+  upsertNormalizedCloudResources,
+} from './PrismaCloudResourceCatalog.js';
+import { buildHistoricalOciResources } from './oci/OciHistoricalResourceCatalog.js';
+import {
   buildFocusCostMetricRows,
   getFocusCloudAccountExternalId,
   getFocusCloudAccountName,
@@ -32,6 +37,7 @@ interface FocusCostMetricProjectionResult {
   readonly projected: number;
   readonly inserted: number;
   readonly linkage: ResourceLinkageRunStats;
+  readonly historicalResourcesInserted?: number;
 }
 
 interface ResourceLinkageRunStats {
@@ -156,7 +162,7 @@ export class PrismaCloudIngestionJobRepository {
     }
     const metricDerivedResources = this.buildMetricDerivedResources(job, result.metricSamples);
     const resources = this.mergeResources([...result.resources, ...metricDerivedResources]);
-    const resourceIdsByExternalId = await this.upsertResources(this.prisma, resources);
+    const resourceIdsByExternalId = await upsertNormalizedCloudResources(this.prisma, resources);
     let focusRowsProcessed = result.focusRows.length;
     let focusRowsInserted = await this.insertFocusRows(this.prisma, result.focusRows);
     let costMetricProjection = await this.projectFocusRowsToCostMetrics(this.prisma, job, result.focusRows, resourceIdsByExternalId);
@@ -165,6 +171,8 @@ export class PrismaCloudIngestionJobRepository {
       projected: costMetricProjection.projected + providerProjection.projected,
       inserted: costMetricProjection.inserted + providerProjection.inserted,
       linkage: mergeResourceLinkageStats(costMetricProjection.linkage, providerProjection.linkage),
+      historicalResourcesInserted: (costMetricProjection.historicalResourcesInserted ?? 0)
+        + (providerProjection.historicalResourcesInserted ?? 0),
     };
 
     if (result.focusBatches !== undefined) {
@@ -176,6 +184,8 @@ export class PrismaCloudIngestionJobRepository {
           projected: costMetricProjection.projected + batchProjection.projected,
           inserted: costMetricProjection.inserted + batchProjection.inserted,
           linkage: mergeResourceLinkageStats(costMetricProjection.linkage, batchProjection.linkage),
+          historicalResourcesInserted: (costMetricProjection.historicalResourcesInserted ?? 0)
+            + (batchProjection.historicalResourcesInserted ?? 0),
         };
       }
     }
@@ -408,65 +418,6 @@ export class PrismaCloudIngestionJobRepository {
     };
   }
 
-  private async upsertResources(
-    tx: PrismaIngestionPersistenceClient,
-    resources: readonly NormalizedCloudResource[],
-  ): Promise<ReadonlyMap<string, string>> {
-    const resourceIdsByExternalId = new Map<string, string>();
-
-    for (const resource of resources) {
-      const externalResourceId = normalizeExternalResourceId(resource.externalResourceId);
-      if (externalResourceId === undefined) {
-        continue;
-      }
-      const updateData: Prisma.CloudResourceUncheckedUpdateInput = {
-        resourceType: resource.resourceType,
-        serviceName: resource.serviceName,
-        status: resource.status,
-        lastSeenAt: new Date(),
-        ...(resource.name !== undefined ? { name: resource.name } : {}),
-        ...(resource.regionId !== undefined ? { regionId: resource.regionId } : {}),
-        ...(resource.tags !== undefined ? { tags: resource.tags as Prisma.InputJsonValue } : {}),
-        ...(resource.rawResource !== undefined
-          ? { rawResource: resource.rawResource as Prisma.InputJsonValue }
-          : {}),
-      };
-      const createData: Prisma.CloudResourceUncheckedCreateInput = {
-        tenantId: resource.tenantId,
-        cloudConnectionId: resource.cloudConnectionId,
-        provider: resource.provider,
-        externalResourceId,
-        resourceType: resource.resourceType,
-        serviceName: resource.serviceName,
-        status: resource.status,
-        ...(resource.name !== undefined ? { name: resource.name } : {}),
-        ...(resource.regionId !== undefined ? { regionId: resource.regionId } : {}),
-        ...(resource.tags !== undefined ? { tags: resource.tags as Prisma.InputJsonValue } : {}),
-        ...(resource.rawResource !== undefined
-          ? { rawResource: resource.rawResource as Prisma.InputJsonValue }
-          : {}),
-      };
-
-      const persisted = await tx.cloudResource.upsert({
-        where: {
-          cloudConnectionId_externalResourceId: {
-            cloudConnectionId: resource.cloudConnectionId,
-            externalResourceId,
-          },
-        },
-        update: updateData,
-        create: createData,
-        select: {
-          id: true,
-          externalResourceId: true,
-        },
-      });
-      resourceIdsByExternalId.set(persisted.externalResourceId, persisted.id);
-    }
-
-    return resourceIdsByExternalId;
-  }
-
   private async insertMetricSamples(
     tx: PrismaIngestionPersistenceClient,
     samples: readonly NormalizedResourceMetricSample[],
@@ -574,6 +525,7 @@ export class PrismaCloudIngestionJobRepository {
           focusRowsInserted,
           costMetrics: costMetricProjection.projected,
           costMetricsInserted: costMetricProjection.inserted,
+          historicalResourcesInserted: costMetricProjection.historicalResourcesInserted ?? 0,
           resources: resourcesPersisted,
           metricDerivedResources,
           metricSamples: result.metricSamples.length,
@@ -620,7 +572,10 @@ export class PrismaCloudIngestionJobRepository {
         metrics: metricLinkage,
       },
       warnings: result.warnings,
-      coverage: result.coverage,
+      coverage: {
+        ...result.coverage,
+        historicalResourcesInserted: costMetricProjection.historicalResourcesInserted ?? 0,
+      },
     };
   }
 
@@ -817,6 +772,10 @@ export class PrismaCloudIngestionJobRepository {
     }
 
     const accountIdsByExternalId = await this.upsertFocusCloudAccounts(tx, job, rows);
+    const historicalResourcesInserted = await insertHistoricalCloudResources(
+      tx,
+      buildHistoricalOciResources(job, rows),
+    );
     const resolvedResourceIds = await this.resolveResourceIdsForRows(tx, job, resourceIdsByExternalId, rows);
     await tx.costMetric.deleteMany({ where: { cloudConnectionId: job.cloudConnectionId, chargePeriodStart: { gte: job.targetStart, lt: job.targetEnd }, billingSource: CostBillingSource.PROVIDER_API } });
     const data = buildFocusCostMetricRows({
@@ -834,6 +793,7 @@ export class PrismaCloudIngestionJobRepository {
       projected: rows.length,
       inserted: result.count,
       linkage: summarizeResourceLinkage(data),
+      historicalResourcesInserted,
     };
   }
 

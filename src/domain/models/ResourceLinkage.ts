@@ -6,6 +6,7 @@ export const resourceLinkReasonCodes = [
   'AMBIGUOUS_RESOURCE_ID',
   'SERVICE_LEVEL_COST',
   'INVALID_EXISTING_REFERENCE',
+  'UNSUPPORTED_RESOURCE_ID',
 ] as const;
 
 export type ResourceLinkReasonCode = (typeof resourceLinkReasonCodes)[number];

@@ -109,3 +109,26 @@ export interface OciComputeInstance {
   readonly freeformTags?: Readonly<Record<string, unknown>>;
   readonly definedTags?: Readonly<Record<string, unknown>>;
 }
+
+export interface OciResourceSearchClient {
+  close?(): void;
+  searchResources(request: unknown): Promise<{
+    readonly opcNextPage?: string;
+    readonly resourceSummaryCollection?: {
+      readonly items?: readonly OciResourceSearchSummary[];
+    };
+  }>;
+}
+
+export interface OciResourceSearchSummary {
+  readonly resourceType: string;
+  readonly identifier: string;
+  readonly compartmentId: string;
+  readonly timeCreated?: Date;
+  readonly displayName?: string;
+  readonly availabilityDomain?: string;
+  readonly lifecycleState?: string;
+  readonly freeformTags?: Readonly<Record<string, unknown>>;
+  readonly definedTags?: Readonly<Record<string, unknown>>;
+  readonly additionalDetails?: Readonly<Record<string, unknown>>;
+}

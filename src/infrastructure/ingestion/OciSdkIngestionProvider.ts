@@ -43,6 +43,7 @@ import type {
   OciUsageClient,
 } from './oci/OciSdkContracts.js';
 import { collectOciInventory } from './oci/OciInventoryCollector.js';
+import { createOciResourceSearchClient } from './oci/OciResourceSearchCollector.js';
 import { discoverOciInventoryCompartments } from './oci/OciCompartmentDiscovery.js';
 import {
   buildOciFocusPreviewResult,
@@ -107,6 +108,7 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     if (job.sourceType === 'INVENTORY') {
       const inventory = await collectOciInventory(job, {
         createComputeClient: (context) => this.createComputeClient(context),
+        createResourceSearchClient: (context) => createOciResourceSearchClient(this.createAuthProvider(context)),
         discoverCompartments: (context) => discoverOciInventoryCompartments(context, {
           createIdentityClient: (target) => this.createIdentityClient(this.createAuthProvider(target)),
           withRetry: withOciProviderRetry,

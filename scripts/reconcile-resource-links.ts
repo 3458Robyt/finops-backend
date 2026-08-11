@@ -10,6 +10,7 @@ import {
 } from '../src/domain/models/ResourceLinkage.js';
 import type { PrismaClient } from '../src/generated/prisma/client.js';
 import { Prisma } from '../src/generated/prisma/client.js';
+import { backfillHistoricalOciResources } from '../src/infrastructure/ingestion/PrismaHistoricalOciResourceBackfill.js';
 
 const defaultBatchSize = 500;
 const reasonCodes: readonly ResourceLinkReasonCode[] = [
@@ -19,6 +20,7 @@ const reasonCodes: readonly ResourceLinkReasonCode[] = [
   'AMBIGUOUS_RESOURCE_ID',
   'SERVICE_LEVEL_COST',
   'INVALID_EXISTING_REFERENCE',
+  'UNSUPPORTED_RESOURCE_ID',
 ];
 
 interface LinkCounters {
@@ -126,10 +128,11 @@ async function reconcileTenant(
   batchSize: number,
   apply: boolean,
 ): Promise<Record<string, unknown>> {
+  const historicalOciResources = await backfillHistoricalOciResources(prisma, tenantId, batchSize, apply);
   const costMetrics = await safelyReconcile('cost_metrics', () => reconcileCostMetrics(prisma, tenantId, batchSize, apply));
   const metricSamples = await safelyReconcile('resource_metric_samples', () => reconcileMetricSamples(prisma, tenantId, batchSize, apply));
   const recommendations = await safelyReconcile('recommendations', () => reconcileRecommendations(prisma, tenantId, batchSize, apply));
-  const summary = { costMetrics, metricSamples, recommendations };
+  const summary = { historicalOciResources, costMetrics, metricSamples, recommendations };
 
   if (apply) {
     const tables = [costMetrics, metricSamples, recommendations];

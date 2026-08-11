@@ -5,7 +5,9 @@ import type {
 import { optionalString, readObjectArray, requireString } from '../providerConfig.js';
 import type { OciCompartmentDiscoveryResult } from './OciCompartmentDiscovery.js';
 import { readOciMetricDefinitions } from './OciMonitoringCollector.js';
-import type { OciComputeClient } from './OciSdkContracts.js';
+import type { OciComputeClient, OciResourceSearchClient } from './OciSdkContracts.js';
+import { collectOciResourceSearchInventory } from './OciResourceSearchCollector.js';
+import { mergeOciTags, normalizeOciResourceStatus, ociInventorySourcePriority } from './OciResourceNormalizer.js';
 
 export interface OciInventoryCollectionResult {
   readonly apiCallCount: number;
@@ -17,6 +19,7 @@ export interface OciInventoryCollectionResult {
 
 export interface OciInventoryDependencies {
   readonly createComputeClient: (job: CloudIngestionJobContext) => OciComputeClient;
+  readonly createResourceSearchClient?: (job: CloudIngestionJobContext) => OciResourceSearchClient;
   readonly discoverCompartments: (
     job: CloudIngestionJobContext,
   ) => Promise<OciCompartmentDiscoveryResult>;
@@ -30,8 +33,30 @@ export async function collectOciInventory(
   const explicit = readExplicitResources(job);
   const inferred = readMetricResources(job);
   let sdkResources: readonly NormalizedCloudResource[] = [];
+  let searchResources: readonly NormalizedCloudResource[] = [];
+  let resourceSearchStatus: 'COMPLETE' | 'FAILED' | 'NOT_CONFIGURED' = 'NOT_CONFIGURED';
+  let resourceSearchFilteredCount = 0;
+  let resourceSearchTypes: readonly string[] = [];
   let apiCallCount = 0;
   const warnings: string[] = [];
+
+  if (dependencies.createResourceSearchClient !== undefined) {
+    try {
+      const search = await collectOciResourceSearchInventory(job, {
+        createClient: dependencies.createResourceSearchClient,
+        withRetry: dependencies.withRetry,
+      });
+      searchResources = search.resources;
+      resourceSearchStatus = 'COMPLETE';
+      resourceSearchFilteredCount = search.filteredResourceCount;
+      resourceSearchTypes = search.resourceTypes;
+      apiCallCount += search.apiCallCount;
+      warnings.push(...search.warnings);
+    } catch (error) {
+      resourceSearchStatus = 'FAILED';
+      warnings.push(`OCI Resource Search skipped: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   let coverage: Readonly<Record<string, unknown>> = {
     inventoryCompartmentDiscovery: 'NOT_ATTEMPTED',
   };
@@ -39,29 +64,33 @@ export async function collectOciInventory(
   try {
     const inventory = await collectComputeInventory(job, dependencies);
     sdkResources = inventory.resources;
-    apiCallCount = inventory.apiCallCount;
+    apiCallCount += inventory.apiCallCount;
     coverage = inventory.coverage;
   } catch (error) {
     warnings.push(`OCI inventory SDK skipped: ${error instanceof Error ? error.message : String(error)}`);
     coverage = { inventoryCompartmentDiscovery: 'FAILED' };
   }
 
-  const resources = mergeInventoryResources([...inferred, ...explicit, ...sdkResources]);
+  const resources = mergeInventoryResources([...inferred, ...searchResources, ...sdkResources, ...explicit]);
   if (resources.length === 0) {
-    warnings.push('No OCI inventory resources found from Compute SDK, metadata or metric definitions.');
+    warnings.push('No OCI inventory resources found from Resource Search, Compute SDK, metadata or metric definitions.');
   }
 
   return {
     apiCallCount,
     resources,
     warnings,
-    source: sdkResources.length > 0
-      ? 'oci_compute_sdk_with_metadata_fallback'
-      : 'metadata_and_metric_definitions',
+    source: searchResources.length > 0
+      ? 'oci_resource_search_with_compute_and_metadata'
+      : sdkResources.length > 0 ? 'oci_compute_sdk_with_metadata_fallback' : 'metadata_and_metric_definitions',
     coverage: {
       ...coverage,
       configuredResourceCount: explicit.length,
       metricDefinitionResourceCount: inferred.length,
+      resourceSearchStatus,
+      resourceSearchTypes,
+      resourceSearchFilteredCount,
+      resourceSearchResourceCount: searchResources.length,
       sdkResourceCount: sdkResources.length,
       mergedResourceCount: resources.length,
     },
@@ -103,10 +132,11 @@ async function collectComputeInventory(
             ...(job.connection.defaultRegion !== undefined
               ? { regionId: job.connection.defaultRegion }
               : {}),
-            status: normalizeResourceStatus(instance.lifecycleState),
-            tags: mergeTags(instance.freeformTags, instance.definedTags),
+            status: normalizeOciResourceStatus(instance.lifecycleState),
+            tags: mergeOciTags(instance.freeformTags, instance.definedTags),
             rawResource: {
               source: 'OCI_COMPUTE_SDK',
+              normalizerVersion: 'oci-compute-v1',
               compartmentId,
               shape: instance.shape,
               lifecycleState: instance.lifecycleState,
@@ -128,6 +158,8 @@ async function collectComputeInventory(
       configuredCompartmentCount: discovery.configuredCompartmentCount,
       discoveredCompartmentCount: discovery.discoveredCompartmentCount,
       compartmentCount: discovery.compartmentIds.length,
+      includedCompartmentCount: discovery.includedCompartmentCount,
+      excludedCompartmentCount: discovery.excludedCompartmentCount,
       compartmentDiscoveryApiCalls: discovery.apiCallCount,
     },
   };
@@ -148,8 +180,8 @@ function readExplicitResources(job: CloudIngestionJobContext): readonly Normaliz
       resourceType: optionalString(item['resourceType']) ?? 'COMPUTE_INSTANCE',
       serviceName: optionalString(item['serviceName']) ?? 'Oracle Compute',
       ...(regionId !== undefined ? { regionId } : {}),
-      status: normalizeResourceStatus(optionalString(item['status'])),
-      rawResource: { source: 'OCI_INVENTORY_METADATA', ...item },
+      status: normalizeOciResourceStatus(optionalString(item['status'])),
+      rawResource: { source: 'OCI_INVENTORY_METADATA', normalizerVersion: 'oci-metadata-v1', ...item },
     };
   });
 }
@@ -167,6 +199,7 @@ function readMetricResources(job: CloudIngestionJobContext): readonly Normalized
     status: 'UNKNOWN',
     rawResource: {
       source: 'OCI_METRIC_DEFINITION',
+      normalizerVersion: 'oci-metric-definition-v1',
       namespace: definition.namespace,
       compartmentId: definition.compartmentId,
       metricName: definition.metricName,
@@ -180,24 +213,9 @@ function mergeInventoryResources(
   const byId = new Map<string, NormalizedCloudResource>();
   for (const resource of resources) {
     const previous = byId.get(resource.externalResourceId);
-    if (previous === undefined || previous.rawResource?.['source'] === 'OCI_METRIC_DEFINITION') {
+    if (previous === undefined || ociInventorySourcePriority(resource) > ociInventorySourcePriority(previous)) {
       byId.set(resource.externalResourceId, resource);
     }
   }
   return [...byId.values()];
-}
-
-function normalizeResourceStatus(status: string | undefined): NormalizedCloudResource['status'] {
-  const normalized = status?.toUpperCase();
-  if (normalized === 'ACTIVE' || normalized === 'RUNNING' || normalized === 'AVAILABLE') return 'ACTIVE';
-  if (normalized === 'STOPPED' || normalized === 'STOPPING') return 'STOPPED';
-  if (normalized === 'TERMINATED' || normalized === 'DELETED') return 'TERMINATED';
-  return 'UNKNOWN';
-}
-
-function mergeTags(
-  freeform: Readonly<Record<string, unknown>> | undefined,
-  defined: Readonly<Record<string, unknown>> | undefined,
-): Readonly<Record<string, unknown>> {
-  return { ...(freeform ?? {}), ...(defined !== undefined ? { definedTags: defined } : {}) };
 }

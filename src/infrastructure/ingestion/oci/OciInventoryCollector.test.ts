@@ -43,6 +43,28 @@ describe('OCI inventory modules', () => {
     expect(result.compartmentIds).toEqual(['tenancy-1']);
   });
 
+  test('applies explicit compartment include and exclude filters after discovery', async () => {
+    const result = await discoverOciInventoryCompartments(buildJob({
+      credentials: [{ purpose: 'INVENTORY_READ', payload: {} }],
+      metadata: {
+        ociInventoryIncludeCompartments: ['compartment-1'],
+        ociInventoryExcludeCompartments: ['compartment-2'],
+      },
+    }), {
+      createIdentityClient: () => ({
+        getUser: async () => ({}),
+        listCompartments: async () => ({ items: [
+          { id: 'compartment-1', lifecycleState: 'ACTIVE' },
+          { id: 'compartment-2', lifecycleState: 'ACTIVE' },
+        ] }),
+      }),
+      withRetry: (operation) => operation(),
+    });
+
+    expect(result.compartmentIds).toEqual(['compartment-1']);
+    expect(result).toMatchObject({ includedCompartmentCount: 1, excludedCompartmentCount: 1 });
+  });
+
   test('keeps explicit inventory metadata over inferred and SDK duplicates', async () => {
     const close = vi.fn();
     const result = await collectOciInventory(buildJob({

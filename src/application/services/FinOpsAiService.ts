@@ -17,6 +17,7 @@ import { FinOpsArtifactGenerator } from './ai/finOpsArtifactGenerator.js';
 import type { TechnicalRecommendationEvidenceProvider } from './ai/TechnicalRecommendationEvidenceService.js';
 import type { RecommendationReadinessReport } from './ai/RecommendationReadinessGate.js';
 import { buildDeterministicTrendAnalysis } from './ai/DeterministicTrendAnalysis.js';
+import { looksLikeSpanish } from './ai/aiLanguageGuard.js';
 import { loadRuntimeConfig } from '../../infrastructure/config/runtimeConfigReader.js';
 import type { RuntimeConfig } from '../../infrastructure/config/runtimeConfigTypes.js';
 
@@ -165,6 +166,13 @@ export class FinOpsAiService {
           },
         ],
       });
+
+      if (!looksLikeSpanish(answer)) {
+        throw new FinOpsBaseError(
+          'El proveedor IA devolvió una respuesta que no cumple el idioma español requerido.',
+          'AI_RESPONSE_ERROR',
+        );
+      }
 
       await this.recordTrace(input, 'CHAT', builtContext, startedAt, answer);
 

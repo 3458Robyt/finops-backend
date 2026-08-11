@@ -273,6 +273,20 @@ describe('FinOpsAiService', () => {
     expect(gateway.lastRequest?.messages.at(-1)?.content).toBe('Explicame donde esta el mayor costo');
   });
 
+  test('rejects a chat response without Spanish language signals', async () => {
+    const gateway = new FakeAiGateway('Optimize EC2 resources and reduce cost.');
+    const service = new FinOpsAiService(
+      new FakeCostAnalyticsRepository(),
+      new FakeRecommendationRepository(),
+      gateway,
+    );
+
+    await expect(service.answerChat({
+      tenantId: 'tenant-1',
+      message: 'Explicame el mayor costo',
+    })).rejects.toMatchObject({ code: 'AI_RESPONSE_ERROR' });
+  });
+
   test('generates AI recommendations only after auditor approval and persists audit evidence', async () => {
     const recommendationResponse = JSON.stringify({
       recommendations: [

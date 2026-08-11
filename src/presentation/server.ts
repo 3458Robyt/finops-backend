@@ -28,48 +28,9 @@ import type { ITokenService } from '../domain/interfaces/ITokenService.js';
 import type { ValueRealizationService } from '../application/services/ValueRealizationService.js';
 import type { ResourceLinkageReadinessService } from '../application/services/ResourceLinkageReadinessService.js';
 import type { MetricsRegistry } from '../application/observability/MetricsRegistry.js';
-import { AgentController } from './controllers/AgentController.js';
-import { BudgetController } from './controllers/BudgetController.js';
-import { CostAllocationController } from './controllers/CostAllocationController.js';
-import { AiController } from './controllers/AiController.js';
-import { AnalyticsController } from './controllers/AnalyticsController.js';
-import { AuthController } from './controllers/AuthController.js';
-import { AuthSessionController } from './controllers/AuthSessionController.js';
-import { PasswordRecoveryController } from './controllers/PasswordRecoveryController.js';
-import { MfaController } from './controllers/MfaController.js';
-import { CloudConnectionController } from './controllers/CloudConnectionController.js';
-import { CostController } from './controllers/CostController.js';
-import { KpiController } from './controllers/KpiController.js';
-import { MasterAdminController } from './controllers/MasterAdminController.js';
-import { NotificationController } from './controllers/NotificationController.js';
-import { OutboundMessageController } from './controllers/OutboundMessageController.js';
-import { RecommendationController } from './controllers/RecommendationController.js';
-import { RecommendationAnalysisController } from './controllers/RecommendationAnalysisController.js';
-import { TechnicalMetricsController } from './controllers/TechnicalMetricsController.js';
-import { TelegramController } from './controllers/TelegramController.js';
-import { ValueRealizationController } from './controllers/ValueRealizationController.js';
-import { ResourceLinkageController } from './controllers/ResourceLinkageController.js';
-import { createAuthMiddleware, requireRole } from './middleware/authMiddleware.js';
 import { createHttpErrorHandler, createNotFoundHandler } from './middleware/httpErrorHandler.js';
-import { createRateLimit } from './middleware/rateLimit.js';
 import { createMetricsAuth } from './middleware/metricsAuth.js';
-import { createAgentRoutes } from './routes/agentRoutes.js';
-import { createBudgetRoutes } from './routes/budgetRoutes.js';
-import { createCostAllocationRoutes } from './routes/costAllocationRoutes.js';
-import { createAiRoutes } from './routes/aiRoutes.js';
-import { createAnalyticsRoutes } from './routes/analyticsRoutes.js';
-import { createAuthRoutes } from './routes/authRoutes.js';
-import { createCloudConnectionRoutes } from './routes/cloudConnectionRoutes.js';
-import { createCostRoutes } from './routes/costRoutes.js';
-import { createIngestionRoutes } from './routes/ingestionRoutes.js';
-import { createKpiRoutes } from './routes/kpiRoutes.js';
-import { createMasterAdminRoutes } from './routes/masterAdminRoutes.js';
-import { createNotificationRoutes } from './routes/notificationRoutes.js';
-import { createOutboundMessageRoutes } from './routes/outboundMessageRoutes.js';
-import { createRecommendationRoutes } from './routes/recommendationRoutes.js';
-import { createTechnicalMetricsRoutes } from './routes/technicalMetricsRoutes.js';
-import { createTelegramRoutes } from './routes/telegramRoutes.js';
-import { createValueRealizationRoutes } from './routes/valueRealizationRoutes.js';
+import { registerApiRoutes } from './registerApiRoutes.js';
 
 /**
  * Dependencias inyectadas en el servidor Express.
@@ -79,7 +40,7 @@ import { createValueRealizationRoutes } from './routes/valueRealizationRoutes.js
  * desde la Composición Raíz (`index.ts`) para mantener desacoplada la capa
  * de presentación de la infraestructura.
  */
-interface ServerDependencies {
+export interface ServerDependencies {
   /** Servicio de autenticación (login, emisión de credenciales). */
   readonly authService: AuthService;
   readonly passwordRecoveryService: PasswordRecoveryService;
@@ -131,41 +92,7 @@ interface ServerDependencies {
   readonly readinessCheck?: () => Promise<void>;
 }
 
-/**
- * Crea y configura la aplicación Express con todas sus rutas.
- *
- * Configuración aplicada:
- *   - Middleware CORS: origen tomado de `process.env.CORS_ORIGIN` (por
- *     defecto `http://localhost:5173`) y `credentials: true`.
- *   - Middleware `express.json()` para parsear cuerpos JSON.
- *
- * Controladores instanciados con sus dependencias: `AiController`,
- * `AgentController`, `AnalyticsController`, `AuthController`,
- * `CloudConnectionController`, `CostController`, `RecommendationController`,
- * `KpiController`, `NotificationController` y `TelegramController`. Además
- * crea el middleware `requireAuth` a partir de `tokenService`.
- *
- * Prefijos de ruta montados (todos bajo `/api/v1`):
- *   - `/api/v1/agent`             → `createAgentRoutes`
- *   - `/api/v1/ai`                → `createAiRoutes`
- *   - `/api/v1/analytics`         → `createAnalyticsRoutes`
- *   - `/api/v1/auth`              → `createAuthRoutes` (sin `requireAuth`)
- *   - `/api/v1/cloud-connections` → `createCloudConnectionRoutes`
- *   - `/api/v1/costs`             → `createCostRoutes`
- *   - `/api/v1/kpis`              → `createKpiRoutes`
- *   - `/api/v1/notifications`     → `createNotificationRoutes`
- *   - `/api/v1/recommendations`   → `createRecommendationRoutes`
- *   - `/api/v1/telegram`          → `createTelegramRoutes`
- *
- * Expone además un endpoint de salud `GET /health` que responde `200` con
- * `{ status: 'ok', timestamp }`.
- *
- * Al final registra handlers globales para rutas no encontradas y errores no
- * controlados, manteniendo respuestas seguras y un diagnosticId trazable.
- *
- * @param dependencies Dependencias inyectadas (servicios, repositorios y configuración).
- * @returns Instancia de la aplicación Express lista para escuchar conexiones.
- */
+/** Crea la aplicación Express con seguridad, rutas, salud, readiness y métricas. */
 export function createExpressServer(dependencies: ServerDependencies): Express {
   const app = express();
   app.set('trust proxy', parseTrustProxy(process.env['TRUST_PROXY']));
@@ -180,162 +107,7 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   app.use(createRequestLogger(dependencies.metricsRegistry));
   app.use(express.json({ limit: parseBodyLimit(process.env['HTTP_BODY_LIMIT']) }));
 
-  const globalApiLimiter = createRateLimit({
-    windowMs: 60 * 1000,
-    limit: parsePositiveIntegerEnv('API_RATE_LIMIT_PER_MINUTE', 600),
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: {
-      success: false,
-      code: 'RATE_LIMITED',
-      message: 'Demasiadas solicitudes. Intenta de nuevo mas tarde.',
-    },
-  });
-
-  // Limitador anti fuerza bruta para el login (POST /api/v1/auth/login).
-  const authLoginLimiter = createRateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutos
-    limit: 10, // 10 intentos por ventana por IP
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: {
-      success: false,
-      code: 'RATE_LIMITED',
-      message: 'Demasiados intentos de inicio de sesión. Intenta de nuevo más tarde.',
-    },
-  });
-
-  const authRefreshLimiter = createRateLimit({
-    windowMs: 15 * 60 * 1000,
-    limit: 30,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: {
-      success: false,
-      code: 'RATE_LIMITED',
-      message: 'Demasiadas renovaciones de sesión. Inicia sesión nuevamente más tarde.',
-    },
-  });
-
-  const authSensitiveLimiter = createRateLimit({
-    windowMs: 15 * 60 * 1000,
-    limit: 20,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: {
-      success: false,
-      code: 'RATE_LIMITED',
-      message: 'Demasiadas solicitudes de seguridad. Intenta de nuevo más tarde.',
-    },
-  });
-
-  // Limitador anti flood para el webhook de Telegram (POST /api/v1/telegram/webhook).
-  const telegramWebhookLimiter = createRateLimit({
-    windowMs: 60 * 1000, // 1 minuto
-    limit: 120, // 120 updates por minuto por IP
-    standardHeaders: true,
-    legacyHeaders: false,
-  });
-
-  const aiLimiter = createRateLimit({
-    windowMs: 60 * 1000,
-    limit: parsePositiveIntegerEnv('AI_RATE_LIMIT_PER_MINUTE', 30),
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: {
-      success: false,
-      code: 'RATE_LIMITED',
-      message: 'Demasiadas solicitudes de IA. Intenta de nuevo mas tarde.',
-    },
-  });
-
-  const aiController = new AiController(dependencies.aiService, dependencies.learningService);
-  const recommendationAnalysisController = new RecommendationAnalysisController(
-    dependencies.recommendationAnalysisService,
-  );
-  const budgetController = new BudgetController(dependencies.budgetService);
-  const costAllocationController = new CostAllocationController(dependencies.costAllocationService);
-  const agentController = new AgentController(
-    dependencies.agentInstructionService,
-    dependencies.agentContextRepository,
-    dependencies.contextSummaryBuilderService,
-  );
-  const analyticsController = new AnalyticsController(dependencies.analyticsService);
-  const authController = new AuthController(dependencies.authService);
-  const authSessionController = new AuthSessionController(dependencies.authService);
-  const passwordRecoveryController = new PasswordRecoveryController(dependencies.passwordRecoveryService);
-  const mfaController = new MfaController(dependencies.mfaService);
-  const cloudConnectionController = new CloudConnectionController(
-    dependencies.cloudConnectionService,
-  );
-  const technicalMetricsController = new TechnicalMetricsController(
-    dependencies.technicalMetricsService,
-  );
-  const costController = new CostController(dependencies.costRepository);
-  const recommendationController = new RecommendationController(
-    dependencies.recommendationRepository,
-    dependencies.aiService,
-    dependencies.learningService,
-    dependencies.valueRealizationService,
-  );
-  const kpiController = new KpiController(dependencies.recommendationRepository);
-  const notificationController = new NotificationController(dependencies.savingsReminderService);
-  const outboundMessageController = new OutboundMessageController(dependencies.outboundMessageService);
-  const telegramController = new TelegramController(
-    dependencies.telegramBotService,
-    dependencies.telegramLinkService,
-    dependencies.telegramWebhookSecret,
-    dependencies.telegramEnabled,
-  );
-  const masterAdminController = new MasterAdminController(dependencies.masterAdminService);
-  const valueRealizationController = new ValueRealizationController(dependencies.valueRealizationService);
-  const resourceLinkageController = new ResourceLinkageController(dependencies.resourceLinkageReadinessService);
-  const requireAuth = createAuthMiddleware(
-    dependencies.tokenService,
-    dependencies.authSessionRepository,
-  );
-  const requireCloudManager = requireRole([
-    'ADMIN',
-    'MASTER_ADMIN',
-    'OPERATOR_ADMIN',
-    'FINOPS_TECHNICIAN',
-  ]);
-  const requireValueRealizationReconcile = requireRole([
-    'ADMIN',
-    'MASTER_ADMIN',
-    'OPERATOR_ADMIN',
-    'FINOPS_TECHNICIAN',
-  ]);
-
-  // Limitadores específicos montados ANTES de sus routers para ejecutarse primero.
-  app.use('/api/v1', globalApiLimiter);
-  app.use('/api/v1/auth/login', authLoginLimiter);
-  app.use('/api/v1/auth/refresh', authRefreshLimiter);
-  app.use('/api/v1/auth/mfa', authSensitiveLimiter);
-  app.use('/api/v1/auth/password-reset', authSensitiveLimiter);
-  app.use('/api/v1/ai', aiLimiter);
-  app.use('/api/v1/telegram/webhook', telegramWebhookLimiter);
-
-  app.use('/api/v1/agent', createAgentRoutes(agentController, requireAuth));
-  app.use(
-    '/api/v1/ai',
-    createAiRoutes(aiController, recommendationAnalysisController, requireAuth, requireCloudManager),
-  );
-  app.use('/api/v1/analytics', createAnalyticsRoutes(analyticsController, requireAuth));
-  app.use('/api/v1/budgets', createBudgetRoutes(budgetController, requireAuth));
-  app.use('/api/v1/cost-allocation', createCostAllocationRoutes(costAllocationController, requireAuth));
-  app.use('/api/v1/auth', createAuthRoutes(authController, authSessionController, requireAuth, passwordRecoveryController, mfaController));
-  app.use('/api/v1/cloud-connections', createCloudConnectionRoutes(cloudConnectionController, requireAuth, requireCloudManager));
-  app.use('/api/v1/costs', createCostRoutes(costController, requireAuth));
-  app.use('/api/v1/ingestion', createIngestionRoutes(cloudConnectionController, requireAuth, requireCloudManager, resourceLinkageController));
-  app.use('/api/v1/technical-metrics', createTechnicalMetricsRoutes(technicalMetricsController, requireAuth));
-  app.use('/api/v1/kpis', createKpiRoutes(kpiController, requireAuth));
-  app.use('/api/v1/master-admin', createMasterAdminRoutes(masterAdminController, requireAuth));
-  app.use('/api/v1/notifications', createNotificationRoutes(notificationController, requireAuth));
-  app.use('/api/v1/outbound-messages', createOutboundMessageRoutes(outboundMessageController, requireAuth));
-  app.use('/api/v1/recommendations', createRecommendationRoutes(recommendationController, requireAuth));
-  app.use('/api/v1/telegram', createTelegramRoutes(telegramController, requireAuth));
-  app.use('/api/v1/value-realization', createValueRealizationRoutes(valueRealizationController, requireAuth, requireValueRealizationReconcile));
+  registerApiRoutes(app, dependencies);
 
   app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });

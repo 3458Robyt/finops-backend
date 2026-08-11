@@ -179,6 +179,14 @@ export function evaluateRecommendationDrafts(
   ));
 
   checks.push(buildAllPass(
+    'candidateSavingsCap',
+    drafts,
+    (draft) => isWithinCandidateSavingsCap(draft),
+    'Los ahorros no superan el límite determinista del candidato.',
+    'Hay un ahorro estimado superior al máximo calculado para su candidato.',
+  ));
+
+  checks.push(buildAllPass(
     'spanishText',
     drafts,
     (draft) => draft.title.trim() !== '' && draft.description.trim() !== '',
@@ -423,6 +431,20 @@ function readEvidenceRefs(evidence: Record<string, unknown>): readonly string[] 
 function readNumericEvidence(evidence: Record<string, unknown>, field: string): number {
   const value = evidence[field];
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function isWithinCandidateSavingsCap(draft: AiRecommendationDraft): boolean {
+  if (draft.estimatedMonthlySavings === undefined || !isRecord(draft.evidence)) {
+    return true;
+  }
+
+  const configuredCap = draft.evidence['maxEstimatedMonthlySavings'];
+  if (typeof configuredCap !== 'number' || !Number.isFinite(configuredCap)) {
+    // Golden fixtures and legacy callers may not contain the normalized cap.
+    return true;
+  }
+
+  return draft.estimatedMonthlySavings >= 0 && draft.estimatedMonthlySavings <= configuredCap + 0.01;
 }
 
 function readStringEvidence(evidence: Record<string, unknown>, field: string): string | undefined {

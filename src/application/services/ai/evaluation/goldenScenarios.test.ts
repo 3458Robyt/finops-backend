@@ -300,4 +300,23 @@ describe('qualityRubric — execution plan', () => {
     const report = evaluateExecutionPlan(mismatchedPlan, snapshot, recommendation);
     expect(report.checks.find((check) => check.name === 'recommendationScope')?.passed).toBe(false);
   });
+
+  test('fails when normalized savings exceed the candidate cap', () => {
+    const draft = {
+      cloudAccountId: 'acc-prod-aws',
+      type: 'STORAGE_LIFECYCLE',
+      severity: 'MEDIUM',
+      title: 'Optimizar almacenamiento',
+      description: 'Revisar el ciclo de vida del almacenamiento.',
+      estimatedMonthlySavings: 20,
+      currency: 'USD',
+      evidence: {
+        evidenceLevel: 'COST_AND_USAGE',
+        maxEstimatedMonthlySavings: 10,
+      },
+    } as AiRecommendationDraft;
+
+    const report = evaluateRecommendationDrafts([draft], snapshot);
+    expect(report.checks.find((check) => check.name === 'candidateSavingsCap')?.passed).toBe(false);
+  });
 });

@@ -19,6 +19,7 @@ import type { TelegramLinkService } from '../application/services/TelegramLinkSe
 import type { MasterAdminService } from '../application/services/MasterAdminService.js';
 import type { IAgentContextRepository } from '../domain/interfaces/IAgentContextRepository.js';
 import type { IAgentLearningService } from '../domain/interfaces/IAgentLearningService.js';
+import type { IAuthSessionRepository } from '../domain/interfaces/IAuthSessionRepository.js';
 import type { ICostRepository } from '../domain/interfaces/ICostRepository.js';
 import type { IRecommendationRepository } from '../domain/interfaces/IRecommendationRepository.js';
 import type { ITokenService } from '../domain/interfaces/ITokenService.js';
@@ -43,6 +44,7 @@ import { TelegramController } from './controllers/TelegramController.js';
 import { ValueRealizationController } from './controllers/ValueRealizationController.js';
 import { ResourceLinkageController } from './controllers/ResourceLinkageController.js';
 import { createAuthMiddleware, requireRole } from './middleware/authMiddleware.js';
+import { createHttpErrorHandler, createNotFoundHandler } from './middleware/httpErrorHandler.js';
 import { createAgentRoutes } from './routes/agentRoutes.js';
 import { createBudgetRoutes } from './routes/budgetRoutes.js';
 import { createCostAllocationRoutes } from './routes/costAllocationRoutes.js';
@@ -110,8 +112,12 @@ interface ServerDependencies {
   readonly recommendationRepository: IRecommendationRepository;
   /** Servicio de tokens usado por el middleware de autenticación. */
   readonly tokenService: ITokenService;
+  /** Repositorio que permite revocar y validar sesiones JWT persistidas. */
+  readonly authSessionRepository: IAuthSessionRepository;
   readonly valueRealizationService: ValueRealizationService;
   readonly resourceLinkageReadinessService: ResourceLinkageReadinessService;
+  /** Comprueba dependencias críticas sin exponer detalles de infraestructura. */
+  readonly readinessCheck?: () => Promise<void>;
 }
 
 /**
@@ -160,7 +166,7 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
     credentials: true,
   }));
   app.use(createRequestLogger());
-  app.use(express.json());
+  app.use(express.json({ limit: parseBodyLimit(process.env['HTTP_BODY_LIMIT']) }));
 
   const globalApiLimiter = createRateLimit({
     windowMs: 60 * 1000,
@@ -245,7 +251,10 @@ const telegramController = new TelegramController(
   const masterAdminController = new MasterAdminController(dependencies.masterAdminService);
   const valueRealizationController = new ValueRealizationController(dependencies.valueRealizationService);
   const resourceLinkageController = new ResourceLinkageController(dependencies.resourceLinkageReadinessService);
-  const requireAuth = createAuthMiddleware(dependencies.tokenService);
+  const requireAuth = createAuthMiddleware(
+    dependencies.tokenService,
+    dependencies.authSessionRepository,
+  );
   const requireCloudManager = requireRole([
     'ADMIN',
     'MASTER_ADMIN',
@@ -290,6 +299,23 @@ app.use('/api/v1/recommendations', createRecommendationRoutes(recommendationCont
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
+  app.get('/ready', async (_req, res) => {
+    if (dependencies.readinessCheck === undefined) {
+      res.status(200).json({ status: 'ready', checks: { database: 'not_configured' } });
+      return;
+    }
+
+    try {
+      await dependencies.readinessCheck();
+      res.status(200).json({ status: 'ready', checks: { database: 'ok' } });
+    } catch {
+      res.status(503).json({ status: 'not_ready', checks: { database: 'failed' } });
+    }
+  });
+
+  app.use(createNotFoundHandler());
+  app.use(createHttpErrorHandler());
+
   return app;
 }
 
@@ -311,6 +337,11 @@ function parsePositiveIntegerEnv(name: string, fallback: number): number {
 
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseBodyLimit(value: string | undefined): string {
+  const normalized = value?.trim();
+  return normalized === undefined || normalized === '' ? '1mb' : normalized;
 }
 
 function createRateLimit(options: { readonly windowMs: number; readonly limit: number; readonly message?: unknown; readonly standardHeaders?: boolean; readonly legacyHeaders?: boolean }): RequestHandler {

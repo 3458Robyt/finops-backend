@@ -5,10 +5,14 @@ const productionEnv: NodeJS.ProcessEnv = {
   NODE_ENV: 'production',
   DATABASE_URL: 'postgresql://localhost/finops',
   JWT_SECRET: 'a-secure-jwt-secret-with-more-than-32-characters',
-  CREDENTIAL_ENCRYPTION_KEY: 'fixture-key',
+  CREDENTIAL_ENCRYPTION_KEY: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=',
   CORS_ORIGIN: 'https://finops.example.com',
   DB_RUNTIME_ENFORCE: 'true',
   DB_RUNTIME_ROLE: 'finops_runtime',
+  AI_API_KEY: 'sk-fixture-key',
+  AI_BASE_URL: 'https://ai.example.com/v1',
+  AI_MODEL: 'gpt-5.4-mini',
+  AI_AUDITOR_MODEL: 'gpt-5.4-mini',
 };
 
 describe('validateRuntimeConfig', () => {

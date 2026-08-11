@@ -1,7 +1,8 @@
 import type { NextFunction, Request, Response } from 'express';
 import type { ITokenService } from '../../domain/interfaces/ITokenService.js';
+import type { IAuthSessionRepository } from '../../domain/interfaces/IAuthSessionRepository.js';
 import type { UserRole } from '../../domain/models/AuthContext.js';
-import { AuthorizationError } from '../../domain/errors/errors.js';
+import { AuthenticationError, AuthorizationError } from '../../domain/errors/errors.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 
 /**
@@ -19,8 +20,11 @@ import { runWithDatabaseContext } from '../../infrastructure/database/tenantCont
  * @param tokenService Servicio de tokens usado para verificar el JWT.
  * @returns Middleware de Express que protege rutas exigiendo un token válido.
  */
-export function createAuthMiddleware(tokenService: ITokenService) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+export function createAuthMiddleware(
+  tokenService: ITokenService,
+  sessionRepository: IAuthSessionRepository,
+) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const header = req.header('authorization');
 
     if (header === undefined || !header.startsWith('Bearer ')) {
@@ -33,13 +37,23 @@ export function createAuthMiddleware(tokenService: ITokenService) {
     }
 
     try {
-      req.auth = tokenService.verifyToken(header.slice('Bearer '.length).trim());
-      runWithDatabaseContext({
-        tenantId: req.auth.tenantId,
-        userId: req.auth.userId,
-        role: req.auth.role,
+      const auth = tokenService.verifyToken(header.slice('Bearer '.length).trim());
+      const databaseContext = {
+        tenantId: auth.tenantId,
+        userId: auth.userId,
+        role: auth.role,
         requestId: res.locals.requestId,
-      }, next);
+      } as const;
+      const active = await runWithDatabaseContext(
+        databaseContext,
+        () => sessionRepository.isActive(auth),
+      );
+      if (!active) {
+        throw new AuthenticationError('La sesión no está activa. Inicia sesión nuevamente.');
+      }
+
+      req.auth = auth;
+      runWithDatabaseContext(databaseContext, next);
     } catch {
       res.status(401).json({
         success: false,

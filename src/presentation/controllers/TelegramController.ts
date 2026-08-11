@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { TelegramBotService } from '../../application/services/TelegramBotService.js';
 import type { TelegramLinkService } from '../../application/services/TelegramLinkService.js';
 import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { safeSecretEqual } from '../../infrastructure/security/safeSecretCompare.js';
 
 const createLinkSchema = z.object({
   email: z.string().email(),
@@ -63,7 +64,7 @@ export class TelegramController {
       return;
     }
 
-    if (req.header('X-Telegram-Bot-Api-Secret-Token') !== this.webhookSecret) {
+    if (!safeSecretEqual(this.webhookSecret, req.header('X-Telegram-Bot-Api-Secret-Token'))) {
       res.status(401).json({ success: false, error: 'Invalid Telegram webhook secret', code: 'AUTHENTICATION_FAILED' });
       return;
     }

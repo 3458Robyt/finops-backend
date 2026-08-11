@@ -21,6 +21,10 @@ export function createAuthRoutes(authController: AuthController, requireAuth: Re
   const router = Router();
 
   router.post('/login', authController.login);
+  router.post('/logout', requireAuth, authController.logout);
+  router.post('/logout-all', requireAuth, authController.logoutAll);
+  router.get('/sessions', requireAuth, authController.listSessions);
+  router.delete('/sessions/:id', requireAuth, authController.revokeSession);
   router.get('/tenants', requireAuth, authController.listTenants);
   router.post('/switch-tenant', requireAuth, authController.switchTenant);
 

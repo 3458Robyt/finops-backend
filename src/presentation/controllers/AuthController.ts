@@ -168,6 +168,72 @@ export class AuthController {
     }
   };
 
+  public logout = async (req: Request, res: Response): Promise<void> => {
+    if (req.auth === undefined) {
+      this.authenticationRequired(res);
+      return;
+    }
+
+    try {
+      await this.authService.logout(req.auth);
+      res.status(200).json({ success: true });
+    } catch (error: unknown) {
+      this.respondWithAuthError(res, error);
+    }
+  };
+
+  public logoutAll = async (req: Request, res: Response): Promise<void> => {
+    if (req.auth === undefined) {
+      this.authenticationRequired(res);
+      return;
+    }
+
+    try {
+      await this.authService.logoutAll(req.auth);
+      res.status(200).json({ success: true });
+    } catch (error: unknown) {
+      this.respondWithAuthError(res, error);
+    }
+  };
+
+  public listSessions = async (req: Request, res: Response): Promise<void> => {
+    if (req.auth === undefined) {
+      this.authenticationRequired(res);
+      return;
+    }
+
+    try {
+      const sessions = await this.authService.listSessions(req.auth);
+      res.status(200).json({ success: true, sessions });
+    } catch (error: unknown) {
+      this.respondWithAuthError(res, error);
+    }
+  };
+
+  public revokeSession = async (req: Request, res: Response): Promise<void> => {
+    if (req.auth === undefined) {
+      this.authenticationRequired(res);
+      return;
+    }
+
+    const sessionId = req.params['id'];
+    if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid session id',
+        code: 'VALIDATION_ERROR',
+      });
+      return;
+    }
+
+    try {
+      await this.authService.revokeSession(req.auth, sessionId);
+      res.status(200).json({ success: true });
+    } catch (error: unknown) {
+      this.respondWithAuthError(res, error);
+    }
+  };
+
   private respondWithAuthError(res: Response, error: unknown): void {
     if (error instanceof AuthenticationError) {
       res.status(401).json({
@@ -191,6 +257,14 @@ export class AuthController {
     res.status(500).json({
       success: false,
       error: 'An unexpected authentication error occurred',
+    });
+  }
+
+  private authenticationRequired(res: Response): void {
+    res.status(401).json({
+      success: false,
+      error: 'Authentication is required',
+      code: 'AUTHENTICATION_REQUIRED',
     });
   }
 }

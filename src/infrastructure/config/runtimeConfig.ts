@@ -10,6 +10,10 @@ const productionOnlyRequired = [
   'CORS_ORIGIN',
   'DB_RUNTIME_ENFORCE',
   'DB_RUNTIME_ROLE',
+  'AI_API_KEY',
+  'AI_BASE_URL',
+  'AI_MODEL',
+  'AI_AUDITOR_MODEL',
 ] as const;
 
 export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): void {
@@ -24,8 +28,13 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
     }
 
     const jwtSecret = env['JWT_SECRET'];
-    if (jwtSecret !== undefined && jwtSecret.length < 32) {
+    if (jwtSecret !== undefined && (jwtSecret.length < 32 || isKnownPlaceholder(jwtSecret))) {
       issues.push({ key: 'JWT_SECRET', message: 'Debe tener al menos 32 caracteres.' });
+    }
+
+    const encryptionKey = env['CREDENTIAL_ENCRYPTION_KEY'];
+    if (encryptionKey !== undefined && !isBase64KeyOf32Bytes(encryptionKey)) {
+      issues.push({ key: 'CREDENTIAL_ENCRYPTION_KEY', message: 'Debe ser una clave base64 que decodifique a 32 bytes.' });
     }
 
     const corsOrigin = env['CORS_ORIGIN'];
@@ -40,6 +49,12 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
     if (env['DB_RUNTIME_ROLE'] !== 'finops_runtime') {
       issues.push({ key: 'DB_RUNTIME_ROLE', message: 'Debe ser finops_runtime en produccion.' });
     }
+
+    if (!isHttpUrl(env['AI_BASE_URL'])) {
+      issues.push({ key: 'AI_BASE_URL', message: 'Debe ser una URL HTTP(S) válida.' });
+    }
+    validatePositiveBound(env, 'AI_TIMEOUT_MS', 5_000, 120_000, issues);
+    validateIntegerBound(env, 'AI_MAX_RETRIES', 0, 2, issues);
   }
 
   if (issues.length > 0) {
@@ -62,4 +77,57 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
 
 function isBlank(value: string | undefined): boolean {
   return value === undefined || value.trim() === '';
+}
+
+function isKnownPlaceholder(value: string): boolean {
+  return /replace_with|your_|example\.com|change_me/i.test(value);
+}
+
+function isBase64KeyOf32Bytes(value: string): boolean {
+  if (isKnownPlaceholder(value)) return false;
+  try {
+    return Buffer.from(value, 'base64').length === 32;
+  } catch {
+    return false;
+  }
+}
+
+function isHttpUrl(value: string | undefined): boolean {
+  if (isBlank(value)) return false;
+  try {
+    const url = new URL(value!);
+    return url.protocol === 'https:' || url.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+function validatePositiveBound(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  minimum: number,
+  maximum: number,
+  issues: RuntimeValidationIssue[],
+): void {
+  const value = env[key];
+  if (value === undefined) return;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    issues.push({ key, message: `Debe ser un entero entre ${minimum} y ${maximum}.` });
+  }
+}
+
+function validateIntegerBound(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  minimum: number,
+  maximum: number,
+  issues: RuntimeValidationIssue[],
+): void {
+  const value = env[key];
+  if (value === undefined) return;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    issues.push({ key, message: `Debe ser un entero entre ${minimum} y ${maximum}.` });
+  }
 }

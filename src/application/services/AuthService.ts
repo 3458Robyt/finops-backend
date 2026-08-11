@@ -1,6 +1,7 @@
 import type { AccessibleTenant, AuthUser, IUserRepository } from '../../domain/interfaces/IUserRepository.js';
 import type { IPasswordHasher } from '../../domain/interfaces/IPasswordHasher.js';
 import type { ITokenService } from '../../domain/interfaces/ITokenService.js';
+import type { IAuthSessionRepository, AuthSessionSummary } from '../../domain/interfaces/IAuthSessionRepository.js';
 import type { AuthContext, UserRole } from '../../domain/models/AuthContext.js';
 import { AuthenticationError, AuthorizationError } from '../../domain/errors/errors.js';
 
@@ -46,6 +47,7 @@ export class AuthService {
     private readonly users: IUserRepository,
     private readonly passwordHasher: IPasswordHasher,
     private readonly tokenService: ITokenService,
+    private readonly sessions: IAuthSessionRepository,
   ) {}
 
   public async login(input: LoginInput): Promise<LoginResult> {
@@ -81,12 +83,41 @@ export class AuthService {
 
   public async switchTenant(input: SwitchTenantInput): Promise<LoginResult> {
     const user = await this.findActiveUser(input.actor.userId);
+    const accessibleTenants = await this.users.listAccessibleTenants(user);
+    if (!accessibleTenants.some((tenant) => tenant.id === input.tenantId)) {
+      throw new AuthorizationError();
+    }
+
+    const revoked = await this.sessions.revokeCurrent(input.actor);
+    if (!revoked) {
+      throw new AuthenticationError('La sesión ya no está activa. Inicia sesión nuevamente.');
+    }
+
     return this.issueTenantScopedSession({
       user,
       activeTenantId: input.tenantId,
       ...(input.ipAddress !== undefined ? { ipAddress: input.ipAddress } : {}),
       ...(input.userAgent !== undefined ? { userAgent: input.userAgent } : {}),
     });
+  }
+
+  public async logout(actor: AuthContext): Promise<void> {
+    await this.sessions.revokeCurrent(actor);
+  }
+
+  public async logoutAll(actor: AuthContext): Promise<void> {
+    await this.sessions.revokeAll(actor.userId);
+  }
+
+  public listSessions(actor: AuthContext): Promise<readonly AuthSessionSummary[]> {
+    return this.sessions.listActive(actor.userId, actor.jwtId);
+  }
+
+  public async revokeSession(actor: AuthContext, sessionId: string): Promise<void> {
+    const revoked = await this.sessions.revokeById(actor.userId, sessionId);
+    if (!revoked) {
+      throw new AuthorizationError('La sesión no existe o ya fue revocada.');
+    }
   }
 
   private async findActiveUser(userId: string): Promise<AuthUser> {

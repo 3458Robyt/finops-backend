@@ -53,6 +53,7 @@ import { OciSdkIngestionProvider } from './infrastructure/ingestion/OciSdkIngest
 import { PrismaCloudIngestionJobRepository } from './infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
 import { runPrismaIngestionJobScheduler } from './infrastructure/ingestion/PrismaIngestionJobScheduler.js';
 import { PrismaAgentContextRepository } from './infrastructure/repositories/PrismaAgentContextRepository.js';
+import { PrismaAuthSessionRepository } from './infrastructure/repositories/PrismaAuthSessionRepository.js';
 import { PrismaBudgetRepository } from './infrastructure/repositories/PrismaBudgetRepository.js';
 import { PrismaCostAllocationRepository } from './infrastructure/repositories/PrismaCostAllocationRepository.js';
 import { PrismaAgentLearningRepository } from './infrastructure/repositories/PrismaAgentLearningRepository.js';
@@ -129,10 +130,11 @@ const telegramRepository = new PrismaTelegramRepository(prisma);
   const agentContextRepository = new PrismaAgentContextRepository(prisma);
   const agentLearningRepository = new PrismaAgentLearningRepository(prisma);
   const userRepository = new PrismaUserRepository(prisma);
+  const authSessionRepository = new PrismaAuthSessionRepository(prisma);
   const masterAdminRepository = new PrismaMasterAdminRepository(prisma);
   const passwordHasher = new Argon2PasswordHasher();
   const tokenService = new JwtTokenService();
-  const authService = new AuthService(userRepository, passwordHasher, tokenService);
+  const authService = new AuthService(userRepository, passwordHasher, tokenService, authSessionRepository);
   const masterAdminService = new MasterAdminService(masterAdminRepository, passwordHasher);
   const ingestionProviders = [new AwsSdkIngestionProvider(), new OciSdkIngestionProvider()];
   const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository, ingestionProviders);
@@ -254,7 +256,11 @@ const app = createExpressServer({
     costRepository,
   recommendationRepository,
     tokenService,
+    authSessionRepository,
     valueRealizationService,
+    readinessCheck: async () => {
+      await prisma.$queryRaw`SELECT 1`;
+    },
   });
 
 if (process.env['MESSAGE_SCHEDULER_ENABLED'] === 'true') {
@@ -278,7 +284,7 @@ if (process.env['MESSAGE_SCHEDULER_ENABLED'] === 'true') {
 
 const PORT = process.env['PORT'] || 3000;
   
-  app.listen(PORT, () => {
+  const httpServer = app.listen(PORT, () => {
     console.log(`\n🚀 FinOps Backend API running on http://localhost:${PORT}`);
     console.log('   Ingestion providers: AWS SDK + OCI SDK');
     console.log(`   Auth: POST http://localhost:${PORT}/api/v1/auth/login`);
@@ -286,6 +292,31 @@ const PORT = process.env['PORT'] || 3000;
     console.log(`   Costs: GET http://localhost:${PORT}/api/v1/costs?provider=oci&startDate=...&endDate=...`);
     console.log(`   Recommendations: GET http://localhost:${PORT}/api/v1/recommendations`);
   });
+
+  let shuttingDown = false;
+  const shutdown = (signal: string): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(JSON.stringify({ level: 'info', event: 'shutdown_started', signal }));
+    const forceExit = setTimeout(() => process.exit(1), 10_000);
+    forceExit.unref();
+    httpServer.close(() => {
+      void prisma.$disconnect()
+        .catch((error: unknown) => {
+          console.error(JSON.stringify({
+            level: 'error',
+            event: 'shutdown_database_disconnect_failed',
+            errorName: error instanceof Error ? error.name : 'UnknownError',
+          }));
+        })
+        .finally(() => {
+          clearTimeout(forceExit);
+          process.exit(0);
+        });
+    });
+  };
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
 
   if (ingestionWorker !== null) {
     const workerId = process.env['INGESTION_WORKER_ID'] ?? `finops-worker-${process.pid}`;
@@ -306,7 +337,7 @@ const PORT = process.env['PORT'] || 3000;
     });
   }
 
-  if (process.env['AGENT_LEARNING_WORKER_ENABLED'] !== 'false') {
+  if (process.env['AGENT_LEARNING_WORKER_ENABLED'] === 'true') {
     const workerId = process.env['AGENT_LEARNING_WORKER_ID'] ?? `finops-learning-${process.pid}`;
     const intervalMs = parsePositiveIntegerEnv('AGENT_LEARNING_WORKER_INTERVAL_MS', 5000);
 
@@ -326,7 +357,7 @@ const PORT = process.env['PORT'] || 3000;
     });
   }
 
-  if (process.env['RECOMMENDATION_ANALYSIS_WORKER_ENABLED'] !== 'false') {
+  if (process.env['RECOMMENDATION_ANALYSIS_WORKER_ENABLED'] === 'true') {
     const workerId = process.env['RECOMMENDATION_ANALYSIS_WORKER_ID']
       ?? `finops-analysis-${process.pid}`;
     const intervalMs = parsePositiveIntegerEnv('RECOMMENDATION_ANALYSIS_WORKER_INTERVAL_MS', 5000);

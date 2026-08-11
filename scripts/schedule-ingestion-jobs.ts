@@ -27,6 +27,8 @@ async function main(): Promise<void> {
     mode: result.mode,
     generatedAt: result.generatedAt.toISOString(),
     options: {
+      inventoryWindowHours: options.inventoryWindowHours,
+      inventoryCooldownHours: options.inventoryCooldownHours,
       metricWindowMinutes: options.metricWindowMinutes,
       metricCooldownMinutes: options.metricCooldownMinutes,
       billingWindowHours: options.billingWindowHours,
@@ -74,6 +76,8 @@ function parseArgs(args: readonly string[]): ParsedArgs {
 function buildOptions(values: ReadonlyMap<string, string>): IngestionScheduleOptions {
   return {
     now: parseDate(values.get('now') ?? new Date().toISOString(), 'now'),
+    inventoryWindowHours: parsePositiveInteger(values.get('inventory-window-hours') ?? '24', 'inventory-window-hours'),
+    inventoryCooldownHours: parsePositiveInteger(values.get('inventory-cooldown-hours') ?? '24', 'inventory-cooldown-hours'),
     metricWindowMinutes: parsePositiveInteger(values.get('metric-window-minutes') ?? '30', 'metric-window-minutes'),
     metricCooldownMinutes: parsePositiveInteger(values.get('metric-cooldown-minutes') ?? '25', 'metric-cooldown-minutes'),
     billingWindowHours: parsePositiveInteger(values.get('billing-window-hours') ?? '24', 'billing-window-hours'),

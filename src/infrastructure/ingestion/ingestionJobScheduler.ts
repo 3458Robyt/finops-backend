@@ -32,6 +32,10 @@ export interface ScheduleableIngestionJob {
 
 export interface IngestionScheduleOptions {
   readonly now: Date;
+  /** Ventana informativa usada para el job de inventario; el proveedor puede ignorarla. */
+  readonly inventoryWindowHours?: number;
+  /** Tiempo mínimo entre dos lecturas completas del inventario de recursos. */
+  readonly inventoryCooldownHours?: number;
   readonly metricWindowMinutes: number;
   readonly metricCooldownMinutes: number;
   readonly billingWindowHours: number;
@@ -80,7 +84,7 @@ export function buildIngestionSchedulePlan(
       continue;
     }
 
-    for (const sourceType of ['TECHNICAL_METRIC', 'BILLING_EXPORT'] as const) {
+    for (const sourceType of ['INVENTORY', 'TECHNICAL_METRIC', 'BILLING_EXPORT'] as const) {
       const decision = evaluateSource(connection, providerCode, sourceType, options);
       if (decision.kind === 'job') {
         jobs.push(decision.job);
@@ -170,9 +174,11 @@ function evaluateSource(
       targetStart: new Date(targetEnd.getTime() - windowMs),
       targetEnd,
       maxAttempts: options.maxAttempts,
-      reason: sourceType === 'TECHNICAL_METRIC'
-        ? 'Metricas tecnicas configuradas y sin job reciente.'
-        : 'Facturación configurada y sin job reciente.',
+      reason: sourceType === 'INVENTORY'
+        ? 'Inventario de recursos habilitado y sin lectura reciente.'
+        : sourceType === 'TECHNICAL_METRIC'
+          ? 'Metricas tecnicas configuradas y sin job reciente.'
+          : 'Facturación configurada y sin job reciente.',
     },
   };
 }
@@ -191,6 +197,10 @@ function hasCredentialForSource(
     return activePurposes.has('OPERATIONAL') || activePurposes.has('METRICS_READ');
   }
 
+  if (sourceType === 'INVENTORY') {
+    return activePurposes.has('OPERATIONAL') || activePurposes.has('INVENTORY_READ');
+  }
+
   return (
     activePurposes.has('OPERATIONAL') ||
     activePurposes.has('BILLING_EXPORT_READ') ||
@@ -204,8 +214,10 @@ function hasMetadataForSource(
   metadata: unknown,
 ): boolean {
   if (!isRecord(metadata)) {
-    return false;
+    return sourceType === 'INVENTORY';
   }
+
+  if (sourceType === 'INVENTORY') return true;
 
   if (providerCode === 'oci' && sourceType === 'TECHNICAL_METRIC') {
     return hasArrayItems(metadata['ociMetricDefinitions']);
@@ -229,7 +241,8 @@ function requiredCapabilityForSource(
   providerCode: 'aws' | 'oci',
   sourceType: IngestionSourceType,
   metadata: unknown,
-): 'METRICS' | 'STORAGE' | 'COSTS' {
+): 'INVENTORY' | 'METRICS' | 'STORAGE' | 'COSTS' {
+  if (sourceType === 'INVENTORY') return 'INVENTORY';
   if (sourceType === 'TECHNICAL_METRIC') return 'METRICS';
   if (!isRecord(metadata)) return 'COSTS';
 
@@ -267,6 +280,10 @@ function normalizeProviderCode(providerCode: string): 'aws' | 'oci' | null {
 }
 
 function getWindowMs(sourceType: IngestionSourceType, options: IngestionScheduleOptions): number {
+  if (sourceType === 'INVENTORY') {
+    return (options.inventoryWindowHours ?? 24) * 60 * 60 * 1000;
+  }
+
   if (sourceType === 'TECHNICAL_METRIC') {
     return options.metricWindowMinutes * 60 * 1000;
   }
@@ -275,6 +292,10 @@ function getWindowMs(sourceType: IngestionSourceType, options: IngestionSchedule
 }
 
 function getCooldownMs(sourceType: IngestionSourceType, options: IngestionScheduleOptions): number {
+  if (sourceType === 'INVENTORY') {
+    return (options.inventoryCooldownHours ?? 24) * 60 * 60 * 1000;
+  }
+
   if (sourceType === 'TECHNICAL_METRIC') {
     return options.metricCooldownMinutes * 60 * 1000;
   }

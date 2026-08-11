@@ -7,6 +7,8 @@ import {
 const now = new Date('2026-06-05T12:00:00.000Z');
 const defaultOptions = {
   now,
+  inventoryWindowHours: 24,
+  inventoryCooldownHours: 24,
   metricWindowMinutes: 30,
   metricCooldownMinutes: 25,
   billingWindowHours: 24,
@@ -15,6 +17,23 @@ const defaultOptions = {
 };
 
 describe('buildIngestionSchedulePlan', () => {
+  it('schedules a normalized inventory refresh when the provider exposes inventory capability', () => {
+    const plan = buildIngestionSchedulePlan([
+      buildOciConnection({
+        metadata: { capabilityValidation: capabilityValidation(['IDENTITY', 'INVENTORY']) },
+      }),
+    ], defaultOptions);
+
+    expect(plan.jobs).toContainEqual(expect.objectContaining({
+      cloudConnectionId: 'oci_1',
+      providerCode: 'oci',
+      sourceType: 'INVENTORY',
+      targetStart: new Date('2026-06-04T12:00:00.000Z'),
+      targetEnd: now,
+      reason: 'Inventario de recursos habilitado y sin lectura reciente.',
+    }));
+  });
+
   it('schedules technical metrics when metadata and active credentials exist', () => {
     const plan = buildIngestionSchedulePlan([buildOciConnection()], defaultOptions);
 
@@ -107,12 +126,10 @@ describe('buildIngestionSchedulePlan', () => {
         providerCode: 'aws',
       }),
     ]);
-    expect(plan.skipped).toEqual([
-      expect.objectContaining({
-        sourceType: 'TECHNICAL_METRIC',
-        reason: 'No hay metadata configurada para programar esta fuente sin inventar datos.',
-      }),
-    ]);
+    expect(plan.skipped).toContainEqual(expect.objectContaining({
+      sourceType: 'TECHNICAL_METRIC',
+      reason: 'No hay metadata configurada para programar esta fuente sin inventar datos.',
+    }));
   });
 
   it('skips every source when the connection has not been validated after configuration changes', () => {
@@ -121,7 +138,7 @@ describe('buildIngestionSchedulePlan', () => {
     ], defaultOptions);
 
     expect(plan.jobs).toEqual([]);
-    expect(plan.skipped).toHaveLength(2);
+    expect(plan.skipped).toHaveLength(3);
     expect(plan.skipped.every((item) => item.reason === 'La conexión debe validarse después de su última modificación.')).toBe(true);
   });
 
@@ -131,7 +148,7 @@ describe('buildIngestionSchedulePlan', () => {
     ], { ...defaultOptions, validationMaxAgeMinutes: 60 * 24 });
 
     expect(plan.jobs).toEqual([]);
-    expect(plan.skipped).toHaveLength(2);
+    expect(plan.skipped).toHaveLength(3);
     expect(plan.skipped.every((item) => item.reason === 'La validación de capacidades expiró; ejecuta una nueva validación antes de ingerir.')).toBe(true);
   });
 

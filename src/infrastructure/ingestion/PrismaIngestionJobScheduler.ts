@@ -64,7 +64,7 @@ export async function runPrismaIngestionJobScheduler(
       },
       ingestionJobs: {
         where: {
-          sourceType: { in: ['TECHNICAL_METRIC', 'BILLING_EXPORT'] },
+          sourceType: { in: ['INVENTORY', 'TECHNICAL_METRIC', 'BILLING_EXPORT'] },
           status: { in: ['PENDING', 'RUNNING', 'SUCCESS'] },
         },
         orderBy: { targetEnd: 'desc' },

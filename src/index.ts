@@ -497,6 +497,8 @@ const PORT = process.env['PORT'] || 3000;
 
   if (runsSchedulers && process.env['INGESTION_SCHEDULER_ENABLED'] === 'true') {
     const intervalMs = parsePositiveIntegerEnv('INGESTION_SCHEDULER_INTERVAL_MS', 300000);
+    const inventoryWindowHours = parsePositiveIntegerEnv('INGESTION_SCHEDULER_INVENTORY_WINDOW_HOURS', 24);
+    const inventoryCooldownHours = parsePositiveIntegerEnv('INGESTION_SCHEDULER_INVENTORY_COOLDOWN_HOURS', 24);
     const metricWindowMinutes = parsePositiveIntegerEnv('INGESTION_SCHEDULER_METRIC_WINDOW_MINUTES', 30);
     const metricCooldownMinutes = parsePositiveIntegerEnv('INGESTION_SCHEDULER_METRIC_COOLDOWN_MINUTES', 25);
     const billingWindowHours = parsePositiveIntegerEnv('INGESTION_SCHEDULER_BILLING_WINDOW_HOURS', 24);
@@ -518,6 +520,8 @@ const PORT = process.env['PORT'] || 3000;
             apply: true,
             schedule: {
               now: new Date(),
+              inventoryWindowHours,
+              inventoryCooldownHours,
               metricWindowMinutes,
               metricCooldownMinutes,
               billingWindowHours,

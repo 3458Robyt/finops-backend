@@ -13,35 +13,12 @@ import type {
   RecommendationLearningResult,
 } from '../../domain/interfaces/IAgentLearningService.js';
 import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
-import type { AiAuditReport } from '../../domain/models/RecommendationExecutionPlan.js';
-import type { FinOpsRecommendation } from '../../domain/models/FinOpsRecommendation.js';
 import { ContextBudgeter } from './ContextBudgeter.js';
-import {
-  buildMemoryCandidate,
-  summarizeEvidence,
-  type MemoryCandidate,
-} from './learning/learningMemoryContent.js';
-import {
-  isExternalAiLearningFailure,
-  parseAuditReport,
-} from './learning/learningAuditParser.js';
-import { buildLearningAuditRequest } from './learning/learningAuditPrompt.js';
-import {
-  buildGlobalMemoryInput,
-  buildLocalMemoryInput,
-} from './learning/memoryInputBuilder.js';
+import { summarizeEvidence } from './learning/learningMemoryContent.js';
+import { LearningEventProcessor } from './learning/LearningEventProcessor.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 
-/** Veredicto del auditor IA que habilita la persistencia de una memoria aprendida. */
-const approvedAuditVerdict = 'APPROVED';
-/**
- * Tiempo máximo (ms) para la llamada de auditoría IA del candidato de aprendizaje.
- * Configurable vía `LEARNING_AUDIT_TIMEOUT_MS`; por defecto 15000 ms.
- */
-const learningAuditTimeoutMs = Number.parseInt(process.env['LEARNING_AUDIT_TIMEOUT_MS'] ?? '15000', 10);
 const learningWorkerLeaseMs = readPositiveIntegerEnv('AGENT_LEARNING_LEASE_MS', 60_000);
-const learningRetryBaseMs = 30_000;
-const learningRetryMaxMs = 5 * 60_000;
 
 /**
  * Servicio de aprendizaje del agente IA FinOps.
@@ -66,6 +43,7 @@ const learningRetryMaxMs = 5 * 60_000;
 export class AgentLearningService implements IAgentLearningService {
   /** Modelo IA usado como auditor de aprendizaje (resuelto en el constructor). */
   private readonly auditorModel: string;
+  private readonly eventProcessor: LearningEventProcessor;
 
   /**
    * @param recommendationRepository - Repositorio de recomendaciones.
@@ -87,6 +65,13 @@ export class AgentLearningService implements IAgentLearningService {
       process.env['NVIDIA_AUDITOR_MODEL'] ??
       aiGateway.modelName ??
       'gpt-5.4-mini';
+    this.eventProcessor = new LearningEventProcessor({
+      recommendationRepository,
+      learningRepository,
+      aiGateway,
+      auditorModel: this.auditorModel,
+      truncate: (value, maxChars) => this.contextBudgeter.truncate(value, maxChars),
+    });
   }
 
   /** Función de truncado del budgeter, inyectada a las funciones puras de contenido. */
@@ -216,95 +201,7 @@ export class AgentLearningService implements IAgentLearningService {
     event: QueuedAgentLearningEvent,
     workerId?: string,
   ): Promise<RecommendationLearningResult> {
-    const recommendation = await this.recommendationRepository.findById(
-      event.tenantId,
-      event.recommendationId,
-    );
-
-    if (recommendation === null) {
-      await this.learningRepository.completeEvent({
-        eventId: event.id,
-        status: 'ERROR',
-        errorMessage: 'Recommendation not found for queued learning',
-      });
-
-      return {
-        status: 'ERROR',
-        eventId: event.id,
-        error: 'Recommendation not found for queued learning',
-      };
-    }
-
-    try {
-      const candidate = buildMemoryCandidate(event, recommendation, this.truncate);
-      const auditRequest = buildLearningAuditRequest(candidate, {
-        model: this.auditorModel,
-        timeoutMs: learningAuditTimeoutMs,
-      });
-      const auditReport = parseAuditReport(await this.aiGateway.generateText(auditRequest));
-
-      if (auditReport.verdict !== approvedAuditVerdict || auditReport.score < 80) {
-        await this.learningRepository.completeEvent({
-          eventId: event.id,
-          status: 'REJECTED',
-          auditVerdict: auditReport.verdict,
-          auditScore: auditReport.score,
-          auditReport,
-          errorMessage: auditReport.blockingIssues.join('\n') || 'Learning candidate rejected by auditor',
-        });
-
-        return {
-          status: 'REJECTED',
-          eventId: event.id,
-        };
-      }
-
-      await this.learningRepository.createMemory(
-        buildLocalMemoryInput(event.tenantId, event.id, candidate, auditReport),
-      );
-
-      await this.promoteGlobalPatternIfEligible(event, recommendation, candidate, auditReport, event.id);
-
-      await this.learningRepository.completeEvent({
-        eventId: event.id,
-        status: 'APPROVED',
-        auditVerdict: auditReport.verdict,
-        auditScore: auditReport.score,
-        auditReport,
-      });
-
-      return {
-        status: 'APPROVED',
-        eventId: event.id,
-      };
-    } catch (error: unknown) {
-      const externalFailure = isExternalAiLearningFailure(error);
-      const errorMessage = error instanceof Error ? error.message : 'Learning processing failed';
-
-      if (externalFailure && workerId !== undefined) {
-        const status = await this.learningRepository.releaseEventForRetry({
-          eventId: event.id,
-          workerId,
-          errorMessage,
-          nextAttemptAt: new Date(Date.now() + retryDelayMs(event.attempts)),
-        });
-        return { status, eventId: event.id, error: errorMessage };
-      }
-
-      const status = externalFailure ? 'SKIPPED' : 'ERROR';
-
-      await this.learningRepository.completeEvent({
-        eventId: event.id,
-        status,
-        errorMessage,
-      });
-
-      return {
-        status,
-        eventId: event.id,
-        error: errorMessage,
-      };
-    }
+    return this.eventProcessor.process(event, workerId);
   }
 
   /**
@@ -337,55 +234,6 @@ export class AgentLearningService implements IAgentLearningService {
     return this.learningRepository.findSummary(tenantId);
   }
 
-  /**
-   * Promueve el patrón aprendido a una memoria GLOBAL si cumple los umbrales
-   * de madurez, para compartirlo entre tenants.
-   *
-   * Criterios de elegibilidad (todos obligatorios):
-   * - Score de auditoría ≥ 90 (calidad alta).
-   * - Al menos 5 eventos aprobados similares (mismo motivo/tipo/decisión).
-   * - Presentes en al menos 2 tenants distintos (evita sesgo de un solo cliente).
-   * - No existe ya una memoria GLOBAL activa con el mismo fingerprint.
-   *
-   * Efectos secundarios: **persiste** una memoria de ámbito GLOBAL cuando
-   * todos los criterios se cumplen; en caso contrario no hace nada.
-   */
-  private async promoteGlobalPatternIfEligible(
-    input: ProcessRecommendationDecisionInput,
-    recommendation: FinOpsRecommendation,
-    candidate: MemoryCandidate,
-    auditReport: AiAuditReport,
-    eventId: string,
-  ): Promise<void> {
-    if (auditReport.score < 90) {
-      return;
-    }
-
-    const count = await this.learningRepository.countSimilarApprovedEvents({
-      reasonCode: input.reasonCode,
-      recommendationType: recommendation.type,
-      decision: input.decision,
-    });
-
-    if (count.eventCount < 5 || count.tenantCount < 2) {
-      return;
-    }
-
-    const globalFingerprint = `GLOBAL:${candidate.fingerprint}`;
-    const exists = await this.learningRepository.hasActiveGlobalMemory(globalFingerprint);
-
-    if (exists) {
-      return;
-    }
-
-    await this.learningRepository.createMemory(
-      buildGlobalMemoryInput(input, recommendation, candidate, auditReport, eventId, count, this.truncate),
-    );
-  }
-}
-
-function retryDelayMs(attempt: number): number {
-  return Math.min(learningRetryMaxMs, learningRetryBaseMs * (2 ** Math.max(0, attempt - 1)));
 }
 
 function readPositiveIntegerEnv(key: string, defaultValue: number): number {

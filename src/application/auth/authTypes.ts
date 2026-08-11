@@ -37,6 +37,8 @@ export interface LoginResult {
   };
   readonly activeTenant: AuthTenant;
   readonly availableTenants: readonly AuthTenant[];
+  /** One-time plaintext recovery codes returned only immediately after MFA enrollment. */
+  readonly mfaRecoveryCodes?: readonly string[];
 }
 
 export interface MfaRequiredResult {

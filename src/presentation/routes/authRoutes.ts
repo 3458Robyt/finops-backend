@@ -43,6 +43,7 @@ export function createAuthRoutes(
     router.get('/mfa/status', requireAuth, mfaController.status);
     router.post('/mfa/setup', requireAuth, mfaController.setup);
     router.post('/mfa/confirm', requireAuth, mfaController.confirm);
+    router.post('/mfa/recovery-codes/regenerate', requireAuth, mfaController.regenerateRecoveryCodes);
   }
   router.post('/logout', trustedOrigin, requireAuth, authSessionController.logout);
   router.post('/logout-all', trustedOrigin, requireAuth, authSessionController.logoutAll);

@@ -61,6 +61,7 @@ import { PrismaAuthSessionRepository } from './infrastructure/repositories/Prism
 import { PrismaAuthSecurityRepository } from './infrastructure/repositories/PrismaAuthSecurityRepository.js';
 import { PrismaAccountRecoveryRepository } from './infrastructure/repositories/PrismaAccountRecoveryRepository.js';
 import { PrismaMfaRepository } from './infrastructure/repositories/PrismaMfaRepository.js';
+import { PrismaMfaRecoveryCodeRepository } from './infrastructure/repositories/PrismaMfaRecoveryCodeRepository.js';
 import { PrismaBudgetRepository } from './infrastructure/repositories/PrismaBudgetRepository.js';
 import { PrismaCostAllocationRepository } from './infrastructure/repositories/PrismaCostAllocationRepository.js';
 import { PrismaAgentLearningRepository } from './infrastructure/repositories/PrismaAgentLearningRepository.js';
@@ -145,11 +146,12 @@ const telegramRepository = new PrismaTelegramRepository(prisma);
   const authSecurityRepository = new PrismaAuthSecurityRepository(prisma);
   const accountRecoveryRepository = new PrismaAccountRecoveryRepository(prisma);
   const mfaRepository = new PrismaMfaRepository(prisma);
+  const mfaRecoveryCodeRepository = new PrismaMfaRecoveryCodeRepository(prisma);
   const authSessionRepository = new PrismaAuthSessionRepository(prisma, authSecurityRepository);
   const masterAdminRepository = new PrismaMasterAdminRepository(prisma);
   const passwordHasher = new Argon2PasswordHasher();
   const tokenService = new JwtTokenService();
-  const mfaService = new MfaService(mfaRepository, credentialCipher);
+  const mfaService = new MfaService(mfaRepository, credentialCipher, mfaRecoveryCodeRepository);
   const authService = new AuthService(
     userRepository,
     passwordHasher,

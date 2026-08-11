@@ -1,15 +1,22 @@
 import { randomBytes } from 'node:crypto';
-import type { IMfaRepository, MfaRecord } from '../../domain/interfaces/IMfaRepository.js';
+import type { IMfaRepository, MfaChallengeRecord, MfaRecord } from '../../domain/interfaces/IMfaRepository.js';
 import type { ISecretCipher } from '../../domain/interfaces/ISecretCipher.js';
 import type { IMfaAuthenticationService, MfaLoginChallenge } from '../../domain/interfaces/IMfaAuthenticationService.js';
+import type { IMfaRecoveryCodeRepository } from '../../domain/interfaces/IMfaRecoveryCodeRepository.js';
 import { AuthenticationError, ConfigurationError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import { buildTotpUri, generateTotpSecret, verifyTotpCode } from './security/totp.js';
+import {
+  createMfaRecoveryCodeSet,
+  hashMfaRecoveryCode,
+  isMfaRecoveryCode,
+} from './security/mfaRecoveryCodes.js';
 import { hashOpaqueToken } from '../auth/opaqueToken.js';
 
 export class MfaService implements IMfaAuthenticationService {
   public constructor(
     private readonly repository: IMfaRepository,
     private readonly cipher?: ISecretCipher,
+    private readonly recoveryCodes?: IMfaRecoveryCodeRepository,
   ) {}
 
   public async isEnabled(userId: string): Promise<boolean> {
@@ -28,8 +35,19 @@ export class MfaService implements IMfaAuthenticationService {
     return this.createChallenge(input.userId, 'LOGIN', input.ipAddress, input.userAgent);
   }
 
-  public async verifyLoginChallenge(challengeToken: string, code: string): Promise<string> {
-    return this.verifyChallenge(challengeToken, code, 'LOGIN');
+  public async verifyLoginChallenge(challengeToken: string, code: string) {
+    const challenge = await this.requireChallenge(challengeToken, 'LOGIN');
+    if (isMfaRecoveryCode(code)) {
+      const consumed = await this.requireRecoveryCodes().consumeLoginChallenge({
+        challengeTokenHash: challenge.tokenHash,
+        userId: challenge.userId,
+        codeHash: hashMfaRecoveryCode(code),
+      });
+      if (!consumed) throw new AuthenticationError('El código de recuperación no es válido o ya fue utilizado.');
+      return { userId: challenge.userId, method: 'RECOVERY_CODE' as const };
+    }
+    await this.verifyTotpChallenge(challenge, code, false);
+    return { userId: challenge.userId, method: 'TOTP' as const };
   }
 
   public async beginSetup(userId: string, email: string): Promise<{ readonly secret: string; readonly otpauthUri: string }> {
@@ -46,20 +64,21 @@ export class MfaService implements IMfaAuthenticationService {
     return { secret, otpauthUri: buildTotpUri(secret, email) };
   }
 
-  public async confirmSetup(userId: string, code: string): Promise<void> {
+  public async confirmSetup(userId: string, code: string): Promise<readonly string[]> {
     const record = await this.requireMfaRecord(userId);
     const secret = this.decryptSecret(record);
     const usedStep = verifyTotpCode(secret, code);
     if (usedStep === null || record.lastUsedStep !== undefined && BigInt(usedStep) <= record.lastUsedStep) {
       throw new AuthenticationError('El código MFA no es válido o ya fue utilizado.');
     }
-    const enabled = await this.repository.enableMfa({
-      challengeTokenHash: '',
+    const generated = createMfaRecoveryCodeSet();
+    const enabled = await this.requireRecoveryCodes().enableMfaWithCodes({
       userId,
       usedStep: BigInt(usedStep),
-      enableMfa: true,
+      recoveryCodes: generated,
     });
     if (!enabled) throw new AuthenticationError('No se pudo activar MFA. Intenta nuevamente.');
+    return generated.plainCodes;
   }
 
   public async beginEnrollment(input: {
@@ -73,15 +92,49 @@ export class MfaService implements IMfaAuthenticationService {
     return { ...challenge, ...setup };
   }
 
-  public async completeEnrollment(challengeToken: string, code: string): Promise<string> {
-    return this.verifyChallenge(challengeToken, code, 'ENROLLMENT');
+  public async completeEnrollment(challengeToken: string, code: string) {
+    const challenge = await this.requireChallenge(challengeToken, 'ENROLLMENT');
+    const record = await this.requireMfaRecord(challenge.userId);
+    const usedStep = verifyTotpCode(this.decryptSecret(record), code);
+    if (usedStep === null || record.lastUsedStep !== undefined && BigInt(usedStep) <= record.lastUsedStep) {
+      throw new AuthenticationError('El código MFA no es válido o ya fue utilizado.');
+    }
+    const generated = createMfaRecoveryCodeSet();
+    const consumed = await this.requireRecoveryCodes().completeEnrollmentWithCodes({
+      challengeTokenHash: challenge.tokenHash,
+      userId: challenge.userId,
+      usedStep: BigInt(usedStep),
+      recoveryCodes: generated,
+    });
+    if (!consumed) throw new AuthenticationError('El desafío MFA ya no está activo.');
+    return { userId: challenge.userId, recoveryCodes: generated.plainCodes };
   }
 
-  private async verifyChallenge(
+  public async recoveryCodeStatus(userId: string): Promise<{ readonly remaining: number }> {
+    return { remaining: await this.requireRecoveryCodes().countActive(userId) };
+  }
+
+  public async regenerateRecoveryCodes(userId: string, code: string): Promise<readonly string[]> {
+    const record = await this.requireMfaRecord(userId);
+    if (record.enabledAt === undefined) throw new AuthenticationError('MFA no está activado para este usuario.');
+    const usedStep = verifyTotpCode(this.decryptSecret(record), code);
+    if (usedStep === null || record.lastUsedStep !== undefined && BigInt(usedStep) <= record.lastUsedStep) {
+      throw new AuthenticationError('El código MFA no es válido o ya fue utilizado.');
+    }
+    const generated = createMfaRecoveryCodeSet();
+    const replaced = await this.requireRecoveryCodes().replaceCodesWithTotp({
+      userId,
+      usedStep: BigInt(usedStep),
+      recoveryCodes: generated,
+    });
+    if (!replaced) throw new AuthenticationError('No fue posible regenerar los códigos de recuperación.');
+    return generated.plainCodes;
+  }
+
+  private async requireChallenge(
     challengeToken: string,
-    code: string,
     purpose: 'LOGIN' | 'ENROLLMENT',
-  ): Promise<string> {
+  ): Promise<MfaChallengeRecord> {
     if (challengeToken.trim().length < 32) {
       throw new AuthenticationError('El desafío MFA no es válido o expiró.');
     }
@@ -96,21 +149,27 @@ export class MfaService implements IMfaAuthenticationService {
       throw new AuthenticationError('El desafío MFA no es válido o expiró.');
     }
 
+    return challenge;
+  }
+
+  private async verifyTotpChallenge(
+    challenge: MfaChallengeRecord,
+    code: string,
+    enableMfa: boolean,
+  ): Promise<void> {
     const record = await this.requireMfaRecord(challenge.userId);
-    const secret = this.decryptSecret(record);
-    const usedStep = verifyTotpCode(secret, code);
+    const usedStep = verifyTotpCode(this.decryptSecret(record), code);
     if (usedStep === null || record.lastUsedStep !== undefined && BigInt(usedStep) <= record.lastUsedStep) {
       throw new AuthenticationError('El código MFA no es válido o ya fue utilizado.');
     }
 
     const consumed = await this.repository.consumeChallenge({
-      challengeTokenHash: tokenHash,
+      challengeTokenHash: challenge.tokenHash,
       userId: challenge.userId,
       usedStep: BigInt(usedStep),
-      enableMfa: purpose === 'ENROLLMENT',
+      enableMfa,
     });
     if (!consumed) throw new AuthenticationError('El desafío MFA ya no está activo.');
-    return challenge.userId;
   }
 
   private async createChallenge(
@@ -161,6 +220,13 @@ export class MfaService implements IMfaAuthenticationService {
     const record = await this.repository.findMfa(userId);
     if (record === null) throw new AuthenticationError('MFA no está configurado para este usuario.');
     return record;
+  }
+
+  private requireRecoveryCodes(): IMfaRecoveryCodeRepository {
+    if (this.recoveryCodes === undefined) {
+      throw new ConfigurationError('El almacenamiento de códigos de recuperación MFA no está disponible.');
+    }
+    return this.recoveryCodes;
   }
 }
 

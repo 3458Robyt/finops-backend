@@ -120,8 +120,8 @@ export class AuthService {
     readonly userAgent?: string;
   }): Promise<LoginResult> {
     if (this.mfa === undefined) throw new AuthenticationError('MFA no está disponible.');
-    const userId = await this.mfa.verifyLoginChallenge(input.challengeToken, input.code);
-    const user = await this.runInDatabaseContext({ userId }, () => this.findActiveUser(userId));
+    const verification = await this.mfa.verifyLoginChallenge(input.challengeToken, input.code);
+    const user = await this.runInDatabaseContext({ userId: verification.userId }, () => this.findActiveUser(verification.userId));
     return this.runInDatabaseContext({ userId: user.id, tenantId: user.tenantId, role: user.role }, () => this.issuer.issue({
       user,
       activeTenantId: user.tenantId,
@@ -137,14 +137,15 @@ export class AuthService {
     readonly userAgent?: string;
   }): Promise<LoginResult> {
     if (this.mfa === undefined) throw new AuthenticationError('MFA no está disponible.');
-    const userId = await this.mfa.completeEnrollment(input.challengeToken, input.code);
-    const user = await this.runInDatabaseContext({ userId }, () => this.findActiveUser(userId));
-    return this.runInDatabaseContext({ userId: user.id, tenantId: user.tenantId, role: user.role }, () => this.issuer.issue({
+    const verification = await this.mfa.completeEnrollment(input.challengeToken, input.code);
+    const user = await this.runInDatabaseContext({ userId: verification.userId }, () => this.findActiveUser(verification.userId));
+    const session = await this.runInDatabaseContext({ userId: user.id, tenantId: user.tenantId, role: user.role }, () => this.issuer.issue({
       user,
       activeTenantId: user.tenantId,
       ...(input.ipAddress === undefined ? {} : { ipAddress: input.ipAddress }),
       ...(input.userAgent === undefined ? {} : { userAgent: input.userAgent }),
     }));
+    return { ...session, mfaRecoveryCodes: verification.recoveryCodes };
   }
 
   public async listAccessibleTenants(actor: AuthContext): Promise<readonly AuthTenant[]> {

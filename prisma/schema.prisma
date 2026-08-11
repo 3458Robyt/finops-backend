@@ -437,6 +437,7 @@ model User {
   passwordResetTokens                 PasswordResetToken[]
   mfaChallenges                       MfaChallenge[]
   mfa                                UserMfa?
+  mfaRecoveryCodes                   MfaRecoveryCode[]
   decisions                           RecommendationDecision[]
   executionPlans                      RecommendationExecutionPlan[]
   manualExecutions                    RecommendationManualExecution[]
@@ -696,6 +697,21 @@ model MfaChallenge {
 
   @@index([userId, purpose, expiresAt])
   @@map("mfa_challenges")
+}
+
+model MfaRecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  batchId   String    @map("batch_id")
+  codeHash  String    @unique @map("code_hash")
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt, usedAt])
+  @@index([userId, batchId])
+  @@map("mfa_recovery_codes")
 }
 
 model CloudAccount {

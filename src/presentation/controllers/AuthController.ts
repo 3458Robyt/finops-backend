@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AuthService, type LoginResult } from '../../application/services/AuthService.js';
 import { hashMfaChallengeToken } from '../../application/services/MfaService.js';
+import { isMfaRecoveryCode } from '../../application/services/security/mfaRecoveryCodes.js';
 import { AuthenticationError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 import { setRefreshCookie } from '../auth/authCookie.js';
@@ -13,7 +14,7 @@ const loginSchema = z.object({
 
 const mfaCompleteSchema = z.object({
   challengeToken: z.string().min(32),
-  code: z.string().regex(/^\d{6}$/),
+  code: z.string().min(6).max(32).refine((value) => /^\d{6}$/.test(value) || isMfaRecoveryCode(value)),
 });
 
 /** Public credential exchange and pre-session MFA challenge handlers. */
@@ -140,6 +141,7 @@ function toPublicLoginResult(result: LoginResult): object {
     user: result.user,
     activeTenant: result.activeTenant,
     availableTenants: result.availableTenants,
+    ...(result.mfaRecoveryCodes === undefined ? {} : { mfaRecoveryCodes: result.mfaRecoveryCodes }),
   };
 }
 

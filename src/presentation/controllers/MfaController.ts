@@ -15,10 +15,13 @@ export class MfaController {
       return;
     }
     try {
+      const enabled = await this.service.isEnabled(req.auth.userId);
+      const recovery = enabled ? await this.service.recoveryCodeStatus(req.auth.userId) : { remaining: 0 };
       res.status(200).json({
         success: true,
-        enabled: await this.service.isEnabled(req.auth.userId),
+        enabled,
         requiredForRole: privilegedRoles.has(req.auth.role),
+        recoveryCodesRemaining: recovery.remaining,
       });
     } catch (error: unknown) {
       this.respond(res, error);
@@ -43,8 +46,31 @@ export class MfaController {
       return;
     }
     try {
-      await this.service.confirmSetup(req.auth.userId, parsed.data.code);
-      res.status(200).json({ success: true, message: 'MFA quedó activado para esta cuenta.' });
+      const recoveryCodes = await this.service.confirmSetup(req.auth.userId, parsed.data.code);
+      res.status(200).json({
+        success: true,
+        recoveryCodes,
+        message: 'MFA quedó activado. Guarda estos códigos; no volverán a mostrarse.',
+      });
+    } catch (error: unknown) {
+      this.respond(res, error);
+    }
+  };
+
+  public regenerateRecoveryCodes = async (req: Request, res: Response): Promise<void> => {
+    if (!this.requirePrivileged(req, res) || req.auth === undefined) return;
+    const parsed = codeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, error: 'Confirma un código MFA de seis dígitos.', code: 'VALIDATION_ERROR' });
+      return;
+    }
+    try {
+      const recoveryCodes = await this.service.regenerateRecoveryCodes(req.auth.userId, parsed.data.code);
+      res.status(200).json({
+        success: true,
+        recoveryCodes,
+        message: 'Los códigos anteriores fueron revocados. Guarda los nuevos códigos ahora.',
+      });
     } catch (error: unknown) {
       this.respond(res, error);
     }

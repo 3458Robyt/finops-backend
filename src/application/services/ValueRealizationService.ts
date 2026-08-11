@@ -9,6 +9,7 @@ import type {
   ValueRealizationSummary,
   ValueRealizationTrendPoint,
 } from '../../domain/interfaces/IValueRealizationRepository.js';
+import { safeErrorMessage } from '../observability/safeError.js';
 
 export interface ValueRealizationReconciliationResult {
   readonly tenantId: string;
@@ -96,7 +97,7 @@ export class ValueRealizationService {
           tenantId,
           recommendationId: candidate.recommendationId,
           manualExecutionId: candidate.manualExecutionId,
-          error: error instanceof Error ? error.message : String(error),
+          error: safeErrorMessage(error),
         }));
       }
     }
@@ -144,7 +145,7 @@ export class ValueRealizationService {
               tenantId,
               userId: user.id,
               measurementId: measurement.id,
-              error: error instanceof Error ? error.message : String(error),
+              error: safeErrorMessage(error),
             }));
           }
         }
@@ -156,7 +157,7 @@ export class ValueRealizationService {
             event: 'value_realization_outbound_notification_failed',
             tenantId,
             measurementId: measurement.id,
-            error: error instanceof Error ? error.message : String(error),
+            error: safeErrorMessage(error),
           }));
         });
       }

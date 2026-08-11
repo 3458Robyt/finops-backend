@@ -20,6 +20,7 @@
 import 'dotenv/config';
 
 import { AuthService } from './application/services/AuthService.js';
+import { safeErrorMessage } from './application/observability/safeError.js';
 import { BudgetService } from './application/services/BudgetService.js';
 import { CostAllocationService } from './application/services/CostAllocationService.js';
 import { AgentInstructionService } from './application/services/AgentInstructionService.js';
@@ -335,7 +336,7 @@ const PORT = process.env['PORT'] || 3000;
       intervalMs,
       fallbackIntervalMs: 30000,
       onError: (error: unknown) => {
-        console.error('Ingestion worker iteration failed:', error);
+        console.error(JSON.stringify({ level: 'error', event: 'ingestion_worker_iteration_failed', error: safeErrorMessage(error) }));
       },
       onSkip: () => {
         console.warn('Ingestion worker iteration skipped because previous run is still active');
@@ -355,7 +356,7 @@ const PORT = process.env['PORT'] || 3000;
       intervalMs,
       fallbackIntervalMs: 5000,
       onError: (error: unknown) => {
-        console.error('Agent learning worker iteration failed:', error);
+        console.error(JSON.stringify({ level: 'error', event: 'agent_learning_worker_iteration_failed', error: safeErrorMessage(error) }));
       },
       onSkip: () => {
         console.warn('Agent learning worker iteration skipped because previous run is still active');
@@ -380,7 +381,7 @@ const PORT = process.env['PORT'] || 3000;
       intervalMs,
       fallbackIntervalMs: 5000,
       onError: (error: unknown) => {
-        console.error('Recommendation analysis worker iteration failed:', error);
+        console.error(JSON.stringify({ level: 'error', event: 'recommendation_analysis_worker_iteration_failed', error: safeErrorMessage(error) }));
       },
       onSkip: () => {
         console.warn('Recommendation analysis iteration skipped because previous run is still active');
@@ -414,7 +415,7 @@ const PORT = process.env['PORT'] || 3000;
       intervalMs,
       fallbackIntervalMs: 300_000,
       onError: (error: unknown) => {
-        console.error('Recommendation analysis scheduler iteration failed:', error);
+        console.error(JSON.stringify({ level: 'error', event: 'recommendation_analysis_scheduler_iteration_failed', error: safeErrorMessage(error) }));
       },
     });
   }
@@ -435,7 +436,7 @@ const PORT = process.env['PORT'] || 3000;
     };
 
     if (process.env['SAVINGS_RECONCILIATION_RUN_ON_START'] === 'true') {
-      void runReconciliation().catch((error: unknown) => console.error('Initial value realization reconciliation failed:', error));
+      void runReconciliation().catch((error: unknown) => console.error(JSON.stringify({ level: 'error', event: 'initial_value_realization_reconciliation_failed', error: safeErrorMessage(error) })));
     }
     if (process.env['SAVINGS_RECONCILIATION_SCHEDULER_ENABLED'] === 'true') {
       const intervalMs = parsePositiveIntegerEnv('SAVINGS_RECONCILIATION_INTERVAL_MS', 300_000);
@@ -444,7 +445,7 @@ const PORT = process.env['PORT'] || 3000;
         run: runReconciliation,
         intervalMs,
         fallbackIntervalMs: 300_000,
-        onError: (error: unknown) => console.error('Value realization reconciliation iteration failed:', error),
+        onError: (error: unknown) => console.error(JSON.stringify({ level: 'error', event: 'value_realization_reconciliation_iteration_failed', error: safeErrorMessage(error) })),
         onSkip: () => console.warn('Value realization reconciliation skipped because previous run is still active'),
       });
     }
@@ -487,7 +488,7 @@ const PORT = process.env['PORT'] || 3000;
         console.log(`Ingestion scheduler planned ${result.plannedJobs.length} job(s), created ${result.createdJobs.length}.`);
       },
       onError: (error: unknown) => {
-        console.error('Ingestion scheduler iteration failed:', error);
+        console.error(JSON.stringify({ level: 'error', event: 'ingestion_scheduler_iteration_failed', error: safeErrorMessage(error) }));
       },
       onSkip: () => {
         console.warn('Ingestion scheduler iteration skipped because previous run is still active');
@@ -513,6 +514,6 @@ function parsePositiveIntegerEnv(name: string, fallback: number): number {
 // el proceso termina con código de salida `1` para que el orquestador
 // (Docker, PM2, systemd, etc.) detecte el fallo y reinicie si procede.
 bootstrap().catch((error: unknown) => {
-  console.error('💥 Fatal error during bootstrap:', error);
+  console.error(JSON.stringify({ level: 'error', event: 'bootstrap_failed', error: safeErrorMessage(error) }));
   process.exit(1);
 });

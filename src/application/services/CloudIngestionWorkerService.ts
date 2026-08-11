@@ -4,6 +4,7 @@ import type {
   PrismaCloudIngestionJobRepository,
 } from '../../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
+import { safeErrorMessage } from '../observability/safeError.js';
 
 export interface CloudIngestionWorkerRunResult {
   readonly processed: boolean;
@@ -92,7 +93,7 @@ export class CloudIngestionWorkerService {
             event: 'post_ingestion_value_reconciliation_failed',
             jobId: job.id,
             tenantId: job.tenantId,
-            error: error instanceof Error ? error.message : String(error),
+            error: safeErrorMessage(error),
           }));
         });
       }

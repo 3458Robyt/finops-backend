@@ -5,6 +5,7 @@ import type { IRecommendationRepository } from '../../domain/interfaces/IRecomme
 import type { ValueRealizationService } from '../../application/services/ValueRealizationService.js';
 import type { CreateSavingsMeasurementInput } from '../../domain/interfaces/IRecommendationRepository.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import { safeErrorMessage } from '../../application/observability/safeError.js';
 import {
   parseStatus,
   parseString,
@@ -245,7 +246,7 @@ export class RecommendationController {
       };
       const measurement = await this.recommendationRepository.createSavingsMeasurement(input);
       void this.valueRealizationService?.notifyMeasurement(measurement).catch((error: unknown) => {
-        console.error('Savings measurement notification failed:', error);
+        console.error(JSON.stringify({ level: 'warn', event: 'savings_measurement_notification_failed', error: safeErrorMessage(error) }));
       });
       res.status(201).json({ success: true, measurement });
     } catch (error: unknown) {
@@ -304,7 +305,7 @@ export class RecommendationController {
         ...(note !== undefined ? { note } : {}),
       });
       void this.valueRealizationService?.notifyMeasurement(measurement).catch((error: unknown) => {
-        console.error('Verified savings notification failed:', error);
+        console.error(JSON.stringify({ level: 'warn', event: 'verified_savings_notification_failed', error: safeErrorMessage(error) }));
       });
       res.status(200).json({ success: true, measurement });
     } catch (error: unknown) {
@@ -332,7 +333,7 @@ export class RecommendationController {
         reason,
       });
       void this.valueRealizationService?.notifyMeasurement(measurement).catch((error: unknown) => {
-        console.error('Rejected savings notification failed:', error);
+        console.error(JSON.stringify({ level: 'warn', event: 'rejected_savings_notification_failed', error: safeErrorMessage(error) }));
       });
       res.status(200).json({ success: true, measurement });
     } catch (error: unknown) {

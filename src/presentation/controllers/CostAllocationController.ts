@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { CostAllocationService } from '../../application/services/CostAllocationService.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { CostAllocationRuleStatus } from '../../domain/models/CostAllocation.js';
+import { safeErrorMessage } from '../../application/observability/safeError.js';
 
 export class CostAllocationController {
   constructor(private readonly service: CostAllocationService) {}
@@ -22,7 +23,7 @@ export class CostAllocationController {
   public exportCsv = async (req: Request, res: Response): Promise<void> => { try { const summary = await this.service.summary(this.actor(req), { period: required(string(req.query['period'])) }); const rows = ['currency,allocation,cost,metrics,resources', ...summary.flatMap((item) => item.dimensions.map((row) => [item.currency, csv(row.allocationKey), row.cost, row.metricCount, row.resourceCount].join(',')))]; res.type('text/csv').attachment(`showback-${req.query['period']}.csv`).send(rows.join('\n')); } catch (error) { this.error(error, res); } };
   private actor(req: Request) { if (req.auth === undefined) throw new FinOpsBaseError('Se requiere autenticación', 'AUTHENTICATION_REQUIRED'); return req.auth; }
   private async run(req: Request, res: Response, action: () => Promise<object>, status = 200): Promise<void> { try { res.status(status).json({ success: true, ...(await action()) }); } catch (error) { this.error(error, res); } }
-  private error(error: unknown, res: Response): void { const known = error instanceof FinOpsBaseError; const code = known ? error.code : 'INTERNAL_ERROR'; const status = code === 'AUTHENTICATION_REQUIRED' ? 401 : code === 'AUTHORIZATION_FAILED' ? 403 : code === 'NOT_FOUND' ? 404 : code === 'VALIDATION_ERROR' ? 400 : 500; const diagnosticId = typeof res.locals.requestId === 'string' ? res.locals.requestId : undefined; if (!known) console.error(JSON.stringify({ level: 'error', event: 'cost_allocation_operation_failed', diagnosticId, error: error instanceof Error ? error.message : String(error) })); res.status(status).json({ success: false, code, error: known ? error.message : 'No fue posible operar con la asignación de costos.', ...(diagnosticId === undefined ? {} : { diagnosticId }) }); }
+  private error(error: unknown, res: Response): void { const known = error instanceof FinOpsBaseError; const code = known ? error.code : 'INTERNAL_ERROR'; const status = code === 'AUTHENTICATION_REQUIRED' ? 401 : code === 'AUTHORIZATION_FAILED' ? 403 : code === 'NOT_FOUND' ? 404 : code === 'VALIDATION_ERROR' ? 400 : 500; const diagnosticId = typeof res.locals.requestId === 'string' ? res.locals.requestId : undefined; if (!known) console.error(JSON.stringify({ level: 'error', event: 'cost_allocation_operation_failed', diagnosticId, error: safeErrorMessage(error) })); res.status(status).json({ success: false, code, error: known ? error.message : 'No fue posible operar con la asignación de costos.', ...(diagnosticId === undefined ? {} : { diagnosticId }) }); }
 }
 function string(value: unknown): string | undefined { return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined; }
 function required(value: string | undefined): string { if (value === undefined) throw new FinOpsBaseError('Falta un valor requerido', 'VALIDATION_ERROR'); return value; }

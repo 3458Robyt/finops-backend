@@ -1,4 +1,5 @@
 import type { AuthContext } from '../../domain/models/AuthContext.js';
+import { safeErrorMessage } from '../observability/safeError.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 import type { OutboundMessageService } from './OutboundMessageService.js';
 import { startNonOverlappingLoop, type NonOverlappingLoopHandle } from './NonOverlappingLoop.js';
@@ -36,7 +37,7 @@ export class OutboundMessageScheduler {
       fallbackIntervalMs: 5 * 60 * 1000,
       runImmediately: false,
       unref: true,
-      onError: (error) => console.error('Outbound message scheduler iteration failed:', error),
+      onError: (error) => console.error(JSON.stringify({ level: 'error', event: 'outbound_message_scheduler_iteration_failed', error: safeErrorMessage(error) })),
     });
   }
 

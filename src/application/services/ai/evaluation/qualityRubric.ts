@@ -3,6 +3,7 @@ import type { FinOpsRecommendation } from '../../../../domain/models/FinOpsRecom
 import type { AiRecommendationDraft } from '../finOpsAiTypes.js';
 import { isRecord } from '../jsonReadHelpers.js';
 import type { RecommendationEvidenceSnapshot } from '../RecommendationEvidenceSnapshot.js';
+import { collectText, looksLikeSpanish } from '../aiLanguageGuard.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -189,9 +190,11 @@ export function evaluateRecommendationDrafts(
   checks.push(buildAllPass(
     'spanishText',
     drafts,
-    (draft) => draft.title.trim() !== '' && draft.description.trim() !== '',
-    'Todas las recomendaciones tienen título y descripción.',
-    'Hay recomendaciones sin título o descripción.',
+    (draft) => draft.title.trim() !== ''
+      && draft.description.trim() !== ''
+      && looksLikeSpanish(`${draft.title} ${draft.description}`),
+    'Todas las recomendaciones tienen texto no vacío y señales de español.',
+    'Hay recomendaciones vacías o redactadas sin señales suficientes de español.',
   ));
 
   return toReport(checks);
@@ -246,6 +249,15 @@ export function evaluateExecutionPlan(
     name: 'noAutoExecution',
     passed: noAuto,
     detail: noAuto ? 'El plan no promete ejecución automática.' : 'El plan promete ejecución automática (prohibido).',
+  });
+
+  const spanishPlan = looksLikeSpanish(collectText(plan));
+  checks.push({
+    name: 'spanishText',
+    passed: spanishPlan,
+    detail: spanishPlan
+      ? 'El plan contiene señales suficientes de español.'
+      : 'El plan no contiene señales suficientes de español.',
   });
 
   return toReport(checks);

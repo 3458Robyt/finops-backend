@@ -282,6 +282,29 @@ describe('qualityRubric — execution plan', () => {
     expect(report.checks.find((check) => check.name === 'requiredArrays')?.passed).toBe(false);
   });
 
+  test('rejects recommendation text without Spanish language signals', () => {
+    const report = evaluateRecommendationDrafts([
+      draft({ title: 'Optimize storage', description: 'Move old objects to cold storage.' }),
+    ], snapshot);
+
+    expect(report.checks.find((check) => check.name === 'spanishText')?.passed).toBe(false);
+  });
+
+  test('rejects an execution plan without Spanish language signals', () => {
+    const report = evaluateExecutionPlan({
+      summary: 'Optimize the storage resource.',
+      scope: { cloudAccountId: 'acc-prod-aws' },
+      prerequisites: ['Confirm change window.'],
+      steps: ['Move objects to cold storage.'],
+      validation: ['Compare costs.'],
+      risks: ['Slower retrieval.'],
+      rollback: ['Delete the lifecycle rule.'],
+      successCriteria: ['Lower storage cost.'],
+    }, snapshot);
+
+    expect(report.checks.find((check) => check.name === 'spanishText')?.passed).toBe(false);
+  });
+
   test('fails when a plan contradicts the recommendation resource', () => {
     const recommendation = {
       cloudAccountId: 'acc-prod-aws',

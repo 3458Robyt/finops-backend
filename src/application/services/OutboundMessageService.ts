@@ -1,4 +1,4 @@
-import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { IOutboundMessageRepository } from '../../domain/interfaces/IOutboundMessageRepository.js';
 import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
 import type { ITelegramRepository } from '../../domain/interfaces/ITelegramRepository.js';
@@ -9,8 +9,7 @@ import type { IEmailClient } from './EmailClient.js';
 import type { SavingsReminderService } from './SavingsReminderService.js';
 import type { ITelegramClient } from './TelegramClient.js';
 import { formatRecommendations, formatSavingsReminders } from './telegram/telegramMessageFormatters.js';
-
-const adminRoles = new Set<AuthContext['role']>(['ADMIN', 'MASTER_ADMIN', 'OPERATOR_ADMIN']);
+import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
 
 export interface OutboundChannelStatus {
   readonly telegram: {
@@ -346,9 +345,7 @@ export class OutboundMessageService {
   }
 
   private requireAdmin(actor: AuthContext): void {
-    if (!adminRoles.has(actor.role)) {
-      throw new AuthorizationError('Only agent administrators can manage outbound messages');
-    }
+    requirePermission(actor.role, 'OUTBOUND_MANAGE', 'Solo los administradores del agente pueden gestionar mensajes externos');
   }
 }
 

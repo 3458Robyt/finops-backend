@@ -4,8 +4,8 @@ import type { AgentInstructionService } from '../../application/services/AgentIn
 import type { ContextSummaryBuilderService } from '../../application/services/ContextSummaryBuilderService.js';
 import type { IAgentContextRepository } from '../../domain/interfaces/IAgentContextRepository.js';
 import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
-import { agentAdminRoles, agentTechnicalRoles } from '../../domain/models/AgentContext.js';
 import type { UserRole } from '../../domain/models/AuthContext.js';
+import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
 
 const profileSchema = z.object({
   structuredRules: z.object({
@@ -74,7 +74,7 @@ export class AgentController {
    * Valida y activa un nuevo perfil de instrucciones del agente.
    *
    * Sirve: POST /api/v1/agent/profile/activate
-   * Autenticación: requerida. Rol: administrador de agente ({@link agentAdminRoles}).
+   * Autenticación: requerida. Permiso: `AGENT_CONFIGURE`.
    *
    * Cuerpo (`req.body`, validado con `profileSchema`):
    * - `structuredRules`: reglas estructuradas del agente (objetivo, tono,
@@ -116,7 +116,7 @@ export class AgentController {
    * Lista las reglas específicas del tenant del usuario autenticado.
    *
    * Sirve: GET /api/v1/agent/tenant-rules
-   * Autenticación: requerida. Rol: administrador de agente ({@link agentAdminRoles}).
+   * Autenticación: requerida. Permiso: `AGENT_CONFIGURE`.
    * Usa `req.auth.tenantId` para acotar las reglas al tenant.
    *
    * Respuestas:
@@ -140,7 +140,7 @@ export class AgentController {
    * Crea una nueva regla específica del tenant.
    *
    * Sirve: POST /api/v1/agent/tenant-rules
-   * Autenticación: requerida. Rol: administrador de agente ({@link agentAdminRoles}).
+   * Autenticación: requerida. Permiso: `AGENT_CONFIGURE`.
    *
    * Cuerpo (`req.body`, validado con `tenantRuleSchema`):
    * - `category`: categoría de la regla.
@@ -181,7 +181,7 @@ export class AgentController {
    * Desactiva una regla del tenant identificada por su id.
    *
    * Sirve: PATCH /api/v1/agent/tenant-rules/:id/disable
-   * Autenticación: requerida. Rol: administrador de agente ({@link agentAdminRoles}).
+   * Autenticación: requerida. Permiso: `AGENT_CONFIGURE`.
    *
    * Parámetros de ruta:
    * - `id` (`req.params.id`): identificador de la regla a desactivar.
@@ -215,7 +215,7 @@ export class AgentController {
    * Lista las trazas de contexto IA del tenant.
    *
    * Sirve: GET /api/v1/agent/context-traces
-   * Autenticación: requerida. Rol: técnico de agente ({@link agentTechnicalRoles}).
+   * Autenticación: requerida. Permiso: `AGENT_OBSERVE`.
    *
    * Parámetros de consulta:
    * - `limit` (`req.query.limit`, opcional): número máximo de trazas; por
@@ -246,7 +246,7 @@ export class AgentController {
    * Ejecuta el backfill de contexto del tenant reconstruyendo los resúmenes de contexto.
    *
    * Sirve: POST /api/v1/agent/context/backfill
-   * Autenticación: requerida. Rol: administrador de agente ({@link agentAdminRoles}).
+   * Autenticación: requerida. Permiso: `AGENT_CONFIGURE`.
    * Usa `req.auth.tenantId` y `req.auth.userId` para acotar y registrar el proceso.
    *
    * Respuestas:
@@ -291,9 +291,7 @@ export class AgentController {
    * Lanza {@link AuthorizationError} (mapeado a 403) en caso contrario.
    */
   private requireAgentAdmin(role: UserRole): void {
-    if (!agentAdminRoles.includes(role)) {
-      throw new AuthorizationError();
-    }
+    requirePermission(role, 'AGENT_CONFIGURE');
   }
 
   /**
@@ -301,9 +299,7 @@ export class AgentController {
    * Lanza {@link AuthorizationError} (mapeado a 403) en caso contrario.
    */
   private requireAgentTechnical(role: UserRole): void {
-    if (!agentTechnicalRoles.includes(role)) {
-      throw new AuthorizationError();
-    }
+    requirePermission(role, 'AGENT_OBSERVE');
   }
 
   /**

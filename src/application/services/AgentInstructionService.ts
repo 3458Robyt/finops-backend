@@ -1,12 +1,12 @@
-import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { IAgentContextRepository } from '../../domain/interfaces/IAgentContextRepository.js';
 import type {
   AgentInstructionProfile,
   AgentInstructionRules,
   TenantAgentRule,
 } from '../../domain/models/AgentContext.js';
-import { agentAdminRoles } from '../../domain/models/AgentContext.js';
 import type { AuthContext } from '../../domain/models/AuthContext.js';
+import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
 import {
   defaultProfile,
   filterRulesAgainstProfile,
@@ -213,11 +213,9 @@ export class AgentInstructionService {
   /**
    * Verifica que el actor tenga rol de administrador del agente.
    *
-   * @throws {AuthorizationError} Si el rol del actor no está en {@link agentAdminRoles}.
+   * @throws {AuthorizationError} Si el actor no tiene `AGENT_CONFIGURE`.
    */
   private assertCanAdminAgent(actor: AuthContext): void {
-    if (!agentAdminRoles.includes(actor.role)) {
-      throw new AuthorizationError();
-    }
+    requirePermission(actor.role, 'AGENT_CONFIGURE');
   }
 }

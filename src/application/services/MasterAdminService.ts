@@ -6,6 +6,7 @@ import type {
   MasterAdminUser,
 } from '../../domain/interfaces/IMasterAdminRepository.js';
 import type { IPasswordHasher } from '../../domain/interfaces/IPasswordHasher.js';
+import { isPrivilegedRole, requirePermission } from '../../domain/security/AuthorizationPolicy.js';
 import type { TenantAccessRole, TenantStatus, UserRole } from '../../generated/prisma/client.js';
 
 export interface RequestAuditMetadata {
@@ -195,11 +196,9 @@ export class MasterAdminService {
   private async requireMasterAdmin(userId: string) {
     const actor = await this.repository.findActor(userId);
     if (actor === null) {
-      throw new AuthorizationError('Authenticated user not found');
+      throw new AuthorizationError('No se encontró el usuario autenticado');
     }
-    if (actor.role !== 'MASTER_ADMIN') {
-      throw new AuthorizationError('Only the master administrator can manage tenants and assignments');
-    }
+    requirePermission(actor.role, 'TENANT_MANAGE', 'Solo el administrador maestro puede gestionar tenants y asignaciones');
 
     return actor;
   }
@@ -219,8 +218,8 @@ export class MasterAdminService {
       throw new FinOpsBaseError('User not found', 'NOT_FOUND');
     }
 
-    if (!['MASTER_ADMIN', 'OPERATOR_ADMIN', 'FINOPS_TECHNICIAN', 'ADMIN'].includes(user.role)) {
-      throw new FinOpsBaseError('Only operator staff users can be assigned through this module', 'VALIDATION_ERROR');
+    if (!isPrivilegedRole(user.role)) {
+      throw new FinOpsBaseError('Solo se pueden asignar usuarios operativos privilegiados desde este módulo', 'VALIDATION_ERROR');
     }
 
     return user;

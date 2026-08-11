@@ -17,6 +17,8 @@ import {
   requireRecommendationExecutionRole,
   requireRecommendationId,
   requireRecommendationDecisionRole,
+  requireSavingsMeasurementRole,
+  requireSavingsVerificationRole,
 } from './recommendation/recommendationRequestGuards.js';
 import { respondWithRecommendationError } from './recommendation/recommendationErrorResponse.js';
 import {
@@ -229,7 +231,7 @@ export class RecommendationController {
     try {
       const auth = requireAuth(req, res);
       if (auth === undefined) return;
-      if (!requireRecommendationExecutionRole(res, auth)) return;
+      if (!requireSavingsMeasurementRole(res, auth)) return;
       const recommendationId = requireRecommendationId(res, req.params['id']);
       const manualExecutionId = parseString(readBodyValue(req.body, 'manualExecutionId'));
       if (recommendationId === undefined || manualExecutionId === undefined) {
@@ -289,7 +291,7 @@ export class RecommendationController {
     try {
       const auth = requireAuth(req, res);
       if (auth === undefined) return;
-      if (!requireRecommendationDecisionRole(res, auth)) return;
+      if (!requireSavingsVerificationRole(res, auth)) return;
       const recommendationId = requireRecommendationId(res, req.params['id']);
       const measurementId = parseString(req.params['measurementId']);
       if (recommendationId === undefined || measurementId === undefined) {
@@ -317,7 +319,7 @@ export class RecommendationController {
     try {
       const auth = requireAuth(req, res);
       if (auth === undefined) return;
-      if (!requireRecommendationDecisionRole(res, auth)) return;
+      if (!requireSavingsVerificationRole(res, auth)) return;
       const recommendationId = requireRecommendationId(res, req.params['id']);
       const measurementId = parseString(req.params['measurementId']);
       const reason = parseString(readBodyValue(req.body, 'reason'));

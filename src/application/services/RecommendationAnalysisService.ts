@@ -1,4 +1,4 @@
-import { AiAuditRejectedError, AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { AiAuditRejectedError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { INotificationRepository } from '../../domain/interfaces/INotificationRepository.js';
 import type { IRecommendationAnalysisRunRepository } from '../../domain/interfaces/IRecommendationAnalysisRunRepository.js';
 import type { AuthContext } from '../../domain/models/AuthContext.js';
@@ -11,13 +11,7 @@ import type { PreparedRecommendationAnalysis } from './ai/finOpsAiTypes.js';
 import type { RecommendationOpportunityCandidate } from './ai/RecommendationReadinessGate.js';
 import { isRecord } from './ai/jsonReadHelpers.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
-
-const managerRoles = new Set<AuthContext['role']>([
-  'MASTER_ADMIN',
-  'OPERATOR_ADMIN',
-  'ADMIN',
-  'FINOPS_TECHNICIAN',
-]);
+import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
 
 export class RecommendationAnalysisService {
   public constructor(
@@ -366,9 +360,7 @@ export class RecommendationAnalysisService {
   }
 
   private requireManager(actor: AuthContext): void {
-    if (!managerRoles.has(actor.role)) {
-      throw new AuthorizationError('No tienes permiso para iniciar o modificar corridas de análisis.');
-    }
+    requirePermission(actor.role, 'RECOMMENDATION_GENERATE', 'No tienes permiso para iniciar o modificar corridas de análisis.');
   }
 }
 

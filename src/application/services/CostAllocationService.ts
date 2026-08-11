@@ -1,11 +1,10 @@
 import { createHash } from 'node:crypto';
 import { Prisma } from '../../generated/prisma/client.js';
-import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { CostAllocationRuleInput, ICostAllocationRepository } from '../../domain/interfaces/ICostAllocationRepository.js';
 import type { AuthContext } from '../../domain/models/AuthContext.js';
 import type { CostAllocationMode, CostAllocationRule, CostAllocationRuleStatus, CostAllocationRuleTarget } from '../../domain/models/CostAllocation.js';
-
-const managers = new Set<AuthContext['role']>(['MASTER_ADMIN', 'OPERATOR_ADMIN', 'ADMIN', 'FINOPS_TECHNICIAN']);
+import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
 const periodPattern = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 export class CostAllocationService {
@@ -136,7 +135,7 @@ export class CostAllocationService {
   }
 
   private requireManager(actor: AuthContext): void {
-    if (!managers.has(actor.role)) throw new AuthorizationError('No está autorizado para administrar reglas de asignación');
+    requirePermission(actor.role, 'COST_ALLOCATION_MANAGE', 'No está autorizado para administrar reglas de asignación');
   }
 
   private prepare(input: CostAllocationRuleInput, configurationVersion: number): CostAllocationRuleInput {

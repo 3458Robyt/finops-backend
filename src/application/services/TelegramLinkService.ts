@@ -1,7 +1,8 @@
-import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { ITelegramRepository } from '../../domain/interfaces/ITelegramRepository.js';
 import type { AuthContext } from '../../domain/models/AuthContext.js';
 import type { TelegramChatLink } from '../../domain/models/Telegram.js';
+import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
 import type { ITelegramClient } from './TelegramClient.js';
 
 /** Datos de entrada para crear (o actualizar) la vinculación de un chat de Telegram con un usuario. */
@@ -15,9 +16,6 @@ export interface CreateTelegramLinkInput {
   /** Nombre de usuario de Telegram, sin la `@` inicial (opcional). */
   readonly telegramUsername?: string;
 }
-
-/** Roles autorizados a administrar las vinculaciones de Telegram. */
-const adminRoles = new Set<AuthContext['role']>(['ADMIN', 'MASTER_ADMIN', 'OPERATOR_ADMIN']);
 
 /**
  * Servicio de aplicación que gestiona el ciclo de vida de las vinculaciones
@@ -220,8 +218,6 @@ export class TelegramLinkService {
    * @throws {AuthorizationError} Si el rol del actor no está autorizado.
    */
   private requireAdmin(actor: AuthContext): void {
-    if (!adminRoles.has(actor.role)) {
-      throw new AuthorizationError();
-    }
+    requirePermission(actor.role, 'OUTBOUND_MANAGE');
   }
 }

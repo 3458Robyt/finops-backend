@@ -4,8 +4,9 @@ import type { ITokenService } from '../../domain/interfaces/ITokenService.js';
 import type { IAuthSessionRepository, AuthSessionSummary } from '../../domain/interfaces/IAuthSessionRepository.js';
 import type { IAuthSecurityRepository } from '../../domain/interfaces/IAuthSecurityRepository.js';
 import type { IMfaAuthenticationService } from '../../domain/interfaces/IMfaAuthenticationService.js';
-import type { AuthContext, UserRole } from '../../domain/models/AuthContext.js';
+import type { AuthContext } from '../../domain/models/AuthContext.js';
 import { AuthenticationError, AuthorizationError } from '../../domain/errors/errors.js';
+import { isPrivilegedRole } from '../../domain/security/AuthorizationPolicy.js';
 import type {
   AuthDatabaseContextRunner,
   AuthLoginResult,
@@ -212,7 +213,7 @@ export class AuthService {
 
 }
 
-function requiresPrivilegedMfa(role: UserRole): boolean {
+function requiresPrivilegedMfa(role: AuthContext['role']): boolean {
   return process.env['MFA_REQUIRED_FOR_PRIVILEGED'] === 'true'
-    && ['ADMIN', 'MASTER_ADMIN', 'OPERATOR_ADMIN', 'FINOPS_TECHNICIAN'].includes(role);
+    && isPrivilegedRole(role);
 }

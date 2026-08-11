@@ -2,9 +2,9 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { MfaService } from '../../application/services/MfaService.js';
 import { AuthenticationError, AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { isPrivilegedRole } from '../../domain/security/AuthorizationPolicy.js';
 
 const codeSchema = z.object({ code: z.string().regex(/^\d{6}$/) });
-const privilegedRoles = new Set(['ADMIN', 'MASTER_ADMIN', 'OPERATOR_ADMIN', 'FINOPS_TECHNICIAN']);
 
 export class MfaController {
   public constructor(private readonly service: MfaService) {}
@@ -20,7 +20,7 @@ export class MfaController {
       res.status(200).json({
         success: true,
         enabled,
-        requiredForRole: privilegedRoles.has(req.auth.role),
+        requiredForRole: isPrivilegedRole(req.auth.role),
         recoveryCodesRemaining: recovery.remaining,
       });
     } catch (error: unknown) {
@@ -81,7 +81,7 @@ export class MfaController {
       res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });
       return false;
     }
-    if (!privilegedRoles.has(req.auth.role)) {
+    if (!isPrivilegedRole(req.auth.role)) {
       const error = new AuthorizationError();
       res.status(403).json({ success: false, error: error.message, code: error.code });
       return false;

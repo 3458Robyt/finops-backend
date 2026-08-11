@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import type { AuthContext } from '../../../domain/models/AuthContext.js';
 import { AuthorizationError } from '../../../domain/errors/errors.js';
+import { hasPermission, type FinOpsPermission } from '../../../domain/security/AuthorizationPolicy.js';
 import { parseString } from './recommendationRequestParsers.js';
 
 /**
@@ -42,20 +43,30 @@ export function requireAuth(req: Request, res: Response): AuthContext | undefine
  * Permite administrar la ejecución manual solo a roles operativos FinOps.
  */
 export function requireRecommendationExecutionRole(res: Response, auth: AuthContext): boolean {
-  return requireRecommendationRole(res, auth, ['ADMIN', 'MASTER_ADMIN', 'OPERATOR_ADMIN', 'FINOPS_TECHNICIAN']);
+  return requireRecommendationPermission(res, auth, 'RECOMMENDATION_EXECUTE');
 }
 
 /** Permite aprobar o rechazar a los roles operativos y al aprobador del cliente. */
 export function requireRecommendationDecisionRole(res: Response, auth: AuthContext): boolean {
-  return requireRecommendationRole(res, auth, ['ADMIN', 'MASTER_ADMIN', 'OPERATOR_ADMIN', 'FINOPS_TECHNICIAN', 'CLIENT_APPROVER']);
+  return requireRecommendationPermission(res, auth, 'RECOMMENDATION_DECIDE');
 }
 
-function requireRecommendationRole(
+/** Permite calcular mediciones de ahorro a los roles operativos FinOps. */
+export function requireSavingsMeasurementRole(res: Response, auth: AuthContext): boolean {
+  return requireRecommendationPermission(res, auth, 'SAVINGS_MEASURE');
+}
+
+/** Permite verificar o rechazar mediciones a operadores y aprobadores del cliente. */
+export function requireSavingsVerificationRole(res: Response, auth: AuthContext): boolean {
+  return requireRecommendationPermission(res, auth, 'SAVINGS_VERIFY');
+}
+
+function requireRecommendationPermission(
   res: Response,
   auth: AuthContext,
-  allowedRoles: readonly AuthContext['role'][],
+  permission: FinOpsPermission,
 ): boolean {
-  if (!allowedRoles.includes(auth.role)) {
+  if (!hasPermission(auth.role, permission)) {
     const error = new AuthorizationError();
     res.status(403).json({
       success: false,

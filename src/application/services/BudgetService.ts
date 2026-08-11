@@ -1,12 +1,11 @@
-import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { IBudgetRepository, CreateBudgetInput, UpdateBudgetInput } from '../../domain/interfaces/IBudgetRepository.js';
 import type { INotificationRepository } from '../../domain/interfaces/INotificationRepository.js';
 import type { IOutboundMessageRepository } from '../../domain/interfaces/IOutboundMessageRepository.js';
 import type { ITelegramRepository } from '../../domain/interfaces/ITelegramRepository.js';
 import type { AuthContext } from '../../domain/models/AuthContext.js';
 import type { Budget, BudgetAlert, BudgetHealth, BudgetPerformance, BudgetScope } from '../../domain/models/Budget.js';
-
-const managerRoles = new Set<AuthContext['role']>(['MASTER_ADMIN', 'OPERATOR_ADMIN', 'ADMIN', 'FINOPS_TECHNICIAN']);
+import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
 const utcMonth = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 export class BudgetService {
@@ -83,7 +82,7 @@ export class BudgetService {
 
   public async listAlerts(actor: AuthContext, budgetId: string): Promise<readonly BudgetAlert[]> { await this.requireBudget(actor, budgetId); return this.budgets.listAlerts(actor.tenantId, budgetId); }
   private async requireBudget(actor: AuthContext, id: string): Promise<Budget> { const budget = await this.budgets.findById(actor.tenantId, id); if (budget === null) throw new FinOpsBaseError('Presupuesto no encontrado', 'NOT_FOUND'); return budget; }
-  private requireManager(actor: AuthContext): void { if (!managerRoles.has(actor.role)) throw new AuthorizationError('No está autorizado para administrar presupuestos'); }
+  private requireManager(actor: AuthContext): void { requirePermission(actor.role, 'BUDGET_MANAGE', 'No está autorizado para administrar presupuestos'); }
   private resolveScopeKey(input: { scope: BudgetScope; scopeKey?: string; cloudAccountId?: string; serviceName?: string }): string {
     if (input.scope === 'TENANT') {
       if (input.cloudAccountId !== undefined || input.serviceName !== undefined) throw new FinOpsBaseError('Los presupuestos del tenant no pueden incluir una cuenta o servicio', 'VALIDATION_ERROR');

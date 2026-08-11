@@ -40,12 +40,15 @@ import { createRecommendationRoutes } from './routes/recommendationRoutes.js';
 import { createTechnicalMetricsRoutes } from './routes/technicalMetricsRoutes.js';
 import { createTelegramRoutes } from './routes/telegramRoutes.js';
 import { createValueRealizationRoutes } from './routes/valueRealizationRoutes.js';
+import { rolesForPermission } from '../domain/security/AuthorizationPolicy.js';
 
 export function registerApiRoutes(app: Express, dependencies: ServerDependencies): void {
   const controllers = createControllers(dependencies);
   const requireAuth = createAuthMiddleware(dependencies.tokenService, dependencies.authSessionRepository);
-  const requireCloudManager = requireRole(['ADMIN', 'MASTER_ADMIN', 'OPERATOR_ADMIN', 'FINOPS_TECHNICIAN']);
-  const requireValueRealizationReconcile = requireCloudManager;
+  const requireCloudManager = requireRole(rolesForPermission('CLOUD_MANAGE'));
+  const requireIngestionManager = requireRole(rolesForPermission('INGESTION_MANAGE'));
+  const requireRecommendationGenerator = requireRole(rolesForPermission('RECOMMENDATION_GENERATE'));
+  const requireValueRealizationReconcile = requireRole(rolesForPermission('VALUE_RECONCILE'));
 
   const globalApiLimiter = createRateLimit({
     windowMs: 60 * 1000,
@@ -93,14 +96,14 @@ export function registerApiRoutes(app: Express, dependencies: ServerDependencies
   app.use('/api/v1/telegram/webhook', telegramWebhookLimiter);
 
   app.use('/api/v1/agent', createAgentRoutes(controllers.agent, requireAuth));
-  app.use('/api/v1/ai', createAiRoutes(controllers.ai, controllers.analysis, requireAuth, requireCloudManager));
+  app.use('/api/v1/ai', createAiRoutes(controllers.ai, controllers.analysis, requireAuth, requireRecommendationGenerator));
   app.use('/api/v1/analytics', createAnalyticsRoutes(controllers.analytics, requireAuth));
   app.use('/api/v1/budgets', createBudgetRoutes(controllers.budget, requireAuth));
   app.use('/api/v1/cost-allocation', createCostAllocationRoutes(controllers.costAllocation, requireAuth));
   app.use('/api/v1/auth', createAuthRoutes(controllers.auth, controllers.authSession, requireAuth, controllers.passwordRecovery, controllers.mfa));
   app.use('/api/v1/cloud-connections', createCloudConnectionRoutes(controllers.cloudConnection, requireAuth, requireCloudManager));
   app.use('/api/v1/costs', createCostRoutes(controllers.cost, requireAuth));
-  app.use('/api/v1/ingestion', createIngestionRoutes(controllers.cloudConnection, requireAuth, requireCloudManager, controllers.resourceLinkage));
+  app.use('/api/v1/ingestion', createIngestionRoutes(controllers.cloudConnection, requireAuth, requireIngestionManager, controllers.resourceLinkage));
   app.use('/api/v1/technical-metrics', createTechnicalMetricsRoutes(controllers.technicalMetrics, requireAuth));
   app.use('/api/v1/kpis', createKpiRoutes(controllers.kpi, requireAuth));
   app.use('/api/v1/master-admin', createMasterAdminRoutes(controllers.masterAdmin, requireAuth));

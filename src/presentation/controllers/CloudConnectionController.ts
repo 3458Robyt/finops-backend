@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import type { CloudConnectionService } from '../../application/services/CloudConnectionService.js';
 import type { IngestionSourceType } from '../../domain/models/CloudConnection.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
-import { resolveFinOpsError } from '../http/finOpsErrorResponse.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 import { CloudConnectionRequestParser } from './cloudConnectionRequestParser.js';
 
 /**
@@ -577,7 +577,11 @@ export class CloudConnectionController {
    * - Error no controlado -> 500 con mensaje genérico de conexiones a la nube.
    */
   private respondWithError(res: Response, error: unknown): void {
-    const response = resolveFinOpsError(error, 'An unexpected error occurred processing cloud connections');
-    res.status(response.status).json({ success: false, error: response.error, ...(response.code === undefined ? {} : { code: response.code }) });
+    respondWithFinOpsError(
+      res,
+      error,
+      'An unexpected error occurred processing cloud connections',
+      'cloud_connection_operation_failed',
+    );
   }
 }

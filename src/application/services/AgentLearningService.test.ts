@@ -174,7 +174,22 @@ class FakeAgentLearningRepository implements IAgentLearningRepository {
   }
 
   public async findSummary() {
-    return { memories: [], events: [] };
+    return {
+      stats: {
+        totalEvents: 0,
+        feedbackApproved: 0,
+        feedbackRejected: 0,
+        learningPending: 0,
+        learningApproved: 0,
+        learningRejected: 0,
+        learningSkipped: 0,
+        learningError: 0,
+        activeMemories: 0,
+        globalMemories: 0,
+      },
+      memories: [],
+      events: [],
+    };
   }
 
   public async countSimilarApprovedEvents(): Promise<SimilarLearningPatternCount> {

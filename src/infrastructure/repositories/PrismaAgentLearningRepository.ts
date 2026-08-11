@@ -24,6 +24,7 @@ import {
   countSimilarApprovedEventRows,
   queryRecommendationLearningContext,
 } from './queries/agentLearningSearchQueries.js';
+import { queryLearningSummaryStats } from './queries/agentLearningSummaryQueries.js';
 
 /**
  * Adaptador de infraestructura (Clean Architecture) que implementa el puerto de
@@ -334,15 +335,15 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
    * relevantes y los eventos de aprendizaje recientes.
    *
    * Carga en paralelo hasta 20 memorias activas (de ámbito `GLOBAL` o del propio
-   * `tenantId`, aislamiento multi-tenant) y hasta 20 eventos de aprendizaje del
-   * tenant, ambos ordenados por recencia, proyectando solo los campos necesarios
-   * para el resumen.
+   * `tenantId`, aislamiento multi-tenant), hasta 20 eventos recientes y métricas
+   * agregadas del tenant. Las métricas se calculan en PostgreSQL y no dependen
+   * del límite de elementos mostrado en el resumen.
    *
    * @param tenantId Tenant del que se construye el resumen.
    * @returns Resumen con memorias y eventos; colecciones vacías si no hay datos.
    */
   public async findSummary(tenantId: string): Promise<AgentLearningSummary> {
-    const [memories, events] = await Promise.all([
+    const [memories, events, statsRow, activeMemories, globalMemories] = await Promise.all([
       this.prisma.agentMemory.findMany({
         where: {
           active: true,
@@ -359,9 +360,31 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
         orderBy: { createdAt: 'desc' },
         take: 20,
       }),
+      queryLearningSummaryStats(this.prisma, tenantId),
+      this.prisma.agentMemory.count({
+        where: {
+          active: true,
+          OR: [{ scope: 'GLOBAL' }, { scope: 'LOCAL', tenantId }],
+        },
+      }),
+      this.prisma.agentMemory.count({
+        where: { active: true, scope: 'GLOBAL' },
+      }),
     ]);
 
     return {
+      stats: {
+        totalEvents: statsRow.total_events,
+        feedbackApproved: statsRow.feedback_approved,
+        feedbackRejected: statsRow.feedback_rejected,
+        learningPending: statsRow.learning_pending,
+        learningApproved: statsRow.learning_approved,
+        learningRejected: statsRow.learning_rejected,
+        learningSkipped: statsRow.learning_skipped,
+        learningError: statsRow.learning_error,
+        activeMemories,
+        globalMemories,
+      },
       memories: memories.map(toSummaryMemory),
       events: events.map(toSummaryEvent),
     };

@@ -14,7 +14,6 @@ import type {
   IngestionJobSummary,
 } from '../../domain/interfaces/ICloudConnectionRepository.js';
 import type {
-  CloudCapabilityValidation,
   CloudConnectionValidationResult,
   CloudIngestionProvider,
   FocusSourcePreviewResult,
@@ -26,6 +25,17 @@ import type {
   ProviderCatalogEntry,
 } from '../../domain/models/CloudConnection.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import {
+  availableCapabilities,
+  buildBackfillWindows,
+  currentMinute,
+  hasMetricDefinitions,
+  hasUsableBillingSource,
+  hasUsableValidation,
+  isRecord,
+  serializeCapabilityValidation,
+  withTimeout,
+} from './cloudConnectionPolicies.js';
 
 export interface RegisterCloudConnectionInput {
   readonly tenantId: string;
@@ -968,94 +978,3 @@ export class CloudConnectionService {
   }
 }
 
-function buildBackfillWindows(
-  rangeStart: Date,
-  rangeEnd: Date,
-  windowHours: number,
-): readonly TechnicalBackfillWindow[] {
-  const windows: TechnicalBackfillWindow[] = [];
-  const windowMs = windowHours * 60 * 60 * 1000;
-  let cursor = new Date(rangeStart);
-
-  while (cursor.getTime() < rangeEnd.getTime()) {
-    const targetStart = new Date(cursor);
-    const targetEnd = new Date(Math.min(cursor.getTime() + windowMs, rangeEnd.getTime()));
-    windows.push({ targetStart, targetEnd });
-    cursor = targetEnd;
-  }
-
-  return windows;
-}
-
-function currentMinute(): Date {
-  return new Date(Math.floor(Date.now() / 60_000) * 60_000);
-}
-
-function serializeCapabilityValidation(
-  validation: CloudCapabilityValidation,
-): Readonly<Record<string, unknown>> {
-  return {
-    capability: validation.capability,
-    status: validation.status,
-    message: validation.message,
-    checkedAt: validation.checkedAt.toISOString(),
-    ...(validation.metadata !== undefined ? { metadata: validation.metadata } : {}),
-  };
-}
-
-function hasUsableValidation(connection: CloudConnectionSummary): boolean {
-  if (connection.lastValidatedAt === undefined) return false;
-  const validation = connection.metadata?.['capabilityValidation'];
-  if (!isRecord(validation) || !Array.isArray(validation['capabilities'])) return false;
-  const available = validation['capabilities'].filter((item): item is Readonly<Record<string, unknown>> =>
-    isRecord(item) && item['status'] === 'AVAILABLE',
-  );
-  return available.some((item) => item['capability'] === 'IDENTITY')
-    && available.some((item) => ['INVENTORY', 'COSTS', 'METRICS', 'STORAGE'].includes(String(item['capability'])));
-}
-
-function availableCapabilities(connection: CloudConnectionSummary): ReadonlySet<string> {
-  const validation = connection.metadata?.['capabilityValidation'];
-  if (!isRecord(validation) || !Array.isArray(validation['capabilities'])) return new Set();
-  return new Set(validation['capabilities']
-    .filter((item): item is Readonly<Record<string, unknown>> => isRecord(item) && item['status'] === 'AVAILABLE')
-    .map((item) => String(item['capability'])));
-}
-
-function hasUsableBillingSource(connection: CloudConnectionSummary, capabilities: ReadonlySet<string>): boolean {
-  const mode = connection.metadata?.['billingSourceMode'];
-  const focusAvailable = capabilities.has('STORAGE') && hasFocusConfiguration(connection);
-  if (mode === 'FOCUS') return focusAvailable;
-  if (mode === 'PROVIDER_API') return capabilities.has('COSTS');
-  return focusAvailable || capabilities.has('COSTS');
-}
-
-function hasFocusConfiguration(connection: CloudConnectionSummary): boolean {
-  const keys = connection.providerCode === 'aws'
-    ? ['awsFocusExportObjects', 'awsFocusExportLocations']
-    : ['ociFocusReportObjects', 'ociFocusReportLocations'];
-  return keys.some((key) => Array.isArray(connection.metadata?.[key]) && connection.metadata[key].length > 0);
-}
-
-function hasMetricDefinitions(connection: CloudConnectionSummary): boolean {
-  const key = connection.providerCode === 'aws' ? 'awsMetricDefinitions' : 'ociMetricDefinitions';
-  return Array.isArray(connection.metadata?.[key]) && connection.metadata[key].length > 0;
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new FinOpsBaseError(message, 'PROVIDER_TIMEOUT')), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
-  }
-}

@@ -27,6 +27,12 @@ const tableNames = [
   'ingestion_jobs',
   'recommendation_analysis_runs',
   'recommendation_savings_measurements',
+  'auth_sessions',
+  'auth_refresh_tokens',
+  'password_reset_tokens',
+  'user_mfa',
+  'mfa_challenges',
+  'mfa_recovery_codes',
 ] as const;
 
 const pool = createTenantAwarePool(connectionString);

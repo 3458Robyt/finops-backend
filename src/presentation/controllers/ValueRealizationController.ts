@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import type { ValueRealizationFilters } from '../../domain/interfaces/IValueRealizationRepository.js';
 import type { ValueRealizationService } from '../../application/services/ValueRealizationService.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
-import { safeErrorMessage } from '../../application/observability/safeError.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const allowedMeasurementStatuses = new Set(['WAITING_FOR_DATA', 'READY', 'CALCULATED', 'INSUFFICIENT_EVIDENCE', 'VERIFIED', 'REJECTED', 'FAILED', 'NO_EXECUTION']);
 
@@ -62,7 +62,7 @@ export class ValueRealizationController {
 
   private auth(req: Request) { if (req.auth === undefined) throw new FinOpsBaseError('Authentication is required', 'AUTHENTICATION_REQUIRED'); return req.auth; }
   private async run(req: Request, res: Response, operation: () => Promise<unknown>): Promise<void> { try { res.status(200).json({ success: true, ...(await operation() as object) }); } catch (error) { this.handleError(res, error, 'La operación de valor realizado falló'); } }
-  private handleError(res: Response, error: unknown, fallback: string): void { const known = error instanceof FinOpsBaseError; const code = known ? error.code : 'INTERNAL_ERROR'; const status = code === 'AUTHENTICATION_REQUIRED' ? 401 : code === 'AUTHORIZATION_FAILED' ? 403 : code === 'VALIDATION_ERROR' ? 400 : 500; if (!known) console.error(JSON.stringify({ level: 'error', event: 'value_realization_operation_failed', error: safeErrorMessage(error) })); res.status(status).json({ success: false, code, error: known ? error.message : fallback }); }
+  private handleError(res: Response, error: unknown, fallback: string): void { respondWithFinOpsError(res, error, fallback, 'value_realization_operation_failed'); }
 }
 
 function queryString(value: unknown): string | undefined { return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined; }

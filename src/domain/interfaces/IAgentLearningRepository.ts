@@ -87,6 +87,20 @@ export interface CreateAgentMemoryInput {
 }
 
 /**
+ * Cierre atómico de un aprendizaje aprobado y sus memorias derivadas.
+ *
+ * Si falla la actualización del evento o de la decisión, ninguna memoria debe
+ * quedar persistida a medias.
+ */
+export interface RecordApprovedLearningInput {
+  readonly eventId: string;
+  readonly auditVerdict: string;
+  readonly auditScore: number;
+  readonly auditReport: unknown;
+  readonly memories: readonly CreateAgentMemoryInput[];
+}
+
+/**
  * Vista mínima de un evento de aprendizaje encolado pendiente de procesar.
  */
 export interface QueuedAgentLearningEvent {
@@ -170,6 +184,9 @@ export interface IAgentLearningRepository {
    * @returns La memoria creada.
    */
   createMemory(input: CreateAgentMemoryInput): Promise<AgentMemory>;
+
+  /** Persiste memorias auditadas y cierra evento/decisión en una transacción. */
+  recordApprovedLearning(input: RecordApprovedLearningInput): Promise<AgentLearningEvent>;
 
   /**
    * Recupera el contexto de aprendizaje relevante a una recomendación.

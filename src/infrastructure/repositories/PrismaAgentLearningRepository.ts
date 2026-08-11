@@ -4,6 +4,7 @@ import type {
   CreateAgentMemoryInput,
   IAgentLearningRepository,
   QueuedAgentLearningEvent,
+  RecordApprovedLearningInput,
   SimilarLearningPatternCount,
 } from '../../domain/interfaces/IAgentLearningRepository.js';
 import type {
@@ -258,33 +259,75 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
    */
   public async createMemory(input: CreateAgentMemoryInput): Promise<AgentMemory> {
     const row = await this.prisma.$transaction(async (tx) => {
-      const memory = await tx.agentMemory.upsert({
-        where: {
-          sourceLearningEventId_scope: {
-            sourceLearningEventId: input.sourceLearningEventId,
-            scope: input.scope,
-          },
-        },
-        create: {
-          ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
-          scope: input.scope,
-          memoryType: input.memoryType,
-          content: input.content,
-          confidence: input.confidence,
-          sourceLearningEventId: input.sourceLearningEventId,
-          metadata: input.metadata as Prisma.InputJsonValue,
-          auditVerdict: input.auditVerdict as 'APPROVED' | 'REJECTED' | 'NEEDS_REVISION',
-          auditScore: input.auditScore,
-          auditReport: input.auditReport as Prisma.InputJsonValue,
-          fingerprint: input.fingerprint,
-        },
-        update: {},
-      });
-
-      return memory;
+      return this.upsertMemory(tx, input);
     });
 
     return toMemory(row);
+  }
+
+  /**
+   * Persiste todas las memorias aprobadas y cierra el evento en una sola
+   * transacción. Evita que un fallo entre `createMemory` y `completeEvent`
+   * deje memoria durable con el evento todavía pendiente.
+   */
+  public async recordApprovedLearning(input: RecordApprovedLearningInput): Promise<AgentLearningEvent> {
+    const row = await this.prisma.$transaction(async (tx) => {
+      for (const memory of input.memories) {
+        await this.upsertMemory(tx, memory);
+      }
+
+      const event = await tx.agentLearningEvent.update({
+        where: { id: input.eventId },
+        data: {
+          status: 'APPROVED',
+          auditVerdict: input.auditVerdict as 'APPROVED' | 'REJECTED' | 'NEEDS_REVISION',
+          auditScore: input.auditScore,
+          auditReport: input.auditReport as Prisma.InputJsonValue,
+          lockedAt: null,
+          lockedBy: null,
+        },
+      });
+
+      await tx.recommendationDecision.update({
+        where: { id: event.decisionId },
+        data: {
+          learningStatus: 'APPROVED',
+          learningProcessedAt: new Date(),
+        },
+      });
+
+      return event;
+    });
+
+    return toLearningEvent(row);
+  }
+
+  private async upsertMemory(
+    tx: Prisma.TransactionClient,
+    input: CreateAgentMemoryInput,
+  ) {
+    return tx.agentMemory.upsert({
+      where: {
+        sourceLearningEventId_scope: {
+          sourceLearningEventId: input.sourceLearningEventId,
+          scope: input.scope,
+        },
+      },
+      create: {
+        ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+        scope: input.scope,
+        memoryType: input.memoryType,
+        content: input.content,
+        confidence: input.confidence,
+        sourceLearningEventId: input.sourceLearningEventId,
+        metadata: input.metadata as Prisma.InputJsonValue,
+        auditVerdict: input.auditVerdict as 'APPROVED' | 'REJECTED' | 'NEEDS_REVISION',
+        auditScore: input.auditScore,
+        auditReport: input.auditReport as Prisma.InputJsonValue,
+        fingerprint: input.fingerprint,
+      },
+      update: {},
+    });
   }
 
   /**

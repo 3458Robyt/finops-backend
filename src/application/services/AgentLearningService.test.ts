@@ -6,6 +6,7 @@ import type {
   CreateAgentLearningEventInput,
   CreateAgentMemoryInput,
   IAgentLearningRepository,
+  RecordApprovedLearningInput,
   SimilarLearningPatternCount,
 } from '../../domain/interfaces/IAgentLearningRepository.js';
 import type {
@@ -189,6 +190,27 @@ class FakeAgentLearningRepository implements IAgentLearningRepository {
       },
       memories: [],
       events: [],
+    };
+  }
+
+  public async recordApprovedLearning(input: RecordApprovedLearningInput): Promise<AgentLearningEvent> {
+    this.memoryInput = input.memories[0] ?? null;
+    this.completed = {
+      eventId: input.eventId,
+      status: 'APPROVED',
+      auditVerdict: input.auditVerdict,
+      auditScore: input.auditScore,
+      auditReport: input.auditReport,
+    };
+    return {
+      id: input.eventId,
+      tenantId: 'tenant-1',
+      recommendationId: 'rec-1',
+      decisionId: 'decision-1',
+      status: 'APPROVED',
+      auditVerdict: input.auditVerdict,
+      auditScore: input.auditScore,
+      createdAt: new Date('2026-04-29T12:00:00.000Z'),
     };
   }
 

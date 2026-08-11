@@ -1,6 +1,7 @@
 import type { IAiGateway } from '../../../domain/interfaces/IAiGateway.js';
 import type {
   IAgentLearningRepository,
+  CreateAgentMemoryInput,
   QueuedAgentLearningEvent,
 } from '../../../domain/interfaces/IAgentLearningRepository.js';
 import type {
@@ -74,16 +75,14 @@ export class LearningEventProcessor {
         return { status: 'REJECTED', eventId: event.id };
       }
 
-      await this.options.learningRepository.createMemory(
-        buildLocalMemoryInput(event.tenantId, event.id, candidate, auditReport),
-      );
-      await this.promoteGlobalPatternIfEligible(event, recommendation, candidate, auditReport);
-      await this.options.learningRepository.completeEvent({
+      const localMemory = buildLocalMemoryInput(event.tenantId, event.id, candidate, auditReport);
+      const globalMemory = await this.buildGlobalMemoryIfEligible(event, recommendation, candidate, auditReport);
+      await this.options.learningRepository.recordApprovedLearning({
         eventId: event.id,
-        status: 'APPROVED',
         auditVerdict: auditReport.verdict,
         auditScore: auditReport.score,
         auditReport,
+        memories: globalMemory === null ? [localMemory] : [localMemory, globalMemory],
       });
       return { status: 'APPROVED', eventId: event.id };
     } catch (error: unknown) {
@@ -91,26 +90,32 @@ export class LearningEventProcessor {
     }
   }
 
-  private async promoteGlobalPatternIfEligible(
+  private async buildGlobalMemoryIfEligible(
     event: QueuedAgentLearningEvent,
     recommendation: FinOpsRecommendation,
     candidate: MemoryCandidate,
     auditReport: AiAuditReport,
-  ): Promise<void> {
-    if (auditReport.score < 90) return;
+  ): Promise<CreateAgentMemoryInput | null> {
+    if (auditReport.score < 90) return null;
 
     const count = await this.options.learningRepository.countSimilarApprovedEvents({
       reasonCode: event.reasonCode,
       recommendationType: recommendation.type,
       decision: event.decision,
     });
-    if (count.eventCount < 5 || count.tenantCount < 2) return;
+    if (count.eventCount < 5 || count.tenantCount < 2) return null;
 
     const fingerprint = `GLOBAL:${candidate.fingerprint}`;
-    if (await this.options.learningRepository.hasActiveGlobalMemory(fingerprint)) return;
+    if (await this.options.learningRepository.hasActiveGlobalMemory(fingerprint)) return null;
 
-    await this.options.learningRepository.createMemory(
-      buildGlobalMemoryInput(event, recommendation, candidate, auditReport, event.id, count, this.options.truncate),
+    return buildGlobalMemoryInput(
+      event,
+      recommendation,
+      candidate,
+      auditReport,
+      event.id,
+      count,
+      this.options.truncate,
     );
   }
 

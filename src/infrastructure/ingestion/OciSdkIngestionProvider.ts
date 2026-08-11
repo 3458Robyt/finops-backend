@@ -304,6 +304,7 @@ resources: inventory.resources,
 metricSamples: [],
 warnings: inventory.warnings,
 coverage: {
+...inventory.coverage,
 inventorySource: inventory.source,
 inventoryImplemented: true,
 resources: inventory.resources.length,
@@ -648,6 +649,7 @@ readonly apiCallCount: number;
 readonly resources: readonly NormalizedCloudResource[];
 readonly warnings: readonly string[];
 readonly source: string;
+readonly coverage: Readonly<Record<string, unknown>>;
 }> {
 const explicit = readObjectArray(job.connection.metadata, 'ociInventoryResources').map((item) => {
       const regionId = optionalString(item['regionId']) ?? optionalString(item['region']) ?? job.connection.defaultRegion;
@@ -691,13 +693,20 @@ const explicit = readObjectArray(job.connection.metadata, 'ociInventoryResources
 let sdkResources: readonly NormalizedCloudResource[] = [];
 let apiCallCount = 0;
 const warnings: string[] = [];
+let coverage: Readonly<Record<string, unknown>> = {
+inventoryCompartmentDiscovery: 'NOT_ATTEMPTED',
+};
 
 try {
 const inventory = await this.collectComputeInventoryResources(job);
 sdkResources = inventory.resources;
 apiCallCount = inventory.apiCallCount;
+coverage = inventory.coverage;
 } catch (error) {
 warnings.push(`OCI inventory SDK skipped: ${error instanceof Error ? error.message : String(error)}`);
+coverage = {
+inventoryCompartmentDiscovery: 'FAILED',
+};
 }
 
 const resources = this.mergeInventoryResources([...inferred, ...explicit, ...sdkResources]);
@@ -711,12 +720,23 @@ apiCallCount,
 resources,
 warnings,
 source: sdkResources.length > 0 ? 'oci_compute_sdk_with_metadata_fallback' : 'metadata_and_metric_definitions',
+coverage: {
+...coverage,
+configuredResourceCount: explicit.length,
+metricDefinitionResourceCount: inferred.length,
+sdkResourceCount: sdkResources.length,
+mergedResourceCount: resources.length,
+},
 };
 }
 
 private async collectComputeInventoryResources(
 job: CloudIngestionJobContext,
-): Promise<{ readonly apiCallCount: number; readonly resources: readonly NormalizedCloudResource[] }> {
+): Promise<{
+readonly apiCallCount: number;
+readonly resources: readonly NormalizedCloudResource[];
+readonly coverage: Readonly<Record<string, unknown>>;
+}> {
 const client = this.createComputeClient(job);
 const compartmentDiscovery = await this.listInventoryCompartmentIds(job);
 const compartmentIds = compartmentDiscovery.compartmentIds;
@@ -762,7 +782,17 @@ page = response.opcNextPage;
 } while (page !== undefined);
 }
 
-return { apiCallCount, resources };
+return {
+apiCallCount,
+resources,
+coverage: {
+inventoryCompartmentDiscovery: compartmentDiscovery.status,
+configuredCompartmentCount: compartmentDiscovery.configuredCompartmentCount,
+discoveredCompartmentCount: compartmentDiscovery.discoveredCompartmentCount,
+compartmentCount: compartmentIds.length,
+compartmentDiscoveryApiCalls: compartmentDiscovery.apiCallCount,
+},
+};
 } finally {
 client.close?.();
 }
@@ -799,16 +829,30 @@ return 'UNKNOWN';
 
 private async listInventoryCompartmentIds(
 job: CloudIngestionJobContext,
-): Promise<{ readonly compartmentIds: readonly string[]; readonly apiCallCount: number }> {
-const compartmentIds = new Set(this.readConfiguredInventoryCompartments(job));
+): Promise<{
+readonly compartmentIds: readonly string[];
+readonly apiCallCount: number;
+readonly status: 'COMPLETE' | 'FALLBACK' | 'CONFIGURED_ONLY';
+readonly configuredCompartmentCount: number;
+readonly discoveredCompartmentCount: number;
+}> {
+const configuredCompartments = this.readConfiguredInventoryCompartments(job);
+const compartmentIds = new Set(configuredCompartments);
 if (getCredential(job.connection.credentials, [
 'INVENTORY_READ',
 'OPERATIONAL',
 ]) === undefined) {
-return { compartmentIds: [...compartmentIds], apiCallCount: 0 };
+return {
+compartmentIds: [...compartmentIds],
+apiCallCount: 0,
+status: 'CONFIGURED_ONLY',
+configuredCompartmentCount: configuredCompartments.length,
+discoveredCompartmentCount: 0,
+};
 }
 const client = this.createIdentityClient(this.createAuthProvider(job));
 let apiCallCount = 0;
+let discoveredCompartmentCount = 0;
 let page: string | undefined;
 
 try {
@@ -825,6 +869,7 @@ limit: 1000,
 for (const compartment of response.items ?? []) {
 if (compartment.id !== undefined && compartment.lifecycleState?.toUpperCase() === 'ACTIVE') {
 compartmentIds.add(compartment.id);
+discoveredCompartmentCount += 1;
 }
 }
 page = response.opcNextPage;
@@ -833,12 +878,24 @@ page = response.opcNextPage;
 // The identity policy may not allow compartment discovery. Keep explicitly
 // configured compartments as a safe, deterministic fallback and let the
 // inventory result report the reduced scope through its source/warnings.
-return { compartmentIds: [...compartmentIds], apiCallCount };
+return {
+compartmentIds: [...compartmentIds],
+apiCallCount,
+status: 'FALLBACK',
+configuredCompartmentCount: configuredCompartments.length,
+discoveredCompartmentCount,
+};
 } finally {
 client.close?.();
 }
 
-return { compartmentIds: [...compartmentIds], apiCallCount };
+return {
+compartmentIds: [...compartmentIds],
+apiCallCount,
+status: 'COMPLETE',
+configuredCompartmentCount: configuredCompartments.length,
+discoveredCompartmentCount,
+};
 }
 
 private readConfiguredInventoryCompartments(job: CloudIngestionJobContext): readonly string[] {

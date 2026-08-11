@@ -125,6 +125,16 @@ describe('buildIngestionSchedulePlan', () => {
     expect(plan.skipped.every((item) => item.reason === 'La conexión debe validarse después de su última modificación.')).toBe(true);
   });
 
+  it('skips every source when the capabilities validation is stale', () => {
+    const plan = buildIngestionSchedulePlan([
+      buildOciConnection({ lastValidatedAt: new Date('2026-06-03T12:00:00.000Z') }),
+    ], { ...defaultOptions, validationMaxAgeMinutes: 60 * 24 });
+
+    expect(plan.jobs).toEqual([]);
+    expect(plan.skipped).toHaveLength(2);
+    expect(plan.skipped.every((item) => item.reason === 'La validación de capacidades expiró; ejecuta una nueva validación antes de ingerir.')).toBe(true);
+  });
+
   it('requires the source-specific capability from the latest validation', () => {
     const plan = buildIngestionSchedulePlan([
       buildOciConnection({

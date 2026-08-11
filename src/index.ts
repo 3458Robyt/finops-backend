@@ -457,6 +457,7 @@ const PORT = process.env['PORT'] || 3000;
     const billingWindowHours = parsePositiveIntegerEnv('INGESTION_SCHEDULER_BILLING_WINDOW_HOURS', 24);
     const billingCooldownHours = parsePositiveIntegerEnv('INGESTION_SCHEDULER_BILLING_COOLDOWN_HOURS', 6);
     const maxAttempts = parsePositiveIntegerEnv('INGESTION_SCHEDULER_MAX_ATTEMPTS', 1);
+    const validationMaxAgeMinutes = parsePositiveIntegerEnv('INGESTION_SCHEDULER_VALIDATION_MAX_AGE_MINUTES', 1440);
     const providerCode = process.env['INGESTION_SCHEDULER_PROVIDER'];
     const connectionId = process.env['INGESTION_SCHEDULER_CONNECTION_ID'];
 
@@ -477,6 +478,7 @@ const PORT = process.env['PORT'] || 3000;
               billingWindowHours,
               billingCooldownHours,
               maxAttempts,
+              validationMaxAgeMinutes,
             },
             ...(providerCode !== undefined ? { providerCode } : {}),
             ...(connectionId !== undefined ? { connectionId } : {}),

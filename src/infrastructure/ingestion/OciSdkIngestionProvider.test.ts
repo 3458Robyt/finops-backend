@@ -51,7 +51,56 @@ serviceName: 'Oracle Compute',
 status: 'ACTIVE',
 }),
 ]);
-expect(result.coverage).toMatchObject({ inventorySource: 'oci_compute_sdk_with_metadata_fallback' });
+expect(result.coverage).toMatchObject({
+inventorySource: 'oci_compute_sdk_with_metadata_fallback',
+inventoryCompartmentDiscovery: 'CONFIGURED_ONLY',
+configuredCompartmentCount: 1,
+mergedResourceCount: 1,
+});
+});
+
+it('discovers active OCI compartments recursively before listing instances', async () => {
+const provider = new OciSdkIngestionProvider();
+const listedCompartments: string[] = [];
+const listedInstances: string[] = [];
+Object.assign(provider as unknown as Record<string, unknown>, {
+createAuthProvider: () => ({}),
+createIdentityClient: () => ({
+listCompartments: async (request: { readonly page?: string }) => {
+listedCompartments.push(request.page ?? 'root');
+return request.page === undefined
+? { items: [{ id: 'compartment-a', lifecycleState: 'ACTIVE' }], opcNextPage: 'page-2' }
+: { items: [{ id: 'compartment-b', lifecycleState: 'ACTIVE' }] };
+},
+close: () => undefined,
+}),
+createComputeClient: () => ({
+listInstances: async (request: { readonly compartmentId: string }) => {
+listedInstances.push(request.compartmentId);
+return { items: [{ id: `instance-${request.compartmentId}`, lifecycleState: 'RUNNING' }] };
+},
+close: () => undefined,
+}),
+});
+
+const result = await provider.collect({
+...buildMetricJob(),
+sourceType: 'INVENTORY',
+connection: {
+...buildMetricJob().connection,
+metadata: {},
+credentials: [{ purpose: 'INVENTORY_READ', payload: {} }],
+},
+});
+
+expect(listedCompartments).toEqual(['root', 'page-2']);
+expect(listedInstances).toEqual(['ocid1.tenancy.oc1.test', 'compartment-a', 'compartment-b']);
+expect(result.resources).toHaveLength(3);
+expect(result.coverage).toMatchObject({
+inventoryCompartmentDiscovery: 'COMPLETE',
+discoveredCompartmentCount: 2,
+compartmentCount: 3,
+});
 });
 
 it('normalizes metric samples from OCI TypeScript SDK items response', async () => {

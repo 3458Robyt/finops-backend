@@ -37,6 +37,8 @@ export interface IngestionScheduleOptions {
   readonly billingWindowHours: number;
   readonly billingCooldownHours: number;
   readonly maxAttempts: number;
+  /** Edad máxima de una validación de capacidades antes de exigir otra. */
+  readonly validationMaxAgeMinutes?: number;
 }
 
 export interface PlannedIngestionJob {
@@ -102,8 +104,14 @@ function evaluateSource(
   sourceType: IngestionSourceType,
   options: IngestionScheduleOptions,
 ): { readonly kind: 'job'; readonly job: PlannedIngestionJob } | { readonly kind: 'skip'; readonly reason: string } {
-  if (connection.lastValidatedAt === null) {
+  if (connection.lastValidatedAt === null || connection.lastValidatedAt === undefined) {
     return { kind: 'skip', reason: 'La conexión debe validarse después de su última modificación.' };
+  }
+
+  const validationMaxAgeMinutes = options.validationMaxAgeMinutes ?? 24 * 60;
+  const validationAgeMs = options.now.getTime() - connection.lastValidatedAt.getTime();
+  if (!Number.isFinite(validationAgeMs) || validationAgeMs > validationMaxAgeMinutes * 60 * 1000) {
+    return { kind: 'skip', reason: 'La validación de capacidades expiró; ejecuta una nueva validación antes de ingerir.' };
   }
 
   const capabilities = availableCapabilities(connection.metadata);

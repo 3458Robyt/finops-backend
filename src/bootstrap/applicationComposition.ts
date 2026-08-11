@@ -282,7 +282,11 @@ export function createApplicationComposition(
     authSessionRepository,
     valueRealizationService,
     readinessCheck: async () => {
-      await prisma.$queryRawUnsafe('SELECT 1');
+      const rows = await prisma.$queryRaw<Array<{ readonly current_user: string }>>`SELECT current_user`;
+      const currentUser = rows[0]?.current_user;
+      if (config.database.runtimeEnforce && currentUser !== config.database.runtimeRole) {
+        throw new Error('Database runtime role is not active');
+      }
     },
     metricsRegistry,
     runtimeConfig: config,

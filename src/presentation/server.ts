@@ -114,21 +114,54 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
 
   registerApiRoutes(app, dependencies);
 
+  app.get('/live', (_req, res) => {
+    res.status(200).json({
+      status: 'live',
+      processRole: config.environment.processRole,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   app.get('/health', (_req, res) => {
-    res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.status(200).json({
+      status: 'ok',
+      processRole: config.environment.processRole,
+      timestamp: new Date().toISOString(),
+    });
   });
 
   app.get('/ready', async (_req, res) => {
     if (dependencies.readinessCheck === undefined) {
-      res.status(200).json({ status: 'ready', checks: { database: 'not_configured' } });
+      res.status(200).json({
+        status: 'ready',
+        processRole: config.environment.processRole,
+        checks: {
+          database: 'not_configured',
+          runtimeRls: config.database.runtimeEnforce ? 'required' : 'disabled',
+        },
+      });
       return;
     }
 
     try {
       await dependencies.readinessCheck();
-      res.status(200).json({ status: 'ready', checks: { database: 'ok' } });
+      res.status(200).json({
+        status: 'ready',
+        processRole: config.environment.processRole,
+        checks: {
+          database: 'ok',
+          runtimeRls: config.database.runtimeEnforce ? 'enforced' : 'disabled',
+        },
+      });
     } catch {
-      res.status(503).json({ status: 'not_ready', checks: { database: 'failed' } });
+      res.status(503).json({
+        status: 'not_ready',
+        processRole: config.environment.processRole,
+        checks: {
+          database: 'failed',
+          runtimeRls: config.database.runtimeEnforce ? 'unknown' : 'disabled',
+        },
+      });
     }
   });
 

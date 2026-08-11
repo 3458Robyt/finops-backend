@@ -41,10 +41,12 @@ export class OutboundMessageScheduler {
     });
   }
 
-  public stop(): void {
+  public async stop(): Promise<void> {
     if (this.loop !== undefined) {
-      this.loop.stop();
+      const loop = this.loop;
+      loop.stop();
       this.loop = undefined;
+      await loop.waitForIdle();
     }
   }
 }

@@ -20,7 +20,7 @@ import { runWithDatabaseContext } from './infrastructure/database/tenantContext.
 import { runPrismaIngestionJobScheduler } from './infrastructure/ingestion/PrismaIngestionJobScheduler.js';
 import { createExpressServer } from './presentation/server.js';
 import { queueRecommendationAnalysisAfterIngestion } from './infrastructure/repositories/PrismaRecommendationAnalysisScheduler.js';
-import { startNonOverlappingLoop } from './application/services/NonOverlappingLoop.js';
+import { startNonOverlappingLoop, type NonOverlappingLoopHandle, type NonOverlappingLoopOptions } from './application/services/NonOverlappingLoop.js';
 
 
 /**
@@ -56,6 +56,18 @@ async function bootstrap(): Promise<void> {
   } = composition;
   const { outboundMessageService, recommendationRepository } = serverDependencies;
   const app = runsApi ? createExpressServer(serverDependencies) : undefined;
+  const backgroundStops: Array<() => Promise<void>> = [];
+  const startBackgroundLoop = (options: NonOverlappingLoopOptions): void => {
+    const handle: NonOverlappingLoopHandle = startNonOverlappingLoop(options);
+    backgroundStops.push(async () => {
+      handle.stop();
+      await handle.waitForIdle();
+    });
+  };
+  const stopBackgroundWork = async (): Promise<void> => {
+    const stops = backgroundStops.splice(0);
+    await Promise.all(stops.map((stop) => stop()));
+  };
 
   // ── 4. Iniciar Servidor RESTful ───────────────────────────────────
   const PORT = config.http.port;
@@ -82,12 +94,13 @@ async function bootstrap(): Promise<void> {
   }
 
   let shuttingDown = false;
-  const shutdown = (signal: string): void => {
+  const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(JSON.stringify({ level: 'info', event: 'shutdown_started', signal }));
     const forceExit = setTimeout(() => process.exit(1), 10_000);
     forceExit.unref();
+    await stopBackgroundWork();
     const disconnect = (): void => {
       void prisma.$disconnect()
         .catch((error: unknown) => {
@@ -108,8 +121,8 @@ async function bootstrap(): Promise<void> {
     }
     httpServer.close(disconnect);
   };
-  process.once('SIGTERM', () => shutdown('SIGTERM'));
-  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
+  process.once('SIGINT', () => { void shutdown('SIGINT'); });
 if (runsSchedulers && config.schedulers.message.enabled) {
   const schedulerTenantId = config.schedulers.message.tenantId;
   const schedulerUserId = config.schedulers.message.userId;
@@ -126,6 +139,7 @@ if (runsSchedulers && config.schedulers.message.enabled) {
       config.schedulers.message.intervalMinutes,
     );
     scheduler.start();
+    backgroundStops.push(() => scheduler.stop());
   }
 }
 
@@ -135,7 +149,7 @@ if (runsSchedulers && config.schedulers.message.enabled) {
 
     console.log(`   Ingestion worker: enabled (${workerId}, ${intervalMs}ms)`);
 
-    startNonOverlappingLoop({
+    startBackgroundLoop({
       run: () => ingestionWorker.runOnce(workerId),
       intervalMs,
       fallbackIntervalMs: 30000,
@@ -153,7 +167,7 @@ if (runsSchedulers && config.schedulers.message.enabled) {
     const intervalMs = config.workers.learning.intervalMs;
 
     console.log(`   Agent learning worker: enabled (${workerId}, ${intervalMs}ms)`);
-    startNonOverlappingLoop({
+    startBackgroundLoop({
       run: async () => {
         await learningService.processNextQueuedRecommendationDecision(workerId);
       },
@@ -175,7 +189,7 @@ if (runsSchedulers && config.schedulers.message.enabled) {
     const staleAfterMs = config.workers.recommendationAnalysis.staleAfterMs;
 
     console.log(`   Recommendation analysis worker: enabled (${workerId}, ${intervalMs}ms)`);
-    startNonOverlappingLoop({
+    startBackgroundLoop({
       run: async () => {
         await recommendationAnalysisService.processNext(workerId, staleAfterMs);
       },
@@ -195,7 +209,7 @@ if (runsSchedulers && config.schedulers.message.enabled) {
     const cooldownMinutes = config.schedulers.recommendationAnalysis.cooldownMinutes;
 
     console.log(`   Recommendation analysis scheduler: enabled (${intervalMs}ms)`);
-    startNonOverlappingLoop({
+    startBackgroundLoop({
       run: async () => {
         const queued = await runWithDatabaseContext(
           { workerId: 'recommendation-analysis-scheduler', role: 'MASTER_ADMIN' },
@@ -236,7 +250,7 @@ if (runsSchedulers && config.schedulers.message.enabled) {
     if (config.schedulers.savingsReconciliation.enabled) {
       const intervalMs = config.schedulers.savingsReconciliation.intervalMs;
       console.log(`   Value realization reconciliation scheduler: enabled (${intervalMs}ms)`);
-      startNonOverlappingLoop({
+      startBackgroundLoop({
         run: runReconciliation,
         intervalMs,
         fallbackIntervalMs: 300_000,
@@ -261,7 +275,7 @@ if (runsSchedulers && config.schedulers.message.enabled) {
 
     console.log(`   Ingestion scheduler: enabled (${intervalMs}ms)`);
 
-    startNonOverlappingLoop({
+    startBackgroundLoop({
       intervalMs,
       fallbackIntervalMs: 300000,
       run: async () => {

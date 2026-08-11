@@ -1,5 +1,6 @@
 export interface NonOverlappingLoopHandle {
   stop(): void;
+  waitForIdle(): Promise<void>;
 }
 
 export interface NonOverlappingLoopOptions {
@@ -21,6 +22,7 @@ export function startNonOverlappingLoop(options: NonOverlappingLoopOptions): Non
   const setIntervalFn = options.setIntervalFn ?? setInterval;
   const clearIntervalFn = options.clearIntervalFn ?? clearInterval;
   let running = false;
+  let activeRun: Promise<void> | undefined;
 
   const tick = (): void => {
     if (running) {
@@ -29,9 +31,29 @@ export function startNonOverlappingLoop(options: NonOverlappingLoopOptions): Non
     }
 
     running = true;
-    options.run()
-      .catch((error: unknown) => options.onError?.(error))
-      .finally(() => { running = false; });
+    let result: Promise<unknown>;
+    try {
+      result = options.run();
+    } catch (error: unknown) {
+      running = false;
+      options.onError?.(error);
+      return;
+    }
+
+    let execution: Promise<void>;
+    execution = Promise.resolve(result)
+      .then(
+        () => undefined,
+        (error: unknown) => {
+          options.onError?.(error);
+        },
+      )
+      .finally(() => {
+        running = false;
+        if (activeRun === execution) activeRun = undefined;
+      });
+    activeRun = execution;
+    void execution;
   };
 
   if (options.runImmediately !== false) tick();
@@ -41,5 +63,11 @@ export function startNonOverlappingLoop(options: NonOverlappingLoopOptions): Non
     (timer as NodeJS.Timeout).unref();
   }
 
-  return { stop: () => clearIntervalFn(timer) };
+  return {
+    stop: () => clearIntervalFn(timer),
+    waitForIdle: async () => {
+      const pending = activeRun;
+      if (pending !== undefined) await pending;
+    },
+  };
 }

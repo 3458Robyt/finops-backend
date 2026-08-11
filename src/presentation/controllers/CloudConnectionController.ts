@@ -3,6 +3,7 @@ import type { CloudConnectionService } from '../../application/services/CloudCon
 import type { IngestionSourceType } from '../../domain/models/CloudConnection.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import { resolveFinOpsError } from '../http/finOpsErrorResponse.js';
+import { CloudConnectionRequestParser } from './cloudConnectionRequestParser.js';
 
 /**
  * Controlador de la capa de presentación para las conexiones a proveedores de
@@ -21,6 +22,8 @@ import { resolveFinOpsError } from '../http/finOpsErrorResponse.js';
  * usuario autenticado.
  */
 export class CloudConnectionController {
+  private readonly requestParser = new CloudConnectionRequestParser();
+
   constructor(private readonly cloudConnectionService: CloudConnectionService) {}
 
   /**
@@ -548,189 +551,23 @@ export class CloudConnectionController {
     }
   };
 
-  /**
-   * Garantiza que la petición está autenticada y devuelve el `tenantId` del
-   * contexto de autenticación. Lanza AUTHENTICATION_REQUIRED (mapeado a 401) si
-   * `req.auth` no está presente.
-   */
-  private requireTenant(req: Request): string {
-    if (req.auth === undefined) {
-        throw new FinOpsBaseError('Debes iniciar sesión para continuar.', 'AUTHENTICATION_REQUIRED');
-    }
-
-    return req.auth.tenantId;
-  }
-
-  /**
-   * Lee un parámetro de ruta obligatorio (`req.params[name]`) recortado.
-   * Lanza VALIDATION_ERROR (mapeado a 400) si está ausente o vacío.
-   */
-  private requireParam(req: Request, name: string): string {
-    const value = req.params[name];
-
-    if (typeof value !== 'string' || value.trim() === '') {
-      throw new FinOpsBaseError(`El parámetro ${name} es obligatorio.`, 'VALIDATION_ERROR');
-    }
-
-    return value.trim();
-  }
-
-  /**
-   * Valida que el cuerpo de la petición sea un objeto JSON (no nulo ni array).
-   * Lanza VALIDATION_ERROR (mapeado a 400) en caso contrario.
-   */
-  private requireObjectBody(body: unknown): Record<string, unknown> {
-    if (!this.isRecord(body)) {
-      throw new FinOpsBaseError('El cuerpo de la solicitud debe ser un objeto JSON.', 'VALIDATION_ERROR');
-    }
-
-    return body;
-  }
-
-  /**
-   * Valida que un campo sea una cadena no vacía y la devuelve recortada.
-   * Lanza VALIDATION_ERROR (mapeado a 400) usando `fieldName` en el mensaje.
-   */
-  private requireString(value: unknown, fieldName: string): string {
-    if (typeof value !== 'string' || value.trim() === '') {
-      throw new FinOpsBaseError(`El campo ${fieldName} es obligatorio.`, 'VALIDATION_ERROR');
-    }
-
-    return value.trim();
-  }
-
-  /**
-   * Convierte un campo en fecha a partir de una cadena ISO obligatoria.
-   * Lanza VALIDATION_ERROR (mapeado a 400) si está ausente o no es una fecha válida.
-   */
-  private parseDate(value: unknown, fieldName: string): Date {
-    const raw = this.requireString(value, fieldName);
-    const parsed = new Date(raw);
-
-    if (Number.isNaN(parsed.getTime())) {
-      throw new FinOpsBaseError(`${fieldName} must be an ISO date`, 'VALIDATION_ERROR');
-    }
-
-    return parsed;
-  }
-
-  /**
-   * Valida y normaliza el tipo de fuente de ingesta. Acepta únicamente
-   * `BILLING_EXPORT`, `INVENTORY`, `TECHNICAL_METRIC` o `AGENT_METRIC`; en otro
-   * caso lanza VALIDATION_ERROR (mapeado a 400).
-   */
-  private parseSourceType(value: unknown): IngestionSourceType {
-    const sourceType = this.requireString(value, 'sourceType');
-    const allowed: readonly IngestionSourceType[] = [
-      'BILLING_EXPORT',
-      'INVENTORY',
-      'TECHNICAL_METRIC',
-      'AGENT_METRIC',
-    ];
-
-    if (!allowed.includes(sourceType as IngestionSourceType)) {
-      throw new FinOpsBaseError('El tipo de fuente de ingesta no es compatible.', 'VALIDATION_ERROR');
-    }
-
-    return sourceType as IngestionSourceType;
-  }
-
-  private parseCredentialPurpose(value: unknown):
-    | 'OPERATIONAL'
-    | 'BILLING_EXPORT_READ'
-    | 'INVENTORY_READ'
-    | 'METRICS_READ'
-    | 'STORAGE_READ' {
-    const purpose = this.requireString(value, 'purpose');
-    const allowed = [
-      'OPERATIONAL',
-      'BILLING_EXPORT_READ',
-      'INVENTORY_READ',
-      'METRICS_READ',
-      'STORAGE_READ',
-    ] as const;
-    if (!(allowed as readonly string[]).includes(purpose)) {
-      throw new FinOpsBaseError('El propósito indicado no corresponde a una credencial de solo lectura compatible.', 'VALIDATION_ERROR');
-    }
-
-    return purpose as (typeof allowed)[number];
-  }
-
-  private parseFocusSourceMode(value: unknown): 'location' | 'object' {
-    const mode = this.requireString(value, 'mode');
-    if (mode !== 'location' && mode !== 'object') {
-      throw new FinOpsBaseError('El modo debe ser location u object.', 'VALIDATION_ERROR');
-    }
-
-    return mode;
-  }
-
-  private parseBillingSourceMode(value: unknown): 'AUTO' | 'FOCUS' | 'PROVIDER_API' {
-    const mode = this.requireString(value, 'mode');
-    if (mode !== 'AUTO' && mode !== 'FOCUS' && mode !== 'PROVIDER_API') {
-      throw new FinOpsBaseError('El modo debe ser AUTO, FOCUS o PROVIDER_API.', 'VALIDATION_ERROR');
-    }
-
-    return mode;
-  }
-
+  private requireTenant(req: Request): string { return this.requestParser.requireTenant(req); }
+  private requireParam(req: Request, name: string): string { return this.requestParser.requireParam(req, name); }
+  private requireObjectBody(body: unknown): Record<string, unknown> { return this.requestParser.requireObjectBody(body); }
+  private requireString(value: unknown, fieldName: string): string { return this.requestParser.requireString(value, fieldName); }
+  private parseDate(value: unknown, fieldName: string): Date { return this.requestParser.parseDate(value, fieldName); }
+  private parseSourceType(value: unknown): IngestionSourceType { return this.requestParser.parseSourceType(value); }
+  private parseCredentialPurpose(value: unknown) { return this.requestParser.parseCredentialPurpose(value); }
+  private parseFocusSourceMode(value: unknown) { return this.requestParser.parseFocusSourceMode(value); }
+  private parseBillingSourceMode(value: unknown) { return this.requestParser.parseBillingSourceMode(value); }
   private requireStringRecord(value: unknown, fieldName: string): Readonly<Record<string, string>> {
-    if (!this.isRecord(value)) {
-      throw new FinOpsBaseError(`${fieldName} must be an object`, 'VALIDATION_ERROR');
-    }
-
-    const entries = Object.entries(value);
-    if (entries.length === 0) {
-      throw new FinOpsBaseError(`${fieldName} must not be empty`, 'VALIDATION_ERROR');
-    }
-
-    return Object.fromEntries(entries.map(([key, item]) => {
-      if (typeof item !== 'string' || item.trim() === '') {
-        throw new FinOpsBaseError(`${fieldName}.${key} must be a non-empty string`, 'VALIDATION_ERROR');
-      }
-
-      return [key, item.trim()];
-    }));
+    return this.requestParser.requireStringRecord(value, fieldName);
   }
-
-  /**
-   * Convierte el query param `limit` (string | string[] | undefined) a número,
-   * o `undefined` si no viene o no es numérico. El acotado al rango válido lo
-   * realiza el servicio ({@link CloudConnectionService.listIngestionHistory}).
-   */
-  private parseLimit(value: unknown): number | undefined {
-    const raw = Array.isArray(value) ? value[0] : value;
-
-    if (typeof raw !== 'string' || raw.trim() === '') {
-      return undefined;
-    }
-
-    const parsed = Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) ? parsed : undefined;
+  private parseLimit(value: unknown): number | undefined { return this.requestParser.parseLimit(value); }
+  private parseOptionalNumber(value: unknown, fieldName: string): number | undefined {
+    return this.requestParser.parseOptionalNumber(value, fieldName);
   }
-
-  private parseOptionalNumber(
-    value: unknown,
-    fieldName: string,
-  ): number | undefined {
-    if (value === undefined || value === null || value === '') {
-      return undefined;
-    }
-
-    const parsed = typeof value === 'number' ? value : Number.parseInt(String(value), 10);
-    if (!Number.isFinite(parsed)) {
-      throw new FinOpsBaseError(`${fieldName} must be a number`, 'VALIDATION_ERROR');
-    }
-
-    return parsed;
-  }
-
-  /**
-   * Type guard que indica si un valor es un objeto plano (no nulo ni array).
-   */
-  private isRecord(value: unknown): value is Record<string, unknown> {
-    return value !== null && typeof value === 'object' && !Array.isArray(value);
-  }
+  private isRecord(value: unknown): value is Record<string, unknown> { return this.requestParser.isRecord(value); }
 
   /**
    * Manejador centralizado de errores que traduce excepciones de dominio a

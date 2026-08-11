@@ -81,7 +81,7 @@ interface ServerDependencies {
   readonly cloudConnectionService: CloudConnectionService;
   /** Servicio de métricas técnicas de recursos cloud (CPU, memoria, IOPS, etc.). */
   readonly technicalMetricsService: TechnicalMetricsService;
-  /** Servicio de analítica de costos (anomalías, tendencias, forecast, etc.). */
+  /** Servicio de analítica de costos (oportunidades, tendencias, forecast, etc.). */
   readonly analyticsService: CostAnalyticsService;
   /** Servicio de IA FinOps (chat y generación de recomendaciones). */
   readonly aiService: FinOpsAiService;
@@ -150,8 +150,8 @@ interface ServerDependencies {
  * Expone además un endpoint de salud `GET /health` que responde `200` con
  * `{ status: 'ok', timestamp }`.
  *
- * Nota: esta función no registra un middleware global de manejo de errores
- * ni un handler 404; cada controlador gestiona sus propias respuestas.
+ * Al final registra handlers globales para rutas no encontradas y errores no
+ * controlados, manteniendo respuestas seguras y un diagnosticId trazable.
  *
  * @param dependencies Dependencias inyectadas (servicios, repositorios y configuración).
  * @returns Instancia de la aplicación Express lista para escuchar conexiones.
@@ -241,10 +241,10 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
     dependencies.learningService,
     dependencies.valueRealizationService,
   );
-const kpiController = new KpiController(dependencies.recommendationRepository);
-const notificationController = new NotificationController(dependencies.savingsReminderService);
-const outboundMessageController = new OutboundMessageController(dependencies.outboundMessageService);
-const telegramController = new TelegramController(
+  const kpiController = new KpiController(dependencies.recommendationRepository);
+  const notificationController = new NotificationController(dependencies.savingsReminderService);
+  const outboundMessageController = new OutboundMessageController(dependencies.outboundMessageService);
+  const telegramController = new TelegramController(
     dependencies.telegramBotService,
     dependencies.telegramLinkService,
     dependencies.telegramWebhookSecret,
@@ -290,10 +290,10 @@ const telegramController = new TelegramController(
   app.use('/api/v1/ingestion', createIngestionRoutes(cloudConnectionController, requireAuth, requireCloudManager, resourceLinkageController));
   app.use('/api/v1/technical-metrics', createTechnicalMetricsRoutes(technicalMetricsController, requireAuth));
   app.use('/api/v1/kpis', createKpiRoutes(kpiController, requireAuth));
-app.use('/api/v1/master-admin', createMasterAdminRoutes(masterAdminController, requireAuth));
-app.use('/api/v1/notifications', createNotificationRoutes(notificationController, requireAuth));
-app.use('/api/v1/outbound-messages', createOutboundMessageRoutes(outboundMessageController, requireAuth));
-app.use('/api/v1/recommendations', createRecommendationRoutes(recommendationController, requireAuth));
+  app.use('/api/v1/master-admin', createMasterAdminRoutes(masterAdminController, requireAuth));
+  app.use('/api/v1/notifications', createNotificationRoutes(notificationController, requireAuth));
+  app.use('/api/v1/outbound-messages', createOutboundMessageRoutes(outboundMessageController, requireAuth));
+  app.use('/api/v1/recommendations', createRecommendationRoutes(recommendationController, requireAuth));
   app.use('/api/v1/telegram', createTelegramRoutes(telegramController, requireAuth));
   app.use('/api/v1/value-realization', createValueRealizationRoutes(valueRealizationController, requireAuth, requireValueRealizationReconcile));
 

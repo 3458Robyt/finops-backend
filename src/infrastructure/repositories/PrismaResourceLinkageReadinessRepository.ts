@@ -16,7 +16,10 @@ import {
   queryCostLinkageCoverage,
 } from './queries/resourceLinkageCostQueries.js';
 import { queryResourceLinkageConnections } from './queries/resourceLinkageConnectionQueries.js';
-import { queryResourceTagGovernance } from './queries/resourceTagGovernanceQueries.js';
+import {
+  DEFAULT_REQUIRED_TAG_KEYS,
+  queryResourceTagGovernance,
+} from './queries/resourceTagGovernanceQueries.js';
 
 interface CountRow {
   readonly total: bigint;
@@ -71,7 +74,10 @@ const knownReasons: readonly ResourceLinkReasonCode[] = [
 ];
 
 export class PrismaResourceLinkageReadinessRepository implements IResourceLinkageReadinessRepository {
-  public constructor(private readonly prisma: PrismaClient) {}
+  public constructor(
+    private readonly prisma: PrismaClient,
+    private readonly requiredTagKeys: readonly string[] = DEFAULT_REQUIRED_TAG_KEYS,
+  ) {}
 
   public async getForTenant(tenantId: string, resourceLimit: number): Promise<ResourceLinkageReadiness> {
     const costCoverage = await queryCostLinkageCoverage(this.prisma, tenantId);
@@ -89,7 +95,7 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
         orderBy: { observedAt: 'desc' },
         select: { observedAt: true, status: true, details: true },
       }),
-      queryResourceTagGovernance(this.prisma, tenantId),
+      queryResourceTagGovernance(this.prisma, tenantId, this.requiredTagKeys),
     ]);
 
     const linkedResourcesWithCost = Number(resourceCounts.with_cost);

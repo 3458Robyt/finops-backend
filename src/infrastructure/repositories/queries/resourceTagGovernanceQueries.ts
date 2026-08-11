@@ -14,11 +14,14 @@ interface MissingTagRow {
   readonly count: bigint;
 }
 
+export const DEFAULT_REQUIRED_TAG_KEYS = ['environment', 'owner', 'application', 'cost_center'] as const;
+
 export async function queryResourceTagGovernance(
   prisma: PrismaClient,
   tenantId: string,
+  configuredKeys: readonly string[] = DEFAULT_REQUIRED_TAG_KEYS,
 ): Promise<ResourceTagGovernance> {
-  const requiredKeys = readRequiredTagKeys();
+  const requiredKeys = normalizeRequiredTagKeys(configuredKeys);
   if (requiredKeys.length === 0) {
     return buildTagGovernance([], {
       totalResources: await prisma.cloudResource.count({ where: { tenantId } }),
@@ -64,10 +67,9 @@ export async function queryResourceTagGovernance(
   });
 }
 
-function readRequiredTagKeys(): readonly string[] {
-  const configured = (process.env['FINOPS_REQUIRED_TAG_KEYS'] ?? 'environment,owner,application,cost_center')
-    .split(',')
+function normalizeRequiredTagKeys(configured: readonly string[]): readonly string[] {
+  const normalized = configured
     .map((key) => key.trim())
     .filter((key) => key.length > 0 && key.length <= 128);
-  return [...new Set(configured)].slice(0, 20);
+  return [...new Set(normalized)].slice(0, 20);
 }

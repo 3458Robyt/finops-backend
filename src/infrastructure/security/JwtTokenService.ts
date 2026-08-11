@@ -23,7 +23,7 @@ const VALID_USER_ROLES: ReadonlySet<UserRole> = new Set<UserRole>([
 
 /**
  * Configuración interna del servicio de tokens JWT, resuelta en el constructor
- * a partir de los parámetros recibidos o de variables de entorno.
+ * a partir de los parámetros recibidos por el composition root.
  */
 interface JwtTokenServiceConfig {
   /** Secreto compartido usado para firmar y verificar tokens HS256. */
@@ -69,9 +69,8 @@ export class JwtTokenService implements ITokenService {
   private readonly config: JwtTokenServiceConfig;
 
   /**
-   * Construye el servicio resolviendo la configuración desde los parámetros
-   * o desde variables de entorno (`JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`,
-   * `JWT_EXPIRES_IN_SECONDS`).
+   * Construye el servicio usando la configuración ya validada por el
+   * composition root. No lee variables de entorno desde el adaptador.
    *
    * @param config - Configuración parcial opcional; cualquier campo ausente se
    *   completa con la variable de entorno correspondiente o un valor por defecto
@@ -79,8 +78,8 @@ export class JwtTokenService implements ITokenService {
    * @throws {ConfigurationError} Si el secreto no está definido o tiene menos de 32 caracteres.
    * @throws {ConfigurationError} Si `JWT_EXPIRES_IN_SECONDS` está presente pero no es un entero positivo.
    */
-  constructor(config?: Partial<JwtTokenServiceConfig>) {
-    const secret = config?.secret ?? process.env['JWT_SECRET'];
+  constructor(config: Partial<JwtTokenServiceConfig> = {}) {
+    const secret = config.secret;
 
     if (secret === undefined || secret.length < 32) {
       throw new ConfigurationError('JWT_SECRET must be configured with at least 32 characters');
@@ -88,9 +87,9 @@ export class JwtTokenService implements ITokenService {
 
     this.config = {
       secret,
-      issuer: config?.issuer ?? process.env['JWT_ISSUER'] ?? 'finops-backend',
-      audience: config?.audience ?? process.env['JWT_AUDIENCE'] ?? 'finops-app',
-      expiresInSeconds: config?.expiresInSeconds ?? this.readExpirySeconds(),
+      issuer: config.issuer ?? 'finops-backend',
+      audience: config.audience ?? 'finops-app',
+      expiresInSeconds: this.validateExpirySeconds(config.expiresInSeconds ?? 15 * 60),
     };
   }
 
@@ -189,26 +188,16 @@ export class JwtTokenService implements ITokenService {
   }
 
   /**
-   * Lee y valida el tiempo de expiración (en segundos) desde la variable de
-   * entorno `JWT_EXPIRES_IN_SECONDS`.
+   * Valida el tiempo de expiración recibido desde la configuración central.
    *
    * @returns El número de segundos configurado, o 900 (15 minutos) si la
    *   variable no está definida.
    * @throws {ConfigurationError} Si el valor existe pero no es un entero positivo finito.
    */
-  private readExpirySeconds(): number {
-    const raw = process.env['JWT_EXPIRES_IN_SECONDS'];
-
-    if (raw === undefined) {
-      return 15 * 60;
-    }
-
-    const parsed = Number.parseInt(raw, 10);
-
-    if (!Number.isFinite(parsed) || parsed <= 0) {
+  private validateExpirySeconds(value: number): number {
+    if (!Number.isFinite(value) || value <= 0) {
       throw new ConfigurationError('JWT_EXPIRES_IN_SECONDS must be a positive integer');
     }
-
-    return parsed;
+    return value;
   }
 }

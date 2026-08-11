@@ -44,14 +44,14 @@ export class CredentialCipher {
   /**
    * Inicializa el cifrador validando la clave de cifrado.
    *
-   * @param rawKey - Clave de cifrado en base64. Por defecto se lee de la variable
-   *   de entorno `CREDENTIAL_ENCRYPTION_KEY`. Debe decodificar a 32 bytes.
+   * @param rawKey - Clave de cifrado en base64, recibida desde la configuración
+   *   del proceso. Debe decodificar a 32 bytes.
    * @param keyVersion - Identificador de versión de la clave para soportar rotación.
    *   Por defecto se lee de `CREDENTIAL_KEY_VERSION`, o `'v1'` si no está definida.
    * @throws {ConfigurationError} Si la clave no está configurada o está vacía.
    * @throws {ConfigurationError} Si la clave no decodifica a exactamente 32 bytes.
    */
-  constructor(rawKey = process.env['CREDENTIAL_ENCRYPTION_KEY'], keyVersion = process.env['CREDENTIAL_KEY_VERSION'] ?? 'v1') {
+  constructor(rawKey: string | undefined, keyVersion = 'v1') {
     if (rawKey === undefined || rawKey.trim() === '') {
       throw new ConfigurationError('CREDENTIAL_ENCRYPTION_KEY must be configured as a base64 32-byte key');
     }

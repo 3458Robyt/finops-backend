@@ -128,7 +128,7 @@ export function createApplicationComposition(
   const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository, ingestionProviders);
   const technicalMetricsService = new TechnicalMetricsService(resourceMetricRepository);
   const resourceLinkageReadinessService = new ResourceLinkageReadinessService(
-    new PrismaResourceLinkageReadinessRepository(prisma),
+    new PrismaResourceLinkageReadinessRepository(prisma, config.cloud.requiredTagKeys),
   );
   const technicalRecommendationEvidenceService = new TechnicalRecommendationEvidenceService(resourceMetricRepository);
   const analyticsService = new CostAnalyticsService(costAnalyticsRepository, {
@@ -235,7 +235,10 @@ export function createApplicationComposition(
     ? new CloudIngestionWorkerService(
       new PrismaCloudIngestionJobRepository(
         prisma,
-        credentialCipher ?? new CredentialCipher(),
+        credentialCipher ?? new CredentialCipher(
+          config.security.credentialEncryptionKey,
+          config.security.credentialKeyVersion,
+        ),
         config.workers.ingestion.jobLeaseMs,
       ),
       ingestionProviders,

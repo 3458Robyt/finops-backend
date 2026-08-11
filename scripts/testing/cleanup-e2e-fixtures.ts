@@ -7,7 +7,7 @@ import { Pool } from 'pg';
 const prisma = createTestingPrismaClient();
 
 try {
-  const deletedTenants = await cleanupE2eFixtures(prisma, process.env['E2E_RUN_ID']);
+  const deletedTenants = await cleanupFixtureRows();
   console.log(JSON.stringify({
     success: true,
     deletedTenants,
@@ -16,6 +16,19 @@ try {
 } finally {
   await prisma.$disconnect();
   await dropIsolatedSchema();
+}
+
+async function cleanupFixtureRows(): Promise<number> {
+  try {
+    return await cleanupE2eFixtures(prisma, process.env['E2E_RUN_ID']);
+  } catch (error) {
+    if (isMissingTableError(error)) return 0;
+    throw error;
+  }
+}
+
+function isMissingTableError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2021';
 }
 
 async function dropIsolatedSchema(): Promise<void> {

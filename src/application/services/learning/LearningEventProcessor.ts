@@ -16,7 +16,6 @@ import { buildLearningAuditRequest } from './learningAuditPrompt.js';
 import { buildGlobalMemoryInput, buildLocalMemoryInput } from './memoryInputBuilder.js';
 
 const approvedAuditVerdict = 'APPROVED';
-const learningAuditTimeoutMs = Number.parseInt(process.env['LEARNING_AUDIT_TIMEOUT_MS'] ?? '15000', 10);
 const learningRetryBaseMs = 30_000;
 const learningRetryMaxMs = 5 * 60_000;
 
@@ -25,6 +24,7 @@ interface LearningEventProcessorOptions {
   readonly learningRepository: IAgentLearningRepository;
   readonly aiGateway: IAiGateway;
   readonly auditorModel: string;
+  readonly learningAuditTimeoutMs: number;
   readonly truncate: (value: string, maxChars: number) => string;
 }
 
@@ -59,7 +59,7 @@ export class LearningEventProcessor {
       const candidate = buildMemoryCandidate(event, recommendation, this.options.truncate);
       const request = buildLearningAuditRequest(candidate, {
         model: this.options.auditorModel,
-        timeoutMs: learningAuditTimeoutMs,
+        timeoutMs: this.options.learningAuditTimeoutMs,
       });
       const auditReport = parseAuditReport(await this.options.aiGateway.generateText(request));
 

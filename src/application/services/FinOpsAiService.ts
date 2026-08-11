@@ -17,6 +17,8 @@ import { FinOpsArtifactGenerator } from './ai/finOpsArtifactGenerator.js';
 import type { TechnicalRecommendationEvidenceProvider } from './ai/TechnicalRecommendationEvidenceService.js';
 import type { RecommendationReadinessReport } from './ai/RecommendationReadinessGate.js';
 import { buildDeterministicTrendAnalysis } from './ai/DeterministicTrendAnalysis.js';
+import { loadRuntimeConfig } from '../../infrastructure/config/runtimeConfigReader.js';
+import type { RuntimeConfig } from '../../infrastructure/config/runtimeConfigTypes.js';
 
 // Reexporta los contratos públicos para preservar la API del servicio.
 export type {
@@ -95,9 +97,10 @@ export class FinOpsAiService {
     contextEngine?: IContextEngineService,
     aiObservability?: AiObservabilityService,
     technicalEvidenceProvider?: TechnicalRecommendationEvidenceProvider,
+    aiConfig: RuntimeConfig['ai'] = loadRuntimeConfig().ai,
   ) {
-    this.mainModel = aiGateway.modelName ?? process.env['AI_MODEL'] ?? process.env['NVIDIA_MODEL'] ?? 'gpt-5.4-mini';
-    this.auditorModel = process.env['AI_AUDITOR_MODEL'] ?? process.env['NVIDIA_AUDITOR_MODEL'] ?? this.mainModel;
+    this.mainModel = aiGateway.modelName ?? aiConfig.model;
+    this.auditorModel = aiConfig.auditorModel || this.mainModel;
     if (this.mainModel === this.auditorModel) {
       console.warn('AI generator and auditor use the same model; deterministic quality gates remain required.');
     }

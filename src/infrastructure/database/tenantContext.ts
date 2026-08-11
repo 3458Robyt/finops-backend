@@ -2,6 +2,12 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { PoolClient } from 'pg';
 import { Pool } from 'pg';
 import type { UserRole } from '../../domain/models/AuthContext.js';
+import { loadRuntimeConfig } from '../config/runtimeConfigReader.js';
+
+export interface TenantDatabaseRuntimeConfig {
+  readonly runtimeEnforce: boolean;
+  readonly runtimeRole: string;
+}
 
 export interface DatabaseContext {
   readonly tenantId?: string;
@@ -26,16 +32,27 @@ export function getDatabaseContext(): DatabaseContext | undefined {
   return contextStorage.getStore();
 }
 
-export function createTenantAwarePool(connectionString: string, schema?: string): Pool {
+export function createTenantAwarePool(
+  connectionString: string,
+  schema: string | undefined,
+  runtimeConfig: TenantDatabaseRuntimeConfig = loadRuntimeConfig().database,
+): Pool {
   return new TenantAwarePool({
     connectionString,
     ...(schema === undefined ? {} : { options: `-c search_path=${schema}` }),
-  });
+  }, runtimeConfig);
 }
 
 class TenantAwarePool extends Pool {
+  public constructor(
+    options: ConstructorParameters<typeof Pool>[0],
+    private readonly runtimeConfig: TenantDatabaseRuntimeConfig,
+  ) {
+    super(options);
+  }
+
   public override query(...args: any[]): Promise<any> {
-    if (!runtimeEnforcementEnabled() && getDatabaseContext() === undefined) {
+    if (!this.runtimeConfig.runtimeEnforce && getDatabaseContext() === undefined) {
       return Reflect.apply(Pool.prototype.query, this, args) as Promise<any>;
     }
 
@@ -51,11 +68,11 @@ class TenantAwarePool extends Pool {
 
   public override async connect(): Promise<PoolClient> {
     const client = await super.connect();
-    return wrapPoolClient(client);
+    return wrapPoolClient(client, this.runtimeConfig);
   }
 }
 
-function wrapPoolClient(client: PoolClient): PoolClient {
+function wrapPoolClient(client: PoolClient, runtimeConfig: TenantDatabaseRuntimeConfig): PoolClient {
   const originalQuery = client.query.bind(client) as PoolClient['query'];
   const originalRelease = client.release.bind(client);
   let transactionDepth = 0;
@@ -81,9 +98,9 @@ function wrapPoolClient(client: PoolClient): PoolClient {
       if (transactionDepth === 1) {
         contextApplied = true;
         try {
-          await applyContext(originalQuery, getDatabaseContext());
+          await applyContext(originalQuery, getDatabaseContext(), runtimeConfig);
         } catch (error) {
-          await clearContext(originalQuery).catch(() => undefined);
+          await clearContext(originalQuery, runtimeConfig).catch(() => undefined);
           contextApplied = false;
           throw error;
         }
@@ -95,7 +112,7 @@ function wrapPoolClient(client: PoolClient): PoolClient {
       const result = await originalQuery(...(args as Parameters<PoolClient['query']>));
       transactionDepth = Math.max(0, transactionDepth - 1);
       if (transactionDepth === 0 && contextApplied) {
-        await clearContext(originalQuery);
+        await clearContext(originalQuery, runtimeConfig);
         contextApplied = false;
       }
       return result;
@@ -106,17 +123,17 @@ function wrapPoolClient(client: PoolClient): PoolClient {
     }
 
     const context = getDatabaseContext();
-    if (!runtimeEnforcementEnabled() && context === undefined) {
+    if (!runtimeConfig.runtimeEnforce && context === undefined) {
       return originalQuery(...(args as Parameters<PoolClient['query']>));
     }
 
     contextApplied = true;
     try {
-      await applyContext(originalQuery, context);
+      await applyContext(originalQuery, context, runtimeConfig);
       const result = await originalQuery(...(args as Parameters<PoolClient['query']>));
       return result;
     } finally {
-      await clearContext(originalQuery);
+      await clearContext(originalQuery, runtimeConfig);
       contextApplied = false;
     }
   })) as PoolClient['query'];
@@ -128,7 +145,7 @@ function wrapPoolClient(client: PoolClient): PoolClient {
         return (error?: Error | boolean) => {
           void enqueue(async () => {
             if (contextApplied) {
-              await clearContext(originalQuery).catch(() => undefined);
+              await clearContext(originalQuery, runtimeConfig).catch(() => undefined);
               contextApplied = false;
             }
             originalRelease(error);
@@ -151,17 +168,21 @@ function getQueryText(query: unknown): string | undefined {
 async function applyContext(
   query: PoolClient['query'],
   context: DatabaseContext | undefined,
+  runtimeConfig: TenantDatabaseRuntimeConfig,
 ): Promise<void> {
-  if (runtimeEnforcementEnabled()) {
-    await query(`set role ${quoteIdentifier(runtimeRole())}`);
+  if (runtimeConfig.runtimeEnforce) {
+    await query(`set role ${quoteIdentifier(runtimeConfig.runtimeRole)}`);
   }
 
   await setContextValues(query, contextEntries(context));
 }
 
-async function clearContext(query: PoolClient['query']): Promise<void> {
+async function clearContext(
+  query: PoolClient['query'],
+  runtimeConfig: TenantDatabaseRuntimeConfig,
+): Promise<void> {
   await setContextValues(query, contextKeys.map((key) => [key, ''] as const));
-  if (runtimeEnforcementEnabled()) {
+  if (runtimeConfig.runtimeEnforce) {
     await query('reset role');
   }
 }
@@ -192,18 +213,6 @@ function contextEntries(context: DatabaseContext | undefined): readonly [string,
     ['app.request_id', context?.requestId ?? ''],
     ['app.worker_id', context?.workerId ?? ''],
   ];
-}
-
-function runtimeEnforcementEnabled(): boolean {
-  return process.env['DB_RUNTIME_ENFORCE'] === 'true';
-}
-
-function runtimeRole(): string {
-  const role = process.env['DB_RUNTIME_ROLE'] ?? 'finops_runtime';
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(role)) {
-    throw new Error('DB_RUNTIME_ROLE must be a valid PostgreSQL identifier');
-  }
-  return role;
 }
 
 function quoteIdentifier(identifier: string): string {

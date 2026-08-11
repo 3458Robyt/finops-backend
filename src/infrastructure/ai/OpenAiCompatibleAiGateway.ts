@@ -3,6 +3,8 @@ import OpenAI from 'openai';
 import { ConfigurationError } from '../../domain/errors/errors.js';
 import type { AiGatewayRequest, IAiGateway } from '../../domain/interfaces/IAiGateway.js';
 import type { MetricsRegistry } from '../../application/observability/MetricsRegistry.js';
+import { loadRuntimeConfig } from '../config/runtimeConfigReader.js';
+import type { RuntimeConfig } from '../config/runtimeConfigTypes.js';
 
 /**
  * Adaptador de infraestructura para endpoints compatibles con la API de OpenAI.
@@ -14,7 +16,8 @@ import type { MetricsRegistry } from '../../application/observability/MetricsReg
  * - AI_TIMEOUT_MS
  * - AI_MAX_RETRIES
  *
- * Las variables NVIDIA_* / NIM_API_KEY siguen funcionando como fallback temporal.
+ * Las variables NVIDIA_* / NIM_API_KEY siguen funcionando únicamente como
+ * compatibilidad temporal mientras se migra a AI_*.
  */
 export class OpenAiCompatibleAiGateway implements IAiGateway {
   private readonly client: OpenAI;
@@ -22,21 +25,23 @@ export class OpenAiCompatibleAiGateway implements IAiGateway {
 
   public readonly modelName: string;
 
-  public constructor(private readonly metrics?: MetricsRegistry) {
-    const apiKey =
-      process.env['AI_API_KEY'] ?? process.env['NVIDIA_API_KEY'] ?? process.env['NIM_API_KEY'];
+  public constructor(
+    private readonly metrics?: MetricsRegistry,
+    aiConfig: RuntimeConfig['ai'] = loadRuntimeConfig().ai,
+  ) {
+    const apiKey = aiConfig.apiKey;
 
     if (apiKey === undefined || apiKey.trim() === '') {
       throw new ConfigurationError('AI_API_KEY must be configured before using AI features');
     }
 
-    this.model = process.env['AI_MODEL'] ?? process.env['NVIDIA_MODEL'] ?? 'gpt-5.4-mini';
+    this.model = aiConfig.model;
     this.modelName = this.model;
     this.client = new OpenAI({
       apiKey,
-      baseURL: process.env['AI_BASE_URL'] ?? process.env['NVIDIA_BASE_URL'] ?? 'https://api.openai.com/v1',
-      timeout: readPositiveIntegerEnv('AI_TIMEOUT_MS', process.env['NVIDIA_TIMEOUT_MS'], 60000),
-      maxRetries: readNonNegativeIntegerEnv('AI_MAX_RETRIES', 1),
+      baseURL: aiConfig.baseUrl,
+      timeout: aiConfig.timeoutMs,
+      maxRetries: aiConfig.maxRetries,
     });
   }
 
@@ -89,23 +94,6 @@ export class OpenAiCompatibleAiGateway implements IAiGateway {
     }
   }
 }
-
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
-}
-
-function readPositiveIntegerEnv(primaryKey: string, fallbackRaw: string | undefined, defaultValue: number): number {
-  const raw = process.env[primaryKey] ?? fallbackRaw;
-  if (raw === undefined) return defaultValue;
-
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
-}
-
-function readNonNegativeIntegerEnv(key: string, defaultValue: number): number {
-  const raw = process.env[key];
-  if (raw === undefined) return defaultValue;
-
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : defaultValue;
 }

@@ -1,5 +1,6 @@
 import type { Express } from 'express';
 import type { ServerDependencies } from './server.js';
+import { loadRuntimeConfig } from '../infrastructure/config/runtimeConfigReader.js';
 import { AgentController } from './controllers/AgentController.js';
 import { AiController } from './controllers/AiController.js';
 import { AnalyticsController } from './controllers/AnalyticsController.js';
@@ -43,6 +44,7 @@ import { createValueRealizationRoutes } from './routes/valueRealizationRoutes.js
 import { rolesForPermission } from '../domain/security/AuthorizationPolicy.js';
 
 export function registerApiRoutes(app: Express, dependencies: ServerDependencies): void {
+  const config = dependencies.runtimeConfig ?? loadRuntimeConfig();
   const controllers = createControllers(dependencies);
   const requireAuth = createAuthMiddleware(dependencies.tokenService, dependencies.authSessionRepository);
   const requireCloudManager = requireRole(rolesForPermission('CLOUD_MANAGE'));
@@ -52,7 +54,7 @@ export function registerApiRoutes(app: Express, dependencies: ServerDependencies
 
   const globalApiLimiter = createRateLimit({
     windowMs: 60 * 1000,
-    limit: parsePositiveIntegerEnv('API_RATE_LIMIT_PER_MINUTE', 600),
+    limit: config.http.apiRateLimitPerMinute,
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, code: 'RATE_LIMITED', message: 'Demasiadas solicitudes. Intenta de nuevo mas tarde.' },
@@ -81,7 +83,7 @@ export function registerApiRoutes(app: Express, dependencies: ServerDependencies
   const telegramWebhookLimiter = createRateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false });
   const aiLimiter = createRateLimit({
     windowMs: 60 * 1000,
-    limit: parsePositiveIntegerEnv('AI_RATE_LIMIT_PER_MINUTE', 30),
+    limit: config.http.aiRateLimitPerMinute,
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, code: 'RATE_LIMITED', message: 'Demasiadas solicitudes de IA. Intenta de nuevo mas tarde.' },
@@ -138,9 +140,4 @@ function createControllers(dependencies: ServerDependencies) {
     valueRealization: new ValueRealizationController(dependencies.valueRealizationService),
     resourceLinkage: new ResourceLinkageController(dependencies.resourceLinkageReadinessService),
   };
-}
-
-function parsePositiveIntegerEnv(name: string, fallback: number): number {
-  const parsed = Number.parseInt(process.env[name] ?? '', 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }

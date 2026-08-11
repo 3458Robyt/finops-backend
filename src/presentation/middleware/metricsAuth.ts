@@ -1,11 +1,14 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { RequestHandler } from 'express';
 
-export function createMetricsAuth(): RequestHandler {
+export function createMetricsAuth(
+  expectedToken?: string,
+  isProduction = false,
+): RequestHandler {
   return (req, res, next): void => {
-    const expected = process.env['METRICS_TOKEN']?.trim();
+    const expected = expectedToken?.trim();
     if (expected === undefined || expected === '') {
-      if (process.env['NODE_ENV'] === 'production') {
+      if (isProduction) {
         res.status(503).json({ success: false, error: 'Las métricas no están configuradas.', code: 'METRICS_NOT_CONFIGURED' });
         return;
       }

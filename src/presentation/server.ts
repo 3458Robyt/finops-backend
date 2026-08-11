@@ -28,6 +28,8 @@ import type { ITokenService } from '../domain/interfaces/ITokenService.js';
 import type { ValueRealizationService } from '../application/services/ValueRealizationService.js';
 import type { ResourceLinkageReadinessService } from '../application/services/ResourceLinkageReadinessService.js';
 import type { MetricsRegistry } from '../application/observability/MetricsRegistry.js';
+import { loadRuntimeConfig } from '../infrastructure/config/runtimeConfigReader.js';
+import type { RuntimeConfig } from '../infrastructure/config/runtimeConfigTypes.js';
 import { createHttpErrorHandler, createNotFoundHandler } from './middleware/httpErrorHandler.js';
 import { createMetricsAuth } from './middleware/metricsAuth.js';
 import { registerApiRoutes } from './registerApiRoutes.js';
@@ -88,24 +90,27 @@ export interface ServerDependencies {
   readonly valueRealizationService: ValueRealizationService;
   readonly resourceLinkageReadinessService: ResourceLinkageReadinessService;
   readonly metricsRegistry: MetricsRegistry;
+  /** Configuración tipada resuelta en la composición raíz. */
+  readonly runtimeConfig?: RuntimeConfig;
   /** Comprueba dependencias críticas sin exponer detalles de infraestructura. */
   readonly readinessCheck?: () => Promise<void>;
 }
 
 /** Crea la aplicación Express con seguridad, rutas, salud, readiness y métricas. */
 export function createExpressServer(dependencies: ServerDependencies): Express {
+  const config = dependencies.runtimeConfig ?? loadRuntimeConfig();
   const app = express();
-  app.set('trust proxy', parseTrustProxy(process.env['TRUST_PROXY']));
+  app.set('trust proxy', config.http.trustProxy);
 
   // Cabeceras de seguridad HTTP (X-Content-Type-Options, HSTS, etc.).
   // Se monta antes de CORS; helmet no interfiere con las cabeceras CORS.
   app.use(helmet());
   app.use(cors({
-    origin: parseCorsOrigins(process.env['CORS_ORIGIN']),
+    origin: config.http.corsOrigins.length === 1 ? config.http.corsOrigins[0] : [...config.http.corsOrigins],
     credentials: true,
   }));
   app.use(createRequestLogger(dependencies.metricsRegistry));
-  app.use(express.json({ limit: parseBodyLimit(process.env['HTTP_BODY_LIMIT']) }));
+  app.use(express.json({ limit: config.http.bodyLimit }));
 
   registerApiRoutes(app, dependencies);
 
@@ -127,7 +132,7 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
     }
   });
 
-  app.get('/metrics', createMetricsAuth(), (_req, res) => {
+  app.get('/metrics', createMetricsAuth(config.security.metricsToken, config.environment.isProduction), (_req, res) => {
     res.type('text/plain; version=0.0.4').status(200).send(dependencies.metricsRegistry.toPrometheus());
   });
 
@@ -135,31 +140,6 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   app.use(createHttpErrorHandler());
 
   return app;
-}
-
-function parseCorsOrigins(value: string | undefined): string | string[] {
-  const raw = value ?? 'http://localhost:5173';
-  const origins = raw
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter((origin) => origin !== '');
-
-  return origins.length === 1 ? origins[0]! : origins;
-}
-
-function parsePositiveIntegerEnv(name: string, fallback: number): number {
-  const value = process.env[name];
-  if (value === undefined) {
-    return fallback;
-  }
-
-  const parsed = Number.parseInt(value, 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function parseBodyLimit(value: string | undefined): string {
-  const normalized = value?.trim();
-  return normalized === undefined || normalized === '' ? '1mb' : normalized;
 }
 
 function createRequestLogger(metrics: MetricsRegistry) {
@@ -186,12 +166,4 @@ function createRequestLogger(metrics: MetricsRegistry) {
 
     next();
   };
-}
-
-function parseTrustProxy(value: string | undefined): boolean | number | string {
-  const normalized = value?.trim().toLowerCase();
-  if (normalized === undefined || normalized === '' || normalized === 'false') return false;
-  if (normalized === 'true') return true;
-  const hops = Number.parseInt(normalized, 10);
-  return Number.isInteger(hops) && hops >= 0 ? hops : value!.trim();
 }

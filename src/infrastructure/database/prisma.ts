@@ -2,7 +2,8 @@ import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../../generated/prisma/client.js';
 import { ConfigurationError } from '../../domain/errors/errors.js';
-import { createTenantAwarePool } from './tenantContext.js';
+import { createTenantAwarePool, type TenantDatabaseRuntimeConfig } from './tenantContext.js';
+import { loadRuntimeConfig } from '../config/runtimeConfigReader.js';
 
 /** Instancia singleton del cliente Prisma, reutilizada entre llamadas. */
 let prismaClient: PrismaClient | undefined;
@@ -19,12 +20,18 @@ let prismaClient: PrismaClient | undefined;
  * @returns El cliente Prisma compartido para toda la aplicación.
  * @throws {ConfigurationError} Si `DATABASE_URL` no está configurada o está vacía.
  */
-export function getPrismaClient(): PrismaClient {
+export function getPrismaClient(
+  runtimeConfig: {
+    readonly url: string | undefined;
+    readonly runtimeEnforce: boolean;
+    readonly runtimeRole: string;
+  } = loadRuntimeConfig().database,
+): PrismaClient {
   if (prismaClient !== undefined) {
     return prismaClient;
   }
 
-  const connectionString = process.env['DATABASE_URL'];
+  const connectionString = runtimeConfig.url;
 
   if (connectionString === undefined || connectionString.trim() === '') {
     throw new ConfigurationError('DATABASE_URL must be configured before using Prisma');
@@ -34,8 +41,12 @@ export function getPrismaClient(): PrismaClient {
   if (schema !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
     throw new ConfigurationError('DATABASE_URL schema must be a valid PostgreSQL identifier');
   }
-  const pool = process.env['DB_RUNTIME_ENFORCE'] === 'true'
-    ? createTenantAwarePool(connectionString, schema)
+  const tenantRuntimeConfig: TenantDatabaseRuntimeConfig = {
+    runtimeEnforce: runtimeConfig.runtimeEnforce,
+    runtimeRole: runtimeConfig.runtimeRole,
+  };
+  const pool = runtimeConfig.runtimeEnforce
+    ? createTenantAwarePool(connectionString, schema, tenantRuntimeConfig)
     : undefined;
   const adapter = new PrismaPg(
     pool ?? {

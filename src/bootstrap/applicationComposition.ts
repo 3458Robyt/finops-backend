@@ -29,7 +29,8 @@ import { CloudIngestionWorkerService } from '../application/services/CloudIngest
 import { ResourceLinkageReadinessService } from '../application/services/ResourceLinkageReadinessService.js';
 import { OpenAiCompatibleAiGateway } from '../infrastructure/ai/OpenAiCompatibleAiGateway.js';
 import { getPrismaClient } from '../infrastructure/database/prisma.js';
-import { validateRuntimeConfig } from '../infrastructure/config/runtimeConfig.js';
+import { loadRuntimeConfig } from '../infrastructure/config/runtimeConfigReader.js';
+import type { RuntimeConfig } from '../infrastructure/config/runtimeConfigTypes.js';
 import { runWithDatabaseContext } from '../infrastructure/database/tenantContext.js';
 import { AwsSdkIngestionProvider } from '../infrastructure/ingestion/AwsSdkIngestionProvider.js';
 import { OciSdkIngestionProvider } from '../infrastructure/ingestion/OciSdkIngestionProvider.js';
@@ -73,12 +74,14 @@ export interface ApplicationComposition {
   readonly ingestionWorker: CloudIngestionWorkerService | null;
 }
 
-export function createApplicationComposition(runsWorkers: boolean): ApplicationComposition {
-  validateRuntimeConfig();
+export function createApplicationComposition(
+  runsWorkers: boolean,
+  config: RuntimeConfig = loadRuntimeConfig(),
+): ApplicationComposition {
   const metricsRegistry = new MetricsRegistry();
-  const prisma = getPrismaClient();
-  const credentialCipher = process.env['CREDENTIAL_ENCRYPTION_KEY']?.trim()
-    ? new CredentialCipher()
+  const prisma = getPrismaClient(config.database);
+  const credentialCipher = config.security.credentialEncryptionKey !== undefined
+    ? new CredentialCipher(config.security.credentialEncryptionKey, config.security.credentialKeyVersion)
     : undefined;
   const cloudConnectionRepository = new PrismaCloudConnectionRepository(prisma, credentialCipher);
   const costAnalyticsRepository = new PrismaCostAnalyticsRepository(prisma);
@@ -102,7 +105,12 @@ export function createApplicationComposition(runsWorkers: boolean): ApplicationC
   const authSessionRepository = new PrismaAuthSessionRepository(prisma, authSecurityRepository);
   const masterAdminRepository = new PrismaMasterAdminRepository(prisma);
   const passwordHasher = new Argon2PasswordHasher();
-  const tokenService = new JwtTokenService();
+  const tokenService = new JwtTokenService({
+    ...(config.security.jwtSecret === undefined ? {} : { secret: config.security.jwtSecret }),
+    issuer: config.security.jwtIssuer,
+    audience: config.security.jwtAudience,
+    expiresInSeconds: config.security.jwtExpiresInSeconds,
+  });
   const mfaService = new MfaService(mfaRepository, credentialCipher, mfaRecoveryCodeRepository);
   const authService = new AuthService(
     userRepository,
@@ -130,12 +138,18 @@ export function createApplicationComposition(runsWorkers: boolean): ApplicationC
   );
   const costAllocationService = new CostAllocationService(costAllocationRepository);
   const savingsReminderService = new SavingsReminderService(recommendationRepository, notificationRepository);
-  const aiGateway = new OpenAiCompatibleAiGateway(metricsRegistry);
+  const aiGateway = new OpenAiCompatibleAiGateway(metricsRegistry, config.ai);
   const agentInstructionService = new AgentInstructionService(agentContextRepository);
   const learningService = new AgentLearningService(
     recommendationRepository,
     agentLearningRepository,
     aiGateway,
+    undefined,
+    {
+      auditorModel: config.ai.auditorModel,
+      learningAuditTimeoutMs: config.ai.learningAuditTimeoutMs,
+      learningLeaseMs: config.workers.learning.leaseMs,
+    },
   );
   const contextEngineService = new ContextEngineService(
     agentContextRepository,
@@ -152,16 +166,17 @@ export function createApplicationComposition(runsWorkers: boolean): ApplicationC
     contextEngineService,
     aiObservabilityService,
     technicalRecommendationEvidenceService,
+    config.ai,
   );
   const recommendationAnalysisService = new RecommendationAnalysisService(
     recommendationAnalysisRepository,
     aiService,
     notificationRepository,
   );
-  const telegramEnabled = process.env['TELEGRAM_ENABLED'] === 'true';
-  const telegramClient = new TelegramClient(process.env['TELEGRAM_BOT_TOKEN'], telegramEnabled);
+  const telegramEnabled = config.telegram.enabled;
+  const telegramClient = new TelegramClient(config.telegram.botToken, telegramEnabled);
   const telegramMessageFormatter = new TelegramMessageFormatter();
-  const emailClient = new EmailClient();
+  const emailClient = new EmailClient(config.email);
   const passwordRecoveryService = new PasswordRecoveryService(
     accountRecoveryRepository,
     passwordHasher,
@@ -177,7 +192,7 @@ export function createApplicationComposition(runsWorkers: boolean): ApplicationC
     savingsReminderService,
     recommendationRepository,
     costAnalyticsRepository,
-    process.env['TELEGRAM_BOT_USERNAME'],
+    config.telegram.botUsername,
   );
   const outboundMessageService = new OutboundMessageService(
     outboundMessageRepository,
@@ -188,12 +203,8 @@ export function createApplicationComposition(runsWorkers: boolean): ApplicationC
     recommendationRepository,
     {
       telegramEnabled,
-      ...(process.env['TELEGRAM_BOT_USERNAME'] !== undefined
-        ? { telegramBotUsername: process.env['TELEGRAM_BOT_USERNAME'] }
-        : {}),
-      ...(process.env['TELEGRAM_WEBHOOK_SECRET'] !== undefined
-        ? { telegramWebhookSecret: process.env['TELEGRAM_WEBHOOK_SECRET'] }
-        : {}),
+      ...(config.telegram.botUsername === undefined ? {} : { telegramBotUsername: config.telegram.botUsername }),
+      ...(config.telegram.webhookSecret === undefined ? {} : { telegramWebhookSecret: config.telegram.webhookSecret }),
     },
   );
   const valueRealizationService = new ValueRealizationService(
@@ -201,7 +212,7 @@ export function createApplicationComposition(runsWorkers: boolean): ApplicationC
     recommendationRepository,
     notificationRepository,
     outboundMessageRepository,
-    process.env['VALUE_REALIZATION_OUTBOUND_ENABLED'] === 'true'
+    config.finops.valueRealizationOutboundEnabled
       ? (measurement) => outboundMessageService.sendValueRealizationUpdate(measurement.tenantId, {
         recommendationId: measurement.recommendationId,
         measurementId: measurement.id,
@@ -212,14 +223,14 @@ export function createApplicationComposition(runsWorkers: boolean): ApplicationC
       })
       : undefined,
   );
-  const ingestionWorker = runsWorkers && process.env['INGESTION_WORKER_ENABLED'] === 'true'
+  const ingestionWorker = runsWorkers && config.workers.ingestion.enabled
     ? new CloudIngestionWorkerService(
       new PrismaCloudIngestionJobRepository(prisma, credentialCipher ?? new CredentialCipher()),
       ingestionProviders,
-      process.env['SAVINGS_RECONCILIATION_ENABLED'] === 'true'
+      config.finops.savingsReconciliationEnabled
         ? ({ tenantId }) => valueRealizationService.reconcile(
           tenantId,
-          parsePositiveIntegerEnv('SAVINGS_RECONCILIATION_BATCH_SIZE', 50),
+          config.finops.savingsReconciliationBatchSize,
         ).then(() => undefined)
         : undefined,
       metricsRegistry,
@@ -246,9 +257,7 @@ export function createApplicationComposition(runsWorkers: boolean): ApplicationC
     telegramBotService,
     telegramLinkService,
     masterAdminService,
-    ...(process.env['TELEGRAM_WEBHOOK_SECRET'] !== undefined
-      ? { telegramWebhookSecret: process.env['TELEGRAM_WEBHOOK_SECRET'] }
-      : {}),
+    ...(config.telegram.webhookSecret === undefined ? {} : { telegramWebhookSecret: config.telegram.webhookSecret }),
     telegramEnabled,
     learningService: learningService as IAgentLearningService,
     costRepository,
@@ -260,6 +269,7 @@ export function createApplicationComposition(runsWorkers: boolean): ApplicationC
       await prisma.$queryRawUnsafe('SELECT 1');
     },
     metricsRegistry,
+    runtimeConfig: config,
   };
 
   return {
@@ -272,11 +282,4 @@ export function createApplicationComposition(runsWorkers: boolean): ApplicationC
     learningService,
     ingestionWorker,
   };
-}
-
-function parsePositiveIntegerEnv(name: string, fallback: number): number {
-  const value = process.env[name];
-  if (value === undefined) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }

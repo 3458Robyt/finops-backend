@@ -17,8 +17,14 @@ import { ContextBudgeter } from './ContextBudgeter.js';
 import { summarizeEvidence } from './learning/learningMemoryContent.js';
 import { LearningEventProcessor } from './learning/LearningEventProcessor.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
+import { loadRuntimeConfig } from '../../infrastructure/config/runtimeConfigReader.js';
+import type { RuntimeConfig } from '../../infrastructure/config/runtimeConfigTypes.js';
 
-const learningWorkerLeaseMs = readPositiveIntegerEnv('AGENT_LEARNING_LEASE_MS', 60_000);
+interface AgentLearningRuntimeOptions {
+  readonly auditorModel: string;
+  readonly learningAuditTimeoutMs: number;
+  readonly learningLeaseMs: number;
+}
 
 /**
  * Servicio de aprendizaje del agente IA FinOps.
@@ -44,6 +50,7 @@ export class AgentLearningService implements IAgentLearningService {
   /** Modelo IA usado como auditor de aprendizaje (resuelto en el constructor). */
   private readonly auditorModel: string;
   private readonly eventProcessor: LearningEventProcessor;
+  private readonly learningWorkerLeaseMs: number;
 
   /**
    * @param recommendationRepository - Repositorio de recomendaciones.
@@ -59,17 +66,16 @@ export class AgentLearningService implements IAgentLearningService {
     private readonly learningRepository: IAgentLearningRepository,
     private readonly aiGateway: IAiGateway,
     private readonly contextBudgeter = new ContextBudgeter(),
+    runtimeOptions: AgentLearningRuntimeOptions = defaultRuntimeOptions(),
   ) {
-    this.auditorModel =
-      process.env['AI_AUDITOR_MODEL'] ??
-      process.env['NVIDIA_AUDITOR_MODEL'] ??
-      aiGateway.modelName ??
-      'gpt-5.4-mini';
+    this.auditorModel = runtimeOptions.auditorModel || aiGateway.modelName || 'gpt-5.4-mini';
+    this.learningWorkerLeaseMs = runtimeOptions.learningLeaseMs;
     this.eventProcessor = new LearningEventProcessor({
       recommendationRepository,
       learningRepository,
       aiGateway,
       auditorModel: this.auditorModel,
+      learningAuditTimeoutMs: runtimeOptions.learningAuditTimeoutMs,
       truncate: (value, maxChars) => this.contextBudgeter.truncate(value, maxChars),
     });
   }
@@ -184,7 +190,7 @@ export class AgentLearningService implements IAgentLearningService {
     return runWithDatabaseContext({ workerId, role: 'MASTER_ADMIN' }, async () => {
       const event = await this.learningRepository.claimNextQueuedEvent({
         workerId,
-        leaseExpiredBefore: new Date(Date.now() - learningWorkerLeaseMs),
+        leaseExpiredBefore: new Date(Date.now() - this.learningWorkerLeaseMs),
       });
       if (event === null) {
         return null;
@@ -236,7 +242,11 @@ export class AgentLearningService implements IAgentLearningService {
 
 }
 
-function readPositiveIntegerEnv(key: string, defaultValue: number): number {
-  const parsed = Number.parseInt(process.env[key] ?? '', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+function defaultRuntimeOptions(): AgentLearningRuntimeOptions {
+  const config: RuntimeConfig = loadRuntimeConfig();
+  return {
+    auditorModel: config.ai.auditorModel,
+    learningAuditTimeoutMs: config.ai.learningAuditTimeoutMs,
+    learningLeaseMs: config.workers.learning.leaseMs,
+  };
 }

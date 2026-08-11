@@ -5,6 +5,7 @@ import { goldenScenarios } from './goldenScenarios.js';
 import { runScenarioOffline } from './goldenScenarioRunner.js';
 import { evaluateExecutionPlan, evaluateRecommendationDrafts } from './qualityRubric.js';
 import type { RecommendationEvidenceSnapshot } from '../RecommendationEvidenceSnapshot.js';
+import type { FinOpsRecommendation } from '../../../../domain/models/FinOpsRecommendation.js';
 
 const snapshot: CostAnalyticsSnapshot = {
   tenantId: 'tenant-demo',
@@ -279,5 +280,24 @@ describe('qualityRubric — execution plan', () => {
     const { rollback: _omitted, ...incomplete } = validPlan;
     const report = evaluateExecutionPlan(incomplete, snapshot);
     expect(report.checks.find((check) => check.name === 'requiredArrays')?.passed).toBe(false);
+  });
+
+  test('fails when a plan contradicts the recommendation resource', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-prod-aws',
+      cloudResourceId: 'cloud-resource-1',
+      evidence: { externalResourceId: 'bucket-logs' },
+    } as FinOpsRecommendation;
+    const mismatchedPlan = {
+      ...validPlan,
+      scope: {
+        cloudAccountId: 'acc-prod-aws',
+        service: 'Amazon S3',
+        cloudResourceId: 'cloud-resource-2',
+      },
+    };
+
+    const report = evaluateExecutionPlan(mismatchedPlan, snapshot, recommendation);
+    expect(report.checks.find((check) => check.name === 'recommendationScope')?.passed).toBe(false);
   });
 });

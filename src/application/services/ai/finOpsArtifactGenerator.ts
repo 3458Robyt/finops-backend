@@ -166,7 +166,7 @@ export class FinOpsArtifactGenerator {
       content,
       auditReport: this.combineWithDeterministicQuality(
         auditReport,
-        evaluateExecutionPlan(content, snapshot),
+        evaluateExecutionPlan(content, snapshot, recommendation),
       ),
       firstRawResponse,
     };

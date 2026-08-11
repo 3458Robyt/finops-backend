@@ -199,6 +199,7 @@ export function evaluateRecommendationDrafts(
 export function evaluateExecutionPlan(
   plan: Record<string, unknown>,
   snapshot: CostAnalyticsSnapshot,
+  recommendation?: FinOpsRecommendation,
 ): QualityReport {
   const allowedAccounts = new Set(snapshot.accounts.map((account) => account.cloudAccountId));
   const requiredArrays = ['prerequisites', 'steps', 'validation', 'risks', 'rollback', 'successCriteria'];
@@ -224,6 +225,14 @@ export function evaluateExecutionPlan(
     detail: scopeOk ? 'El alcance apunta a una cuenta del snapshot.' : 'El alcance no referencia una cuenta válida.',
   });
 
+  checks.push({
+    name: 'recommendationScope',
+    passed: matchesRecommendationScope(scope, recommendation),
+    detail: matchesRecommendationScope(scope, recommendation)
+      ? 'El plan no contradice la cuenta o recurso de la recomendación objetivo.'
+      : 'El plan contradice la cuenta o el recurso canónico de la recomendación objetivo.',
+  });
+
   const noAuto = !containsAutoExecution(plan);
   checks.push({
     name: 'noAutoExecution',
@@ -232,6 +241,36 @@ export function evaluateExecutionPlan(
   });
 
   return toReport(checks);
+}
+
+function matchesRecommendationScope(
+  scope: Record<string, unknown>,
+  recommendation: FinOpsRecommendation | undefined,
+): boolean {
+  if (recommendation === undefined) return true;
+
+  const scopeAccountId = readScopeString(scope, 'cloudAccountId');
+  if (scopeAccountId !== undefined && scopeAccountId !== recommendation.cloudAccountId) {
+    return false;
+  }
+
+  const scopeCloudResourceId = readScopeString(scope, 'cloudResourceId');
+  if (scopeCloudResourceId !== undefined && scopeCloudResourceId !== recommendation.cloudResourceId) {
+    return false;
+  }
+
+  const scopeExternalResourceId = readScopeString(scope, 'externalResourceId')
+    ?? readScopeString(scope, 'resourceId');
+  const recommendationExternalResourceId = isRecord(recommendation.evidence)
+    ? readStringEvidence(recommendation.evidence, 'externalResourceId')
+    : undefined;
+  return scopeExternalResourceId === undefined
+    || scopeExternalResourceId === recommendationExternalResourceId;
+}
+
+function readScopeString(scope: Record<string, unknown>, field: string): string | undefined {
+  const value = scope[field];
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
 }
 
 /** Construye un control "todos cumplen" sobre los borradores. */

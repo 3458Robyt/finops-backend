@@ -15,6 +15,7 @@ const productionOnlyRequired = [
   'AI_MODEL',
   'AI_AUDITOR_MODEL',
   'MFA_REQUIRED_FOR_PRIVILEGED',
+  'METRICS_TOKEN',
 ] as const;
 
 export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): void {

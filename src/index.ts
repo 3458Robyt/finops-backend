@@ -23,6 +23,7 @@ import { AuthService } from './application/services/AuthService.js';
 import { PasswordRecoveryService } from './application/services/PasswordRecoveryService.js';
 import { MfaService } from './application/services/MfaService.js';
 import { safeErrorMessage } from './application/observability/safeError.js';
+import { MetricsRegistry } from './application/observability/MetricsRegistry.js';
 import { BudgetService } from './application/services/BudgetService.js';
 import { CostAllocationService } from './application/services/CostAllocationService.js';
 import { AgentInstructionService } from './application/services/AgentInstructionService.js';
@@ -108,6 +109,11 @@ import { runWithDatabaseContext } from './infrastructure/database/tenantContext.
  */
 async function bootstrap(): Promise<void> {
   validateRuntimeConfig();
+  const metricsRegistry = new MetricsRegistry();
+  const processRole = readProcessRole();
+  const runsApi = processRole === 'api' || processRole === 'all';
+  const runsWorkers = processRole === 'worker' || processRole === 'all';
+  const runsSchedulers = processRole === 'scheduler' || processRole === 'all';
 
   console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
@@ -163,7 +169,7 @@ const analyticsService = new CostAnalyticsService(costAnalyticsRepository);
   const budgetService = new BudgetService(budgetRepository, notificationRepository, outboundMessageRepository, telegramRepository);
   const costAllocationService = new CostAllocationService(costAllocationRepository);
   const savingsReminderService = new SavingsReminderService(recommendationRepository, notificationRepository);
-  const aiGateway = new OpenAiCompatibleAiGateway();
+  const aiGateway = new OpenAiCompatibleAiGateway(metricsRegistry);
   const agentInstructionService = new AgentInstructionService(agentContextRepository);
   const learningService = new AgentLearningService(
     recommendationRepository,
@@ -241,20 +247,21 @@ const telegramBotService = new TelegramBotService(
       })
       : undefined,
   );
-  const ingestionWorker = process.env['INGESTION_WORKER_ENABLED'] === 'true'
+  const ingestionWorker = runsWorkers && process.env['INGESTION_WORKER_ENABLED'] === 'true'
     ? new CloudIngestionWorkerService(
       new PrismaCloudIngestionJobRepository(prisma, credentialCipher ?? new CredentialCipher()),
       ingestionProviders,
       process.env['SAVINGS_RECONCILIATION_ENABLED'] === 'true'
         ? ({ tenantId }) => valueRealizationService.reconcile(tenantId, parsePositiveIntegerEnv('SAVINGS_RECONCILIATION_BATCH_SIZE', 50)).then(() => undefined)
         : undefined,
+      metricsRegistry,
     )
     : null;
 
   // ── 4. Iniciar Servidor RESTful ───────────────────────────────────
 
   const { createExpressServer } = await import('./presentation/server.js');
-const app = createExpressServer({
+ const app = runsApi ? createExpressServer({
     authService,
     passwordRecoveryService,
     mfaService,
@@ -287,9 +294,10 @@ const app = createExpressServer({
     readinessCheck: async () => {
       await prisma.$queryRaw`SELECT 1`;
     },
-  });
+    metricsRegistry,
+  }) : undefined;
 
-if (process.env['MESSAGE_SCHEDULER_ENABLED'] === 'true') {
+ if (runsSchedulers && process.env['MESSAGE_SCHEDULER_ENABLED'] === 'true') {
   const schedulerTenantId = process.env['MESSAGE_SCHEDULER_TENANT_ID'];
   const schedulerUserId = process.env['MESSAGE_SCHEDULER_USER_ID'];
   if (schedulerTenantId !== undefined && schedulerUserId !== undefined) {
@@ -310,7 +318,7 @@ if (process.env['MESSAGE_SCHEDULER_ENABLED'] === 'true') {
 
 const PORT = process.env['PORT'] || 3000;
   
-  const httpServer = app.listen(PORT, () => {
+  const httpServer = app?.listen(PORT, () => {
     console.log(`\n🚀 FinOps Backend API running on http://localhost:${PORT}`);
     console.log('   Ingestion providers: AWS SDK + OCI SDK');
     console.log(`   Auth: POST http://localhost:${PORT}/api/v1/auth/login`);
@@ -318,12 +326,16 @@ const PORT = process.env['PORT'] || 3000;
     console.log(`   Costs: GET http://localhost:${PORT}/api/v1/costs?provider=oci&startDate=...&endDate=...`);
     console.log(`   Recommendations: GET http://localhost:${PORT}/api/v1/recommendations`);
   });
-  httpServer.requestTimeout = parsePositiveIntegerEnv('HTTP_REQUEST_TIMEOUT_MS', 120_000);
-  httpServer.headersTimeout = Math.min(
-    parsePositiveIntegerEnv('HTTP_HEADERS_TIMEOUT_MS', 15_000),
-    httpServer.requestTimeout,
-  );
-  httpServer.keepAliveTimeout = parsePositiveIntegerEnv('HTTP_KEEP_ALIVE_TIMEOUT_MS', 5_000);
+  if (httpServer !== undefined) {
+    httpServer.requestTimeout = parsePositiveIntegerEnv('HTTP_REQUEST_TIMEOUT_MS', 120_000);
+    httpServer.headersTimeout = Math.min(
+      parsePositiveIntegerEnv('HTTP_HEADERS_TIMEOUT_MS', 15_000),
+      httpServer.requestTimeout,
+    );
+    httpServer.keepAliveTimeout = parsePositiveIntegerEnv('HTTP_KEEP_ALIVE_TIMEOUT_MS', 5_000);
+  } else {
+    console.log(`   Process role: ${processRole} (HTTP API disabled)`);
+  }
 
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
@@ -332,7 +344,7 @@ const PORT = process.env['PORT'] || 3000;
     console.log(JSON.stringify({ level: 'info', event: 'shutdown_started', signal }));
     const forceExit = setTimeout(() => process.exit(1), 10_000);
     forceExit.unref();
-    httpServer.close(() => {
+    const disconnect = (): void => {
       void prisma.$disconnect()
         .catch((error: unknown) => {
           console.error(JSON.stringify({
@@ -345,6 +357,13 @@ const PORT = process.env['PORT'] || 3000;
           clearTimeout(forceExit);
           process.exit(0);
         });
+    };
+    if (httpServer === undefined) {
+      disconnect();
+      return;
+    }
+    httpServer.close(() => {
+      disconnect();
     });
   };
   process.once('SIGTERM', () => shutdown('SIGTERM'));
@@ -369,7 +388,7 @@ const PORT = process.env['PORT'] || 3000;
     });
   }
 
-  if (process.env['AGENT_LEARNING_WORKER_ENABLED'] === 'true') {
+  if (runsWorkers && process.env['AGENT_LEARNING_WORKER_ENABLED'] === 'true') {
     const workerId = process.env['AGENT_LEARNING_WORKER_ID'] ?? `finops-learning-${process.pid}`;
     const intervalMs = parsePositiveIntegerEnv('AGENT_LEARNING_WORKER_INTERVAL_MS', 5000);
 
@@ -389,7 +408,7 @@ const PORT = process.env['PORT'] || 3000;
     });
   }
 
-  if (process.env['RECOMMENDATION_ANALYSIS_WORKER_ENABLED'] === 'true') {
+  if (runsWorkers && process.env['RECOMMENDATION_ANALYSIS_WORKER_ENABLED'] === 'true') {
     const workerId = process.env['RECOMMENDATION_ANALYSIS_WORKER_ID']
       ?? `finops-analysis-${process.pid}`;
     const intervalMs = parsePositiveIntegerEnv('RECOMMENDATION_ANALYSIS_WORKER_INTERVAL_MS', 5000);
@@ -414,7 +433,7 @@ const PORT = process.env['PORT'] || 3000;
     });
   }
 
-  if (process.env['RECOMMENDATION_ANALYSIS_SCHEDULER_ENABLED'] === 'true') {
+  if (runsSchedulers && process.env['RECOMMENDATION_ANALYSIS_SCHEDULER_ENABLED'] === 'true') {
     const intervalMs = parsePositiveIntegerEnv(
       'RECOMMENDATION_ANALYSIS_SCHEDULER_INTERVAL_MS',
       300_000,
@@ -445,7 +464,7 @@ const PORT = process.env['PORT'] || 3000;
     });
   }
 
-  if (process.env['SAVINGS_RECONCILIATION_ENABLED'] === 'true') {
+  if (runsSchedulers && process.env['SAVINGS_RECONCILIATION_ENABLED'] === 'true') {
     const reconciliationTenantId = process.env['SAVINGS_RECONCILIATION_TENANT_ID']?.trim();
     const batchSize = parsePositiveIntegerEnv('SAVINGS_RECONCILIATION_BATCH_SIZE', 50);
     const runReconciliation = async (): Promise<void> => {
@@ -476,7 +495,7 @@ const PORT = process.env['PORT'] || 3000;
     }
   }
 
-  if (process.env['INGESTION_SCHEDULER_ENABLED'] === 'true') {
+  if (runsSchedulers && process.env['INGESTION_SCHEDULER_ENABLED'] === 'true') {
     const intervalMs = parsePositiveIntegerEnv('INGESTION_SCHEDULER_INTERVAL_MS', 300000);
     const metricWindowMinutes = parsePositiveIntegerEnv('INGESTION_SCHEDULER_METRIC_WINDOW_MINUTES', 30);
     const metricCooldownMinutes = parsePositiveIntegerEnv('INGESTION_SCHEDULER_METRIC_COOLDOWN_MINUTES', 25);
@@ -530,6 +549,15 @@ function parsePositiveIntegerEnv(name: string, fallback: number): number {
 
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+type ProcessRole = 'api' | 'worker' | 'scheduler' | 'all';
+
+function readProcessRole(): ProcessRole {
+  const value = process.env['APP_PROCESS_ROLE']?.trim().toLowerCase();
+  return value === 'api' || value === 'worker' || value === 'scheduler' || value === 'all'
+    ? value
+    : 'all';
 }
 
 // ── Ejecución ─────────────────────────────────────────────────────

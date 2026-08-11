@@ -5,6 +5,7 @@ import type {
 } from '../../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 import { safeErrorMessage } from '../observability/safeError.js';
+import type { MetricsRegistry } from '../observability/MetricsRegistry.js';
 
 export interface CloudIngestionWorkerRunResult {
   readonly processed: boolean;
@@ -22,23 +23,38 @@ export class CloudIngestionWorkerService {
     private readonly jobs: PrismaCloudIngestionJobRepository,
     providers: readonly CloudIngestionProvider[],
     onSuccessfulIngestion?: (input: { readonly tenantId: string; readonly jobId: string; readonly providerCode: string }) => Promise<void>,
+    private readonly metrics?: MetricsRegistry,
   ) {
     this.providers = new Map(providers.map((provider) => [provider.providerCode, provider]));
     this.onSuccessfulIngestion = onSuccessfulIngestion;
   }
 
   public async runOnce(workerId: string): Promise<CloudIngestionWorkerRunResult> {
-    return runWithDatabaseContext({ workerId, role: 'MASTER_ADMIN' }, async () => {
-      const job = await this.jobs.claimNextPendingJob(workerId);
-      if (job === null) {
-        return { processed: false };
-      }
+    const startedAt = Date.now();
+    try {
+      const result = await runWithDatabaseContext({ workerId, role: 'MASTER_ADMIN' }, async () => {
+        const job = await this.jobs.claimNextPendingJob(workerId);
+        if (job === null) {
+          return { processed: false };
+        }
 
-      return runWithDatabaseContext(
-        { tenantId: job.tenantId, workerId, role: 'MASTER_ADMIN' },
-        () => this.processClaimedJob(job, workerId),
-      );
-    });
+        return runWithDatabaseContext(
+          { tenantId: job.tenantId, workerId, role: 'MASTER_ADMIN' },
+          () => this.processClaimedJob(job, workerId),
+        );
+      });
+      const outcome = !result.processed ? 'empty' : result.errorMessage === undefined ? 'success' : 'error';
+      this.metrics?.increment('ingestion_runs_total', { outcome });
+      this.metrics?.observe('ingestion_run_duration_ms', Date.now() - startedAt, { outcome });
+      if (result.summary !== undefined) {
+        this.metrics?.increment('ingestion_api_calls_total', { provider: result.providerCode ?? 'unknown' }, result.summary.apiCallCount);
+      }
+      return result;
+    } catch (error) {
+      this.metrics?.increment('ingestion_runs_total', { outcome: 'error' });
+      this.metrics?.observe('ingestion_run_duration_ms', Date.now() - startedAt, { outcome: 'error' });
+      throw error;
+    }
   }
 
   private async processClaimedJob(

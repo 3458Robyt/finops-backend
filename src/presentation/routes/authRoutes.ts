@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { AuthController } from '../controllers/AuthController.js';
+import { AuthSessionController } from '../controllers/AuthSessionController.js';
 import type { PasswordRecoveryController } from '../controllers/PasswordRecoveryController.js';
 import type { MfaController } from '../controllers/MfaController.js';
 import type { RequestHandler } from 'express';
+import { createTrustedOriginGuard } from '../middleware/trustedOrigin.js';
 
 /**
  * Construye el router de autenticación.
@@ -21,16 +23,18 @@ import type { RequestHandler } from 'express';
  */
 export function createAuthRoutes(
   authController: AuthController,
+  authSessionController: AuthSessionController,
   requireAuth: RequestHandler,
   passwordRecoveryController?: PasswordRecoveryController,
   mfaController?: MfaController,
 ): Router {
   const router = Router();
+  const trustedOrigin = createTrustedOriginGuard();
 
   router.post('/login', authController.login);
-  router.post('/refresh', authController.refresh);
-  router.post('/mfa/complete', authController.completeMfa);
-  router.post('/mfa/enrollment/complete', authController.completeMfaEnrollment);
+  router.post('/refresh', trustedOrigin, authSessionController.refresh);
+  router.post('/mfa/complete', trustedOrigin, authController.completeMfa);
+  router.post('/mfa/enrollment/complete', trustedOrigin, authController.completeMfaEnrollment);
   if (passwordRecoveryController !== undefined) {
     router.post('/password-reset/request', passwordRecoveryController.request);
     router.post('/password-reset/confirm', passwordRecoveryController.confirm);
@@ -40,12 +44,12 @@ export function createAuthRoutes(
     router.post('/mfa/setup', requireAuth, mfaController.setup);
     router.post('/mfa/confirm', requireAuth, mfaController.confirm);
   }
-  router.post('/logout', requireAuth, authController.logout);
-  router.post('/logout-all', requireAuth, authController.logoutAll);
-  router.get('/sessions', requireAuth, authController.listSessions);
-  router.delete('/sessions/:id', requireAuth, authController.revokeSession);
-  router.get('/tenants', requireAuth, authController.listTenants);
-  router.post('/switch-tenant', requireAuth, authController.switchTenant);
+  router.post('/logout', trustedOrigin, requireAuth, authSessionController.logout);
+  router.post('/logout-all', trustedOrigin, requireAuth, authSessionController.logoutAll);
+  router.get('/sessions', requireAuth, authSessionController.listSessions);
+  router.delete('/sessions/:id', requireAuth, authSessionController.revokeSession);
+  router.get('/tenants', requireAuth, authSessionController.listTenants);
+  router.post('/switch-tenant', trustedOrigin, requireAuth, authSessionController.switchTenant);
 
   return router;
 }

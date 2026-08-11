@@ -27,12 +27,14 @@ import type { IRecommendationRepository } from '../domain/interfaces/IRecommenda
 import type { ITokenService } from '../domain/interfaces/ITokenService.js';
 import type { ValueRealizationService } from '../application/services/ValueRealizationService.js';
 import type { ResourceLinkageReadinessService } from '../application/services/ResourceLinkageReadinessService.js';
+import type { MetricsRegistry } from '../application/observability/MetricsRegistry.js';
 import { AgentController } from './controllers/AgentController.js';
 import { BudgetController } from './controllers/BudgetController.js';
 import { CostAllocationController } from './controllers/CostAllocationController.js';
 import { AiController } from './controllers/AiController.js';
 import { AnalyticsController } from './controllers/AnalyticsController.js';
 import { AuthController } from './controllers/AuthController.js';
+import { AuthSessionController } from './controllers/AuthSessionController.js';
 import { PasswordRecoveryController } from './controllers/PasswordRecoveryController.js';
 import { MfaController } from './controllers/MfaController.js';
 import { CloudConnectionController } from './controllers/CloudConnectionController.js';
@@ -50,6 +52,7 @@ import { ResourceLinkageController } from './controllers/ResourceLinkageControll
 import { createAuthMiddleware, requireRole } from './middleware/authMiddleware.js';
 import { createHttpErrorHandler, createNotFoundHandler } from './middleware/httpErrorHandler.js';
 import { createRateLimit } from './middleware/rateLimit.js';
+import { createMetricsAuth } from './middleware/metricsAuth.js';
 import { createAgentRoutes } from './routes/agentRoutes.js';
 import { createBudgetRoutes } from './routes/budgetRoutes.js';
 import { createCostAllocationRoutes } from './routes/costAllocationRoutes.js';
@@ -123,6 +126,7 @@ interface ServerDependencies {
   readonly authSessionRepository: IAuthSessionRepository;
   readonly valueRealizationService: ValueRealizationService;
   readonly resourceLinkageReadinessService: ResourceLinkageReadinessService;
+  readonly metricsRegistry: MetricsRegistry;
   /** Comprueba dependencias críticas sin exponer detalles de infraestructura. */
   readonly readinessCheck?: () => Promise<void>;
 }
@@ -173,7 +177,7 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
     origin: parseCorsOrigins(process.env['CORS_ORIGIN']),
     credentials: true,
   }));
-  app.use(createRequestLogger());
+  app.use(createRequestLogger(dependencies.metricsRegistry));
   app.use(express.json({ limit: parseBodyLimit(process.env['HTTP_BODY_LIMIT']) }));
 
   const globalApiLimiter = createRateLimit({
@@ -258,6 +262,7 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   );
   const analyticsController = new AnalyticsController(dependencies.analyticsService);
   const authController = new AuthController(dependencies.authService);
+  const authSessionController = new AuthSessionController(dependencies.authService);
   const passwordRecoveryController = new PasswordRecoveryController(dependencies.passwordRecoveryService);
   const mfaController = new MfaController(dependencies.mfaService);
   const cloudConnectionController = new CloudConnectionController(
@@ -319,7 +324,7 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
   app.use('/api/v1/analytics', createAnalyticsRoutes(analyticsController, requireAuth));
   app.use('/api/v1/budgets', createBudgetRoutes(budgetController, requireAuth));
   app.use('/api/v1/cost-allocation', createCostAllocationRoutes(costAllocationController, requireAuth));
-  app.use('/api/v1/auth', createAuthRoutes(authController, requireAuth, passwordRecoveryController, mfaController));
+  app.use('/api/v1/auth', createAuthRoutes(authController, authSessionController, requireAuth, passwordRecoveryController, mfaController));
   app.use('/api/v1/cloud-connections', createCloudConnectionRoutes(cloudConnectionController, requireAuth, requireCloudManager));
   app.use('/api/v1/costs', createCostRoutes(costController, requireAuth));
   app.use('/api/v1/ingestion', createIngestionRoutes(cloudConnectionController, requireAuth, requireCloudManager, resourceLinkageController));
@@ -348,6 +353,10 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
     } catch {
       res.status(503).json({ status: 'not_ready', checks: { database: 'failed' } });
     }
+  });
+
+  app.get('/metrics', createMetricsAuth(), (_req, res) => {
+    res.type('text/plain; version=0.0.4').status(200).send(dependencies.metricsRegistry.toPrometheus());
   });
 
   app.use(createNotFoundHandler());
@@ -381,7 +390,7 @@ function parseBodyLimit(value: string | undefined): string {
   return normalized === undefined || normalized === '' ? '1mb' : normalized;
 }
 
-function createRequestLogger() {
+function createRequestLogger(metrics: MetricsRegistry) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const requestId = req.header('x-request-id') ?? randomUUID();
     const startedAt = Date.now();
@@ -389,6 +398,9 @@ function createRequestLogger() {
     res.setHeader('x-request-id', requestId);
 
     res.on('finish', () => {
+      const statusClass = `${Math.floor(res.statusCode / 100)}xx`;
+      metrics.increment('http_requests_total', { method: req.method, status_class: statusClass });
+      metrics.observe('http_request_duration_ms', Date.now() - startedAt, { method: req.method, status_class: statusClass });
       console.log(JSON.stringify({
         level: res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info',
         event: 'http_request',

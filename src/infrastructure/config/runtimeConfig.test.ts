@@ -14,6 +14,7 @@ const productionEnv: NodeJS.ProcessEnv = {
   AI_MODEL: 'gpt-5.4-mini',
   AI_AUDITOR_MODEL: 'gpt-5.4-mini',
   MFA_REQUIRED_FOR_PRIVILEGED: 'true',
+  METRICS_TOKEN: 'metrics-fixture-token',
 };
 
 describe('validateRuntimeConfig', () => {

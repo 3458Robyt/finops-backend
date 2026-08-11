@@ -3,7 +3,6 @@ import type {
   CloudIngestionCredential,
   CloudIngestionJobContext,
   CloudIngestionResult,
-  NormalizedCloudResource,
   NormalizedFocusCostLineItem,
   NormalizedProviderCostLineItem,
   NormalizedResourceMetricSample,
@@ -29,6 +28,10 @@ import {
   getFocusCloudAccountExternalId,
   getFocusCloudAccountName,
 } from './focusCostMetricProjection.js';
+import {
+  buildMetricDerivedResources,
+  mergeNormalizedResources,
+} from './ingestionResourceNormalizer.js';
 
 interface ClaimedJobRow {
   readonly id: string;
@@ -162,8 +165,12 @@ export class PrismaCloudIngestionJobRepository {
     if (!await this.refreshJobLease(job.id, workerId, job.attempt)) {
       throw new Error('Ingestion job lease was lost before persistence');
     }
-    const metricDerivedResources = this.buildMetricDerivedResources(job, result.metricSamples);
-    const resources = this.mergeResources([...result.resources, ...metricDerivedResources]);
+    const metricDerivedResources = buildMetricDerivedResources({
+      tenantId: job.tenantId,
+      cloudConnectionId: job.cloudConnectionId,
+      ...(job.connection.defaultRegion !== undefined ? { defaultRegion: job.connection.defaultRegion } : {}),
+    }, result.metricSamples);
+    const resources = mergeNormalizedResources([...result.resources, ...metricDerivedResources]);
     const resourceIdsByExternalId = await upsertNormalizedCloudResources(this.prisma, resources);
     let focusRowsProcessed = result.focusRows.length;
     let focusRowsInserted = await this.insertFocusRows(this.prisma, result.focusRows);
@@ -581,73 +588,6 @@ export class PrismaCloudIngestionJobRepository {
     };
   }
 
-  private buildMetricDerivedResources(
-    job: CloudIngestionJobContext,
-    samples: readonly NormalizedResourceMetricSample[],
-  ): readonly NormalizedCloudResource[] {
-    const byExternalResourceId = new Map<string, {
-      sample: NormalizedResourceMetricSample;
-      metricNames: Set<string>;
-      sampleCount: number;
-    }>();
-
-    for (const sample of samples) {
-      const externalResourceId = normalizeExternalResourceId(sample.externalResourceId);
-      if (externalResourceId === undefined) {
-        continue;
-      }
-      const normalizedSample = externalResourceId === sample.externalResourceId
-        ? sample
-        : { ...sample, externalResourceId };
-      const current = byExternalResourceId.get(externalResourceId);
-      if (current === undefined) {
-        byExternalResourceId.set(externalResourceId, {
-          sample: normalizedSample,
-          metricNames: new Set([normalizedSample.metricName]),
-          sampleCount: 1,
-        });
-        continue;
-      }
-
-      current.metricNames.add(normalizedSample.metricName);
-      current.sampleCount += 1;
-    }
-
-    return [...byExternalResourceId.values()].map(({ sample, metricNames, sampleCount }) => {
-      const regionId = this.readRawMetricString(sample.rawMetric, 'region') ?? job.connection.defaultRegion;
-      return {
-        tenantId: job.tenantId,
-        cloudConnectionId: job.cloudConnectionId,
-        provider: sample.provider,
-        externalResourceId: sample.externalResourceId,
-        name: this.readRawMetricString(sample.rawMetric, 'resourceName') ?? sample.externalResourceId,
-        resourceType: this.inferResourceType(sample),
-        serviceName: this.inferServiceName(sample),
-        ...(regionId !== undefined ? { regionId } : {}),
-        status: 'UNKNOWN',
-        rawResource: {
-          source: 'METRIC_DERIVED',
-          metricNames: [...metricNames].sort(),
-          sampleCount,
-        },
-      };
-    });
-  }
-
-  private mergeResources(resources: readonly NormalizedCloudResource[]): readonly NormalizedCloudResource[] {
-    const byKey = new Map<string, NormalizedCloudResource>();
-
-    for (const resource of resources) {
-      const key = `${resource.cloudConnectionId}:${resource.externalResourceId}`;
-      const previous = byKey.get(key);
-      if (previous === undefined || previous.rawResource?.['source'] === 'METRIC_DERIVED') {
-        byKey.set(key, resource);
-      }
-    }
-
-    return [...byKey.values()];
-  }
-
   private async reconcileMetricSampleResourceLinks(
     tx: PrismaIngestionPersistenceClient,
     cloudConnectionId: string,
@@ -663,48 +603,6 @@ export class PrismaCloudIngestionJobRepository {
         data: { cloudResourceId, resourceLinkReason: null },
       });
     }
-  }
-
-  private inferResourceType(sample: NormalizedResourceMetricSample): string {
-    const namespace = this.readRawMetricString(sample.rawMetric, 'namespace')?.toLowerCase() ?? '';
-    if (namespace.includes('compute') || namespace.includes('ec2') || namespace.includes('vmi')) {
-      return 'COMPUTE_INSTANCE';
-    }
-
-    if (namespace.includes('block') || namespace.includes('volume') || namespace.includes('ebs')) {
-      return 'BLOCK_VOLUME';
-    }
-
-    return 'UNKNOWN';
-  }
-
-  private inferServiceName(sample: NormalizedResourceMetricSample): string {
-    const namespace = this.readRawMetricString(sample.rawMetric, 'namespace')?.toLowerCase() ?? '';
-    if (namespace.includes('aws/ec2')) {
-      return 'Amazon EC2';
-    }
-
-    if (namespace.includes('oci_compute') || namespace.includes('oci_computeagent') || namespace.includes('vmi')) {
-      return 'Oracle Compute';
-    }
-
-    if (namespace.includes('ebs')) {
-      return 'Amazon EBS';
-    }
-
-    return 'UNKNOWN';
-  }
-
-  private readRawMetricString(
-    rawMetric: Readonly<Record<string, unknown>> | undefined,
-    field: string,
-  ): string | undefined {
-    if (rawMetric === undefined) {
-      return undefined;
-    }
-
-    const value = rawMetric[field];
-    return typeof value === 'string' && value.trim() !== '' ? value : undefined;
   }
 
   private async projectProviderCostsToCostMetrics(

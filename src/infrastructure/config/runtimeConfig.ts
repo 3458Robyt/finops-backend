@@ -57,6 +57,7 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
       issues.push({ key: 'AI_BASE_URL', message: 'Debe ser una URL HTTP(S) válida.' });
     }
     validatePositiveBound(env, 'AI_TIMEOUT_MS', 5_000, 120_000, issues);
+    validatePositiveBound(env, 'LEARNING_AUDIT_TIMEOUT_MS', 5_000, 60_000, issues);
     validateIntegerBound(env, 'AI_MAX_RETRIES', 0, 2, issues);
     validatePositiveBound(env, 'HTTP_REQUEST_TIMEOUT_MS', 1_000, 300_000, issues);
     validatePositiveBound(env, 'HTTP_HEADERS_TIMEOUT_MS', 1_000, 120_000, issues);

@@ -49,4 +49,11 @@ describe('validateRuntimeConfig', () => {
       CORS_ORIGIN: 'https://finops.example.com,https://admin.example.com',
     })).not.toThrow();
   });
+
+  it('rejects an unbounded learning auditor timeout in production', () => {
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      LEARNING_AUDIT_TIMEOUT_MS: '1000',
+    })).toThrow(`Configuracion runtime invalida.`);
+  });
 });

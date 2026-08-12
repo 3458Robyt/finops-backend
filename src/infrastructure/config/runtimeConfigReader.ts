@@ -56,7 +56,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
       auditorModel: readString(env['AI_AUDITOR_MODEL'], readString(env['AI_MODEL'], 'gpt-5.4-mini')),
       timeoutMs: readPositiveInteger(env['AI_TIMEOUT_MS'], 60_000),
       maxRetries: readNonNegativeInteger(env['AI_MAX_RETRIES'], 1),
-      learningAuditTimeoutMs: readPositiveInteger(env['LEARNING_AUDIT_TIMEOUT_MS'], 30_000),
+      learningAuditTimeoutMs: readPositiveInteger(env['LEARNING_AUDIT_TIMEOUT_MS'], 15_000),
       ...optionalAiPricing(env),
     },
     cloud: {

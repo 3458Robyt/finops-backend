@@ -4,7 +4,7 @@ import { extname, join, relative, resolve } from 'node:path';
 const sourceRoot = resolve(process.cwd(), 'src');
 const maxLines = 400;
 const exceptions = new Map([
-  ['infrastructure/repositories/PrismaCloudConnectionRepository.ts', 900],
+  ['infrastructure/repositories/PrismaCloudConnectionRepository.ts', 670],
   ['infrastructure/ingestion/PrismaCloudIngestionJobRepository.ts', 850],
   ['infrastructure/repositories/PrismaResourceMetricRepository.ts', 670],
   ['infrastructure/repositories/queries/recommendationSavingsMeasurementQueries.ts', 650],

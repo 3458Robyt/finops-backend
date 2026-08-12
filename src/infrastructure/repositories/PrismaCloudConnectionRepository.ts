@@ -1,13 +1,13 @@
 import type {
   ConfigureBillingSourceForConnectionInput,
   ConfigureBillingSourceForConnectionResult,
-  CloudCredentialSummary,
-  CreateCloudAuditEventInput,
-  CreateCloudConnectionInput,
   ConfigureFocusSourceForConnectionInput,
   ConfigureFocusSourceForConnectionResult,
   ConfigureMetricDefinitionsForConnectionInput,
   ConfigureMetricDefinitionsForConnectionResult,
+  CloudCredentialSummary,
+  CreateCloudAuditEventInput,
+  CreateCloudConnectionInput,
   CreateIngestionJobInput,
   DataQualityCheckItem,
   ICloudConnectionRepository,
@@ -37,9 +37,9 @@ import {
   toIngestionJobHistoryItem,
 } from './mappers/cloudConnectionMappers.js';
 import { PrismaCloudCredentialRepository } from './PrismaCloudCredentialRepository.js';
+import { PrismaCloudConnectionConfigurationRepository } from './PrismaCloudConnectionConfigurationRepository.js';
 import { invalidatedValidationData } from './cloudConnectionMetadata.js';
 import { buildIngestionReadinessSummary } from '../ingestion/ingestionReadiness.js';
-import { configureFocusSourceMetadata } from '../ingestion/focusSourceMetadata.js';
 import { CredentialCipher } from '../security/CredentialCipher.js';
 
 /**
@@ -54,12 +54,14 @@ import { CredentialCipher } from '../security/CredentialCipher.js';
  */
 export class PrismaCloudConnectionRepository implements ICloudConnectionRepository {
   private readonly credentialRepository: PrismaCloudCredentialRepository;
+  private readonly configurationRepository: PrismaCloudConnectionConfigurationRepository;
 
   constructor(
     private readonly prisma: PrismaClient,
     credentialCipher?: CredentialCipher,
   ) {
     this.credentialRepository = new PrismaCloudCredentialRepository(prisma, credentialCipher);
+    this.configurationRepository = new PrismaCloudConnectionConfigurationRepository(prisma);
   }
 
   /**
@@ -592,107 +594,19 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
   public async configureFocusSourceForConnection(
     input: ConfigureFocusSourceForConnectionInput,
   ): Promise<ConfigureFocusSourceForConnectionResult | null> {
-    const connection = await this.prisma.cloudConnection.findFirst({
-      where: {
-        id: input.cloudConnectionId,
-        tenantId: input.tenantId,
-        status: 'ACTIVE',
-      },
-      select: {
-        id: true,
-        providerCode: true,
-        metadata: true,
-      },
-    });
-
-    if (connection === null) {
-      return null;
-    }
-
-    const result = configureFocusSourceMetadata({
-      provider: connection.providerCode,
-      mode: input.mode,
-      values: new Map(Object.entries(input.values)),
-      existingMetadata: isJsonObject(connection.metadata) ? connection.metadata as Record<string, unknown> : {},
-      replace: input.replace,
-    });
-
-    await this.prisma.cloudConnection.update({
-      where: { id: connection.id },
-      data: {
-        ...invalidatedValidationData(result.metadata),
-      },
-    });
-
-    return {
-      cloudConnectionId: connection.id,
-      providerCode: connection.providerCode,
-      mode: input.mode,
-      updatedKey: result.updatedKey,
-      configuredCount: result.configuredCount,
-      replaced: input.replace,
-    };
+    return this.configurationRepository.configureFocusSourceForConnection(input);
   }
 
   public async configureBillingSourceForConnection(
     input: ConfigureBillingSourceForConnectionInput,
   ): Promise<ConfigureBillingSourceForConnectionResult | null> {
-    const connection = await this.prisma.cloudConnection.findFirst({
-      where: {
-        id: input.cloudConnectionId,
-        tenantId: input.tenantId,
-        status: 'ACTIVE',
-      },
-      select: { id: true, providerCode: true, metadata: true },
-    });
-
-    if (connection === null) return null;
-
-    const metadata = isJsonObject(connection.metadata)
-      ? { ...(connection.metadata as Record<string, unknown>), billingSourceMode: input.mode }
-      : { billingSourceMode: input.mode };
-
-    await this.prisma.cloudConnection.update({
-      where: { id: connection.id },
-      data: invalidatedValidationData(metadata),
-    });
-
-    return {
-      cloudConnectionId: connection.id,
-      providerCode: connection.providerCode,
-      mode: input.mode,
-    };
+    return this.configurationRepository.configureBillingSourceForConnection(input);
   }
 
   public async configureMetricDefinitionsForConnection(
     input: ConfigureMetricDefinitionsForConnectionInput,
   ): Promise<ConfigureMetricDefinitionsForConnectionResult | null> {
-    const connection = await this.prisma.cloudConnection.findFirst({
-      where: { id: input.cloudConnectionId, tenantId: input.tenantId, status: 'ACTIVE' },
-      select: { id: true, providerCode: true, metadata: true },
-    });
-    if (connection === null || (connection.providerCode !== 'aws' && connection.providerCode !== 'oci')) return null;
-
-    const updatedKey = connection.providerCode === 'aws' ? 'awsMetricDefinitions' : 'ociMetricDefinitions';
-    const metadata = isJsonObject(connection.metadata)
-      ? { ...(connection.metadata as Record<string, unknown>) }
-      : {};
-    const existing = !input.replace && Array.isArray(metadata[updatedKey]) ? metadata[updatedKey] : [];
-    const definitions = [...new Map(
-      [...existing, ...input.definitions].map((definition) => [JSON.stringify(definition), definition]),
-    ).values()];
-    metadata[updatedKey] = definitions;
-    await this.prisma.cloudConnection.update({
-      where: { id: connection.id },
-      data: invalidatedValidationData(metadata),
-    });
-    return {
-      cloudConnectionId: connection.id,
-      providerCode: connection.providerCode,
-      updatedKey,
-      configuredCount: definitions.length,
-      replaced: input.replace,
-    };
+    return this.configurationRepository.configureMetricDefinitionsForConnection(input);
   }
 }
 

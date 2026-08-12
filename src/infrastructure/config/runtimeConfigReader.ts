@@ -57,6 +57,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
       timeoutMs: readPositiveInteger(env['AI_TIMEOUT_MS'] ?? env['NVIDIA_TIMEOUT_MS'], 60_000),
       maxRetries: readNonNegativeInteger(env['AI_MAX_RETRIES'], 1),
       learningAuditTimeoutMs: readPositiveInteger(env['LEARNING_AUDIT_TIMEOUT_MS'], 30_000),
+      ...optionalAiPricing(env),
     },
     cloud: {
       requiredTagKeys: readCsv(env['FINOPS_REQUIRED_TAG_KEYS'], ['environment', 'owner', 'application', 'cost_center']),
@@ -179,6 +180,24 @@ function readNonNegativeInteger(value: string | undefined, fallback: number): nu
 function readPositiveNumber(value: string | undefined, fallback: number): number {
   const parsed = Number.parseFloat(value ?? '');
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function readOptionalNonNegativeNumber(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function optionalAiPricing(env: NodeJS.ProcessEnv): {
+  readonly inputCostPerMillionTokensUsd?: number;
+  readonly outputCostPerMillionTokensUsd?: number;
+} {
+  const input = readOptionalNonNegativeNumber(env['AI_INPUT_COST_PER_MILLION_TOKENS_USD']);
+  const output = readOptionalNonNegativeNumber(env['AI_OUTPUT_COST_PER_MILLION_TOKENS_USD']);
+  return {
+    ...(input !== undefined ? { inputCostPerMillionTokensUsd: input } : {}),
+    ...(output !== undefined ? { outputCostPerMillionTokensUsd: output } : {}),
+  };
 }
 
 function readCsv(value: string | undefined, fallback: readonly string[]): readonly string[] {

@@ -46,6 +46,8 @@ export interface RuntimeConfig {
     readonly timeoutMs: number;
     readonly maxRetries: number;
     readonly learningAuditTimeoutMs: number;
+    readonly inputCostPerMillionTokensUsd?: number;
+    readonly outputCostPerMillionTokensUsd?: number;
   };
   readonly cloud: {
     readonly requiredTagKeys: readonly string[];

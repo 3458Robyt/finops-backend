@@ -1,6 +1,7 @@
 import type { PrismaClient } from '../generated/prisma/client.js';
 import { AgentInstructionService } from '../application/services/AgentInstructionService.js';
 import { AgentLearningService } from '../application/services/AgentLearningService.js';
+import { AgentQualityService } from '../application/services/AgentQualityService.js';
 import { AiObservabilityService } from '../application/services/AiObservabilityService.js';
 import { AuthService } from '../application/services/AuthService.js';
 import { BudgetService } from '../application/services/BudgetService.js';
@@ -39,6 +40,7 @@ import { OciSdkIngestionProvider } from '../infrastructure/ingestion/OciSdkInges
 import { PrismaCloudIngestionJobRepository } from '../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
 import { PrismaAgentContextRepository } from '../infrastructure/repositories/PrismaAgentContextRepository.js';
 import { PrismaAgentLearningRepository } from '../infrastructure/repositories/PrismaAgentLearningRepository.js';
+import { PrismaAgentQualityRepository } from '../infrastructure/repositories/PrismaAgentQualityRepository.js';
 import { PrismaAuthSecurityRepository } from '../infrastructure/repositories/PrismaAuthSecurityRepository.js';
 import { PrismaAuthSessionRepository } from '../infrastructure/repositories/PrismaAuthSessionRepository.js';
 import { PrismaAccountRecoveryRepository } from '../infrastructure/repositories/PrismaAccountRecoveryRepository.js';
@@ -100,6 +102,7 @@ export function createApplicationComposition(
   const telegramRepository = new PrismaTelegramRepository(prisma);
   const agentContextRepository = new PrismaAgentContextRepository(prisma);
   const agentLearningRepository = new PrismaAgentLearningRepository(prisma);
+  const agentQualityRepository = new PrismaAgentQualityRepository(prisma);
   const userRepository = new PrismaUserRepository(prisma);
   const authSecurityRepository = new PrismaAuthSecurityRepository(prisma);
   const accountRecoveryRepository = new PrismaAccountRecoveryRepository(prisma);
@@ -176,6 +179,10 @@ export function createApplicationComposition(
     learningService,
   );
   const aiObservabilityService = new AiObservabilityService(agentContextRepository);
+  const agentQualityService = new AgentQualityService(agentQualityRepository, {
+    ...(config.ai.inputCostPerMillionTokensUsd !== undefined ? { inputCostPerMillionTokensUsd: config.ai.inputCostPerMillionTokensUsd } : {}),
+    ...(config.ai.outputCostPerMillionTokensUsd !== undefined ? { outputCostPerMillionTokensUsd: config.ai.outputCostPerMillionTokensUsd } : {}),
+  });
   const contextSummaryBuilderService = new ContextSummaryBuilderService(agentContextRepository);
   const aiService = new FinOpsAiService(
     costAnalyticsRepository,
@@ -290,6 +297,7 @@ export function createApplicationComposition(
     recommendationAnalysisService,
     agentInstructionService,
     agentContextRepository,
+    agentQualityService,
     contextSummaryBuilderService,
     savingsReminderService,
     outboundMessageService,

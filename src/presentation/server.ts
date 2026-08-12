@@ -20,6 +20,7 @@ import type { TelegramBotService } from '../application/services/TelegramBotServ
 import type { TelegramLinkService } from '../application/services/TelegramLinkService.js';
 import type { MasterAdminService } from '../application/services/MasterAdminService.js';
 import type { IAgentContextRepository } from '../domain/interfaces/IAgentContextRepository.js';
+import type { AgentQualityService } from '../application/services/AgentQualityService.js';
 import type { IAgentLearningService } from '../domain/interfaces/IAgentLearningService.js';
 import type { IAuthSessionRepository } from '../domain/interfaces/IAuthSessionRepository.js';
 import type { ICostRepository } from '../domain/interfaces/ICostRepository.js';
@@ -62,6 +63,8 @@ export interface ServerDependencies {
   readonly agentInstructionService: AgentInstructionService;
   /** Repositorio del contexto del agente (perfiles, reglas, trazas). */
   readonly agentContextRepository: IAgentContextRepository;
+  /** Reporte tenant-scoped de calidad/calibración y costo operativo de IA. */
+  readonly agentQualityService: AgentQualityService;
   /** Servicio que construye resúmenes de contexto para el agente. */
   readonly contextSummaryBuilderService: ContextSummaryBuilderService;
   /** Servicio de recordatorios de ahorro (genera notificaciones). */

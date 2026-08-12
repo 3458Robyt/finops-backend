@@ -130,7 +130,7 @@ function createControllers(dependencies: ServerDependencies, config: NonNullable
     sameSite: config.security.cookieSameSite,
   };
   return {
-    agent: new AgentController(dependencies.agentInstructionService, dependencies.agentContextRepository, dependencies.contextSummaryBuilderService),
+    agent: new AgentController(dependencies.agentInstructionService, dependencies.agentContextRepository, dependencies.contextSummaryBuilderService, dependencies.agentQualityService),
     ai: new AiController(dependencies.aiService, dependencies.learningService),
     analysis: new RecommendationAnalysisController(dependencies.recommendationAnalysisService),
     analytics: new AnalyticsController(dependencies.analyticsService),

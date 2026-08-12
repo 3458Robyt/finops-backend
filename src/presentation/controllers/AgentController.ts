@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { AgentInstructionService } from '../../application/services/AgentInstructionService.js';
 import type { ContextSummaryBuilderService } from '../../application/services/ContextSummaryBuilderService.js';
+import type { AgentQualityService } from '../../application/services/AgentQualityService.js';
 import type { IAgentContextRepository } from '../../domain/interfaces/IAgentContextRepository.js';
 import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { UserRole } from '../../domain/models/AuthContext.js';
@@ -47,6 +48,7 @@ export class AgentController {
     private readonly instructionService: AgentInstructionService,
     private readonly contextRepository: IAgentContextRepository,
     private readonly summaryBuilder: ContextSummaryBuilderService,
+    private readonly qualityService: AgentQualityService,
   ) {}
 
   /**
@@ -239,6 +241,24 @@ export class AgentController {
       res.status(200).json({ success: true, traces });
     } catch (error: unknown) {
       this.handleError(error, res, 'No fue posible cargar trazas IA');
+    }
+  };
+
+  /**
+   * Devuelve métricas de calidad/calibración de recomendaciones y observabilidad
+   * IA. La aprobación se presenta como proxy humano, no como precisión ML.
+   * Sirve: GET /api/v1/agent/quality?days=90
+   */
+  public getQualityReport = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const auth = this.requireAuthenticated(req);
+      this.requireAgentTechnical(auth.role);
+      const rawDays = Number.parseInt(String(req.query['days'] ?? '90'), 10);
+      const days = Number.isInteger(rawDays) ? Math.min(Math.max(rawDays, 7), 365) : 90;
+      const report = await this.qualityService.getReport(auth.tenantId, days);
+      res.status(200).json({ success: true, report });
+    } catch (error: unknown) {
+      this.handleError(error, res, 'No fue posible cargar la calibracion del agente');
     }
   };
 

@@ -26,7 +26,7 @@ describe.skipIf(!integrationEnabled)('AI quality calibration integration', () =>
     }
   }, 120_000);
 
-  it('keeps calibration rows tenant-scoped and exposes the fixture recommendation', async () => {
+  it('keeps calibration rows tenant-scoped for both fixture tenants', async () => {
     const service = new AgentQualityService(new PrismaAgentQualityRepository(prisma));
     const tenantA = fixtures.tenants[0];
     const tenantB = fixtures.tenants[1];
@@ -40,8 +40,18 @@ describe.skipIf(!integrationEnabled)('AI quality calibration integration', () =>
     expect(reportA.totals.generated).toBeGreaterThanOrEqual(1);
     expect(reportA.dimensions).toEqual(expect.arrayContaining([
       expect.objectContaining({ dimension: 'TYPE', key: 'RIGHTSIZING' }),
+      expect.objectContaining({ dimension: 'PROVIDER', key: 'AWS' }),
+    ]));
+    expect(reportA.dimensions).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ dimension: 'PROVIDER', key: 'OCI' }),
     ]));
-    expect(reportB.totals.generated).toBe(0);
+    expect(reportB.totals.generated).toBeGreaterThanOrEqual(1);
+    expect(reportB.dimensions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dimension: 'TYPE', key: 'RIGHTSIZING' }),
+      expect.objectContaining({ dimension: 'PROVIDER', key: 'OCI' }),
+    ]));
+    expect(reportB.dimensions).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ dimension: 'PROVIDER', key: 'AWS' }),
+    ]));
   });
 });

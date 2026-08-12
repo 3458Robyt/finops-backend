@@ -4,7 +4,6 @@ import type {
   CloudIngestionJobContext,
   CloudIngestionResult,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
-import type { IngestionSourceType } from '../../domain/models/CloudConnection.js';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { loadRuntimeConfig } from '../config/runtimeConfigReader.js';
@@ -14,12 +13,9 @@ import {
   buildMetricDerivedResources,
   mergeNormalizedResources,
 } from './ingestionResourceNormalizer.js';
-import { PrismaIngestionCostProjector, type FocusCostMetricProjectionResult } from './PrismaIngestionCostProjector.js';
-import type { PrismaIngestionPersistenceClient } from './ingestionPersistenceTypes.js';
-import {
-  mergeResourceLinkageStats,
-  type ResourceLinkageRunStats,
-} from './ingestionResourceLinkage.js';
+import { PrismaIngestionCostProjector } from './PrismaIngestionCostProjector.js';
+import { PrismaIngestionJobCompletionSupport, type IngestionJobExecutionSummary } from './PrismaIngestionJobCompletionSupport.js';
+import { mergeResourceLinkageStats } from './ingestionResourceLinkage.js';
 import { PrismaIngestionSamplePersistence } from './PrismaIngestionSamplePersistence.js';
 
 interface ClaimedJobRow {
@@ -28,27 +24,7 @@ interface ClaimedJobRow {
 
 type PrismaIngestionJobWithConnection = NonNullable<Awaited<ReturnType<PrismaCloudIngestionJobRepository['findJobContext']>>>;
 
-export interface IngestionJobExecutionSummary {
-  readonly durationMs: number;
-  readonly providerCode: string;
-  readonly sourceType: IngestionSourceType;
-  readonly apiCallCount: number;
-  readonly objectsProcessed: number;
-  readonly focusRows: number;
-  readonly focusRowsInserted: number;
-  readonly costMetrics: number;
-  readonly costMetricsInserted: number;
-  readonly resources: number;
-  readonly metricDerivedResources: number;
-  readonly metricSamples: number;
-  readonly metricSamplesLinkedToResource: number;
-  readonly resourceLinkage: {
-    readonly costs: ResourceLinkageRunStats;
-    readonly metrics: ResourceLinkageRunStats;
-  };
-  readonly warnings: readonly string[];
-  readonly coverage: Readonly<Record<string, unknown>>;
-}
+export type { IngestionJobExecutionSummary } from './PrismaIngestionJobCompletionSupport.js';
 
 export class PrismaCloudIngestionJobRepository {
   private static readonly COMPLETION_TRANSACTION_OPTIONS = {
@@ -57,6 +33,7 @@ export class PrismaCloudIngestionJobRepository {
   } as const;
   private readonly costProjector = new PrismaIngestionCostProjector();
   private readonly samplePersistence = new PrismaIngestionSamplePersistence();
+  private readonly completionSupport = new PrismaIngestionJobCompletionSupport();
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -174,7 +151,7 @@ export class PrismaCloudIngestionJobRepository {
     await this.samplePersistence.reconcileMetricSampleResourceLinks(this.prisma, job.cloudConnectionId, resourceIdsByExternalId);
 
     const completedAt = new Date();
-    const summary = this.buildSummary(
+    const summary = this.completionSupport.buildSummary(
       job,
       result,
       completedAt.getTime() - startedAt.getTime(),
@@ -204,8 +181,8 @@ export class PrismaCloudIngestionJobRepository {
           throw new Error('Ingestion job lease was lost before completion');
         }
 
-        await this.updateWatermark(tx, job);
-        await this.recordQualityCheck(
+        await this.completionSupport.updateWatermark(tx, job);
+        await this.completionSupport.recordQualityCheck(
           tx,
           job,
           result,
@@ -341,122 +318,6 @@ export class PrismaCloudIngestionJobRepository {
         }),
       } satisfies CloudIngestionConnection,
     };
-  }
-
-  private async updateWatermark(
-    tx: PrismaIngestionPersistenceClient,
-    job: CloudIngestionJobContext,
-  ): Promise<void> {
-    await tx.ingestionWatermark.upsert({
-      where: {
-        cloudConnectionId_sourceType: {
-          cloudConnectionId: job.cloudConnectionId,
-          sourceType: job.sourceType,
-        },
-      },
-      update: {
-        watermarkStart: job.targetStart,
-        watermarkEnd: job.targetEnd,
-        lastSuccessfulRunAt: new Date(),
-        freshnessDeadlineAt: this.calculateFreshnessDeadline(job),
-      },
-      create: {
-        tenantId: job.tenantId,
-        cloudConnectionId: job.cloudConnectionId,
-        sourceType: job.sourceType,
-        watermarkStart: job.targetStart,
-        watermarkEnd: job.targetEnd,
-        lastSuccessfulRunAt: new Date(),
-        freshnessDeadlineAt: this.calculateFreshnessDeadline(job),
-      },
-    });
-  }
-
-  private async recordQualityCheck(
-    tx: PrismaIngestionPersistenceClient,
-    job: CloudIngestionJobContext,
-    result: CloudIngestionResult,
-    costMetricProjection: FocusCostMetricProjectionResult,
-    focusRowsInserted: number,
-    focusRowsProcessed: number,
-    resourcesPersisted: number,
-    metricDerivedResources: number,
-    metricSamplesLinkedToResource: number,
-    metricLinkage: ResourceLinkageRunStats,
-  ): Promise<void> {
-    await tx.dataQualityCheck.create({
-      data: {
-        tenantId: job.tenantId,
-        cloudConnectionId: job.cloudConnectionId,
-        sourceType: job.sourceType,
-        checkName: 'ingestion_job_execution',
-        status: result.warnings.length === 0 ? 'PASSED' : 'WARNING',
-        expectedAt: job.targetEnd,
-        details: {
-          jobId: job.id,
-          apiCallCount: result.apiCallCount,
-          objectsProcessed: result.objectsProcessed,
-          focusRows: focusRowsProcessed,
-          focusRowsInserted,
-          costMetrics: costMetricProjection.projected,
-          costMetricsInserted: costMetricProjection.inserted,
-          historicalResourcesInserted: costMetricProjection.historicalResourcesInserted ?? 0,
-          resources: resourcesPersisted,
-          metricDerivedResources,
-          metricSamples: result.metricSamples.length,
-          metricSamplesLinkedToResource,
-          resourceLinkage: {
-            costs: costMetricProjection.linkage,
-            metrics: metricLinkage,
-          },
-          warnings: result.warnings,
-          coverage: result.coverage,
-        } as unknown as Prisma.InputJsonValue,
-      },
-    });
-  }
-
-  private buildSummary(
-    job: CloudIngestionJobContext,
-    result: CloudIngestionResult,
-    durationMs: number,
-    costMetricProjection: FocusCostMetricProjectionResult,
-    focusRowsInserted: number,
-    focusRowsProcessed: number,
-    resourcesPersisted: number,
-    metricDerivedResources: number,
-    metricSamplesLinkedToResource: number,
-    metricLinkage: ResourceLinkageRunStats,
-  ): IngestionJobExecutionSummary {
-    return {
-      durationMs,
-      providerCode: job.connection.providerCode,
-      sourceType: job.sourceType,
-      apiCallCount: result.apiCallCount,
-      objectsProcessed: result.objectsProcessed,
-      focusRows: focusRowsProcessed,
-      focusRowsInserted,
-      costMetrics: costMetricProjection.projected,
-      costMetricsInserted: costMetricProjection.inserted,
-      resources: resourcesPersisted,
-      metricDerivedResources,
-      metricSamples: result.metricSamples.length,
-      metricSamplesLinkedToResource,
-      resourceLinkage: {
-        costs: costMetricProjection.linkage,
-        metrics: metricLinkage,
-      },
-      warnings: result.warnings,
-      coverage: {
-        ...result.coverage,
-        historicalResourcesInserted: costMetricProjection.historicalResourcesInserted ?? 0,
-      },
-    };
-  }
-
-  private calculateFreshnessDeadline(job: CloudIngestionJobContext): Date {
-    const hours = job.sourceType === 'BILLING_EXPORT' ? 30 : 1;
-    return new Date(job.targetEnd.getTime() + hours * 60 * 60 * 1000);
   }
 
   private isJsonObject(value: unknown): value is Record<string, unknown> {

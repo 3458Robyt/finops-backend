@@ -4,16 +4,7 @@ import { extname, join, relative, resolve } from 'node:path';
 const sourceRoot = resolve(process.cwd(), 'src');
 const maxLines = 400;
 const exceptions = new Map([
-  ['infrastructure/repositories/PrismaCloudConnectionRepository.ts', 670],
-  ['infrastructure/ingestion/PrismaCloudIngestionJobRepository.ts', 850],
-  ['infrastructure/repositories/PrismaResourceMetricRepository.ts', 670],
-  ['infrastructure/repositories/queries/recommendationSavingsMeasurementQueries.ts', 650],
-  ['presentation/controllers/CloudConnectionController.ts', 600],
-  ['application/services/ai/evaluation/qualityRubric.ts', 550],
-  ['application/services/FinOpsAiService.ts', 540],
   ['application/services/ai/evaluation/goldenScenarios.ts', 500],
-  ['presentation/controllers/RecommendationController.ts', 500],
-  ['infrastructure/repositories/PrismaAgentLearningRepository.ts', 500],
   ['infrastructure/repositories/PrismaRecommendationRepository.ts', 490],
   ['infrastructure/repositories/PrismaValueRealizationRepository.ts', 480],
   ['application/services/RecommendationAnalysisService.ts', 480],

@@ -147,6 +147,8 @@ describe('CostAnalyticsService', () => {
 
     expect(results.every((result) => result.forecasts.length === 3)).toBe(true);
     expect(results.every((result) => result.usageInsights.length > 0)).toBe(true);
+    expect(results.every((result) => result.opportunities.length === 0)).toBe(true);
+    expect(results.every((result) => result.opportunities === result.anomalies)).toBe(true);
     expect(repository.maxConcurrentForecastReplacements).toBe(1);
   });
 });

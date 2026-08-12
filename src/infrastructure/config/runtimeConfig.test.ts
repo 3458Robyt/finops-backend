@@ -39,6 +39,13 @@ describe('validateRuntimeConfig', () => {
     warning.mockRestore();
   });
 
+  it('rejects an explicitly invalid process role during development', () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(() => validateRuntimeConfig({ NODE_ENV: 'development', APP_PROCESS_ROLE: 'unexpected' }))
+      .toThrow('APP_PROCESS_ROLE');
+    warning.mockRestore();
+  });
+
   it.each([undefined, 'unknown'])('rejects production when APP_PROCESS_ROLE is %s', (role) => {
     expect(() => validateRuntimeConfig({ ...productionEnv, APP_PROCESS_ROLE: role }))
       .toThrow(`Configuracion runtime invalida.`);

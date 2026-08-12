@@ -147,9 +147,11 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
 
 function readProcessRole(value: string | undefined): ProcessRole {
   const normalized = value?.trim().toLowerCase();
-  return normalized === 'api' || normalized === 'worker' || normalized === 'scheduler' || normalized === 'all'
-    ? normalized
-    : 'all';
+  if (normalized === undefined || normalized === '') return 'all';
+  if (normalized === 'api' || normalized === 'worker' || normalized === 'scheduler' || normalized === 'all') {
+    return normalized;
+  }
+  throw new Error('Configuracion runtime invalida. APP_PROCESS_ROLE: Debe ser api, worker, scheduler o all.');
 }
 
 function readString(value: string | undefined, fallback: string): string {

@@ -39,7 +39,8 @@ export class AnalyticsController {
    * `serviceName`, `groupBy` en la query string).
    *
    * Respuestas:
-   * - 200: `{ success: true, anomalies, meta: { count } }` por compatibilidad.
+   * - 200: `{ success: true, opportunities, anomalies, ... }`; `anomalies` se
+   *   conserva únicamente como alias de compatibilidad.
    * - La ruta está deprecada; los clientes nuevos deben usar `/opportunities`.
    * - 400 VALIDATION_ERROR: filtros inválidos (fecha o `groupBy` no soportado).
    * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.

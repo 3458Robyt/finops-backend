@@ -47,6 +47,9 @@ export interface AnalyticsQuery {
  * tendencias e insights de consumo.
  */
 export interface AnalyticsRecomputeResult {
+  /** Canonical user-facing name for cost signals. */
+  readonly opportunities: readonly CostAnomaly[];
+  /** @deprecated Kept for clients that still consume the historical field. */
   readonly anomalies: readonly CostAnomaly[];
   readonly forecasts: readonly CostForecast[];
   readonly trends: readonly CostTrend[];
@@ -231,7 +234,7 @@ export class CostAnalyticsService {
       ...filters,
       groupBy,
     });
-    const anomalies = await this.analyticsRepository.replaceAnomalies(
+    const opportunities = await this.analyticsRepository.replaceAnomalies(
       query.tenantId,
       detectAnomalies(query.tenantId, series, this.anomalyThresholds),
     );
@@ -241,7 +244,8 @@ export class CostAnalyticsService {
     );
 
     return {
-      anomalies,
+      opportunities,
+      anomalies: opportunities,
       forecasts,
       trends: buildTrends(series),
       usageInsights: await this.getEfficiencyInsights(query),

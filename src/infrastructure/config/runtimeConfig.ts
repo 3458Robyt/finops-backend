@@ -23,6 +23,13 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
   const issues: RuntimeValidationIssue[] = [];
   const isProduction = env['NODE_ENV'] === 'production';
 
+  // An omitted role is a valid development shorthand for `all`, but an
+  // explicitly supplied invalid role must never silently start every process.
+  // Production still requires the variable through `productionOnlyRequired`.
+  if (!isBlank(env['APP_PROCESS_ROLE'])) {
+    validateProcessRole(env['APP_PROCESS_ROLE'], issues);
+  }
+
   if (isProduction) {
     for (const key of productionOnlyRequired) {
       if (isBlank(env[key])) {
@@ -49,8 +56,6 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
     if (env['DB_RUNTIME_ROLE'] !== 'finops_runtime') {
       issues.push({ key: 'DB_RUNTIME_ROLE', message: 'Debe ser finops_runtime en produccion.' });
     }
-
-    validateProcessRole(env['APP_PROCESS_ROLE'], issues);
 
     if (env['MFA_REQUIRED_FOR_PRIVILEGED'] !== 'true') {
       issues.push({ key: 'MFA_REQUIRED_FOR_PRIVILEGED', message: 'Debe ser true en produccion.' });

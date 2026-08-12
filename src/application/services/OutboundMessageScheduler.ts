@@ -10,7 +10,12 @@ export class OutboundMessageScheduler {
   constructor(
     private readonly outboundMessageService: OutboundMessageService,
     private readonly systemActor: AuthContext | undefined,
-    private readonly intervalMinutes: number,
+    private readonly options: {
+      readonly intervalMinutes: number;
+      readonly deliveryBatchSize: number;
+      readonly deliveryLeaseMs: number;
+      readonly deliveryRetryBackoffMs: number;
+    },
   ) {}
 
   public start(): void {
@@ -18,27 +23,46 @@ export class OutboundMessageScheduler {
       return;
     }
 
-    const intervalMs = Math.max(5, this.intervalMinutes) * 60 * 1000;
+    const intervalMs = Math.max(5, this.options.intervalMinutes) * 60 * 1000;
     this.loop = startNonOverlappingLoop({
-      run: () => {
-        const actor = this.systemActor as AuthContext;
-        return runWithDatabaseContext(
-          {
-            tenantId: actor.tenantId,
-            userId: actor.userId,
-            role: actor.role,
-            loginEmail: actor.email,
-            workerId: 'message-scheduler',
-          },
-          () => this.outboundMessageService.sendSavingsReminders(actor),
-        );
-      },
+      run: () => this.runOnce(),
       intervalMs,
       fallbackIntervalMs: 5 * 60 * 1000,
       runImmediately: false,
       unref: true,
       onError: (error) => console.error(JSON.stringify({ level: 'error', event: 'outbound_message_scheduler_iteration_failed', error: safeErrorMessage(error) })),
     });
+  }
+
+  public async runOnce(): Promise<void> {
+    if (this.systemActor === undefined) return;
+    const actor = this.systemActor;
+    await runWithDatabaseContext(
+      {
+        tenantId: actor.tenantId,
+        userId: actor.userId,
+        role: actor.role,
+        loginEmail: actor.email,
+        workerId: 'message-scheduler',
+      },
+      async () => {
+        let processed = 0;
+        const batchSize = Math.max(1, Math.min(this.options.deliveryBatchSize, 500));
+        while (processed < batchSize) {
+          const result = await this.outboundMessageService.processNextPendingDelivery({
+            workerId: 'message-scheduler',
+            leaseMs: this.options.deliveryLeaseMs,
+            retryBackoffMs: this.options.deliveryRetryBackoffMs,
+          });
+          if (!result.processed) break;
+          processed += 1;
+        }
+        if (processed > 0) {
+          console.log(JSON.stringify({ level: 'info', event: 'outbound_message_deliveries_processed', count: processed }));
+        }
+        await this.outboundMessageService.sendSavingsReminders(actor);
+      },
+    );
   }
 
   public async stop(): Promise<void> {

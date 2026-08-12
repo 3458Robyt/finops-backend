@@ -352,6 +352,7 @@ enum OutboundMessageType {
 
 enum OutboundMessageStatus {
   PENDING
+  PROCESSING
   SENT
   FAILED
   SKIPPED
@@ -1809,10 +1810,16 @@ model OutboundMessageDelivery {
   status            OutboundMessageStatus  @default(PENDING)
   subject           String?
   preview           String                 @db.Text
+  body              String                 @db.Text
   providerMessageId String?                @map("provider_message_id")
   errorMessage      String?                @map("error_message") @db.Text
   metadata          Json?
   sentAt            DateTime?              @map("sent_at") @db.Timestamptz(6)
+  attemptCount      Int                    @default(0) @map("attempt_count")
+  maxAttempts       Int                    @default(3) @map("max_attempts")
+  nextAttemptAt     DateTime               @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lockedAt          DateTime?              @map("locked_at") @db.Timestamptz(6)
+  lockedBy          String?                @map("locked_by")
   createdAt         DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
   tenant            Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1820,6 +1827,7 @@ model OutboundMessageDelivery {
   recommendation    Recommendation?        @relation(fields: [recommendationId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, channel, status, createdAt])
+  @@index([tenantId, status, nextAttemptAt, lockedAt, createdAt])
   @@index([userId, createdAt])
   @@index([recommendationId, createdAt])
   @@map("outbound_message_deliveries")

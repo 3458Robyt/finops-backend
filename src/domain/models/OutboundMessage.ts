@@ -8,7 +8,7 @@ export type OutboundMessageType =
   | 'EXECUTION_PLAN_READY'
   | 'BUDGET_ALERT';
 
-export type OutboundMessageStatus = 'PENDING' | 'SENT' | 'FAILED' | 'SKIPPED';
+export type OutboundMessageStatus = 'PENDING' | 'PROCESSING' | 'SENT' | 'FAILED' | 'SKIPPED';
 
 export interface OutboundMessageDelivery {
   readonly id: string;

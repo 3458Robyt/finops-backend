@@ -104,6 +104,9 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
         tenantId: readOptionalString(env['MESSAGE_SCHEDULER_TENANT_ID']),
         userId: readOptionalString(env['MESSAGE_SCHEDULER_USER_ID']),
         intervalMinutes: readPositiveInteger(env['MESSAGE_SCHEDULER_INTERVAL_MINUTES'], 1440),
+        deliveryBatchSize: readPositiveInteger(env['MESSAGE_SCHEDULER_DELIVERY_BATCH_SIZE'], 50),
+        deliveryLeaseMs: readPositiveInteger(env['MESSAGE_SCHEDULER_DELIVERY_LEASE_MS'], 120_000),
+        deliveryRetryBackoffMs: readPositiveInteger(env['MESSAGE_SCHEDULER_DELIVERY_RETRY_BACKOFF_MS'], 30_000),
       },
       ingestion: {
         enabled: readBoolean(env['INGESTION_SCHEDULER_ENABLED'], false),

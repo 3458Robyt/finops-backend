@@ -88,6 +88,9 @@ export interface RuntimeConfig {
       readonly tenantId: string | undefined;
       readonly userId: string | undefined;
       readonly intervalMinutes: number;
+      readonly deliveryBatchSize: number;
+      readonly deliveryLeaseMs: number;
+      readonly deliveryRetryBackoffMs: number;
     };
     readonly ingestion: {
       readonly enabled: boolean;

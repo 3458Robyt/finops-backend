@@ -99,7 +99,55 @@ export class BudgetService {
     return key.trim();
   }
   private validateUpdate(input: UpdateBudgetInput): void { if (input.amount !== undefined && (!Number.isFinite(input.amount) || input.amount <= 0)) throw new FinOpsBaseError('El monto del presupuesto debe ser positivo', 'VALIDATION_ERROR'); if ([input.warningThreshold, input.criticalThreshold, input.exceededThreshold].some((v) => v !== undefined && (!Number.isFinite(v) || v <= 0))) throw new FinOpsBaseError('Los umbrales deben ser positivos', 'VALIDATION_ERROR'); }
-  private async publishAlert(budget: Budget, performance: BudgetPerformance, alert: BudgetAlert): Promise<void> { const [users, links] = await Promise.all([this.outbound.findTenantUsers(budget.tenantId), this.telegram.findLinksByTenant(budget.tenantId)]); const activeLinks = new Map(links.filter((link) => link.status === 'ACTIVE').map((link) => [link.userId, link])); const percent = performance.consumedPercent.toFixed(1); const text = `Presupuesto ${alert.level.toLowerCase()}: ${budget.currency} ${performance.actualCost.toFixed(2)} consumidos (${percent}% de ${budget.amount.toFixed(2)}).`; await Promise.all(users.filter((u) => u.status === 'ACTIVE').map(async (user) => { await this.notifications.create({ tenantId: budget.tenantId, userId: user.id, type: 'BUDGET_ALERT', title: 'Alerta de presupuesto', message: text, currency: budget.currency, periodStart: budget.periodStart, generatedForDate: new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate())), metadata: { budgetId: budget.id, budgetAlertId: alert.id, level: alert.level } }); await this.outbound.create({ tenantId: budget.tenantId, userId: user.id, channel: 'EMAIL', messageType: 'BUDGET_ALERT', status: 'PENDING', subject: 'Alerta de presupuesto FinOps', preview: text, metadata: { budgetAlertId: alert.id, budgetId: budget.id } }); const link = activeLinks.get(user.id); if (link !== undefined) await this.outbound.create({ tenantId: budget.tenantId, userId: user.id, channel: 'TELEGRAM', messageType: 'BUDGET_ALERT', status: 'PENDING', preview: text, metadata: { budgetAlertId: alert.id, budgetId: budget.id, chatId: link.chatId } }); })); }
+  private async publishAlert(budget: Budget, performance: BudgetPerformance, alert: BudgetAlert): Promise<void> {
+    const [users, links] = await Promise.all([
+      this.outbound.findTenantUsers(budget.tenantId),
+      this.telegram.findLinksByTenant(budget.tenantId),
+    ]);
+    const activeLinks = new Map(links.filter((link) => link.status === 'ACTIVE').map((link) => [link.userId, link]));
+    const percent = performance.consumedPercent.toFixed(1);
+    const text = `Presupuesto ${alert.level.toLowerCase()}: ${budget.currency} ${performance.actualCost.toFixed(2)} consumidos (${percent}% de ${budget.amount.toFixed(2)}).`;
+
+    await Promise.all(users.filter((user) => user.status === 'ACTIVE').map(async (user) => {
+      await this.notifications.create({
+        tenantId: budget.tenantId,
+        userId: user.id,
+        type: 'BUDGET_ALERT',
+        title: 'Alerta de presupuesto',
+        message: text,
+        currency: budget.currency,
+        periodStart: budget.periodStart,
+        generatedForDate: new Date(Date.UTC(
+          new Date().getUTCFullYear(),
+          new Date().getUTCMonth(),
+          new Date().getUTCDate(),
+        )),
+        metadata: { budgetId: budget.id, budgetAlertId: alert.id, level: alert.level },
+      });
+      await this.outbound.create({
+        tenantId: budget.tenantId,
+        userId: user.id,
+        channel: 'EMAIL',
+        messageType: 'BUDGET_ALERT',
+        status: 'PENDING',
+        subject: 'Alerta de presupuesto FinOps',
+        preview: text,
+        metadata: { budgetAlertId: alert.id, budgetId: budget.id, to: user.email },
+      });
+      const link = activeLinks.get(user.id);
+      if (link !== undefined) {
+        await this.outbound.create({
+          tenantId: budget.tenantId,
+          userId: user.id,
+          channel: 'TELEGRAM',
+          messageType: 'BUDGET_ALERT',
+          status: 'PENDING',
+          preview: text,
+          metadata: { budgetAlertId: alert.id, budgetId: budget.id, chatId: link.chatId },
+        });
+      }
+    }));
+  }
 }
 
 function parseMonth(value: string): Date { if (!utcMonth.test(value)) throw new FinOpsBaseError('El período debe tener formato YYYY-MM', 'VALIDATION_ERROR'); const [year, month] = value.split('-').map(Number); return new Date(Date.UTC(year!, month! - 1, 1)); }

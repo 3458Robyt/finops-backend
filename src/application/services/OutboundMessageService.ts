@@ -8,6 +8,11 @@ import type { TelegramChatLink } from '../../domain/models/Telegram.js';
 import type { IEmailClient } from './EmailClient.js';
 import type { SavingsReminderService } from './SavingsReminderService.js';
 import type { ITelegramClient } from './TelegramClient.js';
+import {
+  OutboundMessageDeliveryProcessor,
+  type ProcessPendingOutboundDeliveryInput,
+  type ProcessPendingOutboundDeliveryResult,
+} from './OutboundMessageDeliveryProcessor.js';
 import { formatRecommendations, formatSavingsReminders } from './telegram/telegramMessageFormatters.js';
 import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
 
@@ -44,6 +49,8 @@ export interface ValueRealizationOutboundInput {
 }
 
 export class OutboundMessageService {
+  private readonly deliveryProcessor: OutboundMessageDeliveryProcessor;
+
   constructor(
     private readonly outboundRepository: IOutboundMessageRepository,
     private readonly telegramRepository: ITelegramRepository,
@@ -56,7 +63,14 @@ export class OutboundMessageService {
       readonly telegramBotUsername?: string;
       readonly telegramWebhookSecret?: string;
     },
-  ) {}
+  ) {
+    this.deliveryProcessor = new OutboundMessageDeliveryProcessor(
+      outboundRepository,
+      telegramClient,
+      emailClient,
+      config.telegramEnabled,
+    );
+  }
 
   public async getStatus(actor: AuthContext): Promise<OutboundChannelStatus> {
     this.requireAdmin(actor);
@@ -79,6 +93,12 @@ export class OutboundMessageService {
   public async listRecentDeliveries(actor: AuthContext, limit: number): Promise<readonly OutboundMessageDelivery[]> {
     this.requireAdmin(actor);
     return this.outboundRepository.listRecent({ tenantId: actor.tenantId, limit });
+  }
+
+  public processNextPendingDelivery(
+    input: ProcessPendingOutboundDeliveryInput,
+  ): Promise<ProcessPendingOutboundDeliveryResult> {
+    return this.deliveryProcessor.processNext(input);
   }
 
   public async sendTestMessages(actor: AuthContext, input: { readonly email?: string; readonly telegramLinkId?: string }): Promise<SendTestMessagesResult> {

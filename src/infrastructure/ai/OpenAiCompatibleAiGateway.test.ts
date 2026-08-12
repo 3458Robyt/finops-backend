@@ -48,7 +48,7 @@ describe('OpenAiCompatibleAiGateway', () => {
     });
   });
 
-  test('keeps legacy NVIDIA configuration as fallback', async () => {
+  test('does not silently use removed legacy NVIDIA configuration', async () => {
     delete process.env['AI_API_KEY'];
     delete process.env['AI_BASE_URL'];
     delete process.env['AI_MODEL'];
@@ -57,14 +57,8 @@ describe('OpenAiCompatibleAiGateway', () => {
     process.env['NVIDIA_MODEL'] = 'legacy-model';
 
     const { OpenAiCompatibleAiGateway } = await import('./OpenAiCompatibleAiGateway.js');
-    const gateway = new OpenAiCompatibleAiGateway();
 
-    expect(gateway.modelName).toBe('legacy-model');
-    expect(openAiConstructor).toHaveBeenCalledWith(
-      expect.objectContaining({
-        apiKey: 'legacy-key',
-        baseURL: 'https://legacy.example.test/v1',
-      }),
-    );
+    expect(() => new OpenAiCompatibleAiGateway()).toThrow('AI_API_KEY must be configured');
+    expect(openAiConstructor).not.toHaveBeenCalled();
   });
 });

@@ -16,8 +16,9 @@ import type { RuntimeConfig } from '../config/runtimeConfigTypes.js';
  * - AI_TIMEOUT_MS
  * - AI_MAX_RETRIES
  *
- * Las variables NVIDIA_* / NIM_API_KEY siguen funcionando únicamente como
- * compatibilidad temporal mientras se migra a AI_*.
+ * Las variables heredadas NVIDIA_* / NIM_API_KEY no se leen: la configuración
+ * debe migrarse explícitamente a la familia AI_* para evitar proveedores
+ * ambiguos o credenciales antiguas activadas de forma silenciosa.
  */
 export class OpenAiCompatibleAiGateway implements IAiGateway {
   private readonly client: OpenAI;

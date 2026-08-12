@@ -122,6 +122,11 @@ export interface RuntimeConfig {
       readonly runOnStart: boolean;
       readonly intervalMs: number;
     };
+    readonly authCleanup: {
+      readonly enabled: boolean;
+      readonly intervalMs: number;
+      readonly batchSize: number;
+    };
   };
   readonly finops: {
     readonly valueRealizationOutboundEnabled: boolean;

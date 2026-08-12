@@ -4,6 +4,7 @@ import { AgentLearningService } from '../application/services/AgentLearningServi
 import { AgentQualityService } from '../application/services/AgentQualityService.js';
 import { AiObservabilityService } from '../application/services/AiObservabilityService.js';
 import { AuthService } from '../application/services/AuthService.js';
+import { AuthLifecycleCleanupService } from '../application/services/AuthLifecycleCleanupService.js';
 import { BudgetService } from '../application/services/BudgetService.js';
 import { CloudConnectionService } from '../application/services/CloudConnectionService.js';
 import { ContextEngineService } from '../application/services/ContextEngineService.js';
@@ -42,6 +43,7 @@ import { PrismaAgentContextRepository } from '../infrastructure/repositories/Pri
 import { PrismaAgentLearningRepository } from '../infrastructure/repositories/PrismaAgentLearningRepository.js';
 import { PrismaAgentQualityRepository } from '../infrastructure/repositories/PrismaAgentQualityRepository.js';
 import { PrismaAuthSecurityRepository } from '../infrastructure/repositories/PrismaAuthSecurityRepository.js';
+import { PrismaAuthLifecycleCleanupRepository } from '../infrastructure/repositories/PrismaAuthLifecycleCleanupRepository.js';
 import { PrismaAuthSessionRepository } from '../infrastructure/repositories/PrismaAuthSessionRepository.js';
 import { PrismaAccountRecoveryRepository } from '../infrastructure/repositories/PrismaAccountRecoveryRepository.js';
 import { PrismaBudgetRepository } from '../infrastructure/repositories/PrismaBudgetRepository.js';
@@ -75,6 +77,7 @@ export interface ApplicationComposition {
   readonly recommendationAnalysisService: RecommendationAnalysisService;
   readonly valueRealizationService: ValueRealizationService;
   readonly learningService: AgentLearningService;
+  readonly authLifecycleCleanupService: AuthLifecycleCleanupService;
   readonly ingestionWorker: CloudIngestionWorkerService | null;
 }
 
@@ -105,6 +108,10 @@ export function createApplicationComposition(
   const agentQualityRepository = new PrismaAgentQualityRepository(prisma);
   const userRepository = new PrismaUserRepository(prisma);
   const authSecurityRepository = new PrismaAuthSecurityRepository(prisma);
+  const authLifecycleCleanupService = new AuthLifecycleCleanupService(
+    new PrismaAuthLifecycleCleanupRepository(prisma),
+    config.schedulers.authCleanup.batchSize,
+  );
   const accountRecoveryRepository = new PrismaAccountRecoveryRepository(prisma);
   const mfaRepository = new PrismaMfaRepository(prisma);
   const mfaRecoveryCodeRepository = new PrismaMfaRecoveryCodeRepository(prisma);
@@ -331,6 +338,7 @@ export function createApplicationComposition(
     recommendationAnalysisService,
     valueRealizationService,
     learningService,
+    authLifecycleCleanupService,
     ingestionWorker,
   };
 }

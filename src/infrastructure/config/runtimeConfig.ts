@@ -73,6 +73,8 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
     validatePositiveBound(env, 'OUTBOUND_PROVIDER_TIMEOUT_MS', 5_000, 60_000, issues);
     validatePositiveBound(env, 'AUTH_REFRESH_TOKEN_TTL_SECONDS', 300, 90 * 24 * 60 * 60, issues);
     validatePositiveBound(env, 'PASSWORD_RESET_TTL_SECONDS', 300, 3600, issues);
+    validatePositiveBound(env, 'AUTH_CLEANUP_SCHEDULER_INTERVAL_MS', 60_000, 7 * 24 * 60 * 60 * 1000, issues);
+    validateIntegerBound(env, 'AUTH_CLEANUP_BATCH_SIZE', 1, 5000, issues);
     if (env['EMAIL_ENABLED'] === 'true' && !isHttpUrl(env['PASSWORD_RESET_URL'])) {
       issues.push({ key: 'PASSWORD_RESET_URL', message: 'Debe ser una URL HTTP(S) válida cuando el correo está habilitado.' });
     }

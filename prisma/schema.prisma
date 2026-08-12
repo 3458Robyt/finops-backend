@@ -628,6 +628,7 @@ model AuthSession {
 
   @@index([userId, expiresAt])
   @@index([tenantId, revokedAt])
+  @@index([expiresAt], map: "auth_sessions_expires_at_idx")
   @@map("auth_sessions")
 }
 
@@ -652,6 +653,7 @@ model AuthRefreshToken {
   @@index([userId, revokedAt, expiresAt])
   @@index([familyId, revokedAt])
   @@index([tenantId], map: "auth_refresh_tokens_tenant_id_idx")
+  @@index([expiresAt], map: "auth_refresh_tokens_expires_at_idx")
   @@map("auth_refresh_tokens")
 }
 
@@ -666,6 +668,7 @@ model PasswordResetToken {
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, expiresAt])
+  @@index([expiresAt], map: "password_reset_tokens_expires_at_idx")
   @@map("password_reset_tokens")
 }
 
@@ -699,6 +702,7 @@ model MfaChallenge {
   user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, purpose, expiresAt])
+  @@index([expiresAt], map: "mfa_challenges_expires_at_idx")
   @@map("mfa_challenges")
 }
 

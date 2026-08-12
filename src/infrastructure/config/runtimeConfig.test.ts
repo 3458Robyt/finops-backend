@@ -77,6 +77,11 @@ describe('validateRuntimeConfig', () => {
     })).toThrow(`Configuracion runtime invalida.`);
   });
 
+  it('rejects an auth cleanup batch outside the bounded production range', () => {
+    expect(() => validateRuntimeConfig({ ...productionEnv, AUTH_CLEANUP_BATCH_SIZE: '5001' }))
+      .toThrow(`Configuracion runtime invalida.`);
+  });
+
   it('requires credentials for enabled outbound integrations and scheduler targets', () => {
     expect(() => validateRuntimeConfig({
       ...productionEnv,

@@ -29,6 +29,7 @@ export function startBackgroundProcesses(input: BackgroundProcessRuntimeInput): 
   startRecommendationAnalysisScheduler(input, prisma, recommendationAnalysisRepository);
   startSavingsReconciliationScheduler(input, valueRealizationService);
   startIngestionScheduler(input, prisma);
+  startAuthLifecycleCleanupScheduler(input, composition.authLifecycleCleanupService);
 }
 
 function startMessageScheduler(input: BackgroundProcessRuntimeInput, service: ApplicationComposition['serverDependencies']['outboundMessageService']): void {
@@ -183,5 +184,29 @@ function startIngestionScheduler(input: BackgroundProcessRuntimeInput, prisma: A
     },
     onError: (error) => console.error(JSON.stringify({ level: 'error', event: 'ingestion_scheduler_iteration_failed', error: safeErrorMessage(error) })),
     onSkip: () => console.warn('Ingestion scheduler iteration skipped because previous run is still active'),
+  });
+}
+
+function startAuthLifecycleCleanupScheduler(
+  input: BackgroundProcessRuntimeInput,
+  service: ApplicationComposition['authLifecycleCleanupService'],
+): void {
+  const { config, runsSchedulers } = input;
+  if (!runsSchedulers || !config.schedulers.authCleanup.enabled) return;
+  const intervalMs = config.schedulers.authCleanup.intervalMs;
+  console.log(`   Auth lifecycle cleanup scheduler: enabled (${intervalMs}ms)`);
+  input.startBackgroundLoop({
+    intervalMs,
+    fallbackIntervalMs: Math.min(intervalMs, 300_000),
+    run: () => runWithDatabaseContext(
+      { workerId: 'finops-maintenance:auth-lifecycle', role: 'MASTER_ADMIN' },
+      async () => {
+        const result = await service.runOnce();
+        console.log(JSON.stringify({ level: 'info', event: 'auth_lifecycle_cleanup_completed', ...result }));
+        return result;
+      },
+    ),
+    onError: (error) => console.error(JSON.stringify({ level: 'error', event: 'auth_lifecycle_cleanup_failed', error: safeErrorMessage(error) })),
+    onSkip: () => console.warn('Auth lifecycle cleanup skipped because previous run is still active'),
   });
 }

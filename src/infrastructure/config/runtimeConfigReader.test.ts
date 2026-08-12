@@ -17,6 +17,9 @@ describe('loadRuntimeConfig', () => {
       INGESTION_WORKER_INTERVAL_MS: '1500',
       AI_MAX_RETRIES: '2',
       FINOPS_REQUIRED_TAG_KEYS: 'environment, owner',
+      AUTH_CLEANUP_SCHEDULER_ENABLED: 'true',
+      AUTH_CLEANUP_SCHEDULER_INTERVAL_MS: '120000',
+      AUTH_CLEANUP_BATCH_SIZE: '25',
     });
 
     expect(config.environment.processRole).toBe('worker');
@@ -33,6 +36,7 @@ describe('loadRuntimeConfig', () => {
     expect(config.ai.maxRetries).toBe(2);
     expect(config.email.timeoutMs).toBe(15_000);
     expect(config.telegram.timeoutMs).toBe(15_000);
+    expect(config.schedulers.authCleanup).toEqual({ enabled: true, intervalMs: 120_000, batchSize: 25 });
     expect(config.cloud.requiredTagKeys).toEqual(['environment', 'owner']);
 
     warning.mockRestore();
@@ -49,6 +53,7 @@ describe('loadRuntimeConfig', () => {
     expect(config.email.timeoutMs).toBe(15_000);
     expect(config.telegram.timeoutMs).toBe(15_000);
     expect(config.schedulers.ingestion.enabled).toBe(false);
+    expect(config.schedulers.authCleanup).toEqual({ enabled: false, intervalMs: 21_600_000, batchSize: 500 });
 
     warning.mockRestore();
   });

@@ -137,6 +137,11 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
         runOnStart: readBoolean(env['SAVINGS_RECONCILIATION_RUN_ON_START'], false),
         intervalMs: readPositiveInteger(env['SAVINGS_RECONCILIATION_INTERVAL_MS'], 300_000),
       },
+      authCleanup: {
+        enabled: readBoolean(env['AUTH_CLEANUP_SCHEDULER_ENABLED'], false),
+        intervalMs: readPositiveInteger(env['AUTH_CLEANUP_SCHEDULER_INTERVAL_MS'], 6 * 60 * 60 * 1000),
+        batchSize: readPositiveInteger(env['AUTH_CLEANUP_BATCH_SIZE'], 500),
+      },
     },
     finops: {
       valueRealizationOutboundEnabled: readBoolean(env['VALUE_REALIZATION_OUTBOUND_ENABLED'], false),

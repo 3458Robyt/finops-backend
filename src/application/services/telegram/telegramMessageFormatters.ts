@@ -103,20 +103,20 @@ export function formatCosts(snapshot: CostAnalyticsSnapshot): string {
 }
 
 /**
- * Formatea las oportunidades detectadas combinando anomalías (top 3) e
+ * Formatea las oportunidades detectadas combinando señales de variación (top 3) e
  * insights de uso (top 5) del último snapshot, limitando el total a 5 líneas.
  *
  * @param snapshot - Snapshot de costos del tenant ya recuperado.
  * @returns El texto con las oportunidades, o un aviso si no hay evidencia disponible.
  */
 export function formatOpportunities(snapshot: CostAnalyticsSnapshot): string {
-  const anomalyLines = (snapshot.anomalies ?? []).slice(0, 3).map((opportunity) => (
+  const opportunityLines = (snapshot.anomalies ?? []).slice(0, 3).map((opportunity) => (
     `- ${opportunity.explanation} (${formatCurrency(opportunity.deltaAmount, snapshot.currency)})`
   ));
   const insightLines = (snapshot.usageInsights ?? []).slice(0, 3).map((insight) => (
     `- ${insight.title}: ${insight.description}`
   ));
-  const lines = [...anomalyLines, ...insightLines].slice(0, 5);
+  const lines = [...opportunityLines, ...insightLines].slice(0, 5);
 
   if (lines.length === 0) {
     return 'No hay oportunidades activas con la evidencia disponible.';

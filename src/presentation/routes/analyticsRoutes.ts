@@ -30,7 +30,16 @@ export function createAnalyticsRoutes(
 ): Router {
   const router = Router();
 
-  router.get('/anomalies', requireAuth, analyticsController.getAnomalies);
+  router.get(
+    '/anomalies',
+    requireAuth,
+    (_req, res, next) => {
+      res.setHeader('Deprecation', 'true');
+      res.setHeader('Link', '</api/v1/analytics/opportunities>; rel="successor-version"');
+      next();
+    },
+    analyticsController.getAnomalies,
+  );
   router.get('/opportunities', requireAuth, analyticsController.getOpportunities);
   router.get('/forecast', requireAuth, analyticsController.getForecast);
   router.get('/forecast/scenarios', requireAuth, analyticsController.getForecastScenarios);

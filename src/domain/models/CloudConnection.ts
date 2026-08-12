@@ -47,7 +47,7 @@ export type IngestionJobStatus =
  * Resultado de un control de calidad de datos.
  *
  * - `PASSED`: El control se superó sin incidencias.
- * - `WARNING`: El control detectó anomalías no bloqueantes.
+ * - `WARNING`: El control detectó oportunidades no bloqueantes.
  * - `FAILED`: El control falló.
  */
 export type DataQualityStatus = 'PASSED' | 'WARNING' | 'FAILED';

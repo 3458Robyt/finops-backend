@@ -16,7 +16,7 @@ const supportedGroupBy = new Set<AnalyticsGroupBy>([
  * en `/api/v1/analytics`). Traduce las peticiones HTTP hacia los casos de uso de
  * analítica y serializa la respuesta al cliente.
  *
- * Expone consultas de anomalías, oportunidades, previsión (forecast),
+ * Expone consultas de oportunidades, previsión (forecast),
  * tendencias, uso, economía unitaria e insights de eficiencia, además del
  * recálculo de la analítica. Todos los endpoints comparten un mismo conjunto de
  * filtros leídos de la query string mediante {@link parseQuery}.
@@ -30,7 +30,7 @@ export class AnalyticsController {
   constructor(private readonly analyticsService: CostAnalyticsService) {}
 
   /**
-   * Devuelve las anomalías de coste detectadas para el tenant.
+   * Devuelve las oportunidades históricas de coste para el tenant.
    *
    * Sirve: GET /api/v1/analytics/anomalies
    * Autenticación: requerida.
@@ -38,7 +38,8 @@ export class AnalyticsController {
    * `serviceName`, `groupBy` en la query string).
    *
    * Respuestas:
-   * - 200: `{ success: true, anomalies, meta: { count } }`.
+   * - 200: `{ success: true, anomalies, meta: { count } }` por compatibilidad.
+   * - La ruta está deprecada; los clientes nuevos deben usar `/opportunities`.
    * - 400 VALIDATION_ERROR: filtros inválidos (fecha o `groupBy` no soportado).
    * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
    * - 500: error inesperado de analítica.
@@ -53,7 +54,7 @@ export class AnalyticsController {
       const anomalies = await this.analyticsService.getAnomalies(this.parseQuery(req));
       res.status(200).json({ success: true, anomalies, meta: { count: anomalies.length } });
     } catch (error: unknown) {
-      this.handleError(error, res, 'An unexpected analytics anomaly error occurred');
+      this.handleError(error, res, 'An unexpected analytics opportunities error occurred');
     }
   };
 
@@ -64,7 +65,7 @@ export class AnalyticsController {
    * Autenticación: requerida.
    * Filtros: ver {@link parseQuery}.
    *
-   * Nota: internamente reutiliza la consulta de anomalías del servicio de analítica.
+   * Nota: internamente reutiliza la detección histórica del servicio de analítica.
    *
    * Respuestas:
    * - 200: `{ success: true, opportunities, meta: { count } }`.

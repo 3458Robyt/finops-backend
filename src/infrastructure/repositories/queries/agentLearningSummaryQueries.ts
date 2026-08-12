@@ -10,6 +10,7 @@ export interface LearningSummaryStatsRow {
   readonly learning_rejected: number;
   readonly learning_skipped: number;
   readonly learning_error: number;
+  readonly global_shadow_memories: number;
 }
 
 /**
@@ -32,6 +33,11 @@ export async function queryLearningSummaryStats(
       COUNT(*) FILTER (WHERE status = 'REJECTED')::int AS learning_rejected,
       COUNT(*) FILTER (WHERE status = 'SKIPPED')::int AS learning_skipped,
       COUNT(*) FILTER (WHERE status = 'ERROR')::int AS learning_error
+      ,(SELECT COUNT(*)::int
+        FROM agent_memory
+        WHERE scope = 'GLOBAL'::"AgentMemoryScope"
+          AND active = false
+          AND metadata ->> 'learningLifecycle' = 'SHADOW') AS global_shadow_memories
     FROM agent_learning_events
     WHERE tenant_id = ${tenantId}
   `;
@@ -45,5 +51,6 @@ export async function queryLearningSummaryStats(
     learning_rejected: 0,
     learning_skipped: 0,
     learning_error: 0,
+    global_shadow_memories: 0,
   };
 }

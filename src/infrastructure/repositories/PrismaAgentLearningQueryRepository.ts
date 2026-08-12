@@ -99,6 +99,7 @@ export class PrismaAgentLearningQueryRepository {
         learningError: statsRow.learning_error,
         activeMemories,
         globalMemories,
+        shadowMemories: statsRow.global_shadow_memories,
       },
       memories: memories.map(toSummaryMemory),
       events: events.map(toSummaryEvent),
@@ -151,6 +152,18 @@ export class PrismaAgentLearningQueryRepository {
         scope: "GLOBAL",
         fingerprint,
         active: true,
+      },
+    });
+
+    return count > 0;
+  }
+
+  /** Evita duplicar candidatos GLOBAL aunque todavía estén en shadow. */
+  public async hasGlobalMemoryCandidate(fingerprint: string): Promise<boolean> {
+    const count = await this.prisma.agentMemory.count({
+      where: {
+        scope: 'GLOBAL',
+        fingerprint,
       },
     });
 

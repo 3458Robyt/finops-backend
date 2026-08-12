@@ -100,6 +100,8 @@ class FakeAgentLearningRepository implements IAgentLearningRepository {
   public recordedApproved: RecordApprovedLearningInput | null = null;
   public retryInput: { readonly eventId: string; readonly workerId: string; readonly errorMessage: string } | null = null;
   public deactivatedMemoryId: string | null = null;
+  public similarPatternCount: SimilarLearningPatternCount = { eventCount: 1, tenantCount: 1 };
+  public promotedGlobalEventId: string | null = null;
 
   public async createEvent(input: CreateAgentLearningEventInput): Promise<AgentLearningEvent> {
     this.eventInput = input;
@@ -190,6 +192,7 @@ class FakeAgentLearningRepository implements IAgentLearningRepository {
         learningError: 0,
         activeMemories: 0,
         globalMemories: 0,
+        shadowMemories: 0,
       },
       memories: [],
       events: [],
@@ -219,11 +222,16 @@ class FakeAgentLearningRepository implements IAgentLearningRepository {
   }
 
   public async countSimilarApprovedEvents(): Promise<SimilarLearningPatternCount> {
-    return { eventCount: 1, tenantCount: 1 };
+    return this.similarPatternCount;
   }
 
   public async hasActiveGlobalMemory(): Promise<boolean> {
     return false;
+  }
+
+  public async promoteGlobalMemory(input: { readonly sourceLearningEventId: string }): Promise<AgentMemory | null> {
+    this.promotedGlobalEventId = input.sourceLearningEventId;
+    return null;
   }
 
   public async deactivateMemory(input: {
@@ -301,6 +309,34 @@ describe('AgentLearningService', () => {
       auditScore: 91,
     });
     expect(learningRepository.recordedApproved?.memories).toHaveLength(1);
+  });
+
+  test('persists recurrent global learning as an inactive shadow candidate', async () => {
+    const learningRepository = new FakeAgentLearningRepository();
+    learningRepository.similarPatternCount = { eventCount: 5, tenantCount: 2 };
+    const service = new AgentLearningService(
+      new FakeRecommendationRepository(),
+      learningRepository,
+      new FakeAiGateway(),
+    );
+
+    const result = await service.processRecommendationDecision({
+      tenantId: 'tenant-1',
+      recommendationId: 'rec-1',
+      decisionId: 'decision-1',
+      userId: 'user-1',
+      decision: 'APPROVED',
+      reasonCode: 'APPROVED_HIGH_CONFIDENCE',
+    });
+
+    expect(result).toMatchObject({ status: 'APPROVED', eventId: 'event-1' });
+    expect(learningRepository.recordedApproved?.memories).toHaveLength(2);
+    expect(learningRepository.recordedApproved?.memories[1]).toMatchObject({
+      scope: 'GLOBAL',
+      active: false,
+      metadata: { learningLifecycle: 'SHADOW' },
+    });
+    expect(learningRepository.promotedGlobalEventId).toBeNull();
   });
 
   test('marks auditor timeouts as skipped learning instead of internal errors', async () => {

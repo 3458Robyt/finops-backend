@@ -84,6 +84,8 @@ export interface CreateAgentMemoryInput {
   readonly auditReport: unknown;
   /** Huella única para deduplicar memorias equivalentes. */
   readonly fingerprint: string;
+  /** Si es `false`, la memoria queda en shadow y no se incorpora al contexto. */
+  readonly active?: boolean;
 }
 
 /**
@@ -193,6 +195,16 @@ export interface IAgentLearningRepository {
     readonly actorUserId: string;
   }): Promise<AgentMemory | null>;
 
+  /**
+   * Promueve una memoria GLOBAL previamente persistida en modo shadow.
+   *
+   * La promoción se identifica por el evento que originó el candidato para no
+   * permitir activar memorias de otro evento o de otro alcance.
+   */
+  promoteGlobalMemory?(input: {
+    readonly sourceLearningEventId: string;
+  }): Promise<AgentMemory | null>;
+
   /** Persiste memorias auditadas y cierra evento/decisión en una transacción. */
   recordApprovedLearning(input: RecordApprovedLearningInput): Promise<AgentLearningEvent>;
 
@@ -235,4 +247,7 @@ export interface IAgentLearningRepository {
    * @returns `true` si ya existe una memoria global activa equivalente; `false` en caso contrario.
    */
   hasActiveGlobalMemory(fingerprint: string): Promise<boolean>;
+
+  /** Indica si el fingerprint GLOBAL ya tiene candidato activo o shadow. */
+  hasGlobalMemoryCandidate?(fingerprint: string): Promise<boolean>;
 }

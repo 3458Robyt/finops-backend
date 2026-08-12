@@ -35,8 +35,9 @@ interface AgentLearningRuntimeOptions {
  * Responsabilidad: convertir las decisiones humanas sobre recomendaciones
  * (aprobación/rechazo + motivo) en "memorias" reutilizables que orientan al
  * agente en el futuro. Cada memoria candidata es auditada por un modelo IA
- * independiente antes de persistirse, y los patrones recurrentes pueden
- * promoverse a memoria GLOBAL compartida entre tenants.
+ * independiente antes de persistirse. Los patrones recurrentes se conservan
+ * primero como candidatos GLOBAL en shadow y solo podrán compartirse entre
+ * tenants después de una promoción con evidencia de calidad.
  *
  * Actúa como coordinador del caso de uso: delega la construcción de contenido
  * de memorias en `learning/learningMemoryContent` y el parseo/clasificación de
@@ -166,7 +167,9 @@ export class AgentLearningService implements IAgentLearningService {
    * 3. Aprueba solo si el veredicto es `APPROVED` y el score ≥ 80; en otro
    *    caso marca el evento como `REJECTED`.
    * 4. Si se aprueba, **persiste** la memoria LOCAL (confianza acotada al
-   *    rango 0.7–0.95) e intenta promover un patrón GLOBAL.
+   *    rango 0.7–0.95) y guarda un candidato GLOBAL inactivo cuando el patrón
+   *    es recurrente; una compuerta offline ejecuta golden scenarios antes de
+   *    considerar cualquier promoción.
    * 5. Distingue fallos externos de IA (timeout, rate limit, JSON inválido,
    *    etc.) marcándolos como `SKIPPED` en vez de `ERROR`.
    *

@@ -79,6 +79,8 @@ export interface AgentLearningSummaryStats {
   readonly learningError: number;
   readonly activeMemories: number;
   readonly globalMemories: number;
+  /** Candidatos globales en shadow, fuera del contexto activo. */
+  readonly shadowMemories: number;
 }
 
 /**

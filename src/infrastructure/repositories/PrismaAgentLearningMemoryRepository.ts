@@ -66,6 +66,36 @@ export class PrismaAgentLearningMemoryRepository {
     return row === null ? null : toMemory(row);
   }
 
+  /** Promueve únicamente el candidato GLOBAL que quedó en shadow para un evento. */
+  public async promoteGlobalMemory(input: {
+    readonly sourceLearningEventId: string;
+  }): Promise<AgentMemory | null> {
+    const row = await this.prisma.$transaction(async (tx) => {
+      const current = await tx.agentMemory.findFirst({
+        where: {
+          sourceLearningEventId: input.sourceLearningEventId,
+          scope: 'GLOBAL',
+          active: false,
+        },
+      });
+      if (current === null) return null;
+      const metadata = isRecord(current.metadata) ? current.metadata : {};
+      if (metadata['learningLifecycle'] !== 'SHADOW') return null;
+      return tx.agentMemory.update({
+        where: { id: current.id },
+        data: {
+          active: true,
+          metadata: {
+            ...metadata,
+            learningLifecycle: 'PROMOTED',
+            promotedAt: new Date().toISOString(),
+          } as Prisma.InputJsonValue,
+        },
+      });
+    });
+    return row === null ? null : toMemory(row);
+  }
+
   public async upsertMemory(
     tx: Prisma.TransactionClient,
     input: CreateAgentMemoryInput,
@@ -83,6 +113,7 @@ export class PrismaAgentLearningMemoryRepository {
         memoryType: input.memoryType,
         content: input.content,
         confidence: input.confidence,
+        active: input.active ?? true,
         sourceLearningEventId: input.sourceLearningEventId,
         metadata: input.metadata as Prisma.InputJsonValue,
         auditVerdict: input.auditVerdict as

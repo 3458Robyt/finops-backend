@@ -14,6 +14,7 @@ import { buildMemoryCandidate, type MemoryCandidate } from './learningMemoryCont
 import { isExternalAiLearningFailure, parseAuditReport } from './learningAuditParser.js';
 import { buildLearningAuditRequest } from './learningAuditPrompt.js';
 import { buildGlobalMemoryInput, buildLocalMemoryInput } from './memoryInputBuilder.js';
+import { evaluateGlobalLearningCandidate, type LearningPromotionEvaluation } from './learningPromotionEvaluator.js';
 import { safeErrorMessage } from '../../observability/safeError.js';
 
 const approvedAuditVerdict = 'APPROVED';
@@ -77,14 +78,20 @@ export class LearningEventProcessor {
       }
 
       const localMemory = buildLocalMemoryInput(event.tenantId, event.id, candidate, auditReport);
-      const globalMemory = await this.buildGlobalMemoryIfEligible(event, recommendation, candidate, auditReport);
+      const globalLearning = await this.buildGlobalMemoryIfEligible(event, recommendation, candidate, auditReport);
       await this.options.learningRepository.recordApprovedLearning({
         eventId: event.id,
         auditVerdict: auditReport.verdict,
         auditScore: auditReport.score,
         auditReport,
-        memories: globalMemory === null ? [localMemory] : [localMemory, globalMemory],
+        memories: globalLearning === null ? [localMemory] : [localMemory, globalLearning.memory],
       });
+
+      if (globalLearning?.evaluation.readyForPromotion === true) {
+        await this.options.learningRepository.promoteGlobalMemory?.({
+          sourceLearningEventId: event.id,
+        });
+      }
       return { status: 'APPROVED', eventId: event.id };
     } catch (error: unknown) {
       return this.handleFailure(event, workerId, error);
@@ -96,7 +103,7 @@ export class LearningEventProcessor {
     recommendation: FinOpsRecommendation,
     candidate: MemoryCandidate,
     auditReport: AiAuditReport,
-  ): Promise<CreateAgentMemoryInput | null> {
+  ): Promise<{ readonly memory: CreateAgentMemoryInput; readonly evaluation: LearningPromotionEvaluation } | null> {
     if (auditReport.score < 90) return null;
 
     const count = await this.options.learningRepository.countSimilarApprovedEvents({
@@ -107,17 +114,31 @@ export class LearningEventProcessor {
     if (count.eventCount < 5 || count.tenantCount < 2) return null;
 
     const fingerprint = `GLOBAL:${candidate.fingerprint}`;
-    if (await this.options.learningRepository.hasActiveGlobalMemory(fingerprint)) return null;
+    const hasCandidate = this.options.learningRepository.hasGlobalMemoryCandidate;
+    if (hasCandidate !== undefined
+      ? await hasCandidate.call(this.options.learningRepository, fingerprint)
+      : await this.options.learningRepository.hasActiveGlobalMemory(fingerprint)) {
+      return null;
+    }
 
-    return buildGlobalMemoryInput(
-      event,
-      recommendation,
+    const evaluation = evaluateGlobalLearningCandidate({
       candidate,
-      auditReport,
-      event.id,
-      count,
-      this.options.truncate,
-    );
+      auditScore: auditReport.score,
+      patternCount: count,
+    });
+    return {
+      memory: buildGlobalMemoryInput(
+        event,
+        recommendation,
+        candidate,
+        auditReport,
+        event.id,
+        count,
+        this.options.truncate,
+        evaluation,
+      ),
+      evaluation,
+    };
   }
 
   private async handleFailure(

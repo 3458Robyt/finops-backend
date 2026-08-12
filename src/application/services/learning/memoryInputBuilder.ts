@@ -8,6 +8,7 @@ import {
   type MemoryCandidate,
   type TruncateFn,
 } from './learningMemoryContent.js';
+import type { LearningPromotionEvaluation } from './learningPromotionEvaluator.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -16,7 +17,7 @@ import {
  *
  * Funciones puras que ensamblan el {@link CreateAgentMemoryInput} que el
  * servicio persiste tras una auditoría aprobada: la memoria LOCAL de un evento
- * concreto y la memoria GLOBAL promovida desde un patrón recurrente. Mantienen
+ * concreto y el candidato GLOBAL en shadow derivado de un patrón recurrente. Mantienen
  * el cálculo de confianza y los metadatos junto al contenido, dejando al
  * servicio solo la coordinación de los repositorios. No importan del servicio,
  * evitando dependencias circulares.
@@ -59,21 +60,22 @@ export function buildLocalMemoryInput(
 }
 
 /**
- * Construye la entrada de una memoria GLOBAL promovida desde un patrón maduro.
+ * Construye la entrada de un candidato de memoria GLOBAL en modo shadow.
  *
  * El contenido se redacta con {@link buildGlobalMemoryContent}, la confianza se
  * acota a un máximo de 0.95 según el score, el fingerprint se prefija con
  * `GLOBAL:` y los metadatos registran la prevalencia (eventos y tenants) que
- * justificó la promoción.
+ * justificó la candidatura. La memoria queda inactiva hasta una promoción
+ * posterior con evidencia de calidad live.
  *
  * @param input       - Decisión humana original (motivo y sentido).
  * @param recommendation - Recomendación evaluada.
  * @param candidate   - Candidato de memoria con el fingerprint base.
  * @param auditReport - Reporte de auditoría IA aprobado.
- * @param eventId     - Evento de aprendizaje que origina la promoción.
+ * @param eventId     - Evento de aprendizaje que origina la candidatura.
  * @param count       - Conteo de eventos y tenants similares que la sustentan.
  * @param truncate    - Función de truncado de texto inyectada.
- * @returns La entrada lista para persistir la memoria GLOBAL.
+ * @returns La entrada lista para persistir el candidato GLOBAL inactivo.
  */
 export function buildGlobalMemoryInput(
   input: ProcessRecommendationDecisionInput,
@@ -83,6 +85,7 @@ export function buildGlobalMemoryInput(
   eventId: string,
   count: SimilarLearningPatternCount,
   truncate: TruncateFn,
+  promotionEvaluation?: LearningPromotionEvaluation,
 ): CreateAgentMemoryInput {
   return {
     scope: 'GLOBAL',
@@ -91,15 +94,18 @@ export function buildGlobalMemoryInput(
     confidence: Math.min(0.95, auditReport.score / 100),
     sourceLearningEventId: eventId,
     metadata: {
+      learningLifecycle: 'SHADOW',
       recommendationType: recommendation.type,
       reasonCode: input.reasonCode,
       decision: input.decision,
       promotedFromEvents: count.eventCount,
       promotedFromTenants: count.tenantCount,
+      ...(promotionEvaluation !== undefined ? { promotionEvaluation } : {}),
     },
     auditVerdict: auditReport.verdict,
     auditScore: auditReport.score,
     auditReport,
     fingerprint: `GLOBAL:${candidate.fingerprint}`,
+    active: false,
   };
 }

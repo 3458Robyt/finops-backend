@@ -75,6 +75,11 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
   }): Promise<AgentMemory | null> {
     return this.memoryRepository.deactivateMemory(input);
   }
+  public promoteGlobalMemory(input: {
+    readonly sourceLearningEventId: string;
+  }): Promise<AgentMemory | null> {
+    return this.memoryRepository.promoteGlobalMemory(input);
+  }
   public recordApprovedLearning(
     input: RecordApprovedLearningInput,
   ): Promise<AgentLearningEvent> {
@@ -99,5 +104,8 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
   }
   public hasActiveGlobalMemory(fingerprint: string): Promise<boolean> {
     return this.queryRepository.hasActiveGlobalMemory(fingerprint);
+  }
+  public hasGlobalMemoryCandidate(fingerprint: string): Promise<boolean> {
+    return this.queryRepository.hasGlobalMemoryCandidate(fingerprint);
   }
 }

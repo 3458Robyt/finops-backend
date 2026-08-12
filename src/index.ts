@@ -12,14 +12,11 @@
 
 import 'dotenv/config';
 
-import { OutboundMessageScheduler } from './application/services/OutboundMessageScheduler.js';
 import { safeErrorMessage } from './application/observability/safeError.js';
 import { createApplicationComposition } from './bootstrap/applicationComposition.js';
+import { startBackgroundProcesses } from './bootstrap/backgroundProcessRuntime.js';
 import { loadRuntimeConfig } from './infrastructure/config/runtimeConfigReader.js';
-import { runWithDatabaseContext } from './infrastructure/database/tenantContext.js';
-import { runPrismaIngestionJobScheduler } from './infrastructure/ingestion/PrismaIngestionJobScheduler.js';
 import { createExpressServer } from './presentation/server.js';
-import { queueRecommendationAnalysisAfterIngestion } from './infrastructure/repositories/PrismaRecommendationAnalysisScheduler.js';
 import { startNonOverlappingLoop, type NonOverlappingLoopHandle, type NonOverlappingLoopOptions } from './application/services/NonOverlappingLoop.js';
 
 
@@ -44,17 +41,7 @@ async function bootstrap(): Promise<void> {
   console.log('\nFinOps Inteligente — Optimizador de Costos en la Nube\nFinOps Demo © 2026\nProviders: AWS + Oracle Cloud (OCI)\n');
 
   const composition = createApplicationComposition(runsWorkers, config);
-  const {
-    prisma,
-    metricsRegistry,
-    serverDependencies,
-    recommendationAnalysisRepository,
-    recommendationAnalysisService,
-    valueRealizationService,
-    learningService,
-    ingestionWorker,
-  } = composition;
-  const { outboundMessageService, recommendationRepository } = serverDependencies;
+  const { prisma, serverDependencies } = composition;
   const app = runsApi ? createExpressServer(serverDependencies) : undefined;
   const backgroundStops: Array<() => Promise<void>> = [];
   const startBackgroundLoop = (options: NonOverlappingLoopOptions): void => {
@@ -123,191 +110,14 @@ async function bootstrap(): Promise<void> {
   };
   process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
   process.once('SIGINT', () => { void shutdown('SIGINT'); });
-if (runsSchedulers && config.schedulers.message.enabled) {
-  const schedulerTenantId = config.schedulers.message.tenantId;
-  const schedulerUserId = config.schedulers.message.userId;
-  if (schedulerTenantId !== undefined && schedulerUserId !== undefined) {
-    const scheduler = new OutboundMessageScheduler(
-      outboundMessageService,
-      {
-        tenantId: schedulerTenantId,
-        userId: schedulerUserId,
-        email: 'scheduler@system.local',
-        role: 'MASTER_ADMIN',
-        jwtId: 'scheduler',
-      },
-      config.schedulers.message.intervalMinutes,
-    );
-    scheduler.start();
-    backgroundStops.push(() => scheduler.stop());
-  }
-}
-
-  if (ingestionWorker !== null) {
-    const workerId = config.workers.ingestion.id ?? `finops-worker-${process.pid}`;
-    const intervalMs = config.workers.ingestion.intervalMs;
-
-    console.log(`   Ingestion worker: enabled (${workerId}, ${intervalMs}ms)`);
-
-    startBackgroundLoop({
-      run: () => ingestionWorker.runOnce(workerId),
-      intervalMs,
-      fallbackIntervalMs: 30000,
-      onError: (error: unknown) => {
-        console.error(JSON.stringify({ level: 'error', event: 'ingestion_worker_iteration_failed', error: safeErrorMessage(error) }));
-      },
-      onSkip: () => {
-        console.warn('Ingestion worker iteration skipped because previous run is still active');
-      },
-    });
-  }
-
-  if (runsWorkers && config.workers.learning.enabled) {
-    const workerId = config.workers.learning.id ?? `finops-learning-${process.pid}`;
-    const intervalMs = config.workers.learning.intervalMs;
-
-    console.log(`   Agent learning worker: enabled (${workerId}, ${intervalMs}ms)`);
-    startBackgroundLoop({
-      run: async () => {
-        await learningService.processNextQueuedRecommendationDecision(workerId);
-      },
-      intervalMs,
-      fallbackIntervalMs: 5000,
-      onError: (error: unknown) => {
-        console.error(JSON.stringify({ level: 'error', event: 'agent_learning_worker_iteration_failed', error: safeErrorMessage(error) }));
-      },
-      onSkip: () => {
-        console.warn('Agent learning worker iteration skipped because previous run is still active');
-      },
-    });
-  }
-
-  if (runsWorkers && config.workers.recommendationAnalysis.enabled) {
-    const workerId = config.workers.recommendationAnalysis.id
-      ?? `finops-analysis-${process.pid}`;
-    const intervalMs = config.workers.recommendationAnalysis.intervalMs;
-    const staleAfterMs = config.workers.recommendationAnalysis.staleAfterMs;
-
-    console.log(`   Recommendation analysis worker: enabled (${workerId}, ${intervalMs}ms)`);
-    startBackgroundLoop({
-      run: async () => {
-        await recommendationAnalysisService.processNext(workerId, staleAfterMs);
-      },
-      intervalMs,
-      fallbackIntervalMs: 5000,
-      onError: (error: unknown) => {
-        console.error(JSON.stringify({ level: 'error', event: 'recommendation_analysis_worker_iteration_failed', error: safeErrorMessage(error) }));
-      },
-      onSkip: () => {
-        console.warn('Recommendation analysis iteration skipped because previous run is still active');
-      },
-    });
-  }
-
-  if (runsSchedulers && config.schedulers.recommendationAnalysis.enabled) {
-    const intervalMs = config.schedulers.recommendationAnalysis.intervalMs;
-    const cooldownMinutes = config.schedulers.recommendationAnalysis.cooldownMinutes;
-
-    console.log(`   Recommendation analysis scheduler: enabled (${intervalMs}ms)`);
-    startBackgroundLoop({
-      run: async () => {
-        const queued = await runWithDatabaseContext(
-          { workerId: 'recommendation-analysis-scheduler', role: 'MASTER_ADMIN' },
-          () => queueRecommendationAnalysisAfterIngestion(
-            prisma,
-            recommendationAnalysisRepository,
-            cooldownMinutes,
-          ),
-        );
-        if (queued > 0) console.log(`Queued ${queued} post-ingestion analysis run(s).`);
-      },
-      intervalMs,
-      fallbackIntervalMs: 300_000,
-      onError: (error: unknown) => {
-        console.error(JSON.stringify({ level: 'error', event: 'recommendation_analysis_scheduler_iteration_failed', error: safeErrorMessage(error) }));
-      },
-    });
-  }
-
-  if (runsSchedulers && config.finops.savingsReconciliationEnabled) {
-    const reconciliationTenantId = config.schedulers.savingsReconciliation.tenantId;
-    const batchSize = config.finops.savingsReconciliationBatchSize;
-    const runReconciliation = async (): Promise<void> => {
-      if (reconciliationTenantId === undefined || reconciliationTenantId === '') {
-        console.warn('Savings reconciliation enabled but SAVINGS_RECONCILIATION_TENANT_ID is not configured');
-        return;
-      }
-      const result = await runWithDatabaseContext(
-        { tenantId: reconciliationTenantId, role: 'MASTER_ADMIN', workerId: 'value-realization-reconciliation' },
-        () => valueRealizationService.reconcile(reconciliationTenantId, batchSize),
-      );
-      console.log(JSON.stringify({ level: 'info', event: 'value_realization_reconciliation_completed', ...result }));
-    };
-
-    if (config.schedulers.savingsReconciliation.runOnStart) {
-      void runReconciliation().catch((error: unknown) => console.error(JSON.stringify({ level: 'error', event: 'initial_value_realization_reconciliation_failed', error: safeErrorMessage(error) })));
-    }
-    if (config.schedulers.savingsReconciliation.enabled) {
-      const intervalMs = config.schedulers.savingsReconciliation.intervalMs;
-      console.log(`   Value realization reconciliation scheduler: enabled (${intervalMs}ms)`);
-      startBackgroundLoop({
-        run: runReconciliation,
-        intervalMs,
-        fallbackIntervalMs: 300_000,
-        onError: (error: unknown) => console.error(JSON.stringify({ level: 'error', event: 'value_realization_reconciliation_iteration_failed', error: safeErrorMessage(error) })),
-        onSkip: () => console.warn('Value realization reconciliation skipped because previous run is still active'),
-      });
-    }
-  }
-
-  if (runsSchedulers && config.schedulers.ingestion.enabled) {
-    const intervalMs = config.schedulers.ingestion.intervalMs;
-    const inventoryWindowHours = config.schedulers.ingestion.inventoryWindowHours;
-    const inventoryCooldownHours = config.schedulers.ingestion.inventoryCooldownHours;
-    const metricWindowMinutes = config.schedulers.ingestion.metricWindowMinutes;
-    const metricCooldownMinutes = config.schedulers.ingestion.metricCooldownMinutes;
-    const billingWindowHours = config.schedulers.ingestion.billingWindowHours;
-    const billingCooldownHours = config.schedulers.ingestion.billingCooldownHours;
-    const maxAttempts = config.schedulers.ingestion.maxAttempts;
-    const validationMaxAgeMinutes = config.schedulers.ingestion.validationMaxAgeMinutes;
-    const providerCode = config.schedulers.ingestion.provider;
-    const connectionId = config.schedulers.ingestion.connectionId;
-
-    console.log(`   Ingestion scheduler: enabled (${intervalMs}ms)`);
-
-    startBackgroundLoop({
-      intervalMs,
-      fallbackIntervalMs: 300000,
-      run: async () => {
-        const result = await runWithDatabaseContext(
-          { workerId: 'ingestion-scheduler', role: 'MASTER_ADMIN' },
-          () => runPrismaIngestionJobScheduler(prisma, {
-            apply: true,
-            schedule: {
-              now: new Date(),
-              inventoryWindowHours,
-              inventoryCooldownHours,
-              metricWindowMinutes,
-              metricCooldownMinutes,
-              billingWindowHours,
-              billingCooldownHours,
-              maxAttempts,
-              validationMaxAgeMinutes,
-            },
-            ...(providerCode !== undefined ? { providerCode } : {}),
-            ...(connectionId !== undefined ? { connectionId } : {}),
-          }),
-        );
-        console.log(`Ingestion scheduler planned ${result.plannedJobs.length} job(s), created ${result.createdJobs.length}.`);
-      },
-      onError: (error: unknown) => {
-        console.error(JSON.stringify({ level: 'error', event: 'ingestion_scheduler_iteration_failed', error: safeErrorMessage(error) }));
-      },
-      onSkip: () => {
-        console.warn('Ingestion scheduler iteration skipped because previous run is still active');
-      },
-    });
-  }
+  startBackgroundProcesses({
+    config,
+    runsWorkers,
+    runsSchedulers,
+    composition,
+    startBackgroundLoop,
+    registerStop: (stop) => backgroundStops.push(stop),
+  });
 }
 
 // ── Ejecución ─────────────────────────────────────────────────────

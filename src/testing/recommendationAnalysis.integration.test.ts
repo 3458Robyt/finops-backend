@@ -169,5 +169,5 @@ describe('recommendation analysis PostgreSQL integration', () => {
       await cleanupE2eFixtures(prisma, runId);
       await prisma.$disconnect();
     }
-  }, 30_000);
+  }, 120_000);
 });

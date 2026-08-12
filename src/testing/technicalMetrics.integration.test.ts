@@ -21,14 +21,19 @@ describe('technical metrics PostgreSQL integration', () => {
       const tenantB = fixtures.tenants[1];
       expect(tenantA).toBeDefined();
       expect(tenantB).toBeDefined();
+      const fixturePeriod = await prisma.costMetric.findFirstOrThrow({
+        where: { tenantId: tenantA!.id },
+        orderBy: { chargePeriodStart: 'asc' },
+        select: { chargePeriodStart: true },
+      });
       const fixtureResource = await prisma.cloudResource.findUniqueOrThrow({
         where: { id: fixtures.resourceIds[0] },
         select: { externalResourceId: true },
       });
 
       const filters = {
-        startDate: new Date('2026-05-01T00:00:00.000Z'),
-        endDate: new Date('2026-05-03T00:00:00.000Z'),
+        startDate: fixturePeriod.chargePeriodStart,
+        endDate: addUtcDays(fixturePeriod.chargePeriodStart, 2),
         metricNames: ['CPUUtilization'],
         pageSize: 10,
       } as const;
@@ -60,3 +65,9 @@ describe('technical metrics PostgreSQL integration', () => {
     }
   }, 30_000);
 });
+
+function addUtcDays(value: Date, days: number): Date {
+  const result = new Date(value);
+  result.setUTCDate(result.getUTCDate() + days);
+  return result;
+}

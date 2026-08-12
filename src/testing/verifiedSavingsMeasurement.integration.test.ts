@@ -21,6 +21,13 @@ describe('verified savings PostgreSQL integration', () => {
       const fixtures = await createE2eFixtures(prisma, runId);
       const tenantId = fixtures.tenants[0]!.id;
       const recommendationId = fixtures.recommendationIds[0]!;
+      const fixturePeriod = await prisma.costMetric.findFirstOrThrow({
+        where: { tenantId },
+        orderBy: { chargePeriodStart: 'asc' },
+        select: { chargePeriodStart: true },
+      });
+      const observationStart = addUtcDays(fixturePeriod.chargePeriodStart, 8);
+      const observationEnd = addUtcDays(fixturePeriod.chargePeriodStart, 15);
       const user = await prisma.user.findFirstOrThrow({ where: { tenantId } });
       const recommendation = await prisma.recommendation.findUniqueOrThrow({
         where: { id: recommendationId },
@@ -40,7 +47,7 @@ describe('verified savings PostgreSQL integration', () => {
       });
 
       const costRows = await prisma.costMetric.findMany({
-        where: { tenantId, chargePeriodStart: { gte: new Date('2026-05-09T00:00:00.000Z') } },
+        where: { tenantId, chargePeriodStart: { gte: observationStart } },
         orderBy: { chargePeriodStart: 'asc' },
       });
       await Promise.all(costRows.map((row) => prisma.costMetric.update({
@@ -55,9 +62,9 @@ describe('verified savings PostgreSQL integration', () => {
       await prisma.costMetric.create({
         data: {
           ...lastCostTemplate,
-          chargePeriodStart: new Date('2026-05-15T00:00:00.000Z'),
-          chargePeriodEnd: new Date('2026-05-16T00:00:00.000Z'),
-          metricIdentityHash: `${runId}:cost:2026-05-15`,
+          chargePeriodStart: addUtcDays(fixturePeriod.chargePeriodStart, 14),
+          chargePeriodEnd: observationEnd,
+          metricIdentityHash: `${runId}:cost:observation-final`,
         },
       });
 
@@ -68,7 +75,7 @@ describe('verified savings PostgreSQL integration', () => {
           executionPlanId: plan.id,
           userId: user.id,
           status: 'EXECUTED',
-          executedAt: new Date('2026-05-08T12:00:00.000Z'),
+          executedAt: addUtcDays(fixturePeriod.chargePeriodStart, 7),
           observedMonthlySavings: 999,
           currency: 'USD',
           notes: 'Valor reportado, no verificado.',
@@ -98,7 +105,7 @@ describe('verified savings PostgreSQL integration', () => {
       expect(sameEvidence.id).toBe(calculated.id);
 
       await prisma.costMetric.updateMany({
-        where: { tenantId, chargePeriodStart: { gte: new Date('2026-05-09T00:00:00.000Z') } },
+        where: { tenantId, chargePeriodStart: { gte: observationStart } },
         data: { billedCost: 3, effectiveCost: 3 },
       });
       const recalculated = await createSavingsMeasurement(prisma, {
@@ -130,3 +137,9 @@ describe('verified savings PostgreSQL integration', () => {
     }
   }, 60_000);
 });
+
+function addUtcDays(value: Date, days: number): Date {
+  const result = new Date(value);
+  result.setUTCDate(result.getUTCDate() + days);
+  return result;
+}

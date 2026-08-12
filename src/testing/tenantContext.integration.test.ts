@@ -1,11 +1,19 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 import { createTenantAwarePool, runWithDatabaseContext } from '../infrastructure/database/tenantContext.js';
+import {
+  cleanupE2eFixtures,
+  createE2eFixtures,
+  createTestingPrismaClient,
+  type E2eFixtureManifest,
+} from './e2eFixtures.js';
 
 const integrationEnabled = process.env['RUN_DB_INTEGRATION_TESTS'] === 'true';
 
 describe.skipIf(!integrationEnabled)('runtime tenant context', () => {
   let pool: Pool;
+  let fixturePrisma: ReturnType<typeof createTestingPrismaClient>;
+  let fixtures: E2eFixtureManifest;
 
   beforeAll(() => {
     const connectionString = process.env['TEST_DATABASE_URL'];
@@ -17,11 +25,17 @@ describe.skipIf(!integrationEnabled)('runtime tenant context', () => {
     process.env['DB_RUNTIME_ENFORCE'] = 'true';
     process.env['DB_RUNTIME_ROLE'] = 'finops_runtime';
     pool = createTenantAwarePool(connectionString, schema ?? undefined);
-  });
+    fixturePrisma = createTestingPrismaClient();
+    return createE2eFixtures(fixturePrisma, `tenant-context-${Date.now()}`).then((created) => { fixtures = created; });
+  }, 120_000);
 
   afterAll(async () => {
+    if (fixturePrisma !== undefined && fixtures !== undefined) {
+      await cleanupE2eFixtures(fixturePrisma, fixtures.runId);
+      await fixturePrisma.$disconnect();
+    }
     await pool?.end();
-  });
+  }, 120_000);
 
   it('keeps tenant-owned rows isolated across context switches', async () => {
     const tenants = await runWithDatabaseContext(
@@ -30,7 +44,7 @@ describe.skipIf(!integrationEnabled)('runtime tenant context', () => {
     );
     expect(tenants.rows.length).toBeGreaterThanOrEqual(2);
 
-    const [tenantA, tenantB] = tenants.rows as [{ id: string }, { id: string }];
+    const [tenantA, tenantB] = fixtures.tenants as [{ id: string }, { id: string }];
     const tenantAResult = await runWithDatabaseContext(
       { tenantId: tenantA.id, userId: 'runtime-context-test', role: 'ADMIN' },
       () => pool.query("select current_user as db_user, current_setting('app.tenant_id', true) as tenant_id, count(*)::int as visible_rows from recommendations"),

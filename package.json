@@ -29,6 +29,7 @@
     "db:verify:quality-indexes": "tsx scripts/verify-quality-report-indexes.ts",
     "test:fixtures:value-realization-benchmark": "tsx scripts/testing/seed-value-realization-benchmark.ts",
     "test:canary:oci-onboarding": "tsx scripts/testing/oci-onboarding-canary.ts",
+    "test:canary:messaging": "tsx scripts/testing/messaging-live-canary.ts",
     "test:fixtures:create": "tsx scripts/testing/create-e2e-fixtures.ts",
     "test:fixtures:cleanup": "tsx scripts/testing/cleanup-e2e-fixtures.ts",
     "test:all": "npm run check:architecture && npm run typecheck && npm run test:unit && npm run test:ai:offline && npm run build",

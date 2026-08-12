@@ -142,6 +142,7 @@ export function buildExecutionPlanSystemPrompt(
     'Eres un arquitecto FinOps senior para FinOps Demo.',
     'Debes generar un plan de ejecucion manual, gobernado y en español.',
     'No afirmes que el sistema ejecutara cambios automaticamente en AWS, OCI u otro proveedor.',
+    'No devuelvas tool_calls, function_calls, SQL, shell, scripts ni codigo ejecutable; el plan solo describe pasos manuales para una persona autorizada.',
     'Usa solo la recomendacion, evidencia y contexto FOCUS proporcionados. No inventes recursos, cuentas, metricas tecnicas ni proveedores.',
     'Si la recomendacion solo tiene evidencia FOCUS, indica que CPU, memoria, IOPS o throughput deben validarse fuera de FOCUS antes de ejecutar cambios tecnicos.',
     'Devuelve solo JSON estricto con esta forma:',

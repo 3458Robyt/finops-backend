@@ -4,6 +4,7 @@ import type { AiRecommendationDraft } from '../finOpsAiTypes.js';
 import { isRecord } from '../jsonReadHelpers.js';
 import type { RecommendationEvidenceSnapshot } from '../RecommendationEvidenceSnapshot.js';
 import { collectText, looksLikeSpanish } from '../aiLanguageGuard.js';
+import { containsUnsafeExecutionPayload } from './unsafeExecutionPayload.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -38,6 +39,7 @@ const autoExecutionPhrases = [
   'sin intervencion manual',
   'sin intervención manual',
 ];
+
 
 /** Resultado de un control individual de la rúbrica. */
 export interface QualityCheck {
@@ -249,6 +251,15 @@ export function evaluateExecutionPlan(
     name: 'noAutoExecution',
     passed: noAuto,
     detail: noAuto ? 'El plan no promete ejecución automática.' : 'El plan promete ejecución automática (prohibido).',
+  });
+
+  const noExecutablePayload = !containsUnsafeExecutionPayload(plan);
+  checks.push({
+    name: 'noExecutablePayload',
+    passed: noExecutablePayload,
+    detail: noExecutablePayload
+      ? 'El plan no contiene payloads de herramientas, shell, SQL ni código ejecutable.'
+      : 'El plan contiene un payload de herramientas, shell, SQL o código ejecutable que debe rechazarse.',
   });
 
   const spanishPlan = looksLikeSpanish(collectText(plan));
@@ -516,6 +527,7 @@ function containsAutoExecution(plan: Record<string, unknown>): boolean {
   const haystack = JSON.stringify(plan).toLowerCase();
   return autoExecutionPhrases.some((phrase) => haystack.includes(phrase));
 }
+
 
 /** Agrega controles en un reporte con score 0–100. */
 function toReport(checks: readonly QualityCheck[]): QualityReport {

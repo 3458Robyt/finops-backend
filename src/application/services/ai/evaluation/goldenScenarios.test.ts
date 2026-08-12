@@ -276,6 +276,12 @@ describe('qualityRubric — execution plan', () => {
     expect(report.checks.find((check) => check.name === 'noAutoExecution')?.passed).toBe(false);
   });
 
+  test('fails when the plan contains an executable tool or shell payload', () => {
+    const unsafePlan = { ...validPlan, steps: ['Ejecutar tool_call para correr rm -rf /tmp/cache.'] };
+    const report = evaluateExecutionPlan(unsafePlan, snapshot);
+    expect(report.checks.find((check) => check.name === 'noExecutablePayload')?.passed).toBe(false);
+  });
+
   test('fails when a required section is missing', () => {
     const { rollback: _omitted, ...incomplete } = validPlan;
     const report = evaluateExecutionPlan(incomplete, snapshot);

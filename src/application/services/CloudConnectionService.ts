@@ -21,6 +21,7 @@ import type {
 } from '../../domain/models/CloudConnection.js';
 import { CloudConnectionOnboarding } from './cloud-connections/CloudConnectionOnboarding.js';
 import { CloudIngestionOrchestrator } from './cloud-connections/CloudIngestionOrchestrator.js';
+import { CloudConnectionSourceConfiguration } from './cloud-connections/CloudConnectionSourceConfiguration.js';
 import type {
   ActivateCloudConnectionInput,
   ActivateCloudConnectionResult,
@@ -49,6 +50,7 @@ export type * from './cloud-connections/CloudConnectionContracts.js';
 export class CloudConnectionService {
   private readonly onboarding: CloudConnectionOnboarding;
   private readonly ingestion: CloudIngestionOrchestrator;
+  private readonly sourceConfiguration: CloudConnectionSourceConfiguration;
 
   constructor(
     repository: ICloudConnectionRepository,
@@ -56,6 +58,7 @@ export class CloudConnectionService {
   ) {
     this.onboarding = new CloudConnectionOnboarding(repository, providers);
     this.ingestion = new CloudIngestionOrchestrator(repository);
+    this.sourceConfiguration = new CloudConnectionSourceConfiguration(repository);
   }
 
   public listProviders(): Promise<readonly ProviderCatalogEntry[]> {
@@ -135,14 +138,14 @@ export class CloudConnectionService {
   }
 
   public configureFocusSource(input: ConfigureFocusSourceInput): Promise<ConfigureFocusSourceForConnectionResult> {
-    return this.onboarding.configureFocusSource(input);
+    return this.sourceConfiguration.configureFocusSource(input);
   }
 
   public configureBillingSource(input: ConfigureBillingSourceInput): Promise<ConfigureBillingSourceForConnectionResult> {
-    return this.onboarding.configureBillingSource(input);
+    return this.sourceConfiguration.configureBillingSource(input);
   }
 
   public configureMetricDefinitions(input: ConfigureMetricDefinitionsInput): Promise<ConfigureMetricDefinitionsForConnectionResult> {
-    return this.onboarding.configureMetricDefinitions(input);
+    return this.sourceConfiguration.configureMetricDefinitions(input);
   }
 }

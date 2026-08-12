@@ -1,8 +1,5 @@
 import type {
   CloudCredentialSummary,
-  ConfigureBillingSourceForConnectionResult,
-  ConfigureFocusSourceForConnectionResult,
-  ConfigureMetricDefinitionsForConnectionResult,
   CreateCloudConnectionInput,
   ICloudConnectionRepository,
 } from '../../../domain/interfaces/ICloudConnectionRepository.js';
@@ -16,9 +13,6 @@ import { FinOpsBaseError } from '../../../domain/errors/errors.js';
 import { serializeCapabilityValidation, withTimeout } from '../cloudConnectionPolicies.js';
 import type {
   CloudConnectionOnboardingDetail,
-  ConfigureBillingSourceInput,
-  ConfigureFocusSourceInput,
-  ConfigureMetricDefinitionsInput,
   PreviewFocusSourceInput,
   RegisterCloudConnectionInput,
   StoreOperationalCredentialInput,
@@ -26,7 +20,6 @@ import type {
   ValidateCloudConnectionInput,
 } from './CloudConnectionContracts.js';
 import {
-  normalizeMetricDefinition,
   normalizeOperationalCredential,
   requireNonEmpty,
 } from './CloudConnectionInputPolicy.js';
@@ -303,86 +296,6 @@ export class CloudConnectionOnboarding {
       },
     });
     return preview;
-  }
-
-  public async configureFocusSource(
-    input: ConfigureFocusSourceInput,
-  ): Promise<ConfigureFocusSourceForConnectionResult> {
-    const result = await this.repository.configureFocusSourceForConnection({
-      tenantId: input.tenantId,
-      cloudConnectionId: input.cloudConnectionId,
-      mode: input.mode,
-      values: input.values,
-      replace: input.replace,
-    });
-
-    if (result === null) {
-      throw new FinOpsBaseError('La conexión cloud no existe o no pertenece al tenant activo.', 'NOT_FOUND');
-    }
-
-    await this.repository.createCloudAuditEvent({
-      tenantId: input.tenantId,
-      actorUserId: input.userId,
-      action: 'CLOUD_FOCUS_SOURCE_CONFIGURED',
-      entityType: 'CLOUD_CONNECTION',
-      entityId: input.cloudConnectionId,
-      metadata: { mode: input.mode, configuredCount: result.configuredCount, replaced: input.replace },
-    });
-    return result;
-  }
-
-  public async configureBillingSource(
-    input: ConfigureBillingSourceInput,
-  ): Promise<ConfigureBillingSourceForConnectionResult> {
-    const result = await this.repository.configureBillingSourceForConnection({
-      tenantId: input.tenantId,
-      cloudConnectionId: input.cloudConnectionId,
-      mode: input.mode,
-    });
-
-    if (result === null) {
-      throw new FinOpsBaseError('La conexión cloud no existe o no pertenece al tenant activo.', 'NOT_FOUND');
-    }
-
-    await this.repository.createCloudAuditEvent({
-      tenantId: input.tenantId,
-      actorUserId: input.userId,
-      action: 'CLOUD_BILLING_SOURCE_CONFIGURED',
-      entityType: 'CLOUD_CONNECTION',
-      entityId: input.cloudConnectionId,
-      metadata: { mode: input.mode },
-    });
-    return result;
-  }
-
-  public async configureMetricDefinitions(
-    input: ConfigureMetricDefinitionsInput,
-  ): Promise<ConfigureMetricDefinitionsForConnectionResult> {
-    const connection = await this.requireConnection(input.tenantId, input.cloudConnectionId);
-    if (input.definitions.length === 0 || input.definitions.length > 100) {
-      throw new FinOpsBaseError('Configura entre 1 y 100 definiciones de métricas.', 'VALIDATION_ERROR');
-    }
-    const definitions = input.definitions.map((definition, index) =>
-      normalizeMetricDefinition(connection.providerCode, definition, index),
-    );
-    const result = await this.repository.configureMetricDefinitionsForConnection({
-      tenantId: input.tenantId,
-      cloudConnectionId: input.cloudConnectionId,
-      definitions,
-      replace: input.replace,
-    });
-    if (result === null) {
-      throw new FinOpsBaseError('La conexión cloud no existe, está deshabilitada o no soporta métricas.', 'NOT_FOUND');
-    }
-    await this.repository.createCloudAuditEvent({
-      tenantId: input.tenantId,
-      actorUserId: input.userId,
-      action: 'CLOUD_METRIC_DEFINITIONS_CONFIGURED',
-      entityType: 'CLOUD_CONNECTION',
-      entityId: input.cloudConnectionId,
-      metadata: { configuredCount: result.configuredCount, replaced: input.replace },
-    });
-    return result;
   }
 
   private async requireConnection(

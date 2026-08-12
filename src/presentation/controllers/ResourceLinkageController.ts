@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import type { ResourceLinkageReadinessService } from '../../application/services/ResourceLinkageReadinessService.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
-import { resolveFinOpsError } from '../http/finOpsErrorResponse.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 export class ResourceLinkageController {
   public constructor(private readonly service: ResourceLinkageReadinessService) {}
@@ -13,8 +13,12 @@ export class ResourceLinkageController {
       const readiness = await this.service.getForTenant(tenantId, rawLimit);
       res.status(200).json({ success: true, readiness });
     } catch (error: unknown) {
-      const resolved = resolveFinOpsError(error, 'No se pudo cargar la cobertura de trazabilidad por recurso.');
-      res.status(resolved.status).json({ success: false, error: resolved.error, ...(resolved.code !== undefined ? { code: resolved.code } : {}) });
+      respondWithFinOpsError(
+        res,
+        error,
+        'No se pudo cargar la cobertura de trazabilidad por recurso.',
+        'resource_linkage_operation_failed',
+      );
     }
   };
 

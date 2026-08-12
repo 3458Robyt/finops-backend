@@ -28,7 +28,7 @@ export function respondWithFinOpsError(
   path?: string,
 ): void {
   const response = resolveFinOpsError(error, fallback);
-  const diagnosticId = typeof res.locals.requestId === 'string' ? res.locals.requestId : undefined;
+  const diagnosticId = typeof res.locals?.requestId === 'string' ? res.locals.requestId : undefined;
 
   if (!(error instanceof FinOpsBaseError)) {
     console.error(JSON.stringify({

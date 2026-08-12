@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import type { RecommendationAnalysisService } from '../../application/services/RecommendationAnalysisService.js';
 import type { RecommendationAnalysisRun } from '../../domain/models/RecommendationAnalysisRun.js';
-import { resolveFinOpsError } from '../http/finOpsErrorResponse.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const queueSchema = z.object({
   externalResourceId: z.string().trim().min(1).max(500).optional(),
@@ -131,12 +131,12 @@ export class RecommendationAnalysisController {
   }
 
   private respondError(res: Response, error: unknown): void {
-    const resolved = resolveFinOpsError(error, 'No fue posible completar la operación de análisis.');
-    res.status(resolved.status).json({
-      success: false,
-      error: resolved.error,
-      ...(resolved.code !== undefined ? { code: resolved.code } : {}),
-    });
+    respondWithFinOpsError(
+      res,
+      error,
+      'No fue posible completar la operación de análisis.',
+      'recommendation_analysis_operation_failed',
+    );
   }
 }
 

@@ -2,8 +2,7 @@ import type { Request, Response } from 'express';
 import type { ICostRepository } from '../../domain/interfaces/ICostRepository.js';
 import type { InternalCostMetric } from '../../domain/models/InternalCostMetric.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
-import { resolveFinOpsError } from '../http/finOpsErrorResponse.js';
-import { safeErrorMessage } from '../../application/observability/safeError.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 interface ServiceBreakdownItem {
   cost: number;
@@ -105,10 +104,7 @@ export class CostController {
   }
 
   private respondWithError(res: Response, error: unknown, fallback: string): void {
-    const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : undefined;
-    const response = resolveFinOpsError(error, fallback);
-    if (response.code === undefined) console.error(JSON.stringify({ level: 'error', event: 'cost_operation_failed', diagnosticId: requestId, error: safeErrorMessage(error) }));
-    res.status(response.status).json({ success: false, code: response.code ?? 'INTERNAL_ERROR', error: response.error, ...(requestId === undefined ? {} : { diagnosticId: requestId }) });
+    respondWithFinOpsError(res, error, fallback, 'cost_operation_failed');
   }
 
   /**

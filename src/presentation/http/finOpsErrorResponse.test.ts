@@ -31,4 +31,25 @@ describe('finOpsErrorResponse', () => {
     expect(log).toHaveBeenCalledWith(expect.not.stringContaining('super-secret'));
     log.mockRestore();
   });
+
+  test('supports lightweight response doubles without locals', () => {
+    const response = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    } as never;
+
+    respondWithFinOpsError(
+      response,
+      new FinOpsBaseError('invalid request', 'VALIDATION_ERROR'),
+      'fallback',
+      'test_event',
+    );
+
+    expect(response.status).toHaveBeenCalledWith(400);
+    expect(response.json).toHaveBeenCalledWith({
+      success: false,
+      error: 'invalid request',
+      code: 'VALIDATION_ERROR',
+    });
+  });
 });

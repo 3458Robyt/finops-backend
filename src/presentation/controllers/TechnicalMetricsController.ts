@@ -6,7 +6,7 @@ import type {
   TechnicalMetricsService,
 } from '../../application/services/TechnicalMetricsService.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
-import { resolveFinOpsError } from '../http/finOpsErrorResponse.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 /**
  * Controlador de la capa de presentación para las métricas técnicas de recursos
@@ -276,7 +276,11 @@ export class TechnicalMetricsController {
    * código -> 500. Error no controlado -> 500 con mensaje genérico.
    */
   private respondWithError(res: Response, error: unknown): void {
-    const response = resolveFinOpsError(error, 'An unexpected error occurred processing technical metrics');
-    res.status(response.status).json({ success: false, error: response.error, ...(response.code === undefined ? {} : { code: response.code }) });
+    respondWithFinOpsError(
+      res,
+      error,
+      'An unexpected error occurred processing technical metrics',
+      'technical_metrics_operation_failed',
+    );
   }
 }

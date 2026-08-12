@@ -18,6 +18,16 @@ describe('safeErrorMessage', () => {
     expect(safeErrorMessage('   ', 10)).toBe('Unknown er');
     expect(safeErrorMessage('abcdefghijklmnopqrstuvwxyz', 10)).toBe('abcdefghij');
   });
+
+  it('redacts bearer and cookie header material', () => {
+    const sanitized = safeErrorMessage(
+      'Authorization: Bearer abcdefghijklmnop Cookie: session=super-secret; refresh=other-secret',
+    );
+
+    expect(sanitized).toBe('Authorization: [REDACTED] Cookie: [REDACTED]');
+    expect(sanitized).not.toContain('super-secret');
+    expect(sanitized).not.toContain('other-secret');
+  });
 });
 
 describe('safeErrorName', () => {

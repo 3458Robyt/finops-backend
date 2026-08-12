@@ -33,6 +33,7 @@ export function createAnalyticsRoutes(
   router.get('/anomalies', requireAuth, analyticsController.getAnomalies);
   router.get('/opportunities', requireAuth, analyticsController.getOpportunities);
   router.get('/forecast', requireAuth, analyticsController.getForecast);
+  router.get('/forecast/scenarios', requireAuth, analyticsController.getForecastScenarios);
   router.get('/trends', requireAuth, analyticsController.getTrends);
   router.get('/usage', requireAuth, analyticsController.getUsage);
   router.get('/unit-economics', requireAuth, analyticsController.getUnitEconomics);

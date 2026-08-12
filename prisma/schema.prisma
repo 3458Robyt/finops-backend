@@ -348,6 +348,7 @@ enum OutboundMessageType {
   RECOMMENDATION_SUMMARY
   EXECUTION_PLAN_READY
   BUDGET_ALERT
+  EXECUTIVE_SUMMARY
 }
 
 enum OutboundMessageStatus {

@@ -17,6 +17,55 @@ export class PrismaAgentLearningMemoryRepository {
     return toMemory(row);
   }
 
+  public async deactivateMemory(input: {
+    readonly tenantId: string;
+    readonly memoryId: string;
+    readonly allowGlobal: boolean;
+    readonly actorUserId: string;
+  }): Promise<AgentMemory | null> {
+    const row = await this.prisma.$transaction(async (tx) => {
+      const current = await tx.agentMemory.findFirst({
+        where: {
+          id: input.memoryId,
+          active: true,
+          OR: [
+            { scope: 'LOCAL', tenantId: input.tenantId },
+            ...(input.allowGlobal ? [{ scope: 'GLOBAL' as const }] : []),
+          ],
+        },
+      });
+      if (current === null) return null;
+      const metadata = isRecord(current.metadata) ? current.metadata : {};
+      const updated = await tx.agentMemory.update({
+        where: { id: current.id },
+        data: {
+          active: false,
+          metadata: {
+            ...metadata,
+            lifecycle: 'DEACTIVATED',
+            deactivatedAt: new Date().toISOString(),
+            deactivatedByUserId: input.actorUserId,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      await tx.agentInstructionAuditEvent.create({
+        data: {
+          tenantId: input.tenantId,
+          actorUserId: input.actorUserId,
+          action: 'AGENT_MEMORY_DEACTIVATED',
+          entityType: 'AGENT_MEMORY',
+          entityId: current.id,
+          metadata: {
+            scope: current.scope,
+            lifecycle: 'DEACTIVATED',
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return updated;
+    });
+    return row === null ? null : toMemory(row);
+  }
+
   public async upsertMemory(
     tx: Prisma.TransactionClient,
     input: CreateAgentMemoryInput,
@@ -66,4 +115,8 @@ export class PrismaAgentLearningMemoryRepository {
    * @returns Identificadores de memorias y casos usados y un resumen textual
    *   concatenado.
    */
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

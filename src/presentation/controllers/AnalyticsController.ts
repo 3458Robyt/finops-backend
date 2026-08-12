@@ -113,6 +113,21 @@ export class AnalyticsController {
     }
   };
 
+  /** Devuelve escenarios comparables: base, tendencia, aprobado, ejecutado y verificado. */
+  public getForecastScenarios = async (req: Request, res: Response): Promise<void> => {
+    if (req.auth === undefined) {
+      res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });
+      return;
+    }
+
+    try {
+      const scenarios = await this.analyticsService.getForecastScenarios(this.parseQuery(req));
+      res.status(200).json({ success: true, scenarios, meta: { count: scenarios.length } });
+    } catch (error: unknown) {
+      this.handleError(error, res, 'An unexpected analytics forecast scenarios error occurred');
+    }
+  };
+
   /**
    * Devuelve las tendencias de coste para el tenant.
    *

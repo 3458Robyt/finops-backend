@@ -42,6 +42,26 @@ export class PrismaOutboundMessageRepository implements IOutboundMessageReposito
     return rows.map(toOutboundDelivery);
   }
 
+  public async findByDedupeKey(input: {
+    readonly tenantId: string;
+    readonly userId: string;
+    readonly channel: OutboundMessageDelivery['channel'];
+    readonly messageType: OutboundMessageDelivery['messageType'];
+    readonly dedupeKey: string;
+  }): Promise<OutboundMessageDelivery | null> {
+    const row = await this.prisma.outboundMessageDelivery.findFirst({
+      where: {
+        tenantId: input.tenantId,
+        userId: input.userId,
+        channel: input.channel,
+        messageType: input.messageType,
+        metadata: { path: ['dedupeKey'], equals: input.dedupeKey },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return row === null ? null : toOutboundDelivery(row);
+  }
+
   public async claimNextPending(input: {
     readonly workerId: string;
     readonly leaseExpiredBefore: Date;

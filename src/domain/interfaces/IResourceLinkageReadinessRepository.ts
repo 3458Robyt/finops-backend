@@ -3,6 +3,7 @@ import type {
   ResourceFreshness,
   ResourceLinkReasonCode,
 } from '../models/ResourceLinkage.js';
+import type { DeterministicOpportunityCatalog } from './deterministicOpportunityModels.js';
 
 
 export type CostResourceClassification =
@@ -101,6 +102,8 @@ export interface ResourceLinkageReadiness {
   readonly tagGovernance: ResourceTagGovernance;
   readonly freshness: ResourceFreshness;
   readonly technicalRecommendationBlockers: readonly string[];
+  /** Added by the application service; repositories may omit it. */
+  readonly opportunityCatalog?: DeterministicOpportunityCatalog;
   readonly latestReconciliation?: {
     readonly observedAt: Date;
     readonly status: string;

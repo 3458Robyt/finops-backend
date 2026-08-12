@@ -67,6 +67,14 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
   public createMemory(input: CreateAgentMemoryInput): Promise<AgentMemory> {
     return this.memoryRepository.createMemory(input);
   }
+  public deactivateMemory(input: {
+    readonly tenantId: string;
+    readonly memoryId: string;
+    readonly allowGlobal: boolean;
+    readonly actorUserId: string;
+  }): Promise<AgentMemory | null> {
+    return this.memoryRepository.deactivateMemory(input);
+  }
   public recordApprovedLearning(
     input: RecordApprovedLearningInput,
   ): Promise<AgentLearningEvent> {

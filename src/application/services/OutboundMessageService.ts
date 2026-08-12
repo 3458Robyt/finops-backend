@@ -14,6 +14,7 @@ import {
   type ProcessPendingOutboundDeliveryResult,
 } from './OutboundMessageDeliveryProcessor.js';
 import { formatRecommendations, formatSavingsReminders } from './telegram/telegramMessageFormatters.js';
+import type { ExecutiveSummaryDeliveryService } from './ExecutiveSummaryDeliveryService.js';
 import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
 
 export interface OutboundChannelStatus {
@@ -63,6 +64,7 @@ export class OutboundMessageService {
       readonly telegramBotUsername?: string;
       readonly telegramWebhookSecret?: string;
     },
+    private readonly executiveSummaryDeliveryService: ExecutiveSummaryDeliveryService | undefined = undefined,
   ) {
     this.deliveryProcessor = new OutboundMessageDeliveryProcessor(
       outboundRepository,
@@ -268,6 +270,20 @@ export class OutboundMessageService {
     return { deliveries };
   }
 
+  /** Envía un resumen ejecutivo diario; las claves de deduplicación evitan spam al reiniciar el scheduler. */
+  public async sendExecutiveSummary(actor: AuthContext): Promise<SendTestMessagesResult> {
+    this.requireAdmin(actor);
+    if (this.executiveSummaryDeliveryService === undefined) {
+      throw new FinOpsBaseError('El resumen ejecutivo no está configurado', 'CONFIGURATION_ERROR');
+    }
+    return { deliveries: await this.executiveSummaryDeliveryService.send(actor.tenantId) };
+  }
+
+  public async sendExecutiveSummaryIfConfigured(actor: AuthContext): Promise<SendTestMessagesResult | null> {
+    if (this.executiveSummaryDeliveryService === undefined) return null;
+    return this.sendExecutiveSummary(actor);
+  }
+
   private async sendTelegram(input: {
     readonly tenantId: string;
     readonly userId?: string;
@@ -367,6 +383,7 @@ export class OutboundMessageService {
   private requireAdmin(actor: AuthContext): void {
     requirePermission(actor.role, 'OUTBOUND_MANAGE', 'Solo los administradores del agente pueden gestionar mensajes externos');
   }
+
 }
 
 function truncatePreview(value: string): string {

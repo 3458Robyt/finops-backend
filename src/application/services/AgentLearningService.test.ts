@@ -18,6 +18,7 @@ import type {
   RecommendationQuery,
 } from '../../domain/interfaces/IRecommendationRepository.js';
 import type { AgentLearningEvent, AgentMemory } from '../../domain/models/AgentLearning.js';
+import type { AuthContext } from '../../domain/models/AuthContext.js';
 import type { FinOpsRecommendation } from '../../domain/models/FinOpsRecommendation.js';
 import type { RecommendationExecutionPlan } from '../../domain/models/RecommendationExecutionPlan.js';
 
@@ -98,6 +99,7 @@ class FakeAgentLearningRepository implements IAgentLearningRepository {
   public memoryInput: CreateAgentMemoryInput | null = null;
   public recordedApproved: RecordApprovedLearningInput | null = null;
   public retryInput: { readonly eventId: string; readonly workerId: string; readonly errorMessage: string } | null = null;
+  public deactivatedMemoryId: string | null = null;
 
   public async createEvent(input: CreateAgentLearningEventInput): Promise<AgentLearningEvent> {
     this.eventInput = input;
@@ -223,6 +225,25 @@ class FakeAgentLearningRepository implements IAgentLearningRepository {
   public async hasActiveGlobalMemory(): Promise<boolean> {
     return false;
   }
+
+  public async deactivateMemory(input: {
+    readonly tenantId: string;
+    readonly memoryId: string;
+    readonly allowGlobal: boolean;
+    readonly actorUserId: string;
+  }): Promise<AgentMemory | null> {
+    this.deactivatedMemoryId = input.memoryId;
+    return {
+      id: input.memoryId,
+      tenantId: input.tenantId,
+      scope: 'LOCAL',
+      memoryType: 'LESSON',
+      content: 'Memoria de prueba',
+      confidence: 0.8,
+      active: false,
+      createdAt: new Date('2026-04-29T12:00:00.000Z'),
+    };
+  }
 }
 
 describe('AgentLearningService', () => {
@@ -330,5 +351,42 @@ describe('AgentLearningService', () => {
       errorMessage: 'Request timed out.',
     });
     expect(learningRepository.completed).toBeNull();
+  });
+
+  test('allows an administrator to deactivate a memory without deleting its origin', async () => {
+    const learningRepository = new FakeAgentLearningRepository();
+    const service = new AgentLearningService(
+      new FakeRecommendationRepository(),
+      learningRepository,
+      new FakeAiGateway(),
+    );
+    const actor: AuthContext = {
+      userId: 'admin-1',
+      tenantId: 'tenant-1',
+      email: 'admin@example.com',
+      role: 'ADMIN',
+      jwtId: 'jwt-1',
+    };
+
+    const result = await service.deactivateMemory(actor, 'memory-1');
+
+    expect(result).toMatchObject({ id: 'memory-1', active: false });
+    expect(learningRepository.deactivatedMemoryId).toBe('memory-1');
+  });
+
+  test('does not allow a client approver to change agent memory', async () => {
+    const service = new AgentLearningService(
+      new FakeRecommendationRepository(),
+      new FakeAgentLearningRepository(),
+      new FakeAiGateway(),
+    );
+
+    await expect(service.deactivateMemory({
+      userId: 'client-1',
+      tenantId: 'tenant-1',
+      email: 'client@example.com',
+      role: 'CLIENT_APPROVER',
+      jwtId: 'jwt-2',
+    }, 'memory-1')).rejects.toThrow('Solo un administrador del agente puede revertir memorias');
   });
 });

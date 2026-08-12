@@ -8,8 +8,12 @@ import type {
   MonthlyCostPoint,
   MonthlyUsagePoint,
 } from './costAnalytics/costAnalyticsModels.js';
+import type { CostForecastScenario } from './costAnalytics/costForecastScenarioModels.js';
 
 export * from './costAnalytics/costAnalyticsModels.js';
+export * from './costAnalytics/costForecastScenarioModels.js';
+
+export type { CostForecastScenario };
 
 /**
  * Filtros opcionales aplicables a las consultas analíticas.

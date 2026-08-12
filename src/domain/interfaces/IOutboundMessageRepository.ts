@@ -50,6 +50,14 @@ export interface CompleteOutboundMessageDeliveryInput {
 
 export interface IOutboundMessageRepository {
   create(input: CreateOutboundMessageDeliveryInput): Promise<OutboundMessageDelivery>;
+  /** Busca una entrega idempotente por tenant, canal, usuario y clave de día. */
+  findByDedupeKey?(input: {
+    readonly tenantId: string;
+    readonly userId: string;
+    readonly channel: OutboundMessageChannel;
+    readonly messageType: OutboundMessageType;
+    readonly dedupeKey: string;
+  }): Promise<OutboundMessageDelivery | null>;
   listRecent(input: ListOutboundMessageDeliveriesInput): Promise<readonly OutboundMessageDelivery[]>;
   claimNextPending(input: ClaimOutboundMessageDeliveryInput): Promise<ClaimedOutboundMessageDelivery | null>;
   completeClaimed(input: CompleteOutboundMessageDeliveryInput): Promise<OutboundMessageDelivery | null>;

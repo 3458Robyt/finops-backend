@@ -185,6 +185,14 @@ export interface IAgentLearningRepository {
    */
   createMemory(input: CreateAgentMemoryInput): Promise<AgentMemory>;
 
+  /** Desactiva una memoria activa sin borrar su evidencia histórica. */
+  deactivateMemory?(input: {
+    readonly tenantId: string;
+    readonly memoryId: string;
+    readonly allowGlobal: boolean;
+    readonly actorUserId: string;
+  }): Promise<AgentMemory | null>;
+
   /** Persiste memorias auditadas y cierra evento/decisión en una transacción. */
   recordApprovedLearning(input: RecordApprovedLearningInput): Promise<AgentLearningEvent>;
 

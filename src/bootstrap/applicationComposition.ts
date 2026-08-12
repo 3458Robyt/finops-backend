@@ -10,6 +10,8 @@ import { ContextSummaryBuilderService } from '../application/services/ContextSum
 import { CostAllocationService } from '../application/services/CostAllocationService.js';
 import { CostAnalyticsService } from '../application/services/CostAnalyticsService.js';
 import { EmailClient } from '../application/services/EmailClient.js';
+import { ExecutiveSummaryService } from '../application/services/ExecutiveSummaryService.js';
+import { ExecutiveSummaryDeliveryService } from '../application/services/ExecutiveSummaryDeliveryService.js';
 import { FinOpsAiService } from '../application/services/FinOpsAiService.js';
 import { MasterAdminService } from '../application/services/MasterAdminService.js';
 import { MfaService } from '../application/services/MfaService.js';
@@ -92,6 +94,7 @@ export function createApplicationComposition(
   const costAllocationRepository = new PrismaCostAllocationRepository(prisma, valueRealizationRepository);
   const recommendationAnalysisRepository = new PrismaRecommendationAnalysisRunRepository(prisma);
   const resourceMetricRepository = new PrismaResourceMetricRepository(prisma);
+  const resourceLinkageReadinessRepository = new PrismaResourceLinkageReadinessRepository(prisma, config.cloud.requiredTagKeys);
   const notificationRepository = new PrismaNotificationRepository(prisma);
   const outboundMessageRepository = new PrismaOutboundMessageRepository(prisma);
   const telegramRepository = new PrismaTelegramRepository(prisma);
@@ -128,12 +131,24 @@ export function createApplicationComposition(
   const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository, ingestionProviders);
   const technicalMetricsService = new TechnicalMetricsService(resourceMetricRepository);
   const resourceLinkageReadinessService = new ResourceLinkageReadinessService(
-    new PrismaResourceLinkageReadinessRepository(prisma, config.cloud.requiredTagKeys),
+    resourceLinkageReadinessRepository,
   );
   const technicalRecommendationEvidenceService = new TechnicalRecommendationEvidenceService(resourceMetricRepository);
   const analyticsService = new CostAnalyticsService(costAnalyticsRepository, {
     anomalyThresholds: { minAbsoluteDelta: config.finops.anomalyMinDeltaUsd },
+    forecastScenarioDependencies: {
+      recommendationRepository,
+      valueRealizationRepository,
+    },
   });
+  const executiveSummaryService = new ExecutiveSummaryService(
+    costAnalyticsRepository,
+    analyticsService,
+    recommendationRepository,
+    valueRealizationRepository,
+    budgetRepository,
+    resourceLinkageReadinessRepository,
+  );
   const budgetService = new BudgetService(
     budgetRepository,
     notificationRepository,
@@ -181,6 +196,13 @@ export function createApplicationComposition(
   const telegramClient = new TelegramClient(config.telegram.botToken, telegramEnabled);
   const telegramMessageFormatter = new TelegramMessageFormatter();
   const emailClient = new EmailClient(config.email);
+  const executiveSummaryDeliveryService = new ExecutiveSummaryDeliveryService(
+    executiveSummaryService,
+    outboundMessageRepository,
+    telegramRepository,
+    emailClient.enabled,
+    telegramEnabled,
+  );
   const passwordRecoveryService = new PasswordRecoveryService(
     accountRecoveryRepository,
     passwordHasher,
@@ -214,6 +236,7 @@ export function createApplicationComposition(
       ...(config.telegram.botUsername === undefined ? {} : { telegramBotUsername: config.telegram.botUsername }),
       ...(config.telegram.webhookSecret === undefined ? {} : { telegramWebhookSecret: config.telegram.webhookSecret }),
     },
+    executiveSummaryDeliveryService,
   );
   const valueRealizationService = new ValueRealizationService(
     valueRealizationRepository,

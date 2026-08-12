@@ -13,6 +13,9 @@ import type {
   RecommendationLearningResult,
 } from '../../domain/interfaces/IAgentLearningService.js';
 import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
+import type { AuthContext } from '../../domain/models/AuthContext.js';
+import type { AgentMemory } from '../../domain/models/AgentLearning.js';
+import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
 import { ContextBudgeter } from './ContextBudgeter.js';
 import { summarizeEvidence } from './learning/learningMemoryContent.js';
 import { LearningEventProcessor } from './learning/LearningEventProcessor.js';
@@ -238,6 +241,23 @@ export class AgentLearningService implements IAgentLearningService {
    */
   public async getLearningSummary(tenantId: string): Promise<AgentLearningSummary> {
     return this.learningRepository.findSummary(tenantId);
+  }
+
+  /** Desactiva una memoria activa como rollback manual y conserva su origen histórico. */
+  public async deactivateMemory(actor: AuthContext, memoryId: string): Promise<AgentMemory> {
+    requirePermission(actor.role, 'AGENT_CONFIGURE', 'Solo un administrador del agente puede revertir memorias');
+    const deactivate = this.learningRepository.deactivateMemory;
+    if (deactivate === undefined) {
+      throw new FinOpsBaseError('Memory rollback is not configured', 'CONFIGURATION_ERROR');
+    }
+    const memory = await deactivate.call(this.learningRepository, {
+      tenantId: actor.tenantId,
+      memoryId,
+      allowGlobal: actor.role === 'MASTER_ADMIN',
+      actorUserId: actor.userId,
+    });
+    if (memory === null) throw new FinOpsBaseError('Memory not found or already inactive', 'NOT_FOUND');
+    return memory;
   }
 
 }

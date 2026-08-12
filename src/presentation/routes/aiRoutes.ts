@@ -35,6 +35,7 @@ export function createAiRoutes(
   router.post('/analysis-runs/:id/cancel', requireAuth, requireAnalysisManager, recommendationAnalysisController.cancel);
   router.post('/analysis-runs/:id/retry', requireAuth, requireAnalysisManager, recommendationAnalysisController.retry);
   router.get('/learning/summary', requireAuth, aiController.getLearningSummary);
+  router.patch('/learning/memories/:memoryId/deactivate', requireAuth, aiController.deactivateLearningMemory);
   router.post('/chat', requireAuth, aiController.chat);
   router.post('/recommendations/generate', requireAuth, aiController.generateRecommendations);
 

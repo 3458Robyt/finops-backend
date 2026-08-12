@@ -217,6 +217,29 @@ export class AiController {
     }
   };
 
+  /** Revierte una memoria activa sin borrar el evento que la originó. */
+  public deactivateLearningMemory = async (req: Request, res: Response): Promise<void> => {
+    if (req.auth === undefined) {
+      res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });
+      return;
+    }
+    const memoryId = typeof req.params['memoryId'] === 'string' ? req.params['memoryId'].trim() : '';
+    if (memoryId === '') {
+      res.status(400).json({ success: false, error: 'Memory id is required', code: 'VALIDATION_ERROR' });
+      return;
+    }
+    if (this.learningService?.deactivateMemory === undefined) {
+      res.status(503).json({ success: false, error: 'Learning memory rollback is not configured', code: 'LEARNING_NOT_CONFIGURED' });
+      return;
+    }
+    try {
+      const memory = await this.learningService.deactivateMemory(req.auth, memoryId);
+      res.status(200).json({ success: true, memory });
+    } catch (error: unknown) {
+      this.handleError(error, res, 'No fue posible revertir la memoria del agente');
+    }
+  };
+
   /**
    * Manejador centralizado de errores de IA que traduce excepciones de dominio
    * a códigos de estado HTTP:
@@ -237,7 +260,12 @@ export class AiController {
     }
 
     if (error instanceof FinOpsBaseError) {
-      const status = error.code === 'VALIDATION_ERROR' ? 400 : 502;
+      const status = error.code === 'AUTHENTICATION_REQUIRED' ? 401
+        : error.code === 'AUTHORIZATION_FAILED' ? 403
+          : error.code === 'NOT_FOUND' ? 404
+            : error.code === 'VALIDATION_ERROR' ? 400
+              : error.code === 'CONFLICT' ? 409
+                : 502;
       res.status(status).json({
         success: false,
         error: error.message,

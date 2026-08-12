@@ -61,6 +61,9 @@ export class OutboundMessageScheduler {
           console.log(JSON.stringify({ level: 'info', event: 'outbound_message_deliveries_processed', count: processed }));
         }
         await this.outboundMessageService.sendSavingsReminders(actor);
+        if (typeof this.outboundMessageService.sendExecutiveSummaryIfConfigured === 'function') {
+          await this.outboundMessageService.sendExecutiveSummaryIfConfigured(actor);
+        }
       },
     );
   }

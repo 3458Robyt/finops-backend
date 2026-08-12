@@ -69,6 +69,16 @@ export class OutboundMessageController {
     }
   };
 
+  public sendExecutiveSummary = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const auth = this.requireAuthenticated(req);
+      const result = await this.outboundMessageService.sendExecutiveSummary(auth);
+      res.status(200).json({ success: true, ...result });
+    } catch (error: unknown) {
+      this.handleError(error, res, 'No fue posible enviar el resumen ejecutivo');
+    }
+  };
+
   private requireAuthenticated(req: Request): NonNullable<Request['auth']> {
     if (req.auth === undefined) {
       throw new FinOpsBaseError('Authentication required', 'AUTHENTICATION_REQUIRED');

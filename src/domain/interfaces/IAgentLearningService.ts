@@ -1,7 +1,9 @@
 import type {
   AgentLearningStatus,
   RecommendationFeedbackReason,
+  AgentMemory,
 } from '../models/AgentLearning.js';
+import type { AuthContext } from '../models/AuthContext.js';
 
 /**
  * Datos de entrada para procesar la decisión de un usuario sobre una recomendación.
@@ -168,4 +170,7 @@ export interface IAgentLearningService extends IAgentLearningContextProvider {
    * @returns Resumen con memorias y eventos de aprendizaje.
    */
   getLearningSummary(tenantId: string): Promise<AgentLearningSummary>;
+
+  /** Revierte una memoria activa sin eliminar el evento de aprendizaje original. */
+  deactivateMemory?(actor: AuthContext, memoryId: string): Promise<AgentMemory>;
 }

@@ -1,21 +1,17 @@
-import { AiAuditRejectedError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { IAiGateway } from '../../domain/interfaces/IAiGateway.js';
 import type { ICostAnalyticsRepository } from '../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
 import type { IAgentLearningContextProvider } from '../../domain/interfaces/IAgentLearningService.js';
-import type { BuiltAiContext, IContextEngineService } from '../../domain/interfaces/IContextEngineService.js';
+import type { IContextEngineService } from '../../domain/interfaces/IContextEngineService.js';
 import type { RecommendationExecutionPlan } from '../../domain/models/RecommendationExecutionPlan.js';
-import type { AiContextOperation } from '../../domain/models/AgentContext.js';
 import type { AiObservabilityService } from './AiObservabilityService.js';
-import { toEphemeralRecommendation } from './ai/finOpsAiResponseParser.js';
-import { applyAuditEvidence, buildRecommendationDeduplicationKey } from './ai/recommendationEvidence.js';
 import { FinOpsContextAssembler } from './ai/finOpsContextAssembler.js';
 import { AiTraceRecorder } from './ai/aiTraceRecorder.js';
 import { FinOpsArtifactGenerator } from './ai/finOpsArtifactGenerator.js';
 import type { TechnicalRecommendationEvidenceProvider } from './ai/TechnicalRecommendationEvidenceService.js';
-import type { RecommendationReadinessReport } from './ai/RecommendationReadinessGate.js';
 import { FinOpsAiChatRunner } from './ai/FinOpsAiChatRunner.js';
 import { FinOpsAiExecutionPlanRunner } from './ai/FinOpsAiExecutionPlanRunner.js';
+import { FinOpsAiRecommendationRunner } from './ai/FinOpsAiRecommendationRunner.js';
 import { FinOpsAiRecommendationPreparer } from './ai/FinOpsAiRecommendationPreparer.js';
 import { loadRuntimeConfig } from '../../infrastructure/config/runtimeConfigReader.js';
 import type { RuntimeConfig } from '../../infrastructure/config/runtimeConfigTypes.js';
@@ -41,8 +37,6 @@ import type {
 } from './ai/finOpsAiTypes.js';
 
 /** Veredicto de auditoría requerido para aceptar el artefacto generado por IA. */
-const approvedAuditVerdict = 'APPROVED';
-
 /**
  * Servicio de aplicación de IA FinOps.
  *
@@ -83,6 +77,7 @@ export class FinOpsAiService {
   private readonly chatRunner: FinOpsAiChatRunner;
   private readonly executionPlanRunner: FinOpsAiExecutionPlanRunner;
   private readonly recommendationPreparer: FinOpsAiRecommendationPreparer;
+  private readonly recommendationRunner: FinOpsAiRecommendationRunner;
 
   /**
    * @param analyticsRepository      - Repositorio de analítica de costos (snapshots).
@@ -93,9 +88,9 @@ export class FinOpsAiService {
    * @param aiObservability          - Servicio opcional de observabilidad/trazas IA.
    */
   constructor(
-    private readonly analyticsRepository: ICostAnalyticsRepository,
-    private readonly recommendationRepository: IRecommendationRepository,
-    private readonly aiGateway: IAiGateway,
+    analyticsRepository: ICostAnalyticsRepository,
+    recommendationRepository: IRecommendationRepository,
+    aiGateway: IAiGateway,
     learningContextProvider?: IAgentLearningContextProvider,
     contextEngine?: IContextEngineService,
     aiObservability?: AiObservabilityService,
@@ -142,6 +137,15 @@ export class FinOpsAiService {
       this.mainModel,
       this.auditorModel,
     );
+    this.recommendationRunner = new FinOpsAiRecommendationRunner(
+      recommendationRepository,
+      this.contextAssembler,
+      this.artifactGenerator,
+      this.traceRecorder,
+      this.recommendationPreparer,
+      this.mainModel,
+      this.auditorModel,
+    );
   }
 
   /**
@@ -179,124 +183,7 @@ export class FinOpsAiService {
   public async generateRecommendations(
     input: GenerateAiRecommendationsInput,
   ): Promise<GenerateAiRecommendationsResponse> {
-    if (input.cloudResourceId !== undefined && input.externalResourceId === undefined) {
-      throw new FinOpsBaseError('cloudResourceId requiere externalResourceId para mantener el alcance canónico.', 'VALIDATION_ERROR');
-    }
-    const prepared = input.prepared ?? await this.prepareRecommendationAnalysis(input);
-    const { snapshot, readinessReport, technicalEvidenceSnapshot } = prepared;
-    if (readinessReport.candidates.length === 0) {
-      return {
-        recommendations: [],
-        snapshot,
-        persisted: input.persist === true,
-        analysis: {
-          readinessReport,
-          ...(technicalEvidenceSnapshot !== undefined ? { technicalEvidenceSnapshot } : {}),
-          evidenceHash: prepared.evidenceHash,
-          generatedCount: 0,
-          promptTokenEstimate: 0,
-          responseTokenEstimate: 0,
-          model: this.mainModel,
-          auditorModel: this.auditorModel,
-        },
-      };
-    }
-
-    const assembled = await this.contextAssembler.assembleRecommendationContext({
-      tenantId: input.tenantId,
-      ...(input.userId !== undefined ? { userId: input.userId } : {}),
-      snapshot,
-      ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
-      ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
-      ...(prepared.technicalEvidenceSnapshot !== undefined
-        ? { technicalEvidenceSnapshot: prepared.technicalEvidenceSnapshot }
-        : {}),
-    });
-    const { builtContext, systemPrompt, learningContext } = assembled;
-    const governedSystemPrompt = [
-      systemPrompt,
-      'PREANALISIS DETERMINISTICO DE TENDENCIAS (hechos autorizados):',
-      JSON.stringify(prepared.deterministicAnalysis, null, 2),
-    ].join('\n\n');
-    const startedAt = Date.now();
-
-    await input.onStage?.('AI_GENERATION');
-    const { drafts, auditReport, firstRawResponse } = await this.artifactGenerator.generateAuditedDrafts(
-      input.tenantId,
-      input.userId,
-      snapshot,
-      governedSystemPrompt,
-      input.externalResourceId,
-      input.cloudResourceId,
-      technicalEvidenceSnapshot,
-      prepared.deterministicAnalysis,
-      readinessReport,
-      () => input.onStage?.('AI_AUDIT'),
-    );
-
-    if (auditReport.verdict !== approvedAuditVerdict) {
-      throw new AiAuditRejectedError('AI audit rejected recommendation output', {
-        diagnosticId: this.buildAuditDiagnosticId(input.tenantId),
-        audit: {
-          ...auditReport,
-          generatedCount: drafts.length,
-          promptTokenEstimate: estimateTokens(governedSystemPrompt),
-          responseTokenEstimate: estimateTokens(firstRawResponse),
-          model: this.mainModel,
-          auditorModel: this.auditorModel,
-          readinessSummary: readinessReport.summary,
-          candidates: readinessReport.candidates.map((candidate: RecommendationReadinessReport['candidates'][number]) => ({
-            id: candidate.id,
-            readiness: candidate.readiness,
-            cloudAccountId: candidate.cloudAccountId,
-            serviceName: candidate.serviceName,
-            resourceId: candidate.resourceId,
-            maxEstimatedMonthlySavings: candidate.maxEstimatedMonthlySavings,
-            reasons: candidate.reasons,
-          })),
-        },
-      });
-    }
-
-    const auditedDrafts = drafts.map((draft) => ({
-      ...applyAuditEvidence(
-        draft,
-        auditReport,
-        learningContext,
-        technicalEvidenceSnapshot,
-        input.analysisRunId,
-      ),
-      deduplicationKey: buildRecommendationDeduplicationKey(
-        draft,
-        snapshot.periodStart,
-        snapshot.periodEnd,
-      ),
-    }));
-
-    const persisted = input.persist === true;
-    await input.onStage?.('PERSISTENCE');
-    const recommendations = persisted
-      ? await this.recommendationRepository.createMany(auditedDrafts)
-      : auditedDrafts.map((draft, index) => toEphemeralRecommendation(draft, index));
-
-    await this.recordTrace(input, 'RECOMMENDATION', builtContext, startedAt, firstRawResponse);
-
-    return {
-      recommendations,
-      snapshot,
-      persisted,
-      analysis: {
-        readinessReport,
-        ...(technicalEvidenceSnapshot !== undefined ? { technicalEvidenceSnapshot } : {}),
-        evidenceHash: prepared.evidenceHash,
-        auditReport,
-        generatedCount: drafts.length,
-        promptTokenEstimate: estimateTokens(governedSystemPrompt),
-        responseTokenEstimate: estimateTokens(firstRawResponse),
-        model: this.mainModel,
-        auditorModel: this.auditorModel,
-      },
-    };
+    return this.recommendationRunner.run(input);
   }
 
   public async prepareRecommendationAnalysis(
@@ -329,35 +216,4 @@ export class FinOpsAiService {
     return this.executionPlanRunner.run(input);
   }
 
-  /**
-   * Registra una traza de observabilidad de una operación IA de alto nivel
-   * (chat, recomendación o plan), delegando en {@link AiTraceRecorder}.
-   */
-  private recordTrace(
-    actor: { readonly tenantId: string; readonly userId?: string },
-    operation: AiContextOperation,
-    builtContext: BuiltAiContext | undefined,
-    startedAt: number,
-    responseText?: string,
-    error?: unknown,
-  ): Promise<void> {
-    return this.traceRecorder.record({
-      tenantId: actor.tenantId,
-      ...(actor.userId !== undefined ? { userId: actor.userId } : {}),
-      operation,
-      model: this.mainModel,
-      ...(builtContext !== undefined ? { builtContext } : {}),
-      startedAt,
-      ...(responseText !== undefined ? { responseText } : {}),
-      ...(error !== undefined ? { error } : {}),
-    });
-  }
-
-  private buildAuditDiagnosticId(tenantId: string): string {
-    return `audit-${tenantId}-${Date.now().toString(36)}`;
-  }
-}
-
-function estimateTokens(value: string): number {
-  return Math.ceil(value.length / 4);
 }

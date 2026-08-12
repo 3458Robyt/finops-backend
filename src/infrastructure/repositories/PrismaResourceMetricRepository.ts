@@ -25,16 +25,11 @@ import {
 } from './mappers/technicalMetricsMappers.js';
 import {
   buildAliasedMetricSummaryWhereClause,
-  buildBucketExpression,
-  buildMetricSeriesCursor,
   buildMetricSummaryWhereClause,
   buildMetricWhereClause,
-  mapMetricSeriesRow,
-  parseMetricSeriesCursor,
-  type MetricSeriesCursor,
   type RawMetricSummaryRow,
-  type RawMetricSeriesRow,
 } from './technicalMetricQueryHelpers.js';
+import { PrismaResourceMetricSeriesReader } from './PrismaResourceMetricSeriesReader.js';
 
 interface CloudResourceLineageRow {
   readonly id: string;
@@ -65,7 +60,11 @@ interface CloudResourceLineageRow {
  * filtran por `tenantId` para garantizar el aislamiento multi-tenant.
  */
 export class PrismaResourceMetricRepository implements IResourceMetricRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly seriesReader: PrismaResourceMetricSeriesReader;
+
+  constructor(private readonly prisma: PrismaClient) {
+    this.seriesReader = new PrismaResourceMetricSeriesReader(prisma);
+  }
 
   /**
    * Lista los recursos cloud inventariados de un tenant, del visto más
@@ -242,122 +241,7 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
     tenantId: string,
     filters: TechnicalMetricSeriesFilters,
   ): Promise<TechnicalMetricSeriesRepositoryResult> {
-    const pageSize = filters.pageSize;
-    const limit = pageSize + 1;
-    const where = buildMetricWhereClause(tenantId, filters, false);
-    const cursor = parseMetricSeriesCursor(filters.cursor);
-    const rowsPromise = filters.bucket === 'raw'
-      ? this.listRawMetricSeriesRows(where, cursor, limit)
-      : this.listAggregatedMetricSeriesRows(where, cursor, filters.bucket, limit);
-
-    const [totalSamples, rows] = await Promise.all([
-      cursor === undefined ? this.countMetricSamples(tenantId, filters) : Promise.resolve(0),
-      rowsPromise,
-    ]);
-
-    const hasMore = rows.length > pageSize;
-    const visibleRows = hasMore ? rows.slice(0, pageSize) : rows;
-    const nextCursor = hasMore ? buildMetricSeriesCursor(visibleRows.at(-1)) : undefined;
-
-    return {
-      points: visibleRows.map((row) => mapMetricSeriesRow(row)),
-      totalSamples,
-      hasMore,
-      ...(nextCursor !== undefined ? { nextCursor } : {}),
-    };
-  }
-
-  private async listRawMetricSeriesRows(
-    where: Prisma.Sql,
-    cursor: MetricSeriesCursor | undefined,
-    limit: number,
-  ): Promise<RawMetricSeriesRow[]> {
-    const cursorCondition = cursor === undefined
-      ? Prisma.empty
-      : cursor.kind === 'legacy-date'
-        ? Prisma.sql`AND sampled_at > ${cursor.bucketStart}`
-        : Prisma.sql`
-          AND (sampled_at, external_resource_id, COALESCE(cloud_resource_id, ''), metric_name) >
-            (${cursor.bucketStart}, ${cursor.externalResourceId}, ${cursor.cloudResourceId}, ${cursor.metricName})
-        `;
-
-    return this.prisma.$queryRaw<RawMetricSeriesRow[]>(Prisma.sql`
-      SELECT
-        sampled_at AS bucket_start,
-        external_resource_id,
-        cloud_resource_id,
-        metric_name,
-        metric_unit,
-        value::float8 AS avg_value,
-        value::float8 AS min_value,
-        value::float8 AS max_value,
-        value::float8 AS latest_value,
-        1::int AS sample_count,
-        sampled_at AS min_sampled_at,
-        sampled_at AS max_sampled_at,
-        sampled_at AS latest_sampled_at
-      FROM resource_metric_samples
-      WHERE ${where}
-      ${cursorCondition}
-      ORDER BY sampled_at ASC, external_resource_id ASC, COALESCE(cloud_resource_id, '') ASC, metric_name ASC
-      LIMIT ${limit}
-    `);
-  }
-
-  private async listAggregatedMetricSeriesRows(
-    where: Prisma.Sql,
-    cursor: MetricSeriesCursor | undefined,
-    bucket: TechnicalMetricSeriesFilters['bucket'],
-    limit: number,
-  ): Promise<RawMetricSeriesRow[]> {
-    const bucketExpression = buildBucketExpression(bucket);
-    const resourceExpression = Prisma.sql`external_resource_id`;
-    const cursorCondition = cursor === undefined
-      ? Prisma.empty
-      : cursor.kind === 'legacy-date'
-        ? Prisma.sql`AND ${bucketExpression} > ${cursor.bucketStart}`
-        : Prisma.sql`
-          AND (${bucketExpression}, ${resourceExpression}, COALESCE(cloud_resource_id, ''), metric_name) >
-            (${cursor.bucketStart}, ${cursor.externalResourceId}, ${cursor.cloudResourceId}, ${cursor.metricName})
-        `;
-
-    return this.prisma.$queryRaw<RawMetricSeriesRow[]>(Prisma.sql`
-        WITH filtered AS (
-          SELECT
-            ${bucketExpression} AS bucket_start,
-            ${resourceExpression} AS external_resource_id,
-            cloud_resource_id,
-            metric_name,
-            metric_unit,
-            sampled_at,
-            value::float8 AS value
-          FROM resource_metric_samples
-          WHERE ${where}
-          ${cursorCondition}
-        ),
-        grouped AS (
-          SELECT
-            bucket_start,
-            external_resource_id,
-            cloud_resource_id,
-            metric_name,
-            metric_unit,
-            avg(value)::float8 AS avg_value,
-            min(value)::float8 AS min_value,
-            max(value)::float8 AS max_value,
-            (array_agg(value ORDER BY sampled_at DESC))[1]::float8 AS latest_value,
-            count(*)::int AS sample_count,
-            (array_agg(sampled_at ORDER BY value ASC, sampled_at ASC))[1] AS min_sampled_at,
-            (array_agg(sampled_at ORDER BY value DESC, sampled_at ASC))[1] AS max_sampled_at,
-            max(sampled_at) AS latest_sampled_at
-          FROM filtered
-          GROUP BY bucket_start, external_resource_id, cloud_resource_id, metric_name, metric_unit
-        )
-        SELECT *
-        FROM grouped
-        ORDER BY bucket_start ASC, external_resource_id ASC, COALESCE(cloud_resource_id, '') ASC, metric_name ASC
-        LIMIT ${limit}
-      `);
+    return this.seriesReader.listForTenant(tenantId, filters);
   }
 
   public async listMetricCoverageSamplesForTenant(
@@ -640,17 +524,4 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
     }));
   }
 
-  private async countMetricSamples(
-    tenantId: string,
-    filters: TechnicalMetricSeriesFilters,
-  ): Promise<number> {
-    const countWhere = buildMetricWhereClause(tenantId, filters, false);
-    const rows = await this.prisma.$queryRaw<{ readonly total: bigint }[]>(Prisma.sql`
-      SELECT count(*)::bigint AS total
-      FROM resource_metric_samples
-      WHERE ${countWhere}
-    `);
-
-    return Number(rows[0]?.total ?? 0n);
-  }
 }

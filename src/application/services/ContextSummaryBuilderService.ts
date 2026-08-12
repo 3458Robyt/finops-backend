@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { IAgentContextRepository } from '../../domain/interfaces/IAgentContextRepository.js';
+import { safeErrorMessage } from '../observability/safeError.js';
 
 /**
  * Servicio de aplicación que construye y mantiene los resúmenes de contexto
@@ -108,7 +109,7 @@ export class ContextSummaryBuilderService {
       await this.repository.completeContextBuildRun({
         runId,
         status: 'FAILED',
-        errorMessage: error instanceof Error ? error.message : 'Context backfill failed',
+        errorMessage: safeErrorMessage(error),
       });
       throw error;
     }

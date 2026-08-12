@@ -14,6 +14,7 @@ import { buildMemoryCandidate, type MemoryCandidate } from './learningMemoryCont
 import { isExternalAiLearningFailure, parseAuditReport } from './learningAuditParser.js';
 import { buildLearningAuditRequest } from './learningAuditPrompt.js';
 import { buildGlobalMemoryInput, buildLocalMemoryInput } from './memoryInputBuilder.js';
+import { safeErrorMessage } from '../../observability/safeError.js';
 
 const approvedAuditVerdict = 'APPROVED';
 const learningRetryBaseMs = 30_000;
@@ -125,7 +126,7 @@ export class LearningEventProcessor {
     error: unknown,
   ): Promise<RecommendationLearningResult> {
     const externalFailure = isExternalAiLearningFailure(error);
-    const errorMessage = error instanceof Error ? error.message : 'Learning processing failed';
+    const errorMessage = safeErrorMessage(error);
 
     if (externalFailure && workerId !== undefined) {
       const status = await this.options.learningRepository.releaseEventForRetry({

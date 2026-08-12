@@ -8,6 +8,7 @@ import { readOciMetricDefinitions } from './OciMonitoringCollector.js';
 import type { OciComputeClient, OciResourceSearchClient } from './OciSdkContracts.js';
 import { collectOciResourceSearchInventory } from './OciResourceSearchCollector.js';
 import { mergeOciTags, normalizeOciResourceStatus, ociInventorySourcePriority } from './OciResourceNormalizer.js';
+import { safeErrorMessage } from '../../../application/observability/safeError.js';
 
 export interface OciInventoryCollectionResult {
   readonly apiCallCount: number;
@@ -54,7 +55,7 @@ export async function collectOciInventory(
       warnings.push(...search.warnings);
     } catch (error) {
       resourceSearchStatus = 'FAILED';
-      warnings.push(`OCI Resource Search skipped: ${error instanceof Error ? error.message : String(error)}`);
+      warnings.push(`OCI Resource Search skipped: ${safeErrorMessage(error)}`);
     }
   }
   let coverage: Readonly<Record<string, unknown>> = {
@@ -67,7 +68,7 @@ export async function collectOciInventory(
     apiCallCount += inventory.apiCallCount;
     coverage = inventory.coverage;
   } catch (error) {
-    warnings.push(`OCI inventory SDK skipped: ${error instanceof Error ? error.message : String(error)}`);
+    warnings.push(`OCI inventory SDK skipped: ${safeErrorMessage(error)}`);
     coverage = { inventoryCompartmentDiscovery: 'FAILED' };
   }
 

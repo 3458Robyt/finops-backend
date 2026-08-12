@@ -246,6 +246,14 @@ class FakeAgentLearningRepository implements IAgentLearningRepository {
   }
 }
 
+class LeakingTimeoutAiGateway implements IAiGateway {
+  public readonly modelName = 'fake-model';
+
+  public async generateText(_request: AiGatewayRequest): Promise<string> {
+    throw new Error('Request timed out. apiKey=super-secret Cookie: session=super-cookie');
+  }
+}
+
 describe('AgentLearningService', () => {
   test('turns a structured approval into an audited local memory', async () => {
     const learningRepository = new FakeAgentLearningRepository();
@@ -323,6 +331,34 @@ describe('AgentLearningService', () => {
       eventId: 'event-1',
       status: 'SKIPPED',
       errorMessage: 'Request timed out.',
+    });
+  });
+
+  test('sanitizes provider errors before persisting learning failures', async () => {
+    const learningRepository = new FakeAgentLearningRepository();
+    const service = new AgentLearningService(
+      new FakeRecommendationRepository(),
+      learningRepository,
+      new LeakingTimeoutAiGateway(),
+    );
+
+    const queued = await service.queueRecommendationDecision({
+      tenantId: 'tenant-1',
+      recommendationId: 'rec-1',
+      decisionId: 'decision-1',
+      userId: 'user-1',
+      decision: 'APPROVED',
+      reasonCode: 'APPROVED_HIGH_CONFIDENCE',
+    });
+    const result = await service.processQueuedRecommendationDecision(queued.eventId ?? '');
+
+    expect(result.error).toBe('Request timed out. apiKey=[REDACTED] Cookie: [REDACTED]');
+    expect(result.error).not.toContain('super-secret');
+    expect(result.error).not.toContain('super-cookie');
+    expect(learningRepository.completed).toMatchObject({
+      eventId: 'event-1',
+      status: 'SKIPPED',
+      errorMessage: 'Request timed out. apiKey=[REDACTED] Cookie: [REDACTED]',
     });
   });
 

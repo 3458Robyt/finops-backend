@@ -20,6 +20,7 @@ import {
   formatSavingsReminders as renderSavingsReminders,
   truncatePreview,
 } from './telegram/telegramMessageFormatters.js';
+import { safeErrorMessage } from '../observability/safeError.js';
 
 // Reexporta el tipo público del update para preservar la API del módulo.
 export type { TelegramUpdate } from './telegram/telegramUpdateParser.js';
@@ -105,7 +106,7 @@ export class TelegramBotService {
         undefined,
         parsed.command,
         'ERROR',
-        error instanceof Error ? error.message : 'Unknown Telegram processing error',
+        safeErrorMessage(error),
       );
     }
   }

@@ -14,6 +14,7 @@ import type {
   OciMonitoringClient,
   OciUsageClient,
 } from './OciSdkContracts.js';
+import { safeErrorMessage } from '../../../application/observability/safeError.js';
 
 export interface OciCapabilityValidationDependencies {
   readonly providerCode: string;
@@ -175,8 +176,7 @@ export async function validateOciCall(
 }
 
 export function safeOciProviderError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/(passphrase|privateKey|token|key)\s*[=:]\s*\S+/gi, '$1=[REDACTED]').slice(0, 300);
+  return safeErrorMessage(error);
 }
 
 export async function withOciClient<TClient extends { close?(): void }, TResult>(

@@ -15,6 +15,7 @@ import type {
   AwsFocusExportObject,
   AwsMetricDefinition,
 } from './awsContracts.js';
+import { safeErrorMessage } from '../../../application/observability/safeError.js';
 
 export function readAwsMetricDefinitions(job: CloudIngestionJobContext): readonly AwsMetricDefinition[] {
   return readObjectArray(job.connection.metadata, 'awsMetricDefinitions').map((item) => {
@@ -135,8 +136,7 @@ export function isAwsFocusObjectName(name: string): boolean {
 }
 
 export function safeAwsProviderError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/(secret|token|key)\s*[=:]\s*\S+/gi, '$1=[REDACTED]').slice(0, 300);
+  return safeErrorMessage(error);
 }
 
 export function emptyAwsIngestionResult(

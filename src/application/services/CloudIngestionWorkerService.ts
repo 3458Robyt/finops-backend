@@ -76,7 +76,7 @@ export class CloudIngestionWorkerService {
         processed: true,
         jobId: job.id,
         providerCode: job.connection.providerCode,
-        errorMessage: error.message,
+        errorMessage: safeErrorMessage(error),
       };
     }
 
@@ -126,7 +126,7 @@ export class CloudIngestionWorkerService {
         processed: true,
         jobId: job.id,
         providerCode: job.connection.providerCode,
-        errorMessage: error instanceof Error ? error.message : 'Unknown ingestion worker error',
+        errorMessage: safeErrorMessage(error),
       };
     } finally {
       clearInterval(heartbeat);

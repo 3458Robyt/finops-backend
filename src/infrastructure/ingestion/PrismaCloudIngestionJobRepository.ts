@@ -17,6 +17,7 @@ import { PrismaIngestionCostProjector } from './PrismaIngestionCostProjector.js'
 import { PrismaIngestionJobCompletionSupport, type IngestionJobExecutionSummary } from './PrismaIngestionJobCompletionSupport.js';
 import { mergeResourceLinkageStats } from './ingestionResourceLinkage.js';
 import { PrismaIngestionSamplePersistence } from './PrismaIngestionSamplePersistence.js';
+import { safeErrorMessage } from '../../application/observability/safeError.js';
 
 interface ClaimedJobRow {
   readonly id: string;
@@ -209,7 +210,7 @@ export class PrismaCloudIngestionJobRepository {
     workerId: string,
   ): Promise<void> {
     const completedAt = new Date();
-    const message = error instanceof Error ? error.message : 'Unknown ingestion worker error';
+    const message = safeErrorMessage(error);
     const current = await this.prisma.ingestionJob.findFirst({
       where: { id: job.id, status: 'RUNNING', lockedBy: workerId, attempts: job.attempt },
       select: { attempts: true, maxAttempts: true },

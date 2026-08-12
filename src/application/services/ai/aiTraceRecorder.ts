@@ -1,6 +1,7 @@
 import type { BuiltAiContext } from '../../../domain/interfaces/IContextEngineService.js';
 import type { AiContextOperation } from '../../../domain/models/AgentContext.js';
 import type { AiObservabilityService } from '../AiObservabilityService.js';
+import { safeErrorMessage } from '../../observability/safeError.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -70,7 +71,7 @@ export class AiTraceRecorder {
       ...(builtContext !== undefined ? { tenantRuleIds: builtContext.tenantRuleIds } : {}),
       ...(builtContext !== undefined ? { conflicts: builtContext.conflicts } : {}),
       ...(error !== undefined
-        ? { errorMessage: error instanceof Error ? error.message : 'AI call failed' }
+        ? { errorMessage: safeErrorMessage(error) }
         : {}),
     });
   }

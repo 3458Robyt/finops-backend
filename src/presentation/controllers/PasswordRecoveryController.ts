@@ -1,8 +1,8 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { hashToken, PasswordRecoveryService } from '../../application/services/PasswordRecoveryService.js';
-import { AuthenticationError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const requestSchema = z.object({ email: z.string().email() });
 const confirmSchema = z.object({ token: z.string().min(32), password: z.string().min(1) });
@@ -31,7 +31,7 @@ export class PasswordRecoveryController {
         message: 'Si el correo existe, recibirás instrucciones para restablecer la contraseña.',
       });
     } catch (error: unknown) {
-      this.respond(res, error);
+      respondWithFinOpsError(res, error, 'No se pudo procesar la solicitud de recuperación.', 'auth_password_recovery_request', req.path);
     }
   };
 
@@ -49,23 +49,8 @@ export class PasswordRecoveryController {
       }, () => this.service.confirmReset(parsed.data));
       res.status(200).json({ success: true, message: 'Contraseña actualizada. Inicia sesión nuevamente.' });
     } catch (error: unknown) {
-      this.respond(res, error);
+      respondWithFinOpsError(res, error, 'No se pudo confirmar la recuperación.', 'auth_password_recovery_confirm', req.path);
     }
   };
 
-  private respond(res: Response, error: unknown): void {
-    if (error instanceof AuthenticationError) {
-      res.status(401).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-    if (error instanceof FinOpsBaseError) {
-      res.status(error.code === 'VALIDATION_ERROR' ? 400 : 500).json({
-        success: false,
-        error: error.message,
-        code: error.code,
-      });
-      return;
-    }
-    res.status(500).json({ success: false, error: 'No se pudo procesar la recuperación.', code: 'INTERNAL_SERVER_ERROR' });
-  }
 }

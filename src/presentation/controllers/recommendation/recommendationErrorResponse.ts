@@ -1,5 +1,6 @@
 import type { Response } from 'express';
 import { FinOpsBaseError } from '../../../domain/errors/errors.js';
+import { safeErrorMessage } from '../../../application/observability/safeError.js';
 
 /**
  * Helper puro de mapeo de errores a respuestas HTTP para el controlador de
@@ -37,7 +38,7 @@ export function respondWithRecommendationError(
 
     res.status(status).json({
       success: false,
-      error: error.message,
+      error: safeErrorMessage(error.message),
       code: error.code,
     });
     return;
@@ -45,6 +46,6 @@ export function respondWithRecommendationError(
 
   res.status(500).json({
     success: false,
-    error: fallbackMessage,
+    error: safeErrorMessage(fallbackMessage),
   });
 }

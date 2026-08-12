@@ -3,9 +3,9 @@ import { z } from 'zod';
 import { AuthService, type LoginResult } from '../../application/services/AuthService.js';
 import { hashMfaChallengeToken } from '../../application/services/MfaService.js';
 import { isMfaRecoveryCode } from '../../application/services/security/mfaRecoveryCodes.js';
-import { AuthenticationError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 import { setRefreshCookie, type AuthCookieConfig } from '../auth/authCookie.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -28,7 +28,7 @@ export class AuthController {
   public login = async (req: Request, res: Response): Promise<void> => {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ success: false, error: 'Invalid login payload', code: 'VALIDATION_ERROR' });
+      res.status(400).json({ success: false, error: 'Los datos de inicio de sesión no son válidos.', code: 'VALIDATION_ERROR' });
       return;
     }
 
@@ -60,7 +60,7 @@ export class AuthController {
       setRefreshCookieIfPresent(res, result, this.cookieConfig, this.refreshTokenTtlSeconds);
       res.status(200).json(toPublicLoginResult(result));
     } catch (error: unknown) {
-      this.respondLoginError(res, error);
+      respondWithFinOpsError(res, error, 'No fue posible iniciar sesión.', 'auth_login', req.path);
     }
   };
 
@@ -80,7 +80,7 @@ export class AuthController {
       setRefreshCookieIfPresent(res, result, this.cookieConfig, this.refreshTokenTtlSeconds);
       res.status(200).json(toPublicLoginResult(result));
     } catch (error: unknown) {
-      this.respondWithAuthError(res, error);
+      respondWithFinOpsError(res, error, 'No fue posible completar el desafío MFA.', 'auth_mfa_complete', req.path);
     }
   };
 
@@ -100,7 +100,7 @@ export class AuthController {
       setRefreshCookieIfPresent(res, result, this.cookieConfig, this.refreshTokenTtlSeconds);
       res.status(200).json(toPublicLoginResult(result));
     } catch (error: unknown) {
-      this.respondWithAuthError(res, error);
+      respondWithFinOpsError(res, error, 'No fue posible completar la activación de MFA.', 'auth_mfa_enrollment', req.path);
     }
   };
 
@@ -108,29 +108,6 @@ export class AuthController {
     res.status(400).json({ success: false, error: 'El desafío MFA no es válido.', code: 'VALIDATION_ERROR' });
   }
 
-  private respondLoginError(res: Response, error: unknown): void {
-    if (error instanceof AuthenticationError) {
-      res.status(401).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-    if (error instanceof FinOpsBaseError) {
-      res.status(500).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-    res.status(500).json({ success: false, error: 'An unexpected authentication error occurred' });
-  }
-
-  private respondWithAuthError(res: Response, error: unknown): void {
-    if (error instanceof AuthenticationError) {
-      res.status(401).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-    if (error instanceof FinOpsBaseError) {
-      res.status(error.code === 'AUTHORIZATION_FAILED' ? 403 : 500).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-    res.status(500).json({ success: false, error: 'An unexpected authentication error occurred' });
-  }
 }
 
 function setRefreshCookieIfPresent(res: Response, result: LoginResult, config: AuthCookieConfig, ttlSeconds: number): void {

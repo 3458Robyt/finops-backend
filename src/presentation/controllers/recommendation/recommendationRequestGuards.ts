@@ -3,6 +3,7 @@ import type { AuthContext } from '../../../domain/models/AuthContext.js';
 import { AuthorizationError } from '../../../domain/errors/errors.js';
 import { hasPermission, type FinOpsPermission } from '../../../domain/security/AuthorizationPolicy.js';
 import { parseString } from './recommendationRequestParsers.js';
+import { respondWithFinOpsError } from '../../http/finOpsErrorResponse.js';
 
 /**
  * Guardas de petición reutilizables para el controlador de recomendaciones
@@ -67,12 +68,12 @@ function requireRecommendationPermission(
   permission: FinOpsPermission,
 ): boolean {
   if (!hasPermission(auth.role, permission)) {
-    const error = new AuthorizationError();
-    res.status(403).json({
-      success: false,
-      error: error.message,
-      code: error.code,
-    });
+    respondWithFinOpsError(
+      res,
+      new AuthorizationError(),
+      'No estás autorizado para realizar esta acción.',
+      'recommendation_permission_denied',
+    );
     return false;
   }
 

@@ -1,8 +1,9 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { MfaService } from '../../application/services/MfaService.js';
-import { AuthenticationError, AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import { isPrivilegedRole } from '../../domain/security/AuthorizationPolicy.js';
+import { AuthorizationError } from '../../domain/errors/errors.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const codeSchema = z.object({ code: z.string().regex(/^\d{6}$/) });
 
@@ -11,7 +12,7 @@ export class MfaController {
 
   public status = async (req: Request, res: Response): Promise<void> => {
     if (req.auth === undefined) {
-      res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });
+      res.status(401).json({ success: false, error: 'Se requiere autenticación.', code: 'AUTHENTICATION_REQUIRED' });
       return;
     }
     try {
@@ -24,7 +25,7 @@ export class MfaController {
         recoveryCodesRemaining: recovery.remaining,
       });
     } catch (error: unknown) {
-      this.respond(res, error);
+      respondWithFinOpsError(res, error, 'No se pudo consultar el estado de MFA.', 'auth_mfa_status', req.path);
     }
   };
 
@@ -34,7 +35,7 @@ export class MfaController {
       const result = await this.service.beginSetup(req.auth.userId, req.auth.email);
       res.status(200).json({ success: true, ...result, message: 'Escanea el código y confirma un código MFA para activarlo.' });
     } catch (error: unknown) {
-      this.respond(res, error);
+      respondWithFinOpsError(res, error, 'No se pudo iniciar la configuración de MFA.', 'auth_mfa_setup', req.path);
     }
   };
 
@@ -53,7 +54,7 @@ export class MfaController {
         message: 'MFA quedó activado. Guarda estos códigos; no volverán a mostrarse.',
       });
     } catch (error: unknown) {
-      this.respond(res, error);
+      respondWithFinOpsError(res, error, 'No se pudo confirmar la configuración de MFA.', 'auth_mfa_confirm', req.path);
     }
   };
 
@@ -72,36 +73,20 @@ export class MfaController {
         message: 'Los códigos anteriores fueron revocados. Guarda los nuevos códigos ahora.',
       });
     } catch (error: unknown) {
-      this.respond(res, error);
+      respondWithFinOpsError(res, error, 'No se pudieron regenerar los códigos de recuperación.', 'auth_mfa_regenerate_recovery', req.path);
     }
   };
 
   private requirePrivileged(req: Request, res: Response): boolean {
     if (req.auth === undefined) {
-      res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });
+      res.status(401).json({ success: false, error: 'Se requiere autenticación.', code: 'AUTHENTICATION_REQUIRED' });
       return false;
     }
     if (!isPrivilegedRole(req.auth.role)) {
-      const error = new AuthorizationError();
-      res.status(403).json({ success: false, error: error.message, code: error.code });
+      respondWithFinOpsError(res, new AuthorizationError(), 'No estás autorizado para administrar MFA.', 'auth_mfa_authorization', req.path);
       return false;
     }
     return true;
   }
 
-  private respond(res: Response, error: unknown): void {
-    if (error instanceof AuthenticationError) {
-      res.status(401).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-    if (error instanceof FinOpsBaseError) {
-      res.status(error.code === 'AUTHORIZATION_FAILED' ? 403 : error.code === 'VALIDATION_ERROR' ? 400 : 500).json({
-        success: false,
-        error: error.message,
-        code: error.code,
-      });
-      return;
-    }
-    res.status(500).json({ success: false, error: 'No se pudo procesar MFA.', code: 'INTERNAL_SERVER_ERROR' });
-  }
 }

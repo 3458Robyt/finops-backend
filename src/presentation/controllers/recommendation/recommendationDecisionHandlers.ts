@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import type { IAgentLearningService } from '../../../domain/interfaces/IAgentLearningService.js';
+import { safeErrorMessage } from '../../../application/observability/safeError.js';
 import type { IRecommendationRepository } from '../../../domain/interfaces/IRecommendationRepository.js';
 import {
   parseDate,
@@ -241,7 +242,7 @@ async function processLearningSafely(
   } catch (error: unknown) {
     return {
       status: 'ERROR',
-      error: error instanceof Error ? error.message : 'Learning processing failed',
+      error: safeErrorMessage(error),
     };
   }
 }

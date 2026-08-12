@@ -1,9 +1,9 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AuthService, hashOpaqueToken, type LoginResult } from '../../application/services/AuthService.js';
-import { AuthenticationError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 import { clearRefreshCookie, readRefreshCookie, setRefreshCookie, type AuthCookieConfig } from '../auth/authCookie.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const switchTenantSchema = z.object({ tenantId: z.string().min(1) });
 
@@ -25,7 +25,7 @@ export class AuthSessionController {
         availableTenants: tenants,
       });
     } catch (error: unknown) {
-      this.respondWithAuthError(res, error);
+      respondWithFinOpsError(res, error, 'No fue posible cargar los tenants disponibles.', 'auth_list_tenants', req.path);
     }
   };
 
@@ -33,7 +33,7 @@ export class AuthSessionController {
     if (req.auth === undefined) return this.authenticationRequired(res);
     const parsed = switchTenantSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ success: false, error: 'Invalid switch tenant payload', code: 'VALIDATION_ERROR' });
+      res.status(400).json({ success: false, error: 'El tenant seleccionado no es válido.', code: 'VALIDATION_ERROR' });
       return;
     }
     try {
@@ -46,7 +46,7 @@ export class AuthSessionController {
       setRefreshCookieIfPresent(res, result, this.cookieConfig, this.refreshTokenTtlSeconds);
       res.status(200).json(toPublicLoginResult(result));
     } catch (error: unknown) {
-      this.respondWithAuthError(res, error);
+      respondWithFinOpsError(res, error, 'No fue posible cambiar de tenant.', 'auth_switch_tenant', req.path);
     }
   };
 
@@ -57,7 +57,7 @@ export class AuthSessionController {
       clearRefreshCookie(res, this.cookieConfig);
       res.status(200).json({ success: true });
     } catch (error: unknown) {
-      this.respondWithAuthError(res, error);
+      respondWithFinOpsError(res, error, 'No fue posible cerrar la sesión.', 'auth_logout', req.path);
     }
   };
 
@@ -81,7 +81,7 @@ export class AuthSessionController {
       res.status(200).json(toPublicLoginResult(result));
     } catch (error: unknown) {
       clearRefreshCookie(res, this.cookieConfig);
-      this.respondWithAuthError(res, error);
+      respondWithFinOpsError(res, error, 'No fue posible renovar la sesión.', 'auth_refresh', req.path);
     }
   };
 
@@ -92,7 +92,7 @@ export class AuthSessionController {
       clearRefreshCookie(res, this.cookieConfig);
       res.status(200).json({ success: true });
     } catch (error: unknown) {
-      this.respondWithAuthError(res, error);
+      respondWithFinOpsError(res, error, 'No fue posible cerrar las sesiones.', 'auth_logout_all', req.path);
     }
   };
 
@@ -101,7 +101,7 @@ export class AuthSessionController {
     try {
       res.status(200).json({ success: true, sessions: await this.authService.listSessions(req.auth) });
     } catch (error: unknown) {
-      this.respondWithAuthError(res, error);
+      respondWithFinOpsError(res, error, 'No fue posible cargar las sesiones.', 'auth_list_sessions', req.path);
     }
   };
 
@@ -109,31 +109,19 @@ export class AuthSessionController {
     if (req.auth === undefined) return this.authenticationRequired(res);
     const sessionId = req.params['id'];
     if (typeof sessionId !== 'string' || sessionId.trim() === '') {
-      res.status(400).json({ success: false, error: 'Invalid session id', code: 'VALIDATION_ERROR' });
+      res.status(400).json({ success: false, error: 'El identificador de sesión no es válido.', code: 'VALIDATION_ERROR' });
       return;
     }
     try {
       await this.authService.revokeSession(req.auth, sessionId);
       res.status(200).json({ success: true });
     } catch (error: unknown) {
-      this.respondWithAuthError(res, error);
+      respondWithFinOpsError(res, error, 'No fue posible revocar la sesión.', 'auth_revoke_session', req.path);
     }
   };
 
-  private respondWithAuthError(res: Response, error: unknown): void {
-    if (error instanceof AuthenticationError) {
-      res.status(401).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-    if (error instanceof FinOpsBaseError) {
-      res.status(error.code === 'AUTHORIZATION_FAILED' ? 403 : 500).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-    res.status(500).json({ success: false, error: 'An unexpected authentication error occurred' });
-  }
-
   private authenticationRequired(res: Response): void {
-    res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });
+    res.status(401).json({ success: false, error: 'Se requiere autenticación.', code: 'AUTHENTICATION_REQUIRED' });
   }
 }
 

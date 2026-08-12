@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import type { SavingsReminderService } from '../../application/services/SavingsReminderService.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 /**
  * Controlador de la capa de presentación para las notificaciones (montado en
@@ -31,7 +32,7 @@ export class NotificationController {
    */
   public list = async (req: Request, res: Response): Promise<void> => {
     if (req.auth === undefined) {
-      res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });
+      res.status(401).json({ success: false, error: 'Se requiere autenticación.', code: 'AUTHENTICATION_REQUIRED' });
       return;
     }
 
@@ -51,10 +52,7 @@ export class NotificationController {
         },
       });
     } catch (error: unknown) {
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'No fue posible cargar notificaciones',
-      });
+      respondWithFinOpsError(res, error, 'No fue posible cargar las notificaciones.', 'notifications_list', req.path);
     }
   };
 
@@ -103,14 +101,14 @@ export class NotificationController {
    */
   private async updateStatus(req: Request, res: Response, status: 'READ' | 'DISMISSED'): Promise<void> {
     if (req.auth === undefined) {
-      res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });
+      res.status(401).json({ success: false, error: 'Se requiere autenticación.', code: 'AUTHENTICATION_REQUIRED' });
       return;
     }
 
     const notificationId = req.params['id'];
 
     if (typeof notificationId !== 'string' || notificationId.trim() === '') {
-      res.status(400).json({ success: false, error: 'Notification id is required', code: 'VALIDATION_ERROR' });
+      res.status(400).json({ success: false, error: 'El identificador de notificación es obligatorio.', code: 'VALIDATION_ERROR' });
       return;
     }
 
@@ -122,16 +120,13 @@ export class NotificationController {
         : await this.savingsReminderService.dismiss(req.auth.tenantId, req.auth.userId, parsedNotificationId);
 
       if (notification === null) {
-        res.status(404).json({ success: false, error: 'Notification not found', code: 'NOT_FOUND' });
+        res.status(404).json({ success: false, error: 'No se encontró la notificación.', code: 'NOT_FOUND' });
         return;
       }
 
       res.status(200).json({ success: true, notification });
     } catch (error: unknown) {
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'No fue posible actualizar la notificacion',
-      });
+      respondWithFinOpsError(res, error, 'No fue posible actualizar la notificación.', 'notifications_update', req.path);
     }
   }
 }

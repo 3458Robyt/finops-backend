@@ -1,6 +1,5 @@
 import type { Request, Response } from "express";
 import type { IRecommendationRepository } from "../../domain/interfaces/IRecommendationRepository.js";
-import { FinOpsBaseError } from "../../domain/errors/errors.js";
 import {
   parseStatus,
   parseString,
@@ -9,7 +8,7 @@ import {
   requireAuth,
   requireRecommendationId,
 } from "./recommendation/recommendationRequestGuards.js";
-import { respondWithRecommendationError } from "./recommendation/recommendationErrorResponse.js";
+import { respondWithFinOpsError } from "../http/finOpsErrorResponse.js";
 
 /** HTTP handlers for recommendation detail and tenant-scoped listing. */
 export class RecommendationReadController {
@@ -43,11 +42,14 @@ export class RecommendationReadController {
       }
 
       res.status(200).json({ success: true, recommendation });
-    } catch {
-      res.status(500).json({
-        success: false,
-        error: "An unexpected error occurred processing recommendation detail",
-      });
+    } catch (error: unknown) {
+      respondWithFinOpsError(
+        res,
+        error,
+        "No fue posible cargar el detalle de la oportunidad.",
+        "recommendation_detail",
+        req.path,
+      );
     }
   };
 
@@ -84,19 +86,13 @@ export class RecommendationReadController {
         },
       });
     } catch (error: unknown) {
-      if (error instanceof FinOpsBaseError) {
-        res.status(400).json({
-          success: false,
-          error: error.message,
-          code: error.code,
-        });
-        return;
-      }
-
-      res.status(500).json({
-        success: false,
-        error: "An unexpected error occurred processing recommendations",
-      });
+      respondWithFinOpsError(
+        res,
+        error,
+        "No fue posible cargar las oportunidades.",
+        "recommendations_list",
+        req.path,
+      );
     }
   };
 }

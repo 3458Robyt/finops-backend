@@ -20,10 +20,10 @@ export function resolveFinOpsError(error: unknown, fallback: string): {
   }
 
   if (!(error instanceof FinOpsBaseError)) {
-    return { status: 500, error: fallback };
+    return { status: 500, error: fallback, code: 'INTERNAL_SERVER_ERROR' };
   }
 
-  const status = error.code === 'AUTHENTICATION_REQUIRED' ? 401
+  const status = ['AUTHENTICATION_REQUIRED', 'AUTHENTICATION_FAILED'].includes(error.code) ? 401
     : error.code === 'AUTHORIZATION_FAILED' ? 403
       : error.code === 'NOT_FOUND' ? 404
         : error.code === 'VALIDATION_ERROR' ? 400

@@ -4,6 +4,7 @@ import type { IAuthSessionRepository } from '../../domain/interfaces/IAuthSessio
 import type { UserRole } from '../../domain/models/AuthContext.js';
 import { AuthenticationError, AuthorizationError } from '../../domain/errors/errors.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 /**
  * Crea el middleware de autenticación basado en Bearer token.
@@ -30,7 +31,7 @@ export function createAuthMiddleware(
     if (header === undefined || !header.startsWith('Bearer ')) {
       res.status(401).json({
         success: false,
-        error: 'Missing Bearer token',
+        error: 'Se requiere un token Bearer.',
         code: 'AUTHENTICATION_REQUIRED',
       });
       return;
@@ -57,7 +58,7 @@ export function createAuthMiddleware(
     } catch {
       res.status(401).json({
         success: false,
-        error: 'Invalid or expired token',
+        error: 'El token no es válido o ha expirado.',
         code: 'AUTHENTICATION_FAILED',
       });
     }
@@ -83,19 +84,20 @@ export function requireRole(allowedRoles: readonly UserRole[]) {
     if (req.auth === undefined) {
       res.status(401).json({
         success: false,
-        error: 'Authentication is required',
+        error: 'Se requiere autenticación.',
         code: 'AUTHENTICATION_REQUIRED',
       });
       return;
     }
 
     if (!allowedRoles.includes(req.auth.role)) {
-      const error = new AuthorizationError();
-      res.status(403).json({
-        success: false,
-        error: error.message,
-        code: error.code,
-      });
+      respondWithFinOpsError(
+        res,
+        new AuthorizationError(),
+        'No estás autorizado para realizar esta acción.',
+        'authorization_role_denied',
+        req.path,
+      );
       return;
     }
 

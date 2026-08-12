@@ -1,5 +1,5 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 export function createNotFoundHandler(): RequestHandler {
   return (req, res) => {
@@ -35,33 +35,13 @@ export function createHttpErrorHandler(): (
       return;
     }
 
-    if (error instanceof FinOpsBaseError) {
-      const status = error.code === 'AUTHENTICATION_FAILED'
-        ? 401
-        : error.code === 'AUTHORIZATION_FAILED' ? 403 : 500;
-      res.status(status).json({
-        success: false,
-        error: status >= 500 ? 'Error interno del servidor' : error.message,
-        code: error.code,
-        ...(requestId === undefined ? {} : { diagnosticId: requestId }),
-      });
-      return;
-    }
-
-    console.error(JSON.stringify({
-      level: 'error',
-      event: 'unhandled_http_error',
-      requestId,
-      method: req.method,
-      path: req.path,
-      errorName: error instanceof Error ? error.name : 'UnknownError',
-    }));
-    res.status(500).json({
-      success: false,
-      error: 'Error interno del servidor',
-      code: 'INTERNAL_SERVER_ERROR',
-      ...(requestId === undefined ? {} : { diagnosticId: requestId }),
-    });
+    respondWithFinOpsError(
+      res,
+      error,
+      'Error interno del servidor',
+      'unhandled_http_error',
+      `${req.method} ${req.path}`,
+    );
   };
 }
 

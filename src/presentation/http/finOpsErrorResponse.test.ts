@@ -4,6 +4,7 @@ import { respondWithFinOpsError, resolveFinOpsError } from './finOpsErrorRespons
 
 describe('finOpsErrorResponse', () => {
   test('maps known domain errors consistently', () => {
+    expect(resolveFinOpsError(new FinOpsBaseError('invalid credentials', 'AUTHENTICATION_FAILED'), 'fallback').status).toBe(401);
     expect(resolveFinOpsError(new FinOpsBaseError('not found', 'NOT_FOUND'), 'fallback')).toEqual({
       status: 404,
       error: 'not found',
@@ -13,6 +14,14 @@ describe('finOpsErrorResponse', () => {
     expect(resolveFinOpsError(new FinOpsBaseError('provider unavailable', 'AI_RESPONSE_ERROR'), 'fallback').status).toBe(502);
     expect(resolveFinOpsError(new FinOpsBaseError('apiKey=super-secret', 'PROVIDER_ERROR'), 'fallback').error)
       .toBe('apiKey=[REDACTED]');
+  });
+
+  test('returns a stable internal error code for unexpected errors', () => {
+    expect(resolveFinOpsError(new Error('provider secret'), 'fallback')).toEqual({
+      status: 500,
+      error: 'fallback',
+      code: 'INTERNAL_SERVER_ERROR',
+    });
   });
 
   test('preserves the audit payload and diagnostic id for rejected AI artifacts', () => {

@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 .env.*
+!.env.example
 downloads/
 src/generated/prisma/
 docs/erd/
@@ -10,6 +11,12 @@ docs/erd/
 *.d.ts.map
 *.pem
 *.key
+*.p12
+*.pfx
+*.jks
+*.sqlite
+*.sqlite3
+*.db
 .oci/
 .idea/dataSources.xml
 .claude/

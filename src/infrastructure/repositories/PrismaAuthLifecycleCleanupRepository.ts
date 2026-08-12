@@ -57,17 +57,23 @@ async function deleteMfaChallenges(transaction: Prisma.TransactionClient, input:
 }
 
 async function deleteSessions(transaction: Prisma.TransactionClient, input: AuthLifecycleCleanupInput): Promise<number> {
-  const rows = await transaction.authSession.findMany({
-    where: {
-      expiresAt: { lte: input.now },
-      // Never let a session delete cascade into a refresh token that is still
-      // valid if a malformed or manually imported record has mismatched TTLs.
-      refreshTokens: { none: { expiresAt: { gt: input.now } } },
-    },
-    orderBy: { id: 'asc' },
-    take: input.batchSize,
-    select: { id: true },
-  });
+  // Lock the parent rows before deleting them. A concurrent refresh-token
+  // insert must acquire a key-share lock on the session and therefore cannot
+  // race this decision into a cascading delete.
+  const rows = await transaction.$queryRaw<{ id: string }[]>`
+    SELECT s."id"
+    FROM "auth_sessions" s
+    WHERE s."expires_at" <= ${input.now}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "auth_refresh_tokens" r
+        WHERE r."session_id" = s."id"
+          AND r."expires_at" > ${input.now}
+      )
+    ORDER BY s."id" ASC
+    FOR UPDATE OF s SKIP LOCKED
+    LIMIT ${input.batchSize}
+  `;
   if (rows.length === 0) return 0;
   return (await transaction.authSession.deleteMany({ where: { id: { in: rows.map((row: { id: string }) => row.id) } } })).count;
 }

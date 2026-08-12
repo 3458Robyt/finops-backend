@@ -8,6 +8,7 @@ describe('PrismaAuthLifecycleCleanupRepository', () => {
       passwordResetToken: modelDouble([{ id: 'reset-1' }], 1),
       mfaChallenge: modelDouble([{ id: 'challenge-1' }], 1),
       authSession: modelDouble([{ id: 'session-1' }], 1),
+      $queryRaw: vi.fn().mockResolvedValue([{ id: 'session-1' }]),
     };
     const prisma = {
       $transaction: vi.fn(async (callback: (tx: typeof transaction) => Promise<unknown>) => callback(transaction)),
@@ -29,12 +30,8 @@ describe('PrismaAuthLifecycleCleanupRepository', () => {
     expect(transaction.authRefreshToken.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { expiresAt: { lte: now } } }));
     expect(transaction.passwordResetToken.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { expiresAt: { lte: now } } }));
     expect(transaction.mfaChallenge.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { expiresAt: { lte: now } } }));
-    expect(transaction.authSession.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: {
-        expiresAt: { lte: now },
-        refreshTokens: { none: { expiresAt: { gt: now } } },
-      },
-    }));
+    expect(transaction.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(transaction.$queryRaw.mock.calls[0]?.[0].join(' ')).toContain('FOR UPDATE OF s SKIP LOCKED');
     expect(transaction.authRefreshToken.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ['refresh-1'] } } });
     expect(transaction.passwordResetToken.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ['reset-1'] } } });
     expect(transaction.mfaChallenge.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ['challenge-1'] } } });

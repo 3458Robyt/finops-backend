@@ -3,14 +3,8 @@ import type {
   CloudIngestionCredential,
   CloudIngestionJobContext,
   CloudIngestionResult,
-  NormalizedFocusCostLineItem,
-  NormalizedResourceMetricSample,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import type { IngestionSourceType } from '../../domain/models/CloudConnection.js';
-import {
-  normalizeExternalResourceId,
-  resolveExactResourceLink,
-} from '../../domain/models/ResourceLinkage.js';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { loadRuntimeConfig } from '../config/runtimeConfigReader.js';
@@ -23,11 +17,10 @@ import {
 import { PrismaIngestionCostProjector, type FocusCostMetricProjectionResult } from './PrismaIngestionCostProjector.js';
 import type { PrismaIngestionPersistenceClient } from './ingestionPersistenceTypes.js';
 import {
-  emptyResourceLinkageStats,
   mergeResourceLinkageStats,
-  summarizeResourceLinkage,
   type ResourceLinkageRunStats,
 } from './ingestionResourceLinkage.js';
+import { PrismaIngestionSamplePersistence } from './PrismaIngestionSamplePersistence.js';
 
 interface ClaimedJobRow {
   readonly id: string;
@@ -63,6 +56,7 @@ export class PrismaCloudIngestionJobRepository {
     timeout: 60_000,
   } as const;
   private readonly costProjector = new PrismaIngestionCostProjector();
+  private readonly samplePersistence = new PrismaIngestionSamplePersistence();
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -146,7 +140,7 @@ export class PrismaCloudIngestionJobRepository {
     const resources = mergeNormalizedResources([...result.resources, ...metricDerivedResources]);
     const resourceIdsByExternalId = await upsertNormalizedCloudResources(this.prisma, resources);
     let focusRowsProcessed = result.focusRows.length;
-    let focusRowsInserted = await this.insertFocusRows(this.prisma, result.focusRows);
+    let focusRowsInserted = await this.samplePersistence.insertFocusRows(this.prisma, result.focusRows);
     let costMetricProjection = await this.costProjector.projectFocusRowsToCostMetrics(this.prisma, job, result.focusRows, resourceIdsByExternalId);
     const providerProjection = await this.costProjector.projectProviderCostsToCostMetrics(this.prisma, job, result.providerCostRows ?? [], resourceIdsByExternalId);
     costMetricProjection = {
@@ -160,7 +154,7 @@ export class PrismaCloudIngestionJobRepository {
     if (result.focusBatches !== undefined) {
       for await (const batch of result.focusBatches) {
         focusRowsProcessed += batch.length;
-        focusRowsInserted += await this.insertFocusRows(this.prisma, batch);
+        focusRowsInserted += await this.samplePersistence.insertFocusRows(this.prisma, batch);
         const batchProjection = await this.costProjector.projectFocusRowsToCostMetrics(this.prisma, job, batch, resourceIdsByExternalId);
         costMetricProjection = {
           projected: costMetricProjection.projected + batchProjection.projected,
@@ -172,12 +166,12 @@ export class PrismaCloudIngestionJobRepository {
       }
     }
 
-    const metricLinkage = await this.insertMetricSamples(
+    const metricLinkage = await this.samplePersistence.insertMetricSamples(
       this.prisma,
       result.metricSamples,
       resourceIdsByExternalId,
     );
-    await this.reconcileMetricSampleResourceLinks(this.prisma, job.cloudConnectionId, resourceIdsByExternalId);
+    await this.samplePersistence.reconcileMetricSampleResourceLinks(this.prisma, job.cloudConnectionId, resourceIdsByExternalId);
 
     const completedAt = new Date();
     const summary = this.buildSummary(
@@ -349,107 +343,6 @@ export class PrismaCloudIngestionJobRepository {
     };
   }
 
-  private async insertFocusRows(
-    tx: PrismaIngestionPersistenceClient,
-    rows: readonly NormalizedFocusCostLineItem[],
-  ): Promise<number> {
-    if (rows.length === 0) {
-      return 0;
-    }
-
-    let inserted = 0;
-    for (const chunk of chunkArray(rows, 1000)) {
-      const result = await tx.focusCostLineItem.createMany({
-        data: chunk.map((row) => this.focusRowData(row)),
-        skipDuplicates: true,
-      });
-      inserted += result.count;
-    }
-
-    return inserted;
-  }
-
-  private focusRowData(row: NormalizedFocusCostLineItem): Prisma.FocusCostLineItemUncheckedCreateInput {
-    return {
-      tenantId: row.tenantId,
-      cloudConnectionId: row.cloudConnectionId,
-      provider: row.provider,
-      focusVersion: row.focusVersion,
-      chargePeriodStart: row.chargePeriodStart,
-      chargePeriodEnd: row.chargePeriodEnd,
-      ...(row.billingPeriodStart !== undefined ? { billingPeriodStart: row.billingPeriodStart } : {}),
-      ...(row.billingPeriodEnd !== undefined ? { billingPeriodEnd: row.billingPeriodEnd } : {}),
-      ...(row.billingAccountId !== undefined ? { billingAccountId: row.billingAccountId } : {}),
-      ...(row.subAccountId !== undefined ? { subAccountId: row.subAccountId } : {}),
-      serviceName: row.serviceName,
-      resourceId: row.resourceId,
-      ...(row.regionId !== undefined ? { regionId: row.regionId } : {}),
-      chargeCategory: row.chargeCategory,
-      billedCost: new Prisma.Decimal(row.billedCost),
-      ...(row.effectiveCost !== undefined ? { effectiveCost: new Prisma.Decimal(row.effectiveCost) } : {}),
-      ...(row.listCost !== undefined ? { listCost: new Prisma.Decimal(row.listCost) } : {}),
-      ...(row.contractedCost !== undefined ? { contractedCost: new Prisma.Decimal(row.contractedCost) } : {}),
-      billingCurrency: row.billingCurrency,
-      ...(row.consumedQuantity !== undefined
-        ? { consumedQuantity: new Prisma.Decimal(row.consumedQuantity) }
-        : {}),
-      ...(row.consumedUnit !== undefined ? { consumedUnit: row.consumedUnit } : {}),
-      ...(row.tags !== undefined ? { tags: row.tags as Prisma.InputJsonValue } : {}),
-      rawRow: row.rawRow as Prisma.InputJsonValue,
-      lineItemHash: row.lineItemHash,
-    };
-  }
-
-  private async insertMetricSamples(
-    tx: PrismaIngestionPersistenceClient,
-    samples: readonly NormalizedResourceMetricSample[],
-    resourceIdsByExternalId: ReadonlyMap<string, string>,
-  ): Promise<ResourceLinkageRunStats> {
-    if (samples.length === 0) {
-      return emptyResourceLinkageStats();
-    }
-
-    const linkageRows: Array<{ readonly cloudResourceId?: string; readonly resourceLinkReason?: string }> = [];
-    await tx.resourceMetricSample.createMany({
-      data: samples.map((sample) => {
-        const normalizedExternalResourceId = normalizeExternalResourceId(sample.externalResourceId);
-        const cloudResourceId = normalizedExternalResourceId === undefined
-          ? undefined
-          : resourceIdsByExternalId.get(normalizedExternalResourceId);
-        const resourceLink = cloudResourceId === undefined
-          ? resolveExactResourceLink({
-              cloudConnectionId: sample.cloudConnectionId,
-              externalResourceId: normalizedExternalResourceId,
-              resourceIdsByKey: new Map(),
-            })
-          : { cloudResourceId };
-        linkageRows.push({
-          ...(resourceLink.cloudResourceId !== undefined ? { cloudResourceId: resourceLink.cloudResourceId } : {}),
-          ...(resourceLink.reason !== undefined ? { resourceLinkReason: resourceLink.reason } : {}),
-        });
-
-        return {
-          tenantId: sample.tenantId,
-          cloudConnectionId: sample.cloudConnectionId,
-          provider: sample.provider,
-          externalResourceId: normalizedExternalResourceId ?? sample.externalResourceId,
-          metricName: sample.metricName,
-          value: new Prisma.Decimal(sample.value),
-          sampledAt: sample.sampledAt,
-          granularitySeconds: sample.granularitySeconds,
-          sourceType: 'TECHNICAL_METRIC',
-          ...(resourceLink.cloudResourceId !== undefined ? { cloudResourceId: resourceLink.cloudResourceId } : {}),
-          ...(resourceLink.reason !== undefined ? { resourceLinkReason: resourceLink.reason } : {}),
-          ...(sample.metricUnit !== undefined ? { metricUnit: sample.metricUnit } : {}),
-          ...(sample.rawMetric !== undefined ? { rawMetric: sample.rawMetric as Prisma.InputJsonValue } : {}),
-        };
-      }),
-      skipDuplicates: true,
-    });
-
-    return summarizeResourceLinkage(linkageRows);
-  }
-
   private async updateWatermark(
     tx: PrismaIngestionPersistenceClient,
     job: CloudIngestionJobContext,
@@ -561,23 +454,6 @@ export class PrismaCloudIngestionJobRepository {
     };
   }
 
-  private async reconcileMetricSampleResourceLinks(
-    tx: PrismaIngestionPersistenceClient,
-    cloudConnectionId: string,
-    resourceIdsByExternalId: ReadonlyMap<string, string>,
-  ): Promise<void> {
-    for (const [externalResourceId, cloudResourceId] of resourceIdsByExternalId) {
-      await tx.resourceMetricSample.updateMany({
-        where: {
-          cloudConnectionId,
-          externalResourceId,
-          cloudResourceId: null,
-        },
-        data: { cloudResourceId, resourceLinkReason: null },
-      });
-    }
-  }
-
   private calculateFreshnessDeadline(job: CloudIngestionJobContext): Date {
     const hours = job.sourceType === 'BILLING_EXPORT' ? 30 : 1;
     return new Date(job.targetEnd.getTime() + hours * 60 * 60 * 1000);
@@ -586,13 +462,4 @@ export class PrismaCloudIngestionJobRepository {
   private isJsonObject(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
   }
-}
-
-function chunkArray<T>(values: readonly T[], size: number): readonly (readonly T[])[] {
-  const chunks: T[][] = [];
-  for (let index = 0; index < values.length; index += size) {
-    chunks.push(values.slice(index, index + size));
-  }
-
-  return chunks;
 }

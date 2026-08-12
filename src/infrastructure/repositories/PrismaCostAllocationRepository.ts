@@ -4,49 +4,12 @@ import type { CostAllocationRuleInput, ICostAllocationRepository } from '../../d
 import type { IValueRealizationRepository } from '../../domain/interfaces/IValueRealizationRepository.js';
 import type { AllocationBreakdown, AllocationPreview, AllocationSummary, CostAllocationClosure, CostAllocationMode, CostAllocationRule, CostAllocationRuleStatus, CostAllocationRuleTarget, CostAllocationTarget, UnallocatedCostDetail } from '../../domain/models/CostAllocation.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import { allocate, filterSummary, hashMetrics, hashRules, matches, matchesAny, rulesUsed, suggestions, summarize, toNumber, scalarInput } from './costAllocationEngine.js';
+import type { AllocationLine, Metric } from './costAllocationEngine.js';
 
-type Metric = {
-  readonly chargePeriodStart: Date;
-  readonly metricIdentityHash: string;
-  readonly billedCost: Prisma.Decimal;
-  readonly billingCurrency: string;
-  readonly cloudAccountId: string;
-  readonly provider: string;
-  readonly serviceName: string;
-  readonly regionId: string | null;
-  readonly resourceId: string;
-  readonly cloudResourceId: string | null;
-  readonly resourceLinkReason: string | null;
-  readonly tags: unknown;
-};
-
-type AllocationLine = {
-  readonly chargePeriodStart: Date;
-  readonly metricIdentityHash: string;
-  readonly sourceAmount: Prisma.Decimal;
-  readonly allocationAmount: Prisma.Decimal;
-  readonly allocationKey: string;
-  readonly currency: string;
-  readonly allocationMode: CostAllocationMode;
-  readonly shared: boolean;
-  readonly percentage?: number;
-  readonly ruleId?: string;
-  readonly cloudAccountId: string;
-  readonly provider: string;
-  readonly serviceName: string;
-  readonly regionId: string | null;
-  readonly resourceId: string;
-  readonly cloudResourceId: string | null;
-  readonly resourceLinkReason: string | null;
-};
-
-type AllocationResult = {
-  readonly summaries: readonly AllocationSummary[];
-  readonly lines: readonly AllocationLine[];
-};
+export { summarize } from './costAllocationEngine.js';
 
 const ruleInclude = { allocationTargets: true } as const;
-const allocationScale = 6;
 const bulkClosureLineThreshold = 500;
 
 export class PrismaCostAllocationRepository implements ICostAllocationRepository {
@@ -240,90 +203,11 @@ export class PrismaCostAllocationRepository implements ICostAllocationRepository
   }
 }
 
-export function summarize(metrics: readonly Metric[], rules: readonly CostAllocationRule[], periodStart: Date): readonly AllocationSummary[] {
-  return allocate(metrics, rules, periodStart).summaries;
+async function createTargets(tx: any, tenantId: string, ruleId: string, targets: readonly CostAllocationRuleTarget[] | undefined): Promise<void> {
+  if (targets === undefined || targets.length === 0) return;
+  await tx.costAllocationRuleTarget.createMany({ data: targets.map((target) => ({ tenantId, ruleId, percentage: target.percentage, costCenter: target.costCenter, businessUnit: target.businessUnit, project: target.project, team: target.team, environment: target.environment })) });
 }
 
-function allocate(metrics: readonly Metric[], rules: readonly CostAllocationRule[], periodStart: Date): AllocationResult {
-  validateExecutionRules(rules);
-  const byCurrency = new Map<string, CurrencyAccumulator>();
-  const lines: AllocationLine[] = [];
-  for (const metric of metrics) {
-    const bucket = byCurrency.get(metric.billingCurrency) ?? emptyCurrency();
-    bucket.total = bucket.total.plus(metric.billedCost);
-    const rule = matchesAny(metric, rules, periodStart);
-    if (rule === undefined) {
-      addGroup(bucket, { allocationKey: 'UNALLOCATED', currency: metric.billingCurrency, cost: metric.billedCost, metricCount: 1, resourceCount: resourceSet(metric), shared: false });
-      lines.push(line(metric, metric.billedCost, 'UNALLOCATED', 'DIRECT', false));
-    } else if (rule.allocationMode === 'SPLIT') {
-      bucket.shared = bucket.shared.plus(metric.billedCost);
-      const amounts = splitAmounts(metric.billedCost, rule.allocationTargets);
-      for (const [index, target] of rule.allocationTargets.entries()) {
-        const allocationAmount = amounts[index]!;
-        addGroup(bucket, { allocationKey: allocationKey(target), currency: metric.billingCurrency, cost: allocationAmount, metricCount: 1, resourceCount: resourceSet(metric), shared: true, percentage: target.percentage, ruleId: rule.id, ...targetDimensions(target) });
-        lines.push(line(metric, allocationAmount, allocationKey(target), 'SPLIT', true, target.percentage, rule.id));
-      }
-    } else {
-      addGroup(bucket, { allocationKey: allocationKey(rule), currency: metric.billingCurrency, cost: metric.billedCost, metricCount: 1, resourceCount: resourceSet(metric), shared: false, percentage: 100, ruleId: rule.id, ...target(rule) });
-      lines.push(line(metric, metric.billedCost, allocationKey(rule), 'DIRECT', false, 100, rule.id));
-    }
-    byCurrency.set(metric.billingCurrency, bucket);
-  }
-  for (const value of byCurrency.values()) {
-    const groupedTotal = [...value.groups.values()].reduce((total, group) => total.plus(group.cost), new Prisma.Decimal(0));
-    if (!groupedTotal.eq(value.total)) throw new FinOpsBaseError('Los totales asignados no cuadran por moneda', 'INTERNAL_ERROR');
-  }
-  const summaries = [...byCurrency.entries()].map(([currency, value]) => ({ period: periodStart.toISOString().slice(0, 7), currency, totalCost: toNumber(value.total), allocatedCost: toNumber(value.allocated.plus(value.shared)), unallocatedCost: toNumber(value.total.minus(value.allocated).minus(value.shared)), sharedCost: toNumber(value.shared), coveragePercent: value.total.isZero() ? 0 : round(toNumber(value.allocated.plus(value.shared).div(value.total).mul(100))), dimensions: [...value.groups.values()].map((group) => ({ ...group, cost: toNumber(group.cost), resourceCount: group.resources.size, resources: undefined })).map(({ resources: _resources, ...group }) => group).sort((a, b) => b.cost - a.cost) }));
-  return { summaries, lines };
-}
-
-type CurrencyAccumulator = { total: Prisma.Decimal; allocated: Prisma.Decimal; shared: Prisma.Decimal; groups: Map<string, GroupAccumulator> };
-type GroupInput = Omit<AllocationBreakdown, 'cost' | 'resourceCount'> & { cost: Prisma.Decimal; resourceCount: Set<string> };
-type GroupAccumulator = { allocationKey: string; currency: string; cost: Prisma.Decimal; metricCount: number; resources: Set<string>; shared: boolean; percentage?: number; ruleId?: string } & CostAllocationTarget;
-function emptyCurrency(): CurrencyAccumulator { return { total: new Prisma.Decimal(0), allocated: new Prisma.Decimal(0), shared: new Prisma.Decimal(0), groups: new Map() }; }
-function addGroup(bucket: CurrencyAccumulator, value: GroupInput): void {
-  const current: GroupAccumulator = bucket.groups.get(value.allocationKey) ?? { allocationKey: value.allocationKey, currency: value.currency, cost: new Prisma.Decimal(0), metricCount: 0, resources: new Set<string>(), shared: value.shared, ...(value.percentage === undefined ? {} : { percentage: value.percentage }), ...(value.ruleId === undefined ? {} : { ruleId: value.ruleId }), ...targetFromBreakdown(value) };
-  current.cost = current.cost.plus(value.cost); current.metricCount += value.metricCount; current.shared = current.shared || value.shared; for (const resource of value.resourceCount) current.resources.add(resource); bucket.groups.set(value.allocationKey, current);
-  if (value.allocationKey !== 'UNALLOCATED' && !value.shared) bucket.allocated = bucket.allocated.plus(value.cost);
-}
-function targetFromBreakdown(value: CostAllocationTarget): Partial<CostAllocationTarget> { return { ...(value.costCenter === undefined ? {} : { costCenter: value.costCenter }), ...(value.businessUnit === undefined ? {} : { businessUnit: value.businessUnit }), ...(value.project === undefined ? {} : { project: value.project }), ...(value.team === undefined ? {} : { team: value.team }), ...(value.environment === undefined ? {} : { environment: value.environment }) }; }
-function targetDimensions(value: CostAllocationTarget): Partial<CostAllocationTarget> { return targetFromBreakdown(value); }
-function resourceSet(metric: Metric): Set<string> { return new Set([metric.cloudResourceId ?? metric.resourceId].filter(Boolean)); }
-function splitAmounts(cost: Prisma.Decimal, targets: readonly CostAllocationRuleTarget[]): readonly Prisma.Decimal[] {
-  let allocated = new Prisma.Decimal(0);
-  return targets.map((target, index) => {
-    if (index === targets.length - 1) return cost.minus(allocated);
-    const amount = cost.mul(new Prisma.Decimal(String(target.percentage))).div(100).toDecimalPlaces(allocationScale, Prisma.Decimal.ROUND_DOWN);
-    allocated = allocated.plus(amount);
-    return amount;
-  });
-}
-function validateExecutionRules(rules: readonly CostAllocationRule[]): void {
-  for (const rule of rules) {
-    if (rule.allocationMode !== 'SPLIT') continue;
-    if (rule.allocationTargets.length < 2) throw new FinOpsBaseError('La regla SPLIT no tiene suficientes destinos', 'VALIDATION_ERROR');
-    let total = new Prisma.Decimal(0);
-    const destinations = new Set<string>();
-    for (const target of rule.allocationTargets) {
-      let percentage: Prisma.Decimal;
-      try { percentage = new Prisma.Decimal(String(target.percentage)); } catch { throw new FinOpsBaseError('La regla SPLIT contiene un porcentaje inválido', 'VALIDATION_ERROR'); }
-      if (!percentage.isFinite() || percentage.lte(0) || percentage.gt(100) || percentage.toDecimalPlaces(4).eq(percentage) === false) throw new FinOpsBaseError('La regla SPLIT contiene porcentajes inválidos', 'VALIDATION_ERROR');
-      const destination = allocationKey(target);
-      if (destination === 'UNNAMED' || destinations.has(destination)) throw new FinOpsBaseError('La regla SPLIT contiene destinos duplicados o vacíos', 'VALIDATION_ERROR');
-      destinations.add(destination);
-      total = total.plus(percentage);
-    }
-    if (!total.eq(100)) throw new FinOpsBaseError('La regla SPLIT debe sumar exactamente 100 %', 'VALIDATION_ERROR');
-  }
-}
-function matchesAny(metric: Metric, rules: readonly CostAllocationRule[], period: Date): CostAllocationRule | undefined { return rules.find((rule) => matches(metric, rule, period)); }
-function matches(metric: Metric, rule: CostAllocationRule, _period: Date): boolean { if (rule.effectiveFrom !== undefined && metric.chargePeriodStart < rule.effectiveFrom) return false; if (rule.effectiveTo !== undefined && metric.chargePeriodStart > rule.effectiveTo) return false; const tags = asTags(metric.tags); return (rule.cloudAccountId === undefined || rule.cloudAccountId === metric.cloudAccountId) && (rule.provider === undefined || rule.provider === metric.provider) && (rule.serviceName === undefined || rule.serviceName === metric.serviceName) && (rule.regionId === undefined || rule.regionId === metric.regionId) && (rule.resourceId === undefined || rule.resourceId === metric.resourceId) && (rule.tagKey === undefined || tags[rule.tagKey] === rule.tagValue); }
-function asTags(value: unknown): Record<string, string> { return typeof value === 'object' && value !== null && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : {}; }
-function target(rule: CostAllocationRule): Partial<CostAllocationTarget> { return targetFromBreakdown(rule); }
-function allocationKey(value: CostAllocationRule | CostAllocationRuleTarget): string { const values = [value.costCenter, value.businessUnit, value.project, value.team, value.environment].filter((item): item is string => item !== undefined && item !== ''); return values.length === 0 ? ('name' in value ? value.name : 'UNNAMED') : values.join(' · '); }
-function suggestions(metric: Metric): readonly string[] { return ['Crear regla por servicio', 'Crear regla por cuenta cloud', ...(metric.resourceId === '' ? [] : ['Crear regla por recurso']), ...Object.keys(asTags(metric.tags)).map((key) => `Usar etiqueta: ${key}`)].slice(0, 4); }
-function scalarInput(input: Partial<CostAllocationRuleInput>): Record<string, unknown> { const { allocationTargets: _targets, ...scalar } = input; return Object.fromEntries(Object.entries(scalar).filter(([, value]) => value !== undefined)); }
-async function createTargets(tx: any, tenantId: string, ruleId: string, targets: readonly CostAllocationRuleTarget[] | undefined): Promise<void> { if (targets === undefined || targets.length === 0) return; await tx.costAllocationRuleTarget.createMany({ data: targets.map((target) => ({ tenantId, ruleId, percentage: target.percentage, costCenter: target.costCenter, businessUnit: target.businessUnit, project: target.project, team: target.team, environment: target.environment })) }); }
 async function createClosureLines(tx: any, tenantId: string, closureId: string, lines: readonly AllocationLine[]): Promise<void> {
   if (lines.length === 0) return;
   const data = lines.map((item) => ({ id: lineId(closureId, item), tenantId, closureId, chargePeriodStart: item.chargePeriodStart, metricIdentityHash: item.metricIdentityHash, currency: item.currency, sourceAmount: item.sourceAmount, allocationAmount: item.allocationAmount, allocationKey: item.allocationKey, allocationMode: item.allocationMode, shared: item.shared, ...(item.percentage === undefined ? {} : { percentage: item.percentage }), ...(item.ruleId === undefined ? {} : { ruleId: item.ruleId }), cloudAccountId: item.cloudAccountId, provider: item.provider, serviceName: item.serviceName, ...(item.regionId === null ? {} : { regionId: item.regionId }), ...(item.resourceId === '' ? {} : { resourceId: item.resourceId }), ...(item.cloudResourceId === null ? {} : { cloudResourceId: item.cloudResourceId }), ...(item.resourceLinkReason === null ? {} : { resourceLinkReason: item.resourceLinkReason }) }));
@@ -332,26 +216,7 @@ async function createClosureLines(tx: any, tenantId: string, closureId: string, 
     return;
   }
   const payload = JSON.stringify(data.map((item) => ({
-    id: item.id,
-    tenant_id: item.tenantId,
-    closure_id: item.closureId,
-    charge_period_start: item.chargePeriodStart.toISOString(),
-    metric_identity_hash: item.metricIdentityHash,
-    currency: item.currency,
-    source_amount: item.sourceAmount.toString(),
-    allocation_amount: item.allocationAmount.toString(),
-    allocation_key: item.allocationKey,
-    allocation_mode: item.allocationMode,
-    shared: item.shared,
-    percentage: item.percentage ?? null,
-    rule_id: item.ruleId ?? null,
-    cloud_account_id: item.cloudAccountId,
-    provider: item.provider,
-    service_name: item.serviceName,
-    region_id: item.regionId,
-    resource_id: item.resourceId === '' ? null : item.resourceId,
-    cloud_resource_id: item.cloudResourceId,
-    resource_link_reason: item.resourceLinkReason,
+    id: item.id, tenant_id: item.tenantId, closure_id: item.closureId, charge_period_start: item.chargePeriodStart.toISOString(), metric_identity_hash: item.metricIdentityHash, currency: item.currency, source_amount: item.sourceAmount.toString(), allocation_amount: item.allocationAmount.toString(), allocation_key: item.allocationKey, allocation_mode: item.allocationMode, shared: item.shared, percentage: item.percentage ?? null, rule_id: item.ruleId ?? null, cloud_account_id: item.cloudAccountId, provider: item.provider, service_name: item.serviceName, region_id: item.regionId, resource_id: item.resourceId === '' ? null : item.resourceId, cloud_resource_id: item.cloudResourceId, resource_link_reason: item.resourceLinkReason,
   })));
   await tx.$executeRaw(Prisma.sql`
     INSERT INTO "cost_allocation_closure_lines" (
@@ -373,35 +238,20 @@ async function createClosureLines(tx: any, tenantId: string, closureId: string, 
     ON CONFLICT ("id") DO NOTHING
   `);
 }
-function line(metric: Metric, allocationAmount: Prisma.Decimal, allocationKeyValue: string, mode: CostAllocationMode, shared: boolean, percentage?: number, ruleId?: string): AllocationLine { return { chargePeriodStart: metric.chargePeriodStart, metricIdentityHash: metric.metricIdentityHash, sourceAmount: metric.billedCost, allocationAmount, allocationKey: allocationKeyValue, currency: metric.billingCurrency, allocationMode: mode, shared, ...(percentage === undefined ? {} : { percentage }), ...(ruleId === undefined ? {} : { ruleId }), cloudAccountId: metric.cloudAccountId, provider: metric.provider, serviceName: metric.serviceName, regionId: metric.regionId, resourceId: metric.resourceId, cloudResourceId: metric.cloudResourceId, resourceLinkReason: metric.resourceLinkReason }; }
-function lineId(closureId: string, item: AllocationLine): string { return createHash('sha256').update([closureId, item.chargePeriodStart.toISOString(), item.metricIdentityHash, item.allocationKey].join('|')).digest('hex'); }
-function filterSummary(summary: readonly AllocationSummary[], allocationKey?: string): readonly AllocationSummary[] {
-  if (allocationKey === undefined || allocationKey.trim() === '') return summary;
-  const needle = allocationKey.trim().toLowerCase();
-  return summary.map((item) => ({ ...item, dimensions: item.dimensions.filter((dimension) => dimension.allocationKey.toLowerCase().includes(needle)) }));
+
+function lineId(closureId: string, item: AllocationLine): string {
+  return createHash('sha256').update([closureId, item.chargePeriodStart.toISOString(), item.metricIdentityHash, item.allocationKey].join('|')).digest('hex');
 }
-function toRule(row: any): CostAllocationRule { return { ...row, allocationMode: row.allocationMode ?? 'DIRECT', allocationTargets: (row.allocationTargets ?? []).map((targetRow: any) => ({ id: targetRow.id, percentage: Number(targetRow.percentage), costCenter: targetRow.costCenter ?? undefined, businessUnit: targetRow.businessUnit ?? undefined, project: targetRow.project ?? undefined, team: targetRow.team ?? undefined, environment: targetRow.environment ?? undefined })), configurationVersion: row.configurationVersion ?? 1, configurationHash: row.configurationHash ?? undefined, lastPreviewedHash: row.lastPreviewedHash ?? undefined, lastPreviewedAt: row.lastPreviewedAt ?? undefined, description: row.description ?? undefined, cloudAccountId: row.cloudAccountId ?? undefined, provider: row.provider ?? undefined, serviceName: row.serviceName ?? undefined, regionId: row.regionId ?? undefined, resourceId: row.resourceId ?? undefined, tagKey: row.tagKey ?? undefined, tagValue: row.tagValue ?? undefined, costCenter: row.costCenter ?? undefined, businessUnit: row.businessUnit ?? undefined, project: row.project ?? undefined, team: row.team ?? undefined, environment: row.environment ?? undefined, effectiveFrom: row.effectiveFrom ?? undefined, effectiveTo: row.effectiveTo ?? undefined, archivedAt: row.archivedAt ?? undefined }; }
-function toClosure(row: any): CostAllocationClosure { const results = Array.isArray(row.results) ? row.results : []; return { id: row.id, tenantId: row.tenantId, period: row.periodStart.toISOString().slice(0, 7), currency: row.currency, version: row.version, status: row.status, sourceTotal: toNumber(row.sourceTotal), allocatedTotal: toNumber(row.allocatedTotal), sharedTotal: toNumber(row.sharedTotal), unallocatedTotal: toNumber(row.unallocatedTotal), sourceHash: row.sourceHash, rulesHash: row.rulesHash, results: results as CostAllocationClosure['results'], replacementReason: row.replacementReason ?? undefined, closedByUserId: row.closedByUserId, createdAt: row.createdAt }; }
+
+function toRule(row: any): CostAllocationRule {
+  return { ...row, allocationMode: row.allocationMode ?? 'DIRECT', allocationTargets: (row.allocationTargets ?? []).map((targetRow: any) => ({ id: targetRow.id, percentage: Number(targetRow.percentage), costCenter: targetRow.costCenter ?? undefined, businessUnit: targetRow.businessUnit ?? undefined, project: targetRow.project ?? undefined, team: targetRow.team ?? undefined, environment: targetRow.environment ?? undefined })), configurationVersion: row.configurationVersion ?? 1, configurationHash: row.configurationHash ?? undefined, lastPreviewedHash: row.lastPreviewedHash ?? undefined, lastPreviewedAt: row.lastPreviewedAt ?? undefined, description: row.description ?? undefined, cloudAccountId: row.cloudAccountId ?? undefined, provider: row.provider ?? undefined, serviceName: row.serviceName ?? undefined, regionId: row.regionId ?? undefined, resourceId: row.resourceId ?? undefined, tagKey: row.tagKey ?? undefined, tagValue: row.tagValue ?? undefined, costCenter: row.costCenter ?? undefined, businessUnit: row.businessUnit ?? undefined, project: row.project ?? undefined, team: row.team ?? undefined, environment: row.environment ?? undefined, effectiveFrom: row.effectiveFrom ?? undefined, effectiveTo: row.effectiveTo ?? undefined, archivedAt: row.archivedAt ?? undefined };
+}
+
+function toClosure(row: any): CostAllocationClosure {
+  const results = Array.isArray(row.results) ? row.results : [];
+  return { id: row.id, tenantId: row.tenantId, period: row.periodStart.toISOString().slice(0, 7), currency: row.currency, version: row.version, status: row.status, sourceTotal: toNumber(row.sourceTotal), allocatedTotal: toNumber(row.allocatedTotal), sharedTotal: toNumber(row.sharedTotal), unallocatedTotal: toNumber(row.unallocatedTotal), sourceHash: row.sourceHash, rulesHash: row.rulesHash, results: results as CostAllocationClosure['results'], replacementReason: row.replacementReason ?? undefined, closedByUserId: row.closedByUserId, createdAt: row.createdAt };
+}
+
 function nextMonth(value: Date): Date { return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + 1, 1)); }
 function monthStart(value: Date): Date { return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1)); }
 function previousMonth(value: Date): Date { return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() - 1, 1)); }
-function hashMetrics(metrics: readonly Metric[]): string {
-  return createHash('sha256').update(metrics.map((metric) => JSON.stringify([
-    metric.chargePeriodStart.toISOString(),
-    metric.metricIdentityHash,
-    metric.billingCurrency,
-    metric.billedCost.toString(),
-    metric.cloudAccountId,
-    metric.provider,
-    metric.serviceName,
-    metric.regionId,
-    metric.resourceId,
-    metric.cloudResourceId,
-    metric.resourceLinkReason,
-    Object.entries(asTags(metric.tags)).sort(([left], [right]) => left.localeCompare(right)),
-  ])).sort().join('\n')).digest('hex');
-}
-function hashRules(rules: readonly CostAllocationRule[]): string { return createHash('sha256').update(rules.map((rule) => JSON.stringify([rule.id, rule.priority, rule.configurationHash ?? rule.id])).join('\n')).digest('hex'); }
-function rulesUsed(metrics: readonly Metric[], rules: readonly CostAllocationRule[], period: Date): readonly CostAllocationRule[] { return rules.filter((rule) => metrics.some((metric) => matches(metric, rule, period))); }
-function toNumber(value: Prisma.Decimal | number): number { return typeof value === 'number' ? value : Number(value.toDecimalPlaces(allocationScale).toString()); }
-function round(value: number): number { return Math.round(value * 100) / 100; }

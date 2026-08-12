@@ -7,7 +7,6 @@ const exceptions = new Map([
   ['application/services/ai/evaluation/goldenScenarios.ts', 500],
   ['domain/interfaces/IRecommendationRepository.ts', 470],
   ['domain/interfaces/ICloudConnectionRepository.ts', 450],
-  ['infrastructure/repositories/PrismaCostAllocationRepository.ts', 420],
 ]);
 
 const files = await collectSourceFiles(sourceRoot);

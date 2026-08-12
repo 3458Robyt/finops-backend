@@ -109,6 +109,26 @@ describe('TechnicalOptimizationRuleEngine', () => {
     expect(result[0]?.blockers).not.toContain('NETWORK_SATURATION_RISK');
     expect(result[0]?.ruleMatches).not.toContain('NETWORK_HIGH_UTILIZATION');
   });
+
+  it('records the rule version and detects low auxiliary utilization', () => {
+    const [result] = evaluateTechnicalOptimizationRules({
+      referenceDate,
+      summaries: [
+        summary('NetworkUtilization', { avg: 8, p95: 20 }),
+        summary('DiskUtilization', { avg: 12, p95: 30 }),
+        summary('CpuUtilization', { avg: 35, p95: 65, p99: 70 }),
+        summary('MemoryUtilization', { avg: 45, p95: 65, p99: 70 }),
+      ],
+    });
+
+    expect(result?.ruleVersion).toBe('technical-rules-2026-08-11.v1');
+    expect(result?.appliedThresholds).toMatchObject({
+      highUtilizationPercent: 80,
+      minimumSamples: 48,
+      minimumCoverageDays: 7,
+    });
+    expect(result?.ruleMatches).toEqual(expect.arrayContaining(['NETWORK_LOW_UTILIZATION', 'DISK_LOW_UTILIZATION']));
+  });
 });
 
 function summary(

@@ -1,5 +1,9 @@
 import type { TechnicalMetricSummaryItem } from '../../../domain/interfaces/IResourceMetricRepository.js';
 import type { RecommendationReadiness } from './RecommendationReadinessGate.js';
+import {
+  defaultTechnicalOptimizationRuleConfig,
+  type TechnicalOptimizationRuleConfig,
+} from './TechnicalOptimizationRuleConfig.js';
 
 export type TechnicalEvidenceStrength = 'LOW' | 'MEDIUM' | 'HIGH';
 
@@ -29,6 +33,15 @@ export interface TechnicalResourceRuleEvaluation {
   readonly technicalEvidenceRefs: readonly string[];
   readonly metricSummary: readonly TechnicalMetricRuleSummary[];
   readonly maxTechnicalSavingsRate: number;
+  readonly ruleVersion?: string;
+  readonly appliedThresholds?: Readonly<{
+    readonly highUtilizationPercent: number;
+    readonly cpuCriticalP99Percent: number;
+    readonly sustainedHighUtilizationRatio: number;
+    readonly minimumSamples: number;
+    readonly minimumCoverageDays: number;
+    readonly recentSampleMaxAgeDays: number;
+  }>;
 }
 
 export interface TechnicalMetricRuleSummary {
@@ -49,19 +62,16 @@ export interface TechnicalMetricRuleSummary {
   readonly latestSampledAt: string;
 }
 
-const minimumSamples = 48;
-const minimumCoverageDays = 7;
-const recentSampleMaxAgeDays = 7;
-const sustainedHighUtilizationRatio = 0.2;
-
 export function evaluateTechnicalOptimizationRules(input: {
   readonly summaries: readonly TechnicalMetricSummaryItem[];
   readonly referenceDate: Date;
+  readonly ruleConfig?: TechnicalOptimizationRuleConfig;
 }): readonly TechnicalResourceRuleEvaluation[] {
+  const ruleConfig = input.ruleConfig ?? defaultTechnicalOptimizationRuleConfig;
   const byResource = groupBy(input.summaries, resourceKey);
 
   return [...byResource.values()].map((summaries) =>
-    evaluateResource(summaries[0]?.externalResourceId ?? 'UNKNOWN', summaries, input.referenceDate),
+    evaluateResource(summaries[0]?.externalResourceId ?? 'UNKNOWN', summaries, input.referenceDate, ruleConfig),
   );
 }
 
@@ -74,6 +84,7 @@ function evaluateResource(
   externalResourceId: string,
   summaries: readonly TechnicalMetricSummaryItem[],
   referenceDate: Date,
+  ruleConfig: TechnicalOptimizationRuleConfig,
 ): TechnicalResourceRuleEvaluation {
   const first = summaries[0];
   const cpu = findMetric(summaries, 'cpu');
@@ -85,7 +96,7 @@ function evaluateResource(
   const ruleMatches: string[] = [];
   const sourceFacts: string[] = [];
 
-  const coverageOk = summaries.some((summary) => hasEnoughCoverage(summary, referenceDate));
+  const coverageOk = summaries.some((summary) => hasEnoughCoverage(summary, referenceDate, ruleConfig));
   if (!coverageOk) {
     blockers.push('INSUFFICIENT_TECHNICAL_COVERAGE');
   }
@@ -94,14 +105,14 @@ function evaluateResource(
     blockers.push('MISSING_CPU_METRIC');
   } else {
     sourceFacts.push(metricFact('CPU', cpu));
-    if (cpu.p95 >= 80 || cpu.p99 >= 90 || (cpu.highUtilizationRatio ?? 0) >= sustainedHighUtilizationRatio) {
+    if (isHighUtilization(cpu, ruleConfig) || cpu.p99 >= ruleConfig.cpuCriticalP99Percent) {
       blockers.push('CPU_SATURATION_RISK');
       ruleMatches.push('CPU_HIGH_UTILIZATION');
-    } else if (cpu.avg <= 5 && cpu.p95 <= 10) {
+    } else if (cpu.avg <= ruleConfig.cpuIdleAveragePercent && cpu.p95 <= ruleConfig.cpuIdleP95Percent) {
       ruleMatches.push('CPU_IDLE_CANDIDATE');
-    } else if (cpu.avg <= 10 && cpu.p95 <= 30) {
+    } else if (cpu.avg <= ruleConfig.cpuStrongAveragePercent && cpu.p95 <= ruleConfig.cpuStrongP95Percent) {
       ruleMatches.push('CPU_STRONG_UNDERUTILIZATION');
-    } else if (cpu.avg <= 20 && cpu.p95 <= 50) {
+    } else if (cpu.avg <= ruleConfig.cpuModerateAveragePercent && cpu.p95 <= ruleConfig.cpuModerateP95Percent) {
       ruleMatches.push('CPU_MODERATE_UNDERUTILIZATION');
     }
   }
@@ -110,26 +121,33 @@ function evaluateResource(
     blockers.push('MISSING_MEMORY_METRIC');
   } else {
     sourceFacts.push(metricFact('Memoria', memory));
-    if (memory.p95 >= 80 || (memory.highUtilizationRatio ?? 0) >= sustainedHighUtilizationRatio) {
+    if (isHighUtilization(memory, ruleConfig)) {
       blockers.push('MEMORY_SATURATION_RISK');
       ruleMatches.push('MEMORY_HIGH_UTILIZATION');
-    } else if (memory.avg <= 30 && memory.p95 <= 50) {
+    } else if (memory.avg <= ruleConfig.memoryLowAveragePercent && memory.p95 <= ruleConfig.memoryLowP95Percent) {
       ruleMatches.push('MEMORY_LOW_UTILIZATION');
     }
   }
 
-  for (const [label, summary] of [
-    ['Red', network],
-    ['Disco', disk],
-    ['IOPS', iops],
+  for (const [label, code, summary] of [
+    ['Red', 'NETWORK', network],
+    ['Disco', 'DISK', disk],
+    ['IOPS', 'IOPS', iops],
   ] as const) {
     if (summary === undefined) {
       continue;
     }
     sourceFacts.push(metricFact(label, summary));
-    if (isPercentMetric(summary) && (summary.p95 >= 80 || (summary.highUtilizationRatio ?? 0) >= sustainedHighUtilizationRatio)) {
-      blockers.push(`${label.toUpperCase()}_SATURATION_RISK`);
-      ruleMatches.push(`${label.toUpperCase()}_HIGH_UTILIZATION`);
+    if (isPercentMetric(summary)) {
+      if (isHighUtilization(summary, ruleConfig)) {
+        blockers.push(`${code}_SATURATION_RISK`);
+        ruleMatches.push(`${code}_HIGH_UTILIZATION`);
+      } else if (
+        summary.avg <= ruleConfig.auxiliaryLowAveragePercent
+        && summary.p95 <= ruleConfig.auxiliaryLowP95Percent
+      ) {
+        ruleMatches.push(`${code}_LOW_UTILIZATION`);
+      }
     }
   }
 
@@ -159,7 +177,7 @@ function evaluateResource(
           ? 'RIGHTSIZING'
           : 'TECHNICAL_VALIDATION_REQUIRED';
 
-  const evidenceStrength = toEvidenceStrength(summaries, blockers, readiness, referenceDate);
+  const evidenceStrength = toEvidenceStrength(summaries, blockers, readiness, referenceDate, ruleConfig);
 
   return {
     externalResourceId,
@@ -177,14 +195,27 @@ function evaluateResource(
     technicalEvidenceRefs: summaries.map(technicalMetricEvidenceRef),
     metricSummary: summaries.map(toMetricRuleSummary),
     maxTechnicalSavingsRate: idleCandidate ? 0.4 : strongRightsizing ? 0.25 : moderateRightsizing ? 0.15 : 0,
+    ruleVersion: ruleConfig.version,
+    appliedThresholds: {
+      highUtilizationPercent: ruleConfig.highUtilizationPercent,
+      cpuCriticalP99Percent: ruleConfig.cpuCriticalP99Percent,
+      sustainedHighUtilizationRatio: ruleConfig.sustainedHighUtilizationRatio,
+      minimumSamples: ruleConfig.minimumSamples,
+      minimumCoverageDays: ruleConfig.minimumCoverageDays,
+      recentSampleMaxAgeDays: ruleConfig.recentSampleMaxAgeDays,
+    },
   };
 }
 
-function hasEnoughCoverage(summary: TechnicalMetricSummaryItem, referenceDate: Date): boolean {
+function hasEnoughCoverage(
+  summary: TechnicalMetricSummaryItem,
+  referenceDate: Date,
+  ruleConfig: TechnicalOptimizationRuleConfig,
+): boolean {
   return (
-    summary.sampleCount >= minimumSamples &&
-    summary.coverageDays >= minimumCoverageDays &&
-    sampleAgeDays(summary.latestSampledAt, referenceDate) <= recentSampleMaxAgeDays
+    summary.sampleCount >= ruleConfig.minimumSamples &&
+    summary.coverageDays >= ruleConfig.minimumCoverageDays &&
+    sampleAgeDays(summary.latestSampledAt, referenceDate) <= ruleConfig.recentSampleMaxAgeDays
   );
 }
 
@@ -193,8 +224,9 @@ function toEvidenceStrength(
   blockers: readonly string[],
   readiness: RecommendationReadiness,
   referenceDate: Date,
+  ruleConfig: TechnicalOptimizationRuleConfig,
 ): TechnicalEvidenceStrength {
-  const coveredMetrics = summaries.filter((summary) => hasEnoughCoverage(summary, referenceDate)).length;
+  const coveredMetrics = summaries.filter((summary) => hasEnoughCoverage(summary, referenceDate, ruleConfig)).length;
   if (readiness === 'GENERATABLE' && blockers.length === 0 && coveredMetrics >= 2) {
     return 'HIGH';
   }
@@ -222,6 +254,15 @@ function isPercentMetric(summary: TechnicalMetricSummaryItem): boolean {
     || unit.includes('percent')
     || unit.includes('percentage')
     || /cpu|memory|mem|utilization|util|percent|pct/.test(name);
+}
+
+function isHighUtilization(
+  summary: TechnicalMetricSummaryItem,
+  ruleConfig: TechnicalOptimizationRuleConfig,
+): boolean {
+  const ratioMatchesSummary = ruleConfig.highUtilizationPercent === 80;
+  return summary.p95 >= ruleConfig.highUtilizationPercent
+    || (ratioMatchesSummary && (summary.highUtilizationRatio ?? 0) >= ruleConfig.sustainedHighUtilizationRatio);
 }
 
 function metricFact(label: string, summary: TechnicalMetricSummaryItem): string {

@@ -11,7 +11,7 @@ import { AnalyticsController } from '../controllers/AnalyticsController.js';
  * Endpoints expuestos:
  * | Método | Subruta                | Auth        | Handler                                  |
  * |--------|------------------------|-------------|------------------------------------------|
- * | GET    | /anomalies             | requireAuth | analyticsController.getAnomalies         |
+ * | GET    | /anomalies (deprecated) | requireAuth | analyticsController.getAnomalies         |
  * | GET    | /opportunities         | requireAuth | analyticsController.getOpportunities     |
  * | GET    | /forecast              | requireAuth | analyticsController.getForecast          |
  * | GET    | /trends                | requireAuth | analyticsController.getTrends            |

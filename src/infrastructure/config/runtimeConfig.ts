@@ -5,6 +5,7 @@ interface RuntimeValidationIssue {
 
 const productionOnlyRequired = [
   'DATABASE_URL',
+  'APP_PROCESS_ROLE',
   'JWT_SECRET',
   'CREDENTIAL_ENCRYPTION_KEY',
   'CORS_ORIGIN',
@@ -49,6 +50,8 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
       issues.push({ key: 'DB_RUNTIME_ROLE', message: 'Debe ser finops_runtime en produccion.' });
     }
 
+    validateProcessRole(env['APP_PROCESS_ROLE'], issues);
+
     if (env['MFA_REQUIRED_FOR_PRIVILEGED'] !== 'true') {
       issues.push({ key: 'MFA_REQUIRED_FOR_PRIVILEGED', message: 'Debe ser true en produccion.' });
     }
@@ -69,6 +72,8 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
     }
     validatePositiveBound(env, 'INGESTION_SCHEDULER_VALIDATION_MAX_AGE_MINUTES', 5, 7 * 24 * 60, issues);
   }
+
+  validateEnabledIntegrations(env, issues);
 
   if (issues.length > 0) {
     const details = issues.map((issue) => `${issue.key}: ${issue.message}`).join(' ');
@@ -140,6 +145,41 @@ function validateCorsOrigins(value: string | undefined, issues: RuntimeValidatio
     } catch {
       issues.push({ key: 'CORS_ORIGIN', message: 'Debe contener orígenes HTTP(S) válidos separados por coma.' });
     }
+  }
+}
+
+function validateProcessRole(value: string | undefined, issues: RuntimeValidationIssue[]): void {
+  const role = value?.trim().toLowerCase();
+  if (role !== 'api' && role !== 'worker' && role !== 'scheduler' && role !== 'all') {
+    issues.push({ key: 'APP_PROCESS_ROLE', message: 'Debe ser api, worker, scheduler o all.' });
+  }
+}
+
+function validateEnabledIntegrations(env: NodeJS.ProcessEnv, issues: RuntimeValidationIssue[]): void {
+  if (env['EMAIL_ENABLED'] === 'true') {
+    for (const key of ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD']) {
+      if (isBlank(env[key])) issues.push({ key, message: 'Es obligatoria cuando EMAIL_ENABLED=true.' });
+    }
+  }
+
+  if (env['TELEGRAM_ENABLED'] === 'true') {
+    for (const key of ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_WEBHOOK_SECRET']) {
+      if (isBlank(env[key])) issues.push({ key, message: 'Es obligatoria cuando TELEGRAM_ENABLED=true.' });
+    }
+  }
+
+  if (env['MESSAGE_SCHEDULER_ENABLED'] === 'true') {
+    for (const key of ['MESSAGE_SCHEDULER_TENANT_ID', 'MESSAGE_SCHEDULER_USER_ID']) {
+      if (isBlank(env[key])) issues.push({ key, message: 'Es obligatoria cuando MESSAGE_SCHEDULER_ENABLED=true.' });
+    }
+  }
+
+  if (env['SAVINGS_RECONCILIATION_SCHEDULER_ENABLED'] === 'true'
+    && isBlank(env['SAVINGS_RECONCILIATION_TENANT_ID'])) {
+    issues.push({
+      key: 'SAVINGS_RECONCILIATION_TENANT_ID',
+      message: 'Es obligatoria cuando SAVINGS_RECONCILIATION_SCHEDULER_ENABLED=true.',
+    });
   }
 }
 

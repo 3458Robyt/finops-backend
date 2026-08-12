@@ -31,6 +31,8 @@ describe('loadRuntimeConfig', () => {
       jobHeartbeatMs: 60000,
     });
     expect(config.ai.maxRetries).toBe(2);
+    expect(config.email.timeoutMs).toBe(15_000);
+    expect(config.telegram.timeoutMs).toBe(15_000);
     expect(config.cloud.requiredTagKeys).toEqual(['environment', 'owner']);
 
     warning.mockRestore();
@@ -44,6 +46,8 @@ describe('loadRuntimeConfig', () => {
     expect(config.http.port).toBe(3000);
     expect(config.security.cookieSameSite).toBe('lax');
     expect(config.ai.model).toBe('gpt-5.4-mini');
+    expect(config.email.timeoutMs).toBe(15_000);
+    expect(config.telegram.timeoutMs).toBe(15_000);
     expect(config.schedulers.ingestion.enabled).toBe(false);
 
     warning.mockRestore();

@@ -54,6 +54,7 @@ export interface RuntimeConfig {
   };
   readonly email: {
     readonly enabled: boolean;
+    readonly timeoutMs: number;
     readonly host: string | undefined;
     readonly port: number;
     readonly secure: boolean;
@@ -64,6 +65,7 @@ export interface RuntimeConfig {
   };
   readonly telegram: {
     readonly enabled: boolean;
+    readonly timeoutMs: number;
     readonly botToken: string | undefined;
     readonly botUsername: string | undefined;
     readonly webhookSecret: string | undefined;

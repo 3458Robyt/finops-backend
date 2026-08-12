@@ -64,6 +64,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
     },
     email: {
       enabled: readBoolean(env['EMAIL_ENABLED'], false),
+      timeoutMs: readPositiveInteger(env['OUTBOUND_PROVIDER_TIMEOUT_MS'], 15_000),
       host: readOptionalString(env['SMTP_HOST']),
       port: readPositiveInteger(env['SMTP_PORT'], 587),
       secure: readBoolean(env['SMTP_SECURE'], false),
@@ -74,6 +75,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
     },
     telegram: {
       enabled: readBoolean(env['TELEGRAM_ENABLED'], false),
+      timeoutMs: readPositiveInteger(env['OUTBOUND_PROVIDER_TIMEOUT_MS'], 15_000),
       botToken: readOptionalString(env['TELEGRAM_BOT_TOKEN']),
       botUsername: readOptionalString(env['TELEGRAM_BOT_USERNAME']),
       webhookSecret: readOptionalString(env['TELEGRAM_WEBHOOK_SECRET']),

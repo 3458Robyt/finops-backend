@@ -70,6 +70,13 @@ describe('validateRuntimeConfig', () => {
     })).toThrow(`Configuracion runtime invalida.`);
   });
 
+  it('rejects an outbound provider timeout below the production bound', () => {
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      OUTBOUND_PROVIDER_TIMEOUT_MS: '1000',
+    })).toThrow(`Configuracion runtime invalida.`);
+  });
+
   it('requires credentials for enabled outbound integrations and scheduler targets', () => {
     expect(() => validateRuntimeConfig({
       ...productionEnv,

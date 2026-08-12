@@ -33,6 +33,7 @@ export class TelegramClient implements ITelegramClient {
   constructor(
     private readonly botToken: string | undefined,
     private readonly enabled: boolean,
+    private readonly timeoutMs = 15_000,
   ) {}
 
   /**
@@ -58,15 +59,29 @@ export class TelegramClient implements ITelegramClient {
       throw new ConfigurationError('TELEGRAM_BOT_TOKEN is required when Telegram is enabled');
     }
 
-    const response = await fetch(`https://api.telegram.org/bot${this.botToken}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: input.chatId,
-        text: input.text,
-        disable_web_page_preview: true,
-      }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    let response: Response;
+    try {
+      response = await fetch(`https://api.telegram.org/bot${this.botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: input.chatId,
+          text: input.text,
+          disable_web_page_preview: true,
+        }),
+        signal: controller.signal,
+      });
+    } catch (error: unknown) {
+      if (controller.signal.aborted) {
+        throw new FinOpsBaseError('Telegram provider request timed out', 'TELEGRAM_TIMEOUT');
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!response.ok) {
       throw new FinOpsBaseError(`Telegram sendMessage failed with status ${response.status}`, 'TELEGRAM_SEND_FAILED');

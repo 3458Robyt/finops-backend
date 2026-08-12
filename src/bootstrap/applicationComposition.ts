@@ -200,7 +200,7 @@ export function createApplicationComposition(
     notificationRepository,
   );
   const telegramEnabled = config.telegram.enabled;
-  const telegramClient = new TelegramClient(config.telegram.botToken, telegramEnabled);
+  const telegramClient = new TelegramClient(config.telegram.botToken, telegramEnabled, config.telegram.timeoutMs);
   const telegramMessageFormatter = new TelegramMessageFormatter();
   const emailClient = new EmailClient(config.email);
   const executiveSummaryDeliveryService = new ExecutiveSummaryDeliveryService(

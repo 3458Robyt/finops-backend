@@ -47,6 +47,9 @@ export class EmailClient implements IEmailClient {
       host,
       port,
       secure,
+      connectionTimeout: config.timeoutMs,
+      greetingTimeout: config.timeoutMs,
+      socketTimeout: config.timeoutMs,
       auth: { user, pass },
     });
   }

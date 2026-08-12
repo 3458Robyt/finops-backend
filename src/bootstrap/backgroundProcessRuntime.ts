@@ -1,4 +1,6 @@
 import type { ApplicationComposition } from './applicationComposition.js';
+import type { AuthContext } from '../domain/models/AuthContext.js';
+import type { BudgetService } from '../application/services/BudgetService.js';
 import { OutboundMessageScheduler } from '../application/services/OutboundMessageScheduler.js';
 import { safeErrorMessage } from '../application/observability/safeError.js';
 import type { NonOverlappingLoopOptions } from '../application/services/NonOverlappingLoop.js';
@@ -21,7 +23,7 @@ export interface BackgroundProcessRuntimeInput {
 export function startBackgroundProcesses(input: BackgroundProcessRuntimeInput): void {
   const { config, composition } = input;
   const { prisma, recommendationAnalysisRepository, recommendationAnalysisService, valueRealizationService, learningService, ingestionWorker } = composition;
-  const { outboundMessageService } = composition.serverDependencies;
+  const { outboundMessageService, budgetService } = composition.serverDependencies;
 
   startProcessHeartbeat(input, composition.processHeartbeatService);
   startMessageScheduler(input, outboundMessageService);
@@ -32,6 +34,7 @@ export function startBackgroundProcesses(input: BackgroundProcessRuntimeInput): 
   startSavingsReconciliationScheduler(input, valueRealizationService);
   startIngestionScheduler(input, prisma);
   startAuthLifecycleCleanupScheduler(input, composition.authLifecycleCleanupService);
+  startBudgetScheduler(input, budgetService);
 }
 
 function startMessageScheduler(input: BackgroundProcessRuntimeInput, service: ApplicationComposition['serverDependencies']['outboundMessageService']): void {
@@ -219,5 +222,52 @@ function startAuthLifecycleCleanupScheduler(
     ),
     onError: (error) => console.error(JSON.stringify({ level: 'error', event: 'auth_lifecycle_cleanup_failed', error: safeErrorMessage(error) })),
     onSkip: () => console.warn('Auth lifecycle cleanup skipped because previous run is still active'),
+  });
+}
+
+function startBudgetScheduler(input: BackgroundProcessRuntimeInput, service: BudgetService): void {
+  const { config, capabilities } = input;
+  if (!capabilities.runsBudgetScheduler || !config.schedulers.budget.enabled) return;
+  const tenantId = config.schedulers.budget.tenantId;
+  const userId = config.schedulers.budget.userId;
+  if (tenantId === undefined || userId === undefined) {
+    console.warn('Budget scheduler enabled but BUDGET_SCHEDULER_TENANT_ID or BUDGET_SCHEDULER_USER_ID is not configured');
+    return;
+  }
+
+  const actor: AuthContext = {
+    tenantId,
+    userId,
+    email: 'budget-scheduler@system.local',
+    role: 'MASTER_ADMIN',
+    jwtId: 'budget-scheduler',
+  };
+  const intervalMs = config.schedulers.budget.intervalMs;
+  console.log(`   Budget scheduler: enabled (${intervalMs}ms)`);
+  input.startBackgroundLoop({
+    metricName: 'budget_scheduler_iteration',
+    run: async () => {
+      const result = await runWithDatabaseContext(
+        {
+          tenantId: actor.tenantId,
+          userId: actor.userId,
+          role: actor.role,
+          loginEmail: actor.email,
+          workerId: 'budget-scheduler',
+        },
+        () => service.evaluate(actor),
+      );
+      console.log(JSON.stringify({
+        level: 'info',
+        event: 'budget_evaluation_completed',
+        tenantId: actor.tenantId,
+        evaluated: result.evaluated,
+        newAlerts: result.newAlerts.length,
+      }));
+    },
+    intervalMs,
+    fallbackIntervalMs: 300_000,
+    onError: (error) => console.error(JSON.stringify({ level: 'error', event: 'budget_scheduler_iteration_failed', error: safeErrorMessage(error) })),
+    onSkip: () => console.warn('Budget scheduler iteration skipped because previous run is still active'),
   });
 }

@@ -35,6 +35,7 @@ const booleanConfigKeys = [
   'SAVINGS_RECONCILIATION_SCHEDULER_ENABLED',
   'SAVINGS_RECONCILIATION_RUN_ON_START',
   'AUTH_CLEANUP_SCHEDULER_ENABLED',
+  'BUDGET_SCHEDULER_ENABLED',
   'PROCESS_HEARTBEAT_ENABLED',
   'VALUE_REALIZATION_OUTBOUND_ENABLED',
   'SAVINGS_RECONCILIATION_ENABLED',
@@ -101,6 +102,7 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
     validatePositiveBound(env, 'PASSWORD_RESET_TTL_SECONDS', 300, 3600, issues);
     validatePositiveBound(env, 'AUTH_CLEANUP_SCHEDULER_INTERVAL_MS', 60_000, 7 * 24 * 60 * 60 * 1000, issues);
     validateIntegerBound(env, 'AUTH_CLEANUP_BATCH_SIZE', 1, 5000, issues);
+    validatePositiveBound(env, 'BUDGET_SCHEDULER_INTERVAL_MS', 60_000, 7 * 24 * 60 * 60 * 1000, issues);
     validatePositiveBound(env, 'PROCESS_HEARTBEAT_INTERVAL_MS', 5_000, 24 * 60 * 60 * 1000, issues);
     validatePositiveBound(env, 'PROCESS_HEARTBEAT_STALE_AFTER_MS', 10_000, 7 * 24 * 60 * 60 * 1000, issues);
     if (isEnabled(env['EMAIL_ENABLED']) && !isHttpUrl(env['PASSWORD_RESET_URL'])) {
@@ -198,6 +200,7 @@ function validateProcessRole(value: string | undefined, issues: RuntimeValidatio
     'recommendation-analysis-scheduler',
     'notification-scheduler',
     'auth-cleanup-scheduler',
+    'budget-scheduler',
     'all',
   ]);
   if (role === undefined || !validRoles.has(role)) {
@@ -230,6 +233,12 @@ function validateEnabledIntegrations(env: NodeJS.ProcessEnv, issues: RuntimeVali
       key: 'SAVINGS_RECONCILIATION_TENANT_ID',
       message: 'Es obligatoria cuando SAVINGS_RECONCILIATION_SCHEDULER_ENABLED=true.',
     });
+  }
+
+  if (isEnabled(env['BUDGET_SCHEDULER_ENABLED'])) {
+    for (const key of ['BUDGET_SCHEDULER_TENANT_ID', 'BUDGET_SCHEDULER_USER_ID']) {
+      if (isBlank(env[key])) issues.push({ key, message: 'Es obligatoria cuando BUDGET_SCHEDULER_ENABLED=true.' });
+    }
   }
 }
 

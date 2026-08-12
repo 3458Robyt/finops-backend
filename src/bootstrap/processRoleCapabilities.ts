@@ -10,6 +10,7 @@ export interface ProcessRoleCapabilities {
   readonly runsRecommendationAnalysisScheduler: boolean;
   readonly runsNotificationScheduler: boolean;
   readonly runsAuthCleanupScheduler: boolean;
+  readonly runsBudgetScheduler: boolean;
 }
 
 const apiOnly: ProcessRoleCapabilities = {
@@ -22,6 +23,7 @@ const apiOnly: ProcessRoleCapabilities = {
   runsRecommendationAnalysisScheduler: false,
   runsNotificationScheduler: false,
   runsAuthCleanupScheduler: false,
+  runsBudgetScheduler: false,
 };
 
 const workerOnly: ProcessRoleCapabilities = {
@@ -41,6 +43,7 @@ const schedulerOnly: ProcessRoleCapabilities = {
   runsSavingsReconciliationWorker: true,
   runsNotificationScheduler: true,
   runsAuthCleanupScheduler: true,
+  runsBudgetScheduler: true,
 };
 
 const allCapabilities: ProcessRoleCapabilities = {
@@ -53,6 +56,7 @@ const allCapabilities: ProcessRoleCapabilities = {
   runsRecommendationAnalysisScheduler: true,
   runsNotificationScheduler: true,
   runsAuthCleanupScheduler: true,
+  runsBudgetScheduler: true,
 };
 
 const granularCapabilities: Readonly<Record<Exclude<ProcessRole, 'api' | 'worker' | 'scheduler' | 'all'>, ProcessRoleCapabilities>> = {
@@ -64,6 +68,7 @@ const granularCapabilities: Readonly<Record<Exclude<ProcessRole, 'api' | 'worker
   'recommendation-analysis-scheduler': { ...apiOnly, runsApi: false, runsRecommendationAnalysisScheduler: true },
   'notification-scheduler': { ...apiOnly, runsApi: false, runsNotificationScheduler: true },
   'auth-cleanup-scheduler': { ...apiOnly, runsApi: false, runsAuthCleanupScheduler: true },
+  'budget-scheduler': { ...apiOnly, runsApi: false, runsBudgetScheduler: true },
 };
 
 export function resolveProcessRoleCapabilities(role: ProcessRole): ProcessRoleCapabilities {

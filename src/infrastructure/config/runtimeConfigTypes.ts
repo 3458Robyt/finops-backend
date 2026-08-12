@@ -10,6 +10,7 @@ export type ProcessRole =
   | 'recommendation-analysis-scheduler'
   | 'notification-scheduler'
   | 'auth-cleanup-scheduler'
+  | 'budget-scheduler'
   | 'all';
 export type TrustProxy = boolean | number | string;
 export type SameSitePolicy = 'strict' | 'lax' | 'none';
@@ -139,6 +140,12 @@ export interface RuntimeConfig {
       readonly enabled: boolean;
       readonly intervalMs: number;
       readonly batchSize: number;
+    };
+    readonly budget: {
+      readonly enabled: boolean;
+      readonly tenantId: string | undefined;
+      readonly userId: string | undefined;
+      readonly intervalMs: number;
     };
   };
   readonly operations: {

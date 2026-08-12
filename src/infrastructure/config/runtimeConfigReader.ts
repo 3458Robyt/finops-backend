@@ -143,6 +143,12 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
         intervalMs: readPositiveInteger(env['AUTH_CLEANUP_SCHEDULER_INTERVAL_MS'], 6 * 60 * 60 * 1000),
         batchSize: readPositiveInteger(env['AUTH_CLEANUP_BATCH_SIZE'], 500),
       },
+      budget: {
+        enabled: readBoolean(env['BUDGET_SCHEDULER_ENABLED'], false),
+        tenantId: readOptionalString(env['BUDGET_SCHEDULER_TENANT_ID']),
+        userId: readOptionalString(env['BUDGET_SCHEDULER_USER_ID']),
+        intervalMs: readPositiveInteger(env['BUDGET_SCHEDULER_INTERVAL_MS'], 300_000),
+      },
     },
     operations: {
       processHeartbeat: {
@@ -174,6 +180,7 @@ function readProcessRole(value: string | undefined): ProcessRole {
     || normalized === 'recommendation-analysis-scheduler'
     || normalized === 'notification-scheduler'
     || normalized === 'auth-cleanup-scheduler'
+    || normalized === 'budget-scheduler'
     || normalized === 'all') {
     return normalized;
   }

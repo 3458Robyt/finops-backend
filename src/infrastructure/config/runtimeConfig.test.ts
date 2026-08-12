@@ -76,6 +76,7 @@ describe('validateRuntimeConfig', () => {
     'recommendation-analysis-scheduler',
     'notification-scheduler',
     'auth-cleanup-scheduler',
+    'budget-scheduler',
   ] as const)('accepts the granular production process role %s', (role) => {
     expect(() => validateRuntimeConfig({ ...productionEnv, APP_PROCESS_ROLE: role })).not.toThrow();
   });
@@ -129,6 +130,10 @@ describe('validateRuntimeConfig', () => {
       ...productionEnv,
       MESSAGE_SCHEDULER_ENABLED: 'true',
     })).toThrow(`Configuracion runtime invalida.`);
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      BUDGET_SCHEDULER_ENABLED: 'true',
+    })).toThrow(`Configuracion runtime invalida.`);
   });
 
   it('validates credentials when integration flags use mixed case or whitespace', () => {
@@ -160,6 +165,9 @@ describe('validateRuntimeConfig', () => {
       MESSAGE_SCHEDULER_ENABLED: 'true',
       MESSAGE_SCHEDULER_TENANT_ID: 'tenant-1',
       MESSAGE_SCHEDULER_USER_ID: 'user-1',
+      BUDGET_SCHEDULER_ENABLED: 'true',
+      BUDGET_SCHEDULER_TENANT_ID: 'tenant-1',
+      BUDGET_SCHEDULER_USER_ID: 'user-1',
     })).not.toThrow();
   });
 });

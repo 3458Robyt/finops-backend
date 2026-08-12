@@ -14,6 +14,7 @@ const schedulerFlags = [
   'runsRecommendationAnalysisScheduler',
   'runsNotificationScheduler',
   'runsAuthCleanupScheduler',
+  'runsBudgetScheduler',
 ] as const;
 
 describe('resolveProcessRoleCapabilities', () => {
@@ -36,6 +37,7 @@ describe('resolveProcessRoleCapabilities', () => {
     ['recommendation-analysis-scheduler', 'runsRecommendationAnalysisScheduler'],
     ['notification-scheduler', 'runsNotificationScheduler'],
     ['auth-cleanup-scheduler', 'runsAuthCleanupScheduler'],
+    ['budget-scheduler', 'runsBudgetScheduler'],
   ] as const)('isolates the %s process to %s', (role, expectedFlag) => {
     const capabilities = resolveProcessRoleCapabilities(role as ProcessRole);
     const activeFlags = [...workerFlags, ...schedulerFlags].filter((flag) => capabilities[flag]);

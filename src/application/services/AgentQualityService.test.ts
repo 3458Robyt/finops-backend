@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type {
+  AgentQualityPage,
+  AgentQualityPageQuery,
   AgentQualityRecommendationRow,
   AgentQualityReportQuery,
   AgentQualityTraceRow,
@@ -11,19 +13,49 @@ class FakeQualityRepository implements IAgentQualityRepository {
   constructor(
     private readonly recommendations: readonly AgentQualityRecommendationRow[],
     private readonly traces: readonly AgentQualityTraceRow[] = [],
+    private readonly pageSize = 1_000,
   ) {}
 
   public query: AgentQualityReportQuery | null = null;
+  public recommendationPageCalls = 0;
+  public tracePageCalls = 0;
 
-  public async listRecommendationRows(query: AgentQualityReportQuery): Promise<readonly AgentQualityRecommendationRow[]> {
+  public async listRecommendationRows(
+    query: AgentQualityReportQuery,
+    page: AgentQualityPageQuery,
+  ): Promise<AgentQualityPage<AgentQualityRecommendationRow>> {
     this.query = query;
-    return this.recommendations;
+    this.recommendationPageCalls += 1;
+    return paginate(this.recommendations, page, this.pageSize);
   }
 
-  public async listTraceRows(query: AgentQualityReportQuery): Promise<readonly AgentQualityTraceRow[]> {
+  public async listTraceRows(
+    query: AgentQualityReportQuery,
+    page: AgentQualityPageQuery,
+  ): Promise<AgentQualityPage<AgentQualityTraceRow>> {
     this.query = query;
-    return this.traces;
+    this.tracePageCalls += 1;
+    return paginate(this.traces, page, this.pageSize);
   }
+}
+
+function paginate<T extends { readonly id: string; readonly createdAt: Date }>(
+  rows: readonly T[],
+  page: AgentQualityPageQuery,
+  pageSize: number,
+): AgentQualityPage<T> {
+  const start = page.cursor === undefined
+    ? 0
+    : rows.findIndex((row) => row.id === page.cursor?.id) + 1;
+  const size = Math.min(page.limit, pageSize);
+  const visible = rows.slice(start, start + size);
+  const hasMore = start + size < rows.length;
+  return {
+    rows: visible,
+    ...(hasMore && visible.length > 0
+      ? { nextCursor: { createdAt: visible[visible.length - 1]!.createdAt, id: visible[visible.length - 1]!.id } }
+      : {}),
+  };
 }
 
 describe('AgentQualityService', () => {
@@ -31,6 +63,7 @@ describe('AgentQualityService', () => {
     const repository = new FakeQualityRepository([
       {
         id: 'rec-1',
+        createdAt: new Date('2026-08-11T00:00:00.000Z'),
         type: 'RIGHTSIZING',
         provider: 'OCI',
         estimatedMonthlySavings: 100,
@@ -43,6 +76,7 @@ describe('AgentQualityService', () => {
       },
       {
         id: 'rec-2',
+        createdAt: new Date('2026-08-10T00:00:00.000Z'),
         type: 'PERFORMANCE_CAPACITY_REVIEW',
         provider: 'OCI',
         estimatedMonthlySavings: null,
@@ -55,14 +89,15 @@ describe('AgentQualityService', () => {
       },
       {
         id: 'rec-3',
+        createdAt: new Date('2026-08-09T00:00:00.000Z'),
         type: 'STORAGE_REVIEW',
         provider: null,
         evidence: { recommendationEvidenceSnapshot: { resources: [{ ruleEvaluation: { ruleMatches: ['DISK_LOW_UTILIZATION'] } }] } },
       },
     ], [
-      { operation: 'RECOMMENDATION', status: 'SUCCESS', latencyMs: 100, promptTokenEstimate: 100, responseTokenEstimate: 50 },
-      { operation: 'AUDIT', status: 'ERROR', latencyMs: 300, promptTokenEstimate: 200, responseTokenEstimate: 20 },
-    ]);
+      { id: 'trace-1', createdAt: new Date('2026-08-11T00:00:00.000Z'), operation: 'RECOMMENDATION', status: 'SUCCESS', latencyMs: 100, promptTokenEstimate: 100, responseTokenEstimate: 50 },
+      { id: 'trace-2', createdAt: new Date('2026-08-10T00:00:00.000Z'), operation: 'AUDIT', status: 'ERROR', latencyMs: 300, promptTokenEstimate: 200, responseTokenEstimate: 20 },
+    ], 2);
     const service = new AgentQualityService(repository, {
       inputCostPerMillionTokensUsd: 1,
       outputCostPerMillionTokensUsd: 2,
@@ -104,6 +139,8 @@ describe('AgentQualityService', () => {
     });
     expect(report.notes[0]).toContain('proxy');
     expect(repository.query?.tenantId).toBe('tenant-1');
+    expect(repository.recommendationPageCalls).toBe(2);
+    expect(repository.tracePageCalls).toBe(1);
   });
 
   it('does not fabricate rates or token cost when there is no evidence', async () => {

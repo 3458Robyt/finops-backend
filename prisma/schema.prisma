@@ -1072,6 +1072,7 @@ model Recommendation {
   analysisRunLinks          RecommendationAnalysisRunRecommendation[]
 
   @@unique([tenantId, deduplicationKey])
+  @@index([tenantId, createdAt, id], map: "recommendations_tenant_id_created_at_id_idx")
   @@index([tenantId, status, createdAt])
   @@index([tenantId, cloudResourceId, createdAt])
   @@index([cloudAccountId, severity])
@@ -1735,6 +1736,7 @@ model AiContextTrace {
 
   @@index([tenantId, operation, createdAt])
   @@index([tenantId, status, createdAt])
+  @@index([tenantId, createdAt, id], map: "ai_context_traces_tenant_id_created_at_id_idx")
   @@index([expiresAt])
   @@index([userId], map: "ai_context_traces_user_id_idx")
   @@map("ai_context_traces")

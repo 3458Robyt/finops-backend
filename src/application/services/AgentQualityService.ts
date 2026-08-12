@@ -1,4 +1,6 @@
 import type {
+  AgentQualityPageCursor,
+  AgentQualityPageQuery,
   AgentQualityRecommendationRow,
   AgentQualityReportQuery,
   AgentQualityTraceRow,
@@ -16,6 +18,8 @@ export interface AgentQualityTokenPricing {
   readonly outputCostPerMillionTokensUsd?: number;
 }
 
+const QUALITY_PAGE_SIZE = 1_000;
+
 /** Builds tenant-scoped, honest quality proxies from persisted outcomes. */
 export class AgentQualityService {
   constructor(
@@ -27,33 +31,17 @@ export class AgentQualityService {
     const periodEnd = new Date(now);
     const periodStart = new Date(periodEnd.getTime() - days * 24 * 60 * 60 * 1000);
     const query: AgentQualityReportQuery = { tenantId, periodStart, periodEnd };
-    const [recommendations, traces] = await Promise.all([
-      this.repository.listRecommendationRows(query),
-      this.repository.listTraceRows(query),
+    const [recommendationResult, traceMetrics] = await Promise.all([
+      this.aggregateRecommendations(query),
+      this.aggregateTraces(query),
     ]);
-    const dimensions = new Map<string, DimensionAccumulator>();
-    const total = createAccumulator();
-
-    for (const recommendation of recommendations) {
-      const keys = [
-        ['TYPE', recommendation.type],
-        ['PROVIDER', recommendation.provider ?? 'PROVEEDOR_NO_IDENTIFICADO'],
-        ...extractRuleKeys(recommendation.evidence).map((key) => ['RULE', key] as const),
-      ] as const;
-      addRecommendation(total, recommendation);
-      for (const [dimension, key] of keys) {
-        const accumulator = dimensions.get(`${dimension}:${key}`) ?? createAccumulator();
-        addRecommendation(accumulator, recommendation);
-        dimensions.set(`${dimension}:${key}`, accumulator);
-      }
-    }
 
     return {
       generatedAt: now,
       periodStart,
       periodEnd,
-      totals: toMetric(total),
-      dimensions: [...dimensions.entries()]
+      totals: toMetric(recommendationResult.total),
+      dimensions: [...recommendationResult.dimensions.entries()]
         .map(([compoundKey, accumulator]) => {
           const [dimension, ...keyParts] = compoundKey.split(':');
           return {
@@ -63,7 +51,7 @@ export class AgentQualityService {
           };
         })
         .sort((left, right) => right.generated - left.generated || left.key.localeCompare(right.key)),
-      traces: toTraceMetrics(traces, this.pricing),
+      traces: toTraceMetrics(traceMetrics, this.pricing),
       notes: [
         'La tasa de aprobación es un proxy de calidad basado en decisiones humanas; no representa precisión de machine learning sin un conjunto de verdad etiquetado.',
         'El ahorro verificado solo usa mediciones con estado VERIFIED y valor observado persistido.',
@@ -71,6 +59,44 @@ export class AgentQualityService {
       ],
     };
   }
+
+  private async aggregateRecommendations(query: AgentQualityReportQuery): Promise<RecommendationAggregation> {
+    const dimensions = new Map<string, DimensionAccumulator>();
+    const total = createAccumulator();
+    await forEachQualityPage(
+      (page) => this.repository.listRecommendationRows(query, page),
+      (recommendations) => {
+        for (const recommendation of recommendations) {
+          const keys = [
+            ['TYPE', recommendation.type],
+            ['PROVIDER', recommendation.provider ?? 'PROVEEDOR_NO_IDENTIFICADO'],
+            ...extractRuleKeys(recommendation.evidence).map((key) => ['RULE', key] as const),
+          ] as const;
+          addRecommendation(total, recommendation);
+          for (const [dimension, key] of keys) {
+            const accumulator = dimensions.get(`${dimension}:${key}`) ?? createAccumulator();
+            addRecommendation(accumulator, recommendation);
+            dimensions.set(`${dimension}:${key}`, accumulator);
+          }
+        }
+      },
+    );
+    return { total, dimensions };
+  }
+
+  private async aggregateTraces(query: AgentQualityReportQuery): Promise<TraceAccumulator> {
+    const accumulator = createTraceAccumulator();
+    await forEachQualityPage(
+      (page) => this.repository.listTraceRows(query, page),
+      (traces) => addTraces(accumulator, traces),
+    );
+    return accumulator;
+  }
+}
+
+interface RecommendationAggregation {
+  readonly total: DimensionAccumulator;
+  readonly dimensions: Map<string, DimensionAccumulator>;
 }
 
 interface DimensionAccumulator {
@@ -150,20 +176,41 @@ function toMetric(accumulator: DimensionAccumulator): AgentQualityMetric {
   };
 }
 
-function toTraceMetrics(rows: readonly AgentQualityTraceRow[], pricing: AgentQualityTokenPricing): AgentQualityTraceMetrics {
-  const successfulCalls = rows.filter((row) => row.status === 'SUCCESS').length;
-  const latencies = rows.map((row) => row.latencyMs).filter((value): value is number => value !== undefined).sort((a, b) => a - b);
-  const promptTokens = rows.reduce((total, row) => total + row.promptTokenEstimate, 0);
-  const responseTokens = rows.reduce((total, row) => total + (row.responseTokenEstimate ?? 0), 0);
+interface TraceAccumulator {
+  calls: number;
+  successfulCalls: number;
+  latencies: number[];
+  promptTokens: number;
+  responseTokens: number;
+}
+
+function createTraceAccumulator(): TraceAccumulator {
+  return { calls: 0, successfulCalls: 0, latencies: [], promptTokens: 0, responseTokens: 0 };
+}
+
+function addTraces(accumulator: TraceAccumulator, rows: readonly AgentQualityTraceRow[]): void {
+  for (const row of rows) {
+    accumulator.calls += 1;
+    if (row.status === 'SUCCESS') accumulator.successfulCalls += 1;
+    if (row.latencyMs !== undefined) accumulator.latencies.push(row.latencyMs);
+    accumulator.promptTokens += row.promptTokenEstimate;
+    accumulator.responseTokens += row.responseTokenEstimate ?? 0;
+  }
+}
+
+function toTraceMetrics(accumulator: TraceAccumulator, pricing: AgentQualityTokenPricing): AgentQualityTraceMetrics {
+  const latencies = [...accumulator.latencies].sort((a, b) => a - b);
+  const promptTokens = accumulator.promptTokens;
+  const responseTokens = accumulator.responseTokens;
   const hasPricing = pricing.inputCostPerMillionTokensUsd !== undefined && pricing.outputCostPerMillionTokensUsd !== undefined;
   const estimatedCostUsd = hasPricing
     ? roundCost(promptTokens / 1_000_000 * pricing.inputCostPerMillionTokensUsd! + responseTokens / 1_000_000 * pricing.outputCostPerMillionTokensUsd!)
     : null;
   return {
-    calls: rows.length,
-    successfulCalls,
-    failedCalls: rows.length - successfulCalls,
-    successRate: rate(successfulCalls, rows.length),
+    calls: accumulator.calls,
+    successfulCalls: accumulator.successfulCalls,
+    failedCalls: accumulator.calls - accumulator.successfulCalls,
+    successRate: rate(accumulator.successfulCalls, accumulator.calls),
     averageLatencyMs: latencies.length === 0 ? null : round(latencies.reduce((sum, value) => sum + value, 0) / latencies.length),
     p95LatencyMs: latencies.length === 0 ? null : latencies[Math.min(latencies.length - 1, Math.ceil(latencies.length * 0.95) - 1)]!,
     promptTokens,
@@ -172,6 +219,25 @@ function toTraceMetrics(rows: readonly AgentQualityTraceRow[], pricing: AgentQua
     estimatedCostUsd,
     costEstimateAvailable: hasPricing,
   };
+}
+
+async function forEachQualityPage<T>(
+  load: (page: AgentQualityPageQuery) => Promise<{ readonly rows: readonly T[]; readonly nextCursor?: AgentQualityPageCursor }>,
+  consume: (rows: readonly T[]) => void,
+): Promise<void> {
+  let cursor: AgentQualityPageCursor | undefined;
+  const seenCursors = new Set<string>();
+  for (;;) {
+    const page = await load(cursor === undefined ? { limit: QUALITY_PAGE_SIZE } : { limit: QUALITY_PAGE_SIZE, cursor });
+    consume(page.rows);
+    if (page.nextCursor === undefined) return;
+    const nextCursorKey = `${page.nextCursor.createdAt.toISOString()}:${page.nextCursor.id}`;
+    if (page.rows.length === 0 || !Number.isFinite(page.nextCursor.createdAt.getTime()) || page.nextCursor.id.length === 0 || seenCursors.has(nextCursorKey)) {
+      throw new Error('La paginación del informe de calidad no avanzó');
+    }
+    seenCursors.add(nextCursorKey);
+    cursor = page.nextCursor;
+  }
 }
 
 function extractRuleKeys(value: unknown): readonly string[] {

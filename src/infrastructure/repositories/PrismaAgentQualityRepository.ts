@@ -1,4 +1,6 @@
 import type {
+  AgentQualityPage,
+  AgentQualityPageQuery,
   AgentQualityRecommendationRow,
   AgentQualityReportQuery,
   AgentQualityTraceRow,
@@ -14,11 +16,17 @@ import {
 export class PrismaAgentQualityRepository implements IAgentQualityRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
-  public listRecommendationRows(query: AgentQualityReportQuery): Promise<readonly AgentQualityRecommendationRow[]> {
-    return listQualityRecommendationRows(this.prisma, query);
+  public listRecommendationRows(
+    query: AgentQualityReportQuery,
+    page: AgentQualityPageQuery,
+  ): Promise<AgentQualityPage<AgentQualityRecommendationRow>> {
+    return listQualityRecommendationRows(this.prisma, query, page);
   }
 
-  public listTraceRows(query: AgentQualityReportQuery): Promise<readonly AgentQualityTraceRow[]> {
-    return listQualityTraceRows(this.prisma, query);
+  public listTraceRows(
+    query: AgentQualityReportQuery,
+    page: AgentQualityPageQuery,
+  ): Promise<AgentQualityPage<AgentQualityTraceRow>> {
+    return listQualityTraceRows(this.prisma, query, page);
   }
 }

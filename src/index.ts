@@ -44,7 +44,11 @@ async function bootstrap(): Promise<void> {
   const app = capabilities.runsApi ? createExpressServer(serverDependencies) : undefined;
   const backgroundStops: Array<() => Promise<void>> = [];
   const startBackgroundLoop = (options: NonOverlappingLoopOptions): void => {
-    const handle: NonOverlappingLoopHandle = startNonOverlappingLoop(options);
+    const handle: NonOverlappingLoopHandle = startNonOverlappingLoop({
+      ...options,
+      metrics: composition.metricsRegistry,
+      metricLabels: { process_role: processRole },
+    });
     backgroundStops.push(async () => {
       handle.stop();
       await handle.waitForIdle();

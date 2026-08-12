@@ -52,6 +52,8 @@ function startMessageScheduler(input: BackgroundProcessRuntimeInput, service: Ap
     deliveryBatchSize: config.schedulers.message.deliveryBatchSize,
     deliveryLeaseMs: config.schedulers.message.deliveryLeaseMs,
     deliveryRetryBackoffMs: config.schedulers.message.deliveryRetryBackoffMs,
+    metrics: input.composition.metricsRegistry,
+    metricLabels: { process_role: config.environment.processRole },
   });
   scheduler.start();
   input.registerStop(() => scheduler.stop());
@@ -63,6 +65,7 @@ function startIngestionWorker(input: BackgroundProcessRuntimeInput, worker: Appl
   const intervalMs = input.config.workers.ingestion.intervalMs;
   console.log(`   Ingestion worker: enabled (${workerId}, ${intervalMs}ms)`);
   input.startBackgroundLoop({
+    metricName: 'ingestion_worker_iteration',
     run: () => worker.runOnce(workerId),
     intervalMs,
     fallbackIntervalMs: 30_000,
@@ -78,6 +81,7 @@ function startLearningWorker(input: BackgroundProcessRuntimeInput, service: Appl
   const intervalMs = config.workers.learning.intervalMs;
   console.log(`   Agent learning worker: enabled (${workerId}, ${intervalMs}ms)`);
   input.startBackgroundLoop({
+    metricName: 'learning_worker_iteration',
     run: () => service.processNextQueuedRecommendationDecision(workerId),
     intervalMs,
     fallbackIntervalMs: 5_000,
@@ -94,6 +98,7 @@ function startRecommendationAnalysisWorker(input: BackgroundProcessRuntimeInput,
   const staleAfterMs = config.workers.recommendationAnalysis.staleAfterMs;
   console.log(`   Recommendation analysis worker: enabled (${workerId}, ${intervalMs}ms)`);
   input.startBackgroundLoop({
+    metricName: 'recommendation_analysis_worker_iteration',
     run: () => service.processNext(workerId, staleAfterMs),
     intervalMs,
     fallbackIntervalMs: 5_000,
@@ -109,6 +114,7 @@ function startRecommendationAnalysisScheduler(input: BackgroundProcessRuntimeInp
   const cooldownMinutes = config.schedulers.recommendationAnalysis.cooldownMinutes;
   console.log(`   Recommendation analysis scheduler: enabled (${intervalMs}ms)`);
   input.startBackgroundLoop({
+    metricName: 'recommendation_analysis_scheduler_iteration',
     run: async () => {
       const queued = await runWithDatabaseContext(
         { workerId: 'recommendation-analysis-scheduler', role: 'MASTER_ADMIN' },
@@ -146,6 +152,7 @@ function startSavingsReconciliationScheduler(input: BackgroundProcessRuntimeInpu
   const intervalMs = config.schedulers.savingsReconciliation.intervalMs;
   console.log(`   Value realization reconciliation scheduler: enabled (${intervalMs}ms)`);
   input.startBackgroundLoop({
+    metricName: 'savings_reconciliation_worker_iteration',
     run: runReconciliation,
     intervalMs,
     fallbackIntervalMs: 300_000,
@@ -160,6 +167,7 @@ function startIngestionScheduler(input: BackgroundProcessRuntimeInput, prisma: A
   const options = config.schedulers.ingestion;
   console.log(`   Ingestion scheduler: enabled (${options.intervalMs}ms)`);
   input.startBackgroundLoop({
+    metricName: 'ingestion_scheduler_iteration',
     intervalMs: options.intervalMs,
     fallbackIntervalMs: 300_000,
     run: async () => {
@@ -198,6 +206,7 @@ function startAuthLifecycleCleanupScheduler(
   const intervalMs = config.schedulers.authCleanup.intervalMs;
   console.log(`   Auth lifecycle cleanup scheduler: enabled (${intervalMs}ms)`);
   input.startBackgroundLoop({
+    metricName: 'auth_lifecycle_cleanup_scheduler_iteration',
     intervalMs,
     fallbackIntervalMs: Math.min(intervalMs, 300_000),
     run: () => runWithDatabaseContext(

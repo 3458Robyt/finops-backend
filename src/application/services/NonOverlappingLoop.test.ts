@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { MetricsRegistry } from '../observability/MetricsRegistry.js';
 import { startNonOverlappingLoop } from './NonOverlappingLoop.js';
 
 describe('startNonOverlappingLoop', () => {
@@ -108,5 +109,28 @@ describe('startNonOverlappingLoop', () => {
 
     scheduled();
     expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('records bounded iteration counters and duration by process role', async () => {
+    const metrics = new MetricsRegistry();
+    const handle = startNonOverlappingLoop({
+      run: async () => undefined,
+      intervalMs: 1000,
+      fallbackIntervalMs: 30000,
+      setIntervalFn: vi.fn(() => 123 as unknown as NodeJS.Timeout),
+      clearIntervalFn: vi.fn(),
+      metrics,
+      metricName: 'learning_worker_iteration',
+      metricLabels: { process_role: 'learning-worker' },
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    handle.stop();
+
+    const output = metrics.toPrometheus();
+    expect(output).toContain('finops_learning_worker_iteration_started_total{process_role="learning-worker"} 1');
+    expect(output).toContain('finops_learning_worker_iteration_completed_total{process_role="learning-worker"} 1');
+    expect(output).toContain('finops_learning_worker_iteration_duration_ms_count{outcome="success",process_role="learning-worker"} 1');
   });
 });

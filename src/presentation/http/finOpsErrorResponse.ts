@@ -12,7 +12,7 @@ export function resolveFinOpsError(error: unknown, fallback: string): {
   if (error instanceof AiAuditRejectedError) {
     return {
       status: 422,
-      error: error.message,
+      error: safeErrorMessage(error.message),
       code: error.code,
       diagnosticId: error.diagnosticId,
       audit: error.audit,
@@ -30,7 +30,7 @@ export function resolveFinOpsError(error: unknown, fallback: string): {
           : error.code === 'CONFLICT' ? 409
             : ['AI_RESPONSE_ERROR', 'PROVIDER_ERROR', 'PROVIDER_TIMEOUT'].includes(error.code) ? 502
             : 500;
-  return { status, error: error.message, code: error.code };
+  return { status, error: safeErrorMessage(error.message), code: error.code };
 }
 
 export function respondWithFinOpsError(

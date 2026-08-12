@@ -11,6 +11,8 @@ describe('finOpsErrorResponse', () => {
     });
     expect(resolveFinOpsError(new FinOpsBaseError('conflict', 'CONFLICT'), 'fallback').status).toBe(409);
     expect(resolveFinOpsError(new FinOpsBaseError('provider unavailable', 'AI_RESPONSE_ERROR'), 'fallback').status).toBe(502);
+    expect(resolveFinOpsError(new FinOpsBaseError('apiKey=super-secret', 'PROVIDER_ERROR'), 'fallback').error)
+      .toBe('apiKey=[REDACTED]');
   });
 
   test('preserves the audit payload and diagnostic id for rejected AI artifacts', () => {

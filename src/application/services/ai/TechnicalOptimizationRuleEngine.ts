@@ -103,6 +103,8 @@ function evaluateResource(
 
   if (cpu === undefined) {
     blockers.push('MISSING_CPU_METRIC');
+  } else if (!isPercentMetric(cpu)) {
+    blockers.push('CPU_METRIC_UNIT_NOT_PERCENTAGE');
   } else {
     sourceFacts.push(metricFact('CPU', cpu));
     if (isHighUtilization(cpu, ruleConfig) || cpu.p99 >= ruleConfig.cpuCriticalP99Percent) {
@@ -119,6 +121,8 @@ function evaluateResource(
 
   if (memory === undefined) {
     blockers.push('MISSING_MEMORY_METRIC');
+  } else if (!isPercentMetric(memory)) {
+    blockers.push('MEMORY_METRIC_UNIT_NOT_PERCENTAGE');
   } else {
     sourceFacts.push(metricFact('Memoria', memory));
     if (isHighUtilization(memory, ruleConfig)) {
@@ -253,7 +257,7 @@ function isPercentMetric(summary: TechnicalMetricSummaryItem): boolean {
   return unit === '%'
     || unit.includes('percent')
     || unit.includes('percentage')
-    || /cpu|memory|mem|utilization|util|percent|pct/.test(name);
+    || /utilization|util|percent|percentage|pct/.test(name);
 }
 
 function isHighUtilization(

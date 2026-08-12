@@ -129,6 +129,27 @@ describe('TechnicalOptimizationRuleEngine', () => {
     });
     expect(result?.ruleMatches).toEqual(expect.arrayContaining(['NETWORK_LOW_UTILIZATION', 'DISK_LOW_UTILIZATION']));
   });
+
+  it('does not interpret absolute CPU or memory values as percentages', () => {
+    const [result] = evaluateTechnicalOptimizationRules({
+      referenceDate,
+      summaries: [
+        summary('CpuSeconds', { metricUnit: 'Seconds', avg: 1, p95: 2, p99: 3 }),
+        summary('MemoryUsedBytes', { metricUnit: 'Bytes', avg: 10, p95: 20, p99: 30 }),
+      ],
+    });
+
+    expect(result?.readiness).toBe('VALIDATION_ONLY');
+    expect(result?.ruleMatches).not.toEqual(expect.arrayContaining([
+      'CPU_IDLE_CANDIDATE',
+      'CPU_STRONG_UNDERUTILIZATION',
+      'MEMORY_LOW_UTILIZATION',
+    ]));
+    expect(result?.blockers).toEqual(expect.arrayContaining([
+      'CPU_METRIC_UNIT_NOT_PERCENTAGE',
+      'MEMORY_METRIC_UNIT_NOT_PERCENTAGE',
+    ]));
+  });
 });
 
 function summary(

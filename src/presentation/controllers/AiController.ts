@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { FinOpsAiService } from '../../application/services/FinOpsAiService.js';
 import type { IAgentLearningService } from '../../domain/interfaces/IAgentLearningService.js';
-import { AiAuditRejectedError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const chatSchema = z.object({
   message: z.string().min(1),
@@ -101,7 +101,7 @@ export class AiController {
         },
       });
     } catch (error: unknown) {
-      this.handleError(error, res, 'An unexpected AI chat error occurred');
+      respondWithFinOpsError(res, error, 'An unexpected AI chat error occurred', 'ai_operation_failed', req.path);
     }
   };
 
@@ -167,7 +167,7 @@ export class AiController {
         },
       });
     } catch (error: unknown) {
-      this.handleError(error, res, 'An unexpected AI recommendation error occurred');
+      respondWithFinOpsError(res, error, 'An unexpected AI recommendation error occurred', 'ai_operation_failed', req.path);
     }
   };
 
@@ -213,7 +213,7 @@ export class AiController {
         learning,
       });
     } catch (error: unknown) {
-      this.handleError(error, res, 'An unexpected AI learning summary error occurred');
+      respondWithFinOpsError(res, error, 'An unexpected AI learning summary error occurred', 'ai_operation_failed', req.path);
     }
   };
 
@@ -236,47 +236,8 @@ export class AiController {
       const memory = await this.learningService.deactivateMemory(req.auth, memoryId);
       res.status(200).json({ success: true, memory });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible revertir la memoria del agente');
+      respondWithFinOpsError(res, error, 'No fue posible revertir la memoria del agente', 'ai_operation_failed', req.path);
     }
   };
 
-  /**
-   * Manejador centralizado de errores de IA que traduce excepciones de dominio
-   * a códigos de estado HTTP:
-   * - {@link FinOpsBaseError} con código `VALIDATION_ERROR` -> 400; cualquier
-   *   otro código (p. ej. fallos del proveedor de IA) -> 502.
-   * - Error no controlado -> 500 con `fallbackMessage`.
-   */
-  private handleError(error: unknown, res: Response, fallbackMessage: string): void {
-    if (error instanceof AiAuditRejectedError) {
-      res.status(422).json({
-        success: false,
-        error: error.message,
-        code: error.code,
-        diagnosticId: error.diagnosticId,
-        audit: error.audit,
-      });
-      return;
-    }
-
-    if (error instanceof FinOpsBaseError) {
-      const status = error.code === 'AUTHENTICATION_REQUIRED' ? 401
-        : error.code === 'AUTHORIZATION_FAILED' ? 403
-          : error.code === 'NOT_FOUND' ? 404
-            : error.code === 'VALIDATION_ERROR' ? 400
-              : error.code === 'CONFLICT' ? 409
-                : 502;
-      res.status(status).json({
-        success: false,
-        error: error.message,
-        code: error.code,
-      });
-      return;
-    }
-
-    res.status(500).json({
-      success: false,
-      error: fallbackMessage,
-    });
-  }
 }

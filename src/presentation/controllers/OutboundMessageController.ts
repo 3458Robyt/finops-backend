@@ -1,7 +1,8 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { OutboundMessageService } from '../../application/services/OutboundMessageService.js';
-import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const testSchema = z.object({
   email: z.string().email().optional(),
@@ -17,7 +18,7 @@ export class OutboundMessageController {
       const status = await this.outboundMessageService.getStatus(auth);
       res.status(200).json({ success: true, status });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible cargar el estado de canales');
+      respondWithFinOpsError(res, error, 'No fue posible cargar el estado de canales', 'outbound_operation_failed', req.path);
     }
   };
 
@@ -28,7 +29,7 @@ export class OutboundMessageController {
       const deliveries = await this.outboundMessageService.listRecentDeliveries(auth, limit);
       res.status(200).json({ success: true, deliveries });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible cargar entregas recientes');
+      respondWithFinOpsError(res, error, 'No fue posible cargar entregas recientes', 'outbound_operation_failed', req.path);
     }
   };
 
@@ -45,7 +46,7 @@ export class OutboundMessageController {
       const result = await this.outboundMessageService.sendTestMessages(auth, input);
       res.status(200).json({ success: true, ...result });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible enviar mensaje de prueba');
+      respondWithFinOpsError(res, error, 'No fue posible enviar mensaje de prueba', 'outbound_operation_failed', req.path);
     }
   };
 
@@ -55,7 +56,7 @@ export class OutboundMessageController {
       const result = await this.outboundMessageService.sendSavingsReminders(auth);
       res.status(200).json({ success: true, ...result });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible enviar recordatorios');
+      respondWithFinOpsError(res, error, 'No fue posible enviar recordatorios', 'outbound_operation_failed', req.path);
     }
   };
 
@@ -65,7 +66,7 @@ export class OutboundMessageController {
       const result = await this.outboundMessageService.sendRecommendationSummary(auth);
       res.status(200).json({ success: true, ...result });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible enviar resumen de recomendaciones');
+      respondWithFinOpsError(res, error, 'No fue posible enviar resumen de recomendaciones', 'outbound_operation_failed', req.path);
     }
   };
 
@@ -75,7 +76,7 @@ export class OutboundMessageController {
       const result = await this.outboundMessageService.sendExecutiveSummary(auth);
       res.status(200).json({ success: true, ...result });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible enviar el resumen ejecutivo');
+      respondWithFinOpsError(res, error, 'No fue posible enviar el resumen ejecutivo', 'outbound_operation_failed', req.path);
     }
   };
 
@@ -86,16 +87,4 @@ export class OutboundMessageController {
     return req.auth;
   }
 
-  private handleError(error: unknown, res: Response, fallbackMessage: string): void {
-    if (error instanceof AuthorizationError) {
-      res.status(403).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-    if (error instanceof FinOpsBaseError) {
-      const status = error.code === 'NOT_FOUND' ? 404 : error.code === 'AUTHENTICATION_REQUIRED' ? 401 : 400;
-      res.status(status).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-    res.status(500).json({ success: false, error: fallbackMessage });
-  }
 }

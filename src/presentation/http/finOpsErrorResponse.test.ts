@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import { AiAuditRejectedError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import { respondWithFinOpsError, resolveFinOpsError } from './finOpsErrorResponse.js';
 
 describe('finOpsErrorResponse', () => {
@@ -10,6 +10,30 @@ describe('finOpsErrorResponse', () => {
       code: 'NOT_FOUND',
     });
     expect(resolveFinOpsError(new FinOpsBaseError('conflict', 'CONFLICT'), 'fallback').status).toBe(409);
+    expect(resolveFinOpsError(new FinOpsBaseError('provider unavailable', 'AI_RESPONSE_ERROR'), 'fallback').status).toBe(502);
+  });
+
+  test('preserves the audit payload and diagnostic id for rejected AI artifacts', () => {
+    const error = new AiAuditRejectedError('artifact rejected', {
+      diagnosticId: 'trace-1',
+      audit: { verdict: 'REJECTED' },
+    });
+
+    expect(resolveFinOpsError(error, 'fallback')).toEqual({
+      status: 422,
+      error: 'artifact rejected',
+      code: 'AI_AUDIT_REJECTED',
+      diagnosticId: 'trace-1',
+      audit: { verdict: 'REJECTED' },
+    });
+
+    const response = {
+      locals: { requestId: 'request-1' },
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    } as never;
+    respondWithFinOpsError(response, error, 'fallback', 'ai_event');
+    expect(response.json).toHaveBeenCalledWith(expect.objectContaining({ diagnosticId: 'trace-1' }));
   });
 
   test('adds diagnostic id and sanitizes unexpected errors', () => {

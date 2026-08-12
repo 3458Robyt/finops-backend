@@ -4,9 +4,10 @@ import type { AgentInstructionService } from '../../application/services/AgentIn
 import type { ContextSummaryBuilderService } from '../../application/services/ContextSummaryBuilderService.js';
 import type { AgentQualityService } from '../../application/services/AgentQualityService.js';
 import type { IAgentContextRepository } from '../../domain/interfaces/IAgentContextRepository.js';
-import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { UserRole } from '../../domain/models/AuthContext.js';
 import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const profileSchema = z.object({
   structuredRules: z.object({
@@ -68,7 +69,7 @@ export class AgentController {
       const profile = await this.instructionService.getActiveProfile();
       res.status(200).json({ success: true, profile });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible cargar el perfil del agente');
+      respondWithFinOpsError(res, error, 'No fue posible cargar el perfil del agente', 'agent_operation_failed', req.path);
     }
   };
 
@@ -110,7 +111,7 @@ export class AgentController {
 
       res.status(200).json({ success: true, profile });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible activar el perfil del agente');
+      respondWithFinOpsError(res, error, 'No fue posible activar el perfil del agente', 'agent_operation_failed', req.path);
     }
   };
 
@@ -134,7 +135,7 @@ export class AgentController {
       const rules = await this.instructionService.listTenantRules(auth.tenantId);
       res.status(200).json({ success: true, rules });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible cargar reglas tenant');
+      respondWithFinOpsError(res, error, 'No fue posible cargar reglas tenant', 'agent_operation_failed', req.path);
     }
   };
 
@@ -175,7 +176,7 @@ export class AgentController {
 
       res.status(201).json({ success: true, rule });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible crear la regla tenant');
+      respondWithFinOpsError(res, error, 'No fue posible crear la regla tenant', 'agent_operation_failed', req.path);
     }
   };
 
@@ -209,7 +210,7 @@ export class AgentController {
       const rule = await this.instructionService.disableTenantRule(auth, ruleId);
       res.status(200).json({ success: true, rule });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible desactivar la regla tenant');
+      respondWithFinOpsError(res, error, 'No fue posible desactivar la regla tenant', 'agent_operation_failed', req.path);
     }
   };
 
@@ -240,7 +241,7 @@ export class AgentController {
       });
       res.status(200).json({ success: true, traces });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible cargar trazas IA');
+      respondWithFinOpsError(res, error, 'No fue posible cargar trazas IA', 'agent_operation_failed', req.path);
     }
   };
 
@@ -258,7 +259,7 @@ export class AgentController {
       const report = await this.qualityService.getReport(auth.tenantId, days);
       res.status(200).json({ success: true, report });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible cargar la calibracion del agente');
+      respondWithFinOpsError(res, error, 'No fue posible cargar la calibracion del agente', 'agent_operation_failed', req.path);
     }
   };
 
@@ -289,7 +290,7 @@ export class AgentController {
         summaries,
       });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible ejecutar backfill de contexto');
+      respondWithFinOpsError(res, error, 'No fue posible ejecutar backfill de contexto', 'agent_operation_failed', req.path);
     }
   };
 
@@ -335,30 +336,4 @@ export class AgentController {
     return value.trim();
   }
 
-  /**
-   * Manejador centralizado de errores que traduce excepciones de dominio a
-   * códigos de estado HTTP:
-   * - {@link AuthorizationError} -> 403.
-   * - {@link FinOpsBaseError} con código `NOT_FOUND` -> 404;
-   *   `AUTHENTICATION_REQUIRED` -> 401; cualquier otro código -> 400.
-   * - Error no controlado -> 500 con `fallbackMessage`.
-   */
-  private handleError(error: unknown, res: Response, fallbackMessage: string): void {
-    if (error instanceof AuthorizationError) {
-      res.status(403).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-
-    if (error instanceof FinOpsBaseError) {
-      const status = error.code === 'NOT_FOUND'
-        ? 404
-        : error.code === 'AUTHENTICATION_REQUIRED'
-          ? 401
-          : 400;
-      res.status(status).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-
-    res.status(500).json({ success: false, error: fallbackMessage });
-  }
 }

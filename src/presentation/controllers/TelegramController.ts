@@ -2,8 +2,9 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { TelegramBotService } from '../../application/services/TelegramBotService.js';
 import type { TelegramLinkService } from '../../application/services/TelegramLinkService.js';
-import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
+import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import { safeSecretEqual } from '../../infrastructure/security/safeSecretCompare.js';
+import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const createLinkSchema = z.object({
   email: z.string().email(),
@@ -73,7 +74,7 @@ export class TelegramController {
       await this.botService.handleUpdate(req.body);
       res.status(200).json({ success: true });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible procesar el webhook de Telegram');
+      respondWithFinOpsError(res, error, 'No fue posible procesar el webhook de Telegram', 'telegram_operation_failed', req.path);
     }
   };
 
@@ -98,7 +99,7 @@ export class TelegramController {
       const links = await this.linkService.listLinks(req.auth);
       res.status(200).json({ success: true, links });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible cargar vinculos Telegram');
+      respondWithFinOpsError(res, error, 'No fue posible cargar vinculos Telegram', 'telegram_operation_failed', req.path);
     }
   };
 
@@ -142,7 +143,7 @@ export class TelegramController {
       });
       res.status(201).json({ success: true, link });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible crear el vinculo Telegram');
+      respondWithFinOpsError(res, error, 'No fue posible crear el vinculo Telegram', 'telegram_operation_failed', req.path);
     }
   };
 
@@ -178,7 +179,7 @@ export class TelegramController {
       const link = await this.linkService.disableLink(req.auth, linkId);
       res.status(200).json({ success: true, link });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible desactivar el vinculo Telegram');
+      respondWithFinOpsError(res, error, 'No fue posible desactivar el vinculo Telegram', 'telegram_operation_failed', req.path);
     }
   };
 
@@ -214,7 +215,7 @@ export class TelegramController {
       const link = await this.linkService.sendTestMessage(req.auth, linkId);
       res.status(200).json({ success: true, link });
     } catch (error: unknown) {
-      this.handleError(error, res, 'No fue posible enviar mensaje de prueba');
+      respondWithFinOpsError(res, error, 'No fue posible enviar mensaje de prueba', 'telegram_operation_failed', req.path);
     }
   };
 
@@ -227,33 +228,4 @@ export class TelegramController {
     return typeof id === 'string' && id.trim() !== '' ? id.trim() : undefined;
   }
 
-  /**
-   * Manejador centralizado de errores que traduce excepciones de dominio a
-   * códigos de estado HTTP:
-   * - {@link AuthorizationError} -> 403.
-   * - {@link FinOpsBaseError} con código `VALIDATION_ERROR` -> 400; `NOT_FOUND`
-   *   -> 404; `CONFLICT` -> 409; cualquier otro código -> 500.
-   * - Error no controlado -> 500 con `fallbackMessage`.
-   */
-  private handleError(error: unknown, res: Response, fallbackMessage: string): void {
-    if (error instanceof AuthorizationError) {
-      res.status(403).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-
-    if (error instanceof FinOpsBaseError) {
-      const status = error.code === 'VALIDATION_ERROR'
-        ? 400
-        : error.code === 'NOT_FOUND'
-          ? 404
-          : error.code === 'CONFLICT'
-            ? 409
-            : 500;
-
-      res.status(status).json({ success: false, error: error.message, code: error.code });
-      return;
-    }
-
-    res.status(500).json({ success: false, error: fallbackMessage });
-  }
 }

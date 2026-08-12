@@ -4,7 +4,6 @@ import * as identity from 'oci-identity';
 import * as monitoring from 'oci-monitoring';
 import * as objectstorage from 'oci-objectstorage';
 import * as usageapi from 'oci-usageapi';
-import { createHash } from 'node:crypto';
 import type {
   CloudIngestionJobContext,
   CloudIngestionConnection,
@@ -13,17 +12,13 @@ import type {
   CloudIngestionProvider,
   CloudIngestionResult,
   FocusSourcePreviewResult,
-  NormalizedFocusCostLineItem,
-  NormalizedProviderCostLineItem,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
-import { parseFocusCsvStream, toAsyncByteChunks } from './focusCsvIngestion.js';
 import {
   getCredential,
   optionalString,
   readObjectArray,
   requireString,
 } from './providerConfig.js';
-import { resolveBillingSource } from './billingSourceMode.js';
 import {
   collectOciTechnicalMetrics,
   readOciMetricDefinitions,
@@ -36,12 +31,12 @@ import {
 } from './oci/OciCapabilityValidator.js';
 import type {
   OciComputeClient,
-  OciFocusReportObject,
   OciIdentityClient,
   OciMonitoringClient,
   OciObjectStorageClient,
   OciUsageClient,
 } from './oci/OciSdkContracts.js';
+import { OciBillingCollector } from './oci/OciBillingCollector.js';
 import { collectOciInventory } from './oci/OciInventoryCollector.js';
 import { createOciResourceSearchClient } from './oci/OciResourceSearchCollector.js';
 import { discoverOciInventoryCompartments } from './oci/OciCompartmentDiscovery.js';
@@ -55,6 +50,14 @@ import { withOciProviderRetry } from './oci/OciRetryPolicy.js';
 
 export class OciSdkIngestionProvider implements CloudIngestionProvider {
   public readonly providerCode = 'oci';
+  private readonly billing: OciBillingCollector;
+
+  constructor() {
+    this.billing = new OciBillingCollector({
+      createObjectStorageClient: (job) => this.createObjectStorageClient(job),
+      createUsageClient: (job) => this.createUsageClient(job),
+    });
+  }
 
   public async validate(connection: CloudIngestionConnection): Promise<CloudConnectionValidationResult> {
     return validateOciCapabilities(connection, {
@@ -102,7 +105,7 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
 
   public async collect(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {
     if (job.sourceType === 'BILLING_EXPORT') {
-      return this.collectBillingExport(job);
+      return this.billing.collect(job);
     }
 
     if (job.sourceType === 'INVENTORY') {
@@ -139,138 +142,6 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
       createClient: (context) => this.createMonitoringClient(context),
       withRetry: withOciProviderRetry,
     });
-  }
-
-  private async collectBillingExport(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {
-    if (resolveBillingSource(job) === 'PROVIDER_API') {
-      return this.collectProviderApiCosts(job);
-    }
-    const client = this.createObjectStorageClient(job);
-    let discovery: Awaited<ReturnType<typeof discoverOciFocusObjects>>;
-    try {
-      discovery = await discoverOciFocusObjects(
-        job,
-        client,
-        withOciProviderRetry,
-      );
-    } catch (error) {
-      client.close?.();
-      throw error;
-    }
-    const objects = [...readOciFocusObjects(job), ...discovery.objects];
-    if (objects.length === 0) {
-      client.close?.();
-      return this.emptyResult(0, [
-        'No OCI FOCUS report objects configured or discovered. Configure ociFocusReportObjects or ociFocusReportLocations.',
-      ], {
-        costSource: 'OCI Cost Reports FOCUS',
-        expectedRefreshHours: 6,
-        objectsConfigured: 0,
-        prefixesConfigured: readOciFocusLocations(job).length,
-      });
-    }
-
-    let apiCallCount = discovery.apiCallCount;
-    apiCallCount += objects.length;
-
-    return {
-      apiCallCount,
-      objectsProcessed: objects.length,
-      focusRows: [],
-      focusBatches: this.streamFocusObjects(job, client, objects),
-      resources: [],
-      metricSamples: [],
-      warnings: [],
-      coverage: {
-        costSource: 'OCI Cost Reports FOCUS',
-        expectedRefreshHours: 6,
-        objectsConfigured: objects.length,
-        objectsDiscovered: discovery.objects.length,
-        prefixesConfigured: readOciFocusLocations(job).length,
-        rowsParsed: 'streamed',
-      },
-    };
-  }
-
-  private async collectProviderApiCosts(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {
-    const provider = this.createAuthProvider(job);
-    const client = new usageapi.UsageapiClient({ authenticationDetailsProvider: provider }) as unknown as OciUsageClient;
-    try {
-    const response = await withOciProviderRetry(() => client.requestSummarizedUsages({
-      requestSummarizedUsagesDetails: {
-        tenantId: job.connection.rootExternalId,
-        timeUsageStarted: job.targetStart,
-        timeUsageEnded: job.targetEnd,
-        granularity: usageapi.models.RequestSummarizedUsagesDetails.Granularity.Daily,
-        queryType: usageapi.models.RequestSummarizedUsagesDetails.QueryType.Cost,
-        groupBy: ['service'],
-      },
-    }));
-    const rows: NormalizedProviderCostLineItem[] = [];
-    for (const item of response.usageAggregation?.items ?? []) {
-      const amount = item.computedAmount;
-      if (amount === undefined || !Number.isFinite(amount)) continue;
-      const serviceName = item.service ?? 'Uncategorized';
-      const rawRow = { ...item, targetStart: job.targetStart.toISOString(), targetEnd: job.targetEnd.toISOString() };
-      rows.push({
-        tenantId: job.tenantId,
-        cloudConnectionId: job.cloudConnectionId,
-        provider: 'OCI',
-        chargePeriodStart: job.targetStart,
-        chargePeriodEnd: job.targetEnd,
-        billingAccountId: job.connection.rootExternalId,
-        serviceName,
-        resourceId: item.resourceId ?? '',
-        ...(item.region === undefined ? {} : { regionId: item.region }),
-        billedCost: amount,
-        billingCurrency: item.currency ?? 'USD',
-        ...(item.computedQuantity === undefined ? {} : { consumedQuantity: item.computedQuantity }),
-        sourceMetric: 'OCI_COMPUTED_AMOUNT',
-        rawRow,
-        lineItemHash: createHash('sha256').update(JSON.stringify(rawRow)).digest('hex'),
-      });
-    }
-    return { apiCallCount: 1, objectsProcessed: 0, focusRows: [], providerCostRows: rows, resources: [], metricSamples: [], warnings: rows.length === 0 ? ['OCI Usage API returned no costs for the requested range.'] : [], coverage: { billingSource: 'PROVIDER_API', costSource: 'OCI Usage API', rows: rows.length } };
-    } finally {
-      client.close?.();
-    }
-  }
-
-  private async *streamFocusObjects(
-    job: CloudIngestionJobContext,
-    client: OciObjectStorageClient,
-    objects: readonly OciFocusReportObject[],
-  ): AsyncGenerator<readonly NormalizedFocusCostLineItem[]> {
-    const batch: NormalizedFocusCostLineItem[] = [];
-    try {
-    for (const object of objects) {
-      const response = await withOciProviderRetry(() => client.getObject({
-        namespaceName: object.namespaceName,
-        bucketName: object.bucketName,
-        objectName: object.objectName,
-      }));
-      for await (const line of parseFocusCsvStream(
-        toAsyncByteChunks(response.getObjectBody ?? response.value),
-        {
-          tenantId: job.tenantId,
-          cloudConnectionId: job.cloudConnectionId,
-          provider: 'OCI',
-          focusVersion: object.focusVersion,
-        },
-        object.objectName,
-      )) {
-        batch.push(line);
-        if (batch.length >= 1000) {
-          yield batch.splice(0, batch.length);
-        }
-      }
-    }
-    if (batch.length > 0) {
-      yield batch;
-    }
-    } finally {
-      client.close?.();
-    }
   }
 
   private createMonitoringClient(job: CloudIngestionJobContext): OciMonitoringClient {
@@ -332,6 +203,13 @@ metadata: { namespaceName, bucketName },
 };
 },
 ));
+}
+
+private createUsageClient(job: CloudIngestionJobContext): OciUsageClient {
+const provider = this.createAuthProvider(job);
+return new usageapi.UsageapiClient({
+authenticationDetailsProvider: provider,
+}) as unknown as OciUsageClient;
 }
 
 private createObjectStorageClient(job: CloudIngestionJobContext): OciObjectStorageClient {

@@ -254,6 +254,59 @@ it('normalizes metric samples from OCI TypeScript SDK items response', async () 
     expect(focusRows).toHaveLength(1);
     expect(focusRows[0]?.provider).toBe('OCI');
   });
+
+  it('normalizes OCI Usage API costs through the billing collector', async () => {
+    const provider = new OciSdkIngestionProvider();
+    const requests: unknown[] = [];
+    let closed = false;
+
+    Object.assign(provider as unknown as Record<string, unknown>, {
+      createUsageClient: () => ({
+        requestSummarizedUsages: async (request: unknown) => {
+          requests.push(request);
+          return {
+            usageAggregation: {
+              items: [{
+                service: 'Compute',
+                computedAmount: 12.5,
+                computedQuantity: 4,
+                currency: 'USD',
+                resourceId: 'ocid1.instance.oc1.test',
+                region: 'sa-bogota-1',
+              }],
+            },
+          };
+        },
+        close: () => { closed = true; },
+      }),
+    });
+
+    const result = await provider.collect({
+      ...buildOciFocusJob(),
+      connection: {
+        ...buildOciFocusJob().connection,
+        metadata: { billingSourceMode: 'PROVIDER_API' },
+      },
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(result.providerCostRows).toEqual([
+      expect.objectContaining({
+        provider: 'OCI',
+        serviceName: 'Compute',
+        billedCost: 12.5,
+        consumedQuantity: 4,
+        billingCurrency: 'USD',
+        resourceId: 'ocid1.instance.oc1.test',
+      }),
+    ]);
+    expect(result.coverage).toEqual({
+      billingSource: 'PROVIDER_API',
+      costSource: 'OCI Usage API',
+      rows: 1,
+    });
+    expect(closed).toBe(true);
+  });
 });
 
 async function collectFocusRows(

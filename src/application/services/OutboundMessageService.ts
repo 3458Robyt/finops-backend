@@ -3,7 +3,7 @@ import type { IOutboundMessageRepository } from '../../domain/interfaces/IOutbou
 import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
 import type { ITelegramRepository } from '../../domain/interfaces/ITelegramRepository.js';
 import type { AuthContext } from '../../domain/models/AuthContext.js';
-import type { OutboundMessageChannel, OutboundMessageDelivery, OutboundMessageType } from '../../domain/models/OutboundMessage.js';
+import type { OutboundMessageChannel, OutboundMessageDelivery } from '../../domain/models/OutboundMessage.js';
 import type { TelegramChatLink } from '../../domain/models/Telegram.js';
 import type { IEmailClient } from './EmailClient.js';
 import type { SavingsReminderService } from './SavingsReminderService.js';
@@ -13,6 +13,7 @@ import {
   type ProcessPendingOutboundDeliveryInput,
   type ProcessPendingOutboundDeliveryResult,
 } from './OutboundMessageDeliveryProcessor.js';
+import { OutboundChannelDeliveryService } from './OutboundChannelDeliveryService.js';
 import { formatRecommendations, formatSavingsReminders } from './telegram/telegramMessageFormatters.js';
 import type { ExecutiveSummaryDeliveryService } from './ExecutiveSummaryDeliveryService.js';
 import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
@@ -51,6 +52,7 @@ export interface ValueRealizationOutboundInput {
 
 export class OutboundMessageService {
   private readonly deliveryProcessor: OutboundMessageDeliveryProcessor;
+  private readonly channelDelivery: OutboundChannelDeliveryService;
 
   constructor(
     private readonly outboundRepository: IOutboundMessageRepository,
@@ -71,6 +73,12 @@ export class OutboundMessageService {
       telegramClient,
       emailClient,
       config.telegramEnabled,
+    );
+    this.channelDelivery = new OutboundChannelDeliveryService(
+      outboundRepository,
+      telegramClient,
+      emailClient,
+      { telegramEnabled: config.telegramEnabled },
     );
   }
 
@@ -113,7 +121,7 @@ export class OutboundMessageService {
     ].join('\n');
 
     if (input.email !== undefined && input.email.trim() !== '') {
-      deliveries.push(await this.sendEmail({
+      deliveries.push(await this.channelDelivery.sendEmail({
         tenantId: actor.tenantId,
         userId: actor.userId,
         to: input.email.trim(),
@@ -128,7 +136,7 @@ export class OutboundMessageService {
       if (link === null || link.status !== 'ACTIVE') {
         throw new FinOpsBaseError('Telegram link not found or inactive', 'NOT_FOUND');
       }
-      deliveries.push(await this.sendTelegram({
+      deliveries.push(await this.channelDelivery.sendTelegram({
         tenantId: actor.tenantId,
         userId: link.userId,
         chatId: link.chatId,
@@ -163,7 +171,7 @@ export class OutboundMessageService {
 
       const link = activeLinksByUserId.get(user.id);
       if (link !== undefined) {
-        deliveries.push(await this.sendTelegram({
+        deliveries.push(await this.channelDelivery.sendTelegram({
           tenantId: actor.tenantId,
           userId: user.id,
           chatId: link.chatId,
@@ -172,7 +180,7 @@ export class OutboundMessageService {
         }));
       }
 
-      deliveries.push(await this.sendEmail({
+      deliveries.push(await this.channelDelivery.sendEmail({
         tenantId: actor.tenantId,
         userId: user.id,
         to: user.email,
@@ -194,8 +202,8 @@ export class OutboundMessageService {
       : `La medición posterior a la ejecución fue actualizada. Recomendación: ${input.recommendationId}. Estado: ${input.status.toLowerCase()}. Moneda: ${input.currency}.`;
     for (const user of users.filter((item) => item.status === 'ACTIVE')) {
       const link = activeLinksByUserId.get(user.id);
-      if (link !== undefined) await this.sendTelegram({ tenantId, userId: user.id, chatId: link.chatId, text, messageType: 'SAVINGS_REMINDER' });
-      await this.sendEmail({ tenantId, userId: user.id, to: user.email, subject: 'Actualización de valor realizado FinOps', text, messageType: 'SAVINGS_REMINDER' });
+      if (link !== undefined) await this.channelDelivery.sendTelegram({ tenantId, userId: user.id, chatId: link.chatId, text, messageType: 'SAVINGS_REMINDER' });
+      await this.channelDelivery.sendEmail({ tenantId, userId: user.id, to: user.email, subject: 'Actualización de valor realizado FinOps', text, messageType: 'SAVINGS_REMINDER' });
     }
   }
 
@@ -215,7 +223,7 @@ export class OutboundMessageService {
     const deliveries: OutboundMessageDelivery[] = [];
 
     if (input.channels.includes('EMAIL')) {
-      deliveries.push(await this.sendEmail({
+      deliveries.push(await this.channelDelivery.sendEmail({
         tenantId: input.tenantId,
         userId: input.userId,
         to: user.email,
@@ -226,7 +234,7 @@ export class OutboundMessageService {
     }
 
     if (input.channels.includes('TELEGRAM') && link !== undefined) {
-      deliveries.push(await this.sendTelegram({
+      deliveries.push(await this.channelDelivery.sendTelegram({
         tenantId: input.tenantId,
         userId: input.userId,
         chatId: link.chatId,
@@ -249,7 +257,7 @@ export class OutboundMessageService {
     for (const user of users.filter((item) => item.status === 'ACTIVE')) {
       const link = links.find((item) => item.userId === user.id && item.status === 'ACTIVE');
       if (link !== undefined) {
-        deliveries.push(await this.sendTelegram({
+        deliveries.push(await this.channelDelivery.sendTelegram({
           tenantId: actor.tenantId,
           userId: user.id,
           chatId: link.chatId,
@@ -257,7 +265,7 @@ export class OutboundMessageService {
           messageType: 'RECOMMENDATION_SUMMARY',
         }));
       }
-      deliveries.push(await this.sendEmail({
+      deliveries.push(await this.channelDelivery.sendEmail({
         tenantId: actor.tenantId,
         userId: user.id,
         to: user.email,
@@ -284,108 +292,8 @@ export class OutboundMessageService {
     return this.sendExecutiveSummary(actor);
   }
 
-  private async sendTelegram(input: {
-    readonly tenantId: string;
-    readonly userId?: string;
-    readonly chatId: string;
-    readonly text: string;
-    readonly messageType: OutboundMessageType;
-  }): Promise<OutboundMessageDelivery> {
-    if (!this.config.telegramEnabled) {
-      return this.outboundRepository.create({
-        tenantId: input.tenantId,
-        ...(input.userId !== undefined ? { userId: input.userId } : {}),
-        channel: 'TELEGRAM',
-        messageType: input.messageType,
-        status: 'SKIPPED',
-        preview: truncatePreview(input.text),
-        errorMessage: 'Telegram channel disabled',
-      });
-    }
-
-    try {
-      await this.telegramClient.sendMessage({ chatId: input.chatId, text: input.text });
-      return this.outboundRepository.create({
-        tenantId: input.tenantId,
-        ...(input.userId !== undefined ? { userId: input.userId } : {}),
-        channel: 'TELEGRAM',
-        messageType: input.messageType,
-        status: 'SENT',
-        preview: truncatePreview(input.text),
-        sentAt: new Date(),
-        metadata: { chatId: input.chatId },
-      });
-    } catch (error: unknown) {
-      return this.outboundRepository.create({
-        tenantId: input.tenantId,
-        ...(input.userId !== undefined ? { userId: input.userId } : {}),
-        channel: 'TELEGRAM',
-        messageType: input.messageType,
-        status: 'FAILED',
-        preview: truncatePreview(input.text),
-        errorMessage: error instanceof Error ? error.message : 'Telegram delivery failed',
-        metadata: { chatId: input.chatId },
-      });
-    }
-  }
-
-  private async sendEmail(input: {
-    readonly tenantId: string;
-    readonly userId?: string;
-    readonly to: string;
-    readonly subject: string;
-    readonly text: string;
-    readonly messageType: OutboundMessageType;
-  }): Promise<OutboundMessageDelivery> {
-    if (!this.emailClient.enabled) {
-      return this.outboundRepository.create({
-        tenantId: input.tenantId,
-        ...(input.userId !== undefined ? { userId: input.userId } : {}),
-        channel: 'EMAIL',
-        messageType: input.messageType,
-        status: 'SKIPPED',
-        subject: input.subject,
-        preview: truncatePreview(input.text),
-        errorMessage: 'Email channel disabled',
-        metadata: { to: input.to },
-      });
-    }
-
-    try {
-      const result = await this.emailClient.send({ to: input.to, subject: input.subject, text: input.text });
-      return this.outboundRepository.create({
-        tenantId: input.tenantId,
-        ...(input.userId !== undefined ? { userId: input.userId } : {}),
-        channel: 'EMAIL',
-        messageType: input.messageType,
-        status: 'SENT',
-        subject: input.subject,
-        preview: truncatePreview(input.text),
-        ...(result.messageId !== undefined ? { providerMessageId: result.messageId } : {}),
-        sentAt: new Date(),
-        metadata: { to: input.to },
-      });
-    } catch (error: unknown) {
-      return this.outboundRepository.create({
-        tenantId: input.tenantId,
-        ...(input.userId !== undefined ? { userId: input.userId } : {}),
-        channel: 'EMAIL',
-        messageType: input.messageType,
-        status: 'FAILED',
-        subject: input.subject,
-        preview: truncatePreview(input.text),
-        errorMessage: error instanceof Error ? error.message : 'Email delivery failed',
-        metadata: { to: input.to },
-      });
-    }
-  }
-
   private requireAdmin(actor: AuthContext): void {
     requirePermission(actor.role, 'OUTBOUND_MANAGE', 'Solo los administradores del agente pueden gestionar mensajes externos');
   }
 
-}
-
-function truncatePreview(value: string): string {
-  return value.length <= 500 ? value : `${value.slice(0, 497)}...`;
 }

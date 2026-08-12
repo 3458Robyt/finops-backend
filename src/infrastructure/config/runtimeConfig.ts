@@ -11,6 +11,7 @@ const productionOnlyRequired = [
   'CORS_ORIGIN',
   'DB_RUNTIME_ENFORCE',
   'DB_RUNTIME_ROLE',
+  'DB_EXPECTED_MIGRATION',
   'AI_API_KEY',
   'AI_BASE_URL',
   'AI_MODEL',
@@ -76,6 +77,10 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
 
     if (env['DB_RUNTIME_ROLE'] !== 'finops_runtime') {
       issues.push({ key: 'DB_RUNTIME_ROLE', message: 'Debe ser finops_runtime en produccion.' });
+    }
+
+    if (!/^[0-9]{12}_[a-z0-9_]+$/.test(env['DB_EXPECTED_MIGRATION'] ?? '')) {
+      issues.push({ key: 'DB_EXPECTED_MIGRATION', message: 'Debe ser el identificador de una migracion aplicada.' });
     }
 
     if (!isEnabled(env['MFA_REQUIRED_FOR_PRIVILEGED'])) {

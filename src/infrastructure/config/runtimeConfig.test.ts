@@ -10,6 +10,7 @@ const productionEnv: NodeJS.ProcessEnv = {
   CORS_ORIGIN: 'https://finops.example.com',
   DB_RUNTIME_ENFORCE: 'true',
   DB_RUNTIME_ROLE: 'finops_runtime',
+  DB_EXPECTED_MIGRATION: '202608120005_runtime_process_heartbeats',
   AI_API_KEY: 'sk-fixture-key',
   AI_BASE_URL: 'https://ai.example.com/v1',
   AI_MODEL: 'gpt-5.4-mini',

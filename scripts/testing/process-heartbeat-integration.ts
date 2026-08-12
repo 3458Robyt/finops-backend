@@ -7,8 +7,11 @@ import { Pool } from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../../src/generated/prisma/client.js';
 import { ProcessHeartbeatService } from '../../src/application/services/ProcessHeartbeatService.js';
+import { OperationalReadinessService } from '../../src/application/services/OperationalReadinessService.js';
 import { PrismaProcessHeartbeatRepository } from '../../src/infrastructure/repositories/PrismaProcessHeartbeatRepository.js';
+import { PrismaOperationalReadinessRepository } from '../../src/infrastructure/repositories/PrismaOperationalReadinessRepository.js';
 import { createTenantAwarePool, runWithDatabaseContext } from '../../src/infrastructure/database/tenantContext.js';
+import type { RuntimeConfig } from '../../src/infrastructure/config/runtimeConfigTypes.js';
 
 const execFileAsync = promisify(execFile);
 const sourceUrl = process.env['DATABASE_URL'];
@@ -36,7 +39,7 @@ try {
   runtime = new PrismaClient({ adapter: new PrismaPg(runtimePool, { schema }) });
 
   const processId = 'process-heartbeat-integration';
-  const startedAt = new Date('2026-08-12T12:00:00.000Z');
+  const startedAt = new Date();
   const service = new ProcessHeartbeatService(new PrismaProcessHeartbeatRepository(runtime), 30_000);
   await runWithDatabaseContext(
     { role: 'MASTER_ADMIN', workerId: processId },
@@ -58,6 +61,28 @@ try {
     { role: 'MASTER_ADMIN', workerId: processId },
     () => service.isFresh(processId, new Date(startedAt.getTime() + 29_999)),
   ), 'A recent heartbeat was classified as stale.');
+
+  const readiness = new OperationalReadinessService(
+    new PrismaOperationalReadinessRepository(runtime),
+    service,
+    {
+      database: {
+        runtimeEnforce: true,
+        runtimeRole: 'finops_runtime',
+        expectedMigration: '202608120005_runtime_process_heartbeats',
+      },
+      operations: { processHeartbeat: { enabled: true, intervalMs: 30_000, staleAfterMs: 30_000 } },
+      ai: { apiKey: undefined },
+    } as RuntimeConfig,
+    processId,
+  );
+  const readinessReport = await runWithDatabaseContext(
+    { role: 'MASTER_ADMIN', workerId: processId },
+    () => readiness.check(),
+  );
+  assert(readinessReport.ready, `Operational readiness failed: ${JSON.stringify(readinessReport)}`);
+  assert(readinessReport.checks.migrations === 'ok', 'Migration readiness was not verified.');
+  assert(readinessReport.checks.lease === 'ok', 'Lease readiness was not verified.');
 
   const hiddenFromOtherProcess = await runWithDatabaseContext(
     { role: 'MASTER_ADMIN', workerId: 'another-process' },

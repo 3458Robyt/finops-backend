@@ -34,6 +34,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
       url: readOptionalString(env['DATABASE_URL']),
       runtimeEnforce: readBoolean(env['DB_RUNTIME_ENFORCE'], false),
       runtimeRole: readString(env['DB_RUNTIME_ROLE'], 'finops_runtime'),
+      expectedMigration: readOptionalString(env['DB_EXPECTED_MIGRATION']),
     },
     security: {
       jwtSecret: readOptionalString(env['JWT_SECRET']),

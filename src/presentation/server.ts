@@ -29,6 +29,7 @@ import type { ITokenService } from '../domain/interfaces/ITokenService.js';
 import type { ValueRealizationService } from '../application/services/ValueRealizationService.js';
 import type { ResourceLinkageReadinessService } from '../application/services/ResourceLinkageReadinessService.js';
 import type { MetricsRegistry } from '../application/observability/MetricsRegistry.js';
+import type { OperationalReadinessReport } from '../application/services/OperationalReadinessService.js';
 import { loadRuntimeConfig } from '../infrastructure/config/runtimeConfigReader.js';
 import type { RuntimeConfig } from '../infrastructure/config/runtimeConfigTypes.js';
 import { createHttpErrorHandler, createNotFoundHandler } from './middleware/httpErrorHandler.js';
@@ -96,7 +97,7 @@ export interface ServerDependencies {
   /** Configuración tipada resuelta en la composición raíz. */
   readonly runtimeConfig?: RuntimeConfig;
   /** Comprueba dependencias críticas sin exponer detalles de infraestructura. */
-  readonly readinessCheck?: () => Promise<void>;
+  readonly readinessCheck?: () => Promise<OperationalReadinessReport>;
 }
 
 /** Crea la aplicación Express con seguridad, rutas, salud, readiness y métricas. */
@@ -147,14 +148,11 @@ export function createExpressServer(dependencies: ServerDependencies): Express {
     }
 
     try {
-      await dependencies.readinessCheck();
-      res.status(200).json({
-        status: 'ready',
+      const report = await dependencies.readinessCheck();
+      res.status(report.ready ? 200 : 503).json({
+        status: report.ready ? 'ready' : 'not_ready',
         processRole: config.environment.processRole,
-        checks: {
-          database: 'ok',
-          runtimeRls: config.database.runtimeEnforce ? 'enforced' : 'disabled',
-        },
+        checks: report.checks,
       });
     } catch {
       res.status(503).json({

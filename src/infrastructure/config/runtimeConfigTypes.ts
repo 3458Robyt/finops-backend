@@ -23,6 +23,7 @@ export interface RuntimeConfig {
     readonly url: string | undefined;
     readonly runtimeEnforce: boolean;
     readonly runtimeRole: string;
+    readonly expectedMigration: string | undefined;
   };
   readonly security: {
     readonly jwtSecret: string | undefined;

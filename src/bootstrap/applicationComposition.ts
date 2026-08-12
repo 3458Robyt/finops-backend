@@ -6,6 +6,7 @@ import { AiObservabilityService } from '../application/services/AiObservabilityS
 import { AuthService } from '../application/services/AuthService.js';
 import { AuthLifecycleCleanupService } from '../application/services/AuthLifecycleCleanupService.js';
 import { ProcessHeartbeatService } from '../application/services/ProcessHeartbeatService.js';
+import { OperationalReadinessService } from '../application/services/OperationalReadinessService.js';
 import { BudgetService } from '../application/services/BudgetService.js';
 import { CloudConnectionService } from '../application/services/CloudConnectionService.js';
 import { ContextEngineService } from '../application/services/ContextEngineService.js';
@@ -37,6 +38,7 @@ import { getPrismaClient } from '../infrastructure/database/prisma.js';
 import { loadRuntimeConfig } from '../infrastructure/config/runtimeConfigReader.js';
 import type { RuntimeConfig } from '../infrastructure/config/runtimeConfigTypes.js';
 import { runWithDatabaseContext } from '../infrastructure/database/tenantContext.js';
+import { createProcessIdentity } from './processIdentity.js';
 import { AwsSdkIngestionProvider } from '../infrastructure/ingestion/AwsSdkIngestionProvider.js';
 import { OciSdkIngestionProvider } from '../infrastructure/ingestion/OciSdkIngestionProvider.js';
 import { PrismaCloudIngestionJobRepository } from '../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
@@ -46,6 +48,7 @@ import { PrismaAgentQualityRepository } from '../infrastructure/repositories/Pri
 import { PrismaAuthSecurityRepository } from '../infrastructure/repositories/PrismaAuthSecurityRepository.js';
 import { PrismaAuthLifecycleCleanupRepository } from '../infrastructure/repositories/PrismaAuthLifecycleCleanupRepository.js';
 import { PrismaProcessHeartbeatRepository } from '../infrastructure/repositories/PrismaProcessHeartbeatRepository.js';
+import { PrismaOperationalReadinessRepository } from '../infrastructure/repositories/PrismaOperationalReadinessRepository.js';
 import { PrismaAuthSessionRepository } from '../infrastructure/repositories/PrismaAuthSessionRepository.js';
 import { PrismaAccountRecoveryRepository } from '../infrastructure/repositories/PrismaAccountRecoveryRepository.js';
 import { PrismaBudgetRepository } from '../infrastructure/repositories/PrismaBudgetRepository.js';
@@ -118,6 +121,13 @@ export function createApplicationComposition(
   const processHeartbeatService = new ProcessHeartbeatService(
     new PrismaProcessHeartbeatRepository(prisma),
     config.operations.processHeartbeat.staleAfterMs,
+    metricsRegistry,
+  );
+  const operationalReadinessService = new OperationalReadinessService(
+    new PrismaOperationalReadinessRepository(prisma),
+    processHeartbeatService,
+    config,
+    createProcessIdentity(config.environment.processRole, process.env['HOSTNAME'], process.pid),
   );
   const accountRecoveryRepository = new PrismaAccountRecoveryRepository(prisma);
   const mfaRepository = new PrismaMfaRepository(prisma);
@@ -326,13 +336,7 @@ export function createApplicationComposition(
     tokenService,
     authSessionRepository,
     valueRealizationService,
-    readinessCheck: async () => {
-      const rows = await prisma.$queryRaw<Array<{ readonly current_user: string }>>`SELECT current_user`;
-      const currentUser = rows[0]?.current_user;
-      if (config.database.runtimeEnforce && currentUser !== config.database.runtimeRole) {
-        throw new Error('Database runtime role is not active');
-      }
-    },
+    readinessCheck: () => operationalReadinessService.check(),
     metricsRegistry,
     runtimeConfig: config,
   };

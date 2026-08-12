@@ -3,6 +3,7 @@ import type { ProcessHeartbeatService } from '../application/services/ProcessHea
 import type { NonOverlappingLoopOptions } from '../application/services/NonOverlappingLoop.js';
 import type { RuntimeConfig } from '../infrastructure/config/runtimeConfigTypes.js';
 import { runWithDatabaseContext } from '../infrastructure/database/tenantContext.js';
+import { createProcessIdentity } from './processIdentity.js';
 
 export interface ProcessHeartbeatRuntimeInput {
   readonly config: RuntimeConfig;
@@ -20,8 +21,7 @@ export function startProcessHeartbeat(
 
   const startedAt = new Date();
   const processRole = input.config.environment.processRole;
-  const processInstanceId = sanitizeProcessInstanceId(process.env['HOSTNAME']);
-  const processId = `finops:${processRole}:${processInstanceId}:${process.pid}`;
+  const processId = createProcessIdentity(processRole, process.env['HOSTNAME'], process.pid);
   let stopping = false;
   let lastRun = Promise.resolve();
 
@@ -68,10 +68,4 @@ export function startProcessHeartbeat(
     intervalMs: options.intervalMs,
     staleAfterMs: options.staleAfterMs,
   }));
-}
-
-function sanitizeProcessInstanceId(value: string | undefined): string {
-  const normalized = value?.trim();
-  return (normalized === undefined || normalized === '' ? 'local' : normalized)
-    .replaceAll(/[^a-zA-Z0-9._-]/g, '_');
 }

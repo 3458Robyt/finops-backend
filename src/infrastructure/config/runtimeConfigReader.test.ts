@@ -12,6 +12,7 @@ describe('loadRuntimeConfig', () => {
       CORS_ORIGIN: 'http://localhost:5173,http://localhost:4173',
       DB_RUNTIME_ENFORCE: 'true',
       DB_RUNTIME_ROLE: 'finops_runtime',
+      DB_EXPECTED_MIGRATION: '202608120005_runtime_process_heartbeats',
       INGESTION_WORKER_ENABLED: 'true',
       INGESTION_WORKER_ID: 'worker-test',
       INGESTION_WORKER_INTERVAL_MS: '1500',
@@ -29,6 +30,7 @@ describe('loadRuntimeConfig', () => {
     expect(config.http.port).toBe(4100);
     expect(config.http.corsOrigins).toEqual(['http://localhost:5173', 'http://localhost:4173']);
     expect(config.database.runtimeEnforce).toBe(true);
+    expect(config.database.expectedMigration).toBe('202608120005_runtime_process_heartbeats');
     expect(config.workers.ingestion).toMatchObject({
       enabled: true,
       id: 'worker-test',

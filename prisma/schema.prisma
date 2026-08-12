@@ -650,6 +650,7 @@ model AuthRefreshToken {
   @@index([sessionId, revokedAt])
   @@index([userId, revokedAt, expiresAt])
   @@index([familyId, revokedAt])
+  @@index([tenantId], map: "auth_refresh_tokens_tenant_id_idx")
   @@map("auth_refresh_tokens")
 }
 
@@ -1033,6 +1034,7 @@ model CostMetric {
   @@index([resourceId])
   @@index([cloudAccountId], map: "cost_metrics_cloud_account_id_idx")
   @@index([cloudConnectionId], map: "cost_metrics_cloud_connection_id_idx")
+  @@index([cloudResourceId], map: "cost_metrics_cloud_resource_id_idx")
   @@index([ingestionRunId], map: "cost_metrics_ingestion_run_id_idx")
   @@map("cost_metrics")
 }
@@ -1072,6 +1074,7 @@ model Recommendation {
   @@index([tenantId, status, createdAt])
   @@index([tenantId, cloudResourceId, createdAt])
   @@index([cloudAccountId, severity])
+  @@index([cloudResourceId], map: "recommendations_cloud_resource_id_idx")
   @@index([sourceChargePeriodStart, sourceMetricIdentityHash])
   @@map("recommendations")
 }
@@ -1386,6 +1389,7 @@ model CostAllocationRuleTarget {
   rule         CostAllocationRule @relation(fields: [ruleId, tenantId], references: [id, tenantId], onDelete: Cascade)
 
   @@index([tenantId, ruleId])
+  @@index([ruleId, tenantId], map: "cost_allocation_rule_targets_rule_id_tenant_id_idx")
   @@map("cost_allocation_rule_targets")
 }
 
@@ -1414,6 +1418,7 @@ model CostAllocationClosure {
   @@unique([tenantId, periodStart, currency, version])
   @@index([tenantId, periodStart, status])
   @@index([tenantId, sourceHash])
+  @@index([closedByUserId], map: "cost_allocation_closures_closed_by_user_id_idx")
   @@map("cost_allocation_closures")
 }
 
@@ -1443,6 +1448,7 @@ model CostAllocationClosureLine {
   closure            CostAllocationClosure @relation(fields: [closureId, tenantId], references: [id, tenantId], onDelete: Cascade)
 
   @@unique([closureId, chargePeriodStart, metricIdentityHash, allocationKey], map: "cost_allocation_closure_lines_identity_key")
+  @@index([closureId, tenantId], map: "cost_allocation_closure_lines_closure_id_tenant_id_idx")
   @@index([tenantId, closureId, allocationKey, currency])
   @@index([tenantId, currency, cloudResourceId, chargePeriodStart])
   @@index([tenantId, currency, metricIdentityHash, chargePeriodStart])

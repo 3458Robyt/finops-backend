@@ -11,6 +11,7 @@ docs/erd/
 *.pem
 *.key
 .oci/
+.idea/dataSources.xml
 .claude/
 analisis-proyecto-grado/
 .test-artifacts/

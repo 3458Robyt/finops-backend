@@ -29,6 +29,8 @@ import {
   buildMetricWhereClause,
   type RawMetricSummaryRow,
 } from './technicalMetricQueryHelpers.js';
+import { PrismaResourceMetricCoverageReader } from './PrismaResourceMetricCoverageReader.js';
+import { PrismaResourceMetricCostContextReader } from './PrismaResourceMetricCostContextReader.js';
 import { PrismaResourceMetricSeriesReader } from './PrismaResourceMetricSeriesReader.js';
 
 interface CloudResourceLineageRow {
@@ -61,9 +63,13 @@ interface CloudResourceLineageRow {
  */
 export class PrismaResourceMetricRepository implements IResourceMetricRepository {
   private readonly seriesReader: PrismaResourceMetricSeriesReader;
+  private readonly coverageReader: PrismaResourceMetricCoverageReader;
+  private readonly costContextReader: PrismaResourceMetricCostContextReader;
 
   constructor(private readonly prisma: PrismaClient) {
     this.seriesReader = new PrismaResourceMetricSeriesReader(prisma);
+    this.coverageReader = new PrismaResourceMetricCoverageReader(prisma);
+    this.costContextReader = new PrismaResourceMetricCostContextReader(prisma);
   }
 
   /**
@@ -248,119 +254,14 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
     tenantId: string,
     filters: TechnicalMetricCoverageFilters,
   ): Promise<readonly TechnicalMetricCoverageSampleItem[]> {
-    const samples = await this.prisma.resourceMetricSample.findMany({
-      where: {
-        tenantId,
-        ...(filters.startDate !== undefined || filters.endDate !== undefined
-          ? {
-              sampledAt: {
-                ...(filters.startDate !== undefined ? { gte: filters.startDate } : {}),
-                ...(filters.endDate !== undefined ? { lte: filters.endDate } : {}),
-              },
-            }
-          : {}),
-        ...(filters.externalResourceId !== undefined
-          ? { externalResourceId: filters.externalResourceId }
-          : {}),
-        ...(filters.cloudResourceId !== undefined
-          ? { cloudResourceId: filters.cloudResourceId }
-          : {}),
-      },
-      orderBy: { sampledAt: 'asc' },
-      select: {
-        externalResourceId: true,
-        cloudResourceId: true,
-        metricName: true,
-        sampledAt: true,
-      },
-    });
-    return samples.map((sample) => ({
-      externalResourceId: sample.externalResourceId,
-      ...(sample.cloudResourceId !== null ? { cloudResourceId: sample.cloudResourceId } : {}),
-      metricName: sample.metricName,
-      sampledAt: sample.sampledAt,
-    }));
+    return this.coverageReader.listSamplesForTenant(tenantId, filters);
   }
 
   public async getMetricCoverageForTenant(
     tenantId: string,
     filters: TechnicalMetricCoverageFilters,
   ): Promise<TechnicalMetricCoverageAggregate> {
-    const where = buildMetricWhereClause(tenantId, filters, false);
-    const [summaryRows, metricRows, dayRows] = await Promise.all([
-      this.prisma.$queryRaw<Array<{
-        readonly total_samples: bigint;
-        readonly metric_count: bigint;
-        readonly resource_count: bigint;
-        readonly min_sampled_at: Date | null;
-        readonly max_sampled_at: Date | null;
-      }>>(Prisma.sql`
-        SELECT
-          count(*)::bigint AS total_samples,
-          count(DISTINCT metric_name)::bigint AS metric_count,
-          count(DISTINCT COALESCE('cloud:' || cloud_resource_id, 'external:' || external_resource_id))::bigint AS resource_count,
-          min(sampled_at) AS min_sampled_at,
-          max(sampled_at) AS max_sampled_at
-        FROM resource_metric_samples
-        WHERE ${where}
-      `),
-      this.prisma.$queryRaw<Array<{
-        readonly metric_name: string;
-        readonly sample_count: bigint;
-        readonly days_with_data: bigint;
-        readonly min_sampled_at: Date | null;
-        readonly max_sampled_at: Date | null;
-      }>>(Prisma.sql`
-        SELECT
-          metric_name,
-          count(*)::bigint AS sample_count,
-          count(DISTINCT sampled_at::date)::bigint AS days_with_data,
-          min(sampled_at) AS min_sampled_at,
-          max(sampled_at) AS max_sampled_at
-        FROM resource_metric_samples
-        WHERE ${where}
-        GROUP BY metric_name
-      `),
-      this.prisma.$queryRaw<Array<{
-        readonly date: string;
-        readonly sample_count: bigint;
-        readonly metric_count: bigint;
-      }>>(Prisma.sql`
-        SELECT
-          to_char(date_trunc('day', sampled_at), 'YYYY-MM-DD') AS date,
-          count(*)::bigint AS sample_count,
-          count(DISTINCT metric_name)::bigint AS metric_count
-        FROM resource_metric_samples
-        WHERE ${where}
-        GROUP BY date_trunc('day', sampled_at)
-        ORDER BY date ASC
-      `),
-    ]);
-
-    const summary = summaryRows[0];
-    return {
-      totalSamples: Number(summary?.total_samples ?? 0n),
-      metricCount: Number(summary?.metric_count ?? 0n),
-      resourceCount: Number(summary?.resource_count ?? 0n),
-      ...(summary?.min_sampled_at !== null && summary?.min_sampled_at !== undefined
-        ? { minSampledAt: summary.min_sampled_at }
-        : {}),
-      ...(summary?.max_sampled_at !== null && summary?.max_sampled_at !== undefined
-        ? { maxSampledAt: summary.max_sampled_at }
-        : {}),
-      metrics: metricRows.map((row) => ({
-        metricName: row.metric_name,
-        sampleCount: Number(row.sample_count),
-        daysWithData: Number(row.days_with_data),
-        ...(row.min_sampled_at !== null ? { minSampledAt: row.min_sampled_at } : {}),
-        ...(row.max_sampled_at !== null ? { maxSampledAt: row.max_sampled_at } : {}),
-      })),
-      days: dayRows.map((row) => ({
-        date: row.date,
-        sampleCount: Number(row.sample_count),
-        metricCount: Number(row.metric_count),
-      })),
-    };
+    return this.coverageReader.getForTenant(tenantId, filters);
   }
 
   public async listCostContextForResources(
@@ -368,63 +269,7 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
     externalResourceIds: readonly string[],
     cloudResourceIds?: readonly string[],
   ): Promise<readonly TechnicalCostContextItem[]> {
-    const normalizedResourceIds = [...new Set(externalResourceIds.map((value) => value.trim()).filter((value) => value !== ''))];
-    const normalizedCloudResourceIds = [...new Set((cloudResourceIds ?? []).map((value) => value.trim()).filter((value) => value !== ''))];
-    if (normalizedResourceIds.length === 0 && normalizedCloudResourceIds.length === 0) {
-      return [];
-    }
-
-    const rows = await this.prisma.$queryRaw<Array<{
-      readonly external_resource_id: string;
-      readonly cloud_resource_id: string | null;
-      readonly cloud_connection_id: string | null;
-      readonly total_cost: number;
-      readonly currency: string;
-      readonly metric_count: number;
-    }>>(Prisma.sql`
-      SELECT
-        COALESCE(cr.external_resource_id, btrim(cm.resource_id)) AS external_resource_id,
-        cm.cloud_resource_id,
-        cm.cloud_connection_id,
-        sum(cm.billed_cost)::float8 AS total_cost,
-        cm.billing_currency AS currency,
-        count(*)::int AS metric_count
-      FROM cost_metrics cm
-      LEFT JOIN cloud_resources cr
-        ON cr.id = cm.cloud_resource_id
-       AND cr.tenant_id = cm.tenant_id
-      WHERE cm.tenant_id = ${tenantId}
-        AND (
-          (${normalizedCloudResourceIds.length > 0 ? Prisma.sql`cm.cloud_resource_id IN (${Prisma.join(normalizedCloudResourceIds)})` : Prisma.sql`FALSE`})
-          OR (
-          (
-            cm.cloud_resource_id IS NOT NULL
-            AND ${normalizedResourceIds.length > 0 ? Prisma.sql`cr.external_resource_id IN (${Prisma.join(normalizedResourceIds)})` : Prisma.sql`FALSE`}
-          )
-          OR (
-            cm.cloud_resource_id IS NULL
-            AND ${normalizedResourceIds.length > 0 ? Prisma.sql`btrim(cm.resource_id) IN (${Prisma.join(normalizedResourceIds)})` : Prisma.sql`FALSE`}
-            AND NOT EXISTS (
-              SELECT 1
-              FROM cloud_resources exact_resource
-              WHERE exact_resource.tenant_id = cm.tenant_id
-                AND exact_resource.cloud_connection_id = cm.cloud_connection_id
-                AND btrim(exact_resource.external_resource_id) = btrim(cm.resource_id)
-            )
-          )
-          )
-        )
-      GROUP BY COALESCE(cr.external_resource_id, btrim(cm.resource_id)), cm.cloud_resource_id, cm.cloud_connection_id, cm.billing_currency
-    `);
-
-    return rows.map((row) => ({
-      externalResourceId: row.external_resource_id,
-      ...(row.cloud_resource_id !== null ? { cloudResourceId: row.cloud_resource_id } : {}),
-      ...(row.cloud_connection_id !== null ? { cloudConnectionId: row.cloud_connection_id } : {}),
-      totalCost: Number(row.total_cost),
-      currency: row.currency,
-      metricCount: row.metric_count,
-    }));
+    return this.costContextReader.listForResources(tenantId, externalResourceIds, cloudResourceIds);
   }
 
   public async listMetricSummariesForTenant(

@@ -7,11 +7,11 @@ import { runWithDatabaseContext } from '../infrastructure/database/tenantContext
 import { runPrismaIngestionJobScheduler } from '../infrastructure/ingestion/PrismaIngestionJobScheduler.js';
 import { queueRecommendationAnalysisAfterIngestion } from '../infrastructure/repositories/PrismaRecommendationAnalysisScheduler.js';
 import { startProcessHeartbeat } from './processHeartbeatRuntime.js';
+import type { ProcessRoleCapabilities } from './processRoleCapabilities.js';
 
 export interface BackgroundProcessRuntimeInput {
   readonly config: RuntimeConfig;
-  readonly runsWorkers: boolean;
-  readonly runsSchedulers: boolean;
+  readonly capabilities: ProcessRoleCapabilities;
   readonly composition: ApplicationComposition;
   readonly startBackgroundLoop: (options: NonOverlappingLoopOptions) => void;
   readonly registerStop: (stop: () => Promise<void>) => void;
@@ -19,7 +19,7 @@ export interface BackgroundProcessRuntimeInput {
 
 /** Arranca únicamente los procesos permitidos por el rol actual. */
 export function startBackgroundProcesses(input: BackgroundProcessRuntimeInput): void {
-  const { config, composition, runsWorkers, runsSchedulers } = input;
+  const { config, composition } = input;
   const { prisma, recommendationAnalysisRepository, recommendationAnalysisService, valueRealizationService, learningService, ingestionWorker } = composition;
   const { outboundMessageService } = composition.serverDependencies;
 
@@ -35,8 +35,8 @@ export function startBackgroundProcesses(input: BackgroundProcessRuntimeInput): 
 }
 
 function startMessageScheduler(input: BackgroundProcessRuntimeInput, service: ApplicationComposition['serverDependencies']['outboundMessageService']): void {
-  const { config, runsSchedulers } = input;
-  if (!runsSchedulers || !config.schedulers.message.enabled) return;
+  const { config, capabilities } = input;
+  if (!capabilities.runsNotificationScheduler || !config.schedulers.message.enabled) return;
   const tenantId = config.schedulers.message.tenantId;
   const userId = config.schedulers.message.userId;
   if (tenantId === undefined || userId === undefined) return;
@@ -58,7 +58,7 @@ function startMessageScheduler(input: BackgroundProcessRuntimeInput, service: Ap
 }
 
 function startIngestionWorker(input: BackgroundProcessRuntimeInput, worker: ApplicationComposition['ingestionWorker']): void {
-  if (worker === null) return;
+  if (!input.capabilities.runsIngestionWorker || worker === null) return;
   const workerId = input.config.workers.ingestion.id ?? `finops-worker-${process.pid}`;
   const intervalMs = input.config.workers.ingestion.intervalMs;
   console.log(`   Ingestion worker: enabled (${workerId}, ${intervalMs}ms)`);
@@ -72,8 +72,8 @@ function startIngestionWorker(input: BackgroundProcessRuntimeInput, worker: Appl
 }
 
 function startLearningWorker(input: BackgroundProcessRuntimeInput, service: ApplicationComposition['learningService']): void {
-  const { config, runsWorkers } = input;
-  if (!runsWorkers || !config.workers.learning.enabled) return;
+  const { config, capabilities } = input;
+  if (!capabilities.runsLearningWorker || !config.workers.learning.enabled) return;
   const workerId = config.workers.learning.id ?? `finops-learning-${process.pid}`;
   const intervalMs = config.workers.learning.intervalMs;
   console.log(`   Agent learning worker: enabled (${workerId}, ${intervalMs}ms)`);
@@ -87,8 +87,8 @@ function startLearningWorker(input: BackgroundProcessRuntimeInput, service: Appl
 }
 
 function startRecommendationAnalysisWorker(input: BackgroundProcessRuntimeInput, service: ApplicationComposition['recommendationAnalysisService']): void {
-  const { config, runsWorkers } = input;
-  if (!runsWorkers || !config.workers.recommendationAnalysis.enabled) return;
+  const { config, capabilities } = input;
+  if (!capabilities.runsRecommendationAnalysisWorker || !config.workers.recommendationAnalysis.enabled) return;
   const workerId = config.workers.recommendationAnalysis.id ?? `finops-analysis-${process.pid}`;
   const intervalMs = config.workers.recommendationAnalysis.intervalMs;
   const staleAfterMs = config.workers.recommendationAnalysis.staleAfterMs;
@@ -103,8 +103,8 @@ function startRecommendationAnalysisWorker(input: BackgroundProcessRuntimeInput,
 }
 
 function startRecommendationAnalysisScheduler(input: BackgroundProcessRuntimeInput, prisma: ApplicationComposition['prisma'], repository: ApplicationComposition['recommendationAnalysisRepository']): void {
-  const { config, runsSchedulers } = input;
-  if (!runsSchedulers || !config.schedulers.recommendationAnalysis.enabled) return;
+  const { config, capabilities } = input;
+  if (!capabilities.runsRecommendationAnalysisScheduler || !config.schedulers.recommendationAnalysis.enabled) return;
   const intervalMs = config.schedulers.recommendationAnalysis.intervalMs;
   const cooldownMinutes = config.schedulers.recommendationAnalysis.cooldownMinutes;
   console.log(`   Recommendation analysis scheduler: enabled (${intervalMs}ms)`);
@@ -123,8 +123,8 @@ function startRecommendationAnalysisScheduler(input: BackgroundProcessRuntimeInp
 }
 
 function startSavingsReconciliationScheduler(input: BackgroundProcessRuntimeInput, service: ApplicationComposition['valueRealizationService']): void {
-  const { config, runsSchedulers } = input;
-  if (!runsSchedulers || !config.finops.savingsReconciliationEnabled) return;
+  const { config, capabilities } = input;
+  if (!capabilities.runsSavingsReconciliationWorker || !config.finops.savingsReconciliationEnabled) return;
   const tenantId = config.schedulers.savingsReconciliation.tenantId;
   const batchSize = config.finops.savingsReconciliationBatchSize;
   const runReconciliation = async (): Promise<void> => {
@@ -155,8 +155,8 @@ function startSavingsReconciliationScheduler(input: BackgroundProcessRuntimeInpu
 }
 
 function startIngestionScheduler(input: BackgroundProcessRuntimeInput, prisma: ApplicationComposition['prisma']): void {
-  const { config, runsSchedulers } = input;
-  if (!runsSchedulers || !config.schedulers.ingestion.enabled) return;
+  const { config, capabilities } = input;
+  if (!capabilities.runsIngestionScheduler || !config.schedulers.ingestion.enabled) return;
   const options = config.schedulers.ingestion;
   console.log(`   Ingestion scheduler: enabled (${options.intervalMs}ms)`);
   input.startBackgroundLoop({
@@ -193,8 +193,8 @@ function startAuthLifecycleCleanupScheduler(
   input: BackgroundProcessRuntimeInput,
   service: ApplicationComposition['authLifecycleCleanupService'],
 ): void {
-  const { config, runsSchedulers } = input;
-  if (!runsSchedulers || !config.schedulers.authCleanup.enabled) return;
+  const { config, capabilities } = input;
+  if (!capabilities.runsAuthCleanupScheduler || !config.schedulers.authCleanup.enabled) return;
   const intervalMs = config.schedulers.authCleanup.intervalMs;
   console.log(`   Auth lifecycle cleanup scheduler: enabled (${intervalMs}ms)`);
   input.startBackgroundLoop({

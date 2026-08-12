@@ -67,6 +67,19 @@ describe('validateRuntimeConfig', () => {
       .toThrow(`Configuracion runtime invalida.`);
   });
 
+  it.each([
+    'ingestion-worker',
+    'learning-worker',
+    'recommendation-analysis-worker',
+    'savings-reconciliation-worker',
+    'ingestion-scheduler',
+    'recommendation-analysis-scheduler',
+    'notification-scheduler',
+    'auth-cleanup-scheduler',
+  ] as const)('accepts the granular production process role %s', (role) => {
+    expect(() => validateRuntimeConfig({ ...productionEnv, APP_PROCESS_ROLE: role })).not.toThrow();
+  });
+
   it.each(['*', ',', 'https://finops.example.com/app', 'https://user:password@finops.example.com'])('rejects an unsafe production CORS origin: %s', (origin) => {
     expect(() => validateRuntimeConfig({ ...productionEnv, CORS_ORIGIN: origin }))
       .toThrow(`Configuracion runtime invalida.`);

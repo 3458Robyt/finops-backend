@@ -186,8 +186,22 @@ function validateCorsOrigins(value: string | undefined, issues: RuntimeValidatio
 
 function validateProcessRole(value: string | undefined, issues: RuntimeValidationIssue[]): void {
   const role = value?.trim().toLowerCase();
-  if (role !== 'api' && role !== 'worker' && role !== 'scheduler' && role !== 'all') {
-    issues.push({ key: 'APP_PROCESS_ROLE', message: 'Debe ser api, worker, scheduler o all.' });
+  const validRoles = new Set([
+    'api',
+    'worker',
+    'scheduler',
+    'ingestion-worker',
+    'learning-worker',
+    'recommendation-analysis-worker',
+    'savings-reconciliation-worker',
+    'ingestion-scheduler',
+    'recommendation-analysis-scheduler',
+    'notification-scheduler',
+    'auth-cleanup-scheduler',
+    'all',
+  ]);
+  if (role === undefined || !validRoles.has(role)) {
+    issues.push({ key: 'APP_PROCESS_ROLE', message: 'Debe ser api, worker, scheduler, un rol granular o all.' });
   }
 }
 

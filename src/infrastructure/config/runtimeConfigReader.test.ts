@@ -64,4 +64,21 @@ describe('loadRuntimeConfig', () => {
 
     warning.mockRestore();
   });
+
+  it.each([
+    'ingestion-worker',
+    'learning-worker',
+    'recommendation-analysis-worker',
+    'savings-reconciliation-worker',
+    'ingestion-scheduler',
+    'recommendation-analysis-scheduler',
+    'notification-scheduler',
+    'auth-cleanup-scheduler',
+  ] as const)('accepts the granular process role %s', (role) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const config = loadRuntimeConfig({ NODE_ENV: 'development', APP_PROCESS_ROLE: role });
+
+    expect(config.environment.processRole).toBe(role);
+    warning.mockRestore();
+  });
 });

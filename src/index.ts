@@ -18,6 +18,7 @@ import { startBackgroundProcesses } from './bootstrap/backgroundProcessRuntime.j
 import { loadRuntimeConfig } from './infrastructure/config/runtimeConfigReader.js';
 import { createExpressServer } from './presentation/server.js';
 import { startNonOverlappingLoop, type NonOverlappingLoopHandle, type NonOverlappingLoopOptions } from './application/services/NonOverlappingLoop.js';
+import { resolveProcessRoleCapabilities } from './bootstrap/processRoleCapabilities.js';
 
 
 /**
@@ -34,15 +35,13 @@ import { startNonOverlappingLoop, type NonOverlappingLoopHandle, type NonOverlap
 async function bootstrap(): Promise<void> {
   const config = loadRuntimeConfig();
   const processRole = config.environment.processRole;
-  const runsApi = processRole === 'api' || processRole === 'all';
-  const runsWorkers = processRole === 'worker' || processRole === 'all';
-  const runsSchedulers = processRole === 'scheduler' || processRole === 'all';
+  const capabilities = resolveProcessRoleCapabilities(processRole);
 
   console.log('\nFinOps Inteligente — Optimizador de Costos en la Nube\nFinOps Demo © 2026\nProviders: AWS + Oracle Cloud (OCI)\n');
 
-  const composition = createApplicationComposition(runsWorkers, config);
+  const composition = createApplicationComposition(capabilities.runsIngestionWorker, config);
   const { prisma, serverDependencies } = composition;
-  const app = runsApi ? createExpressServer(serverDependencies) : undefined;
+  const app = capabilities.runsApi ? createExpressServer(serverDependencies) : undefined;
   const backgroundStops: Array<() => Promise<void>> = [];
   const startBackgroundLoop = (options: NonOverlappingLoopOptions): void => {
     const handle: NonOverlappingLoopHandle = startNonOverlappingLoop(options);
@@ -112,8 +111,7 @@ async function bootstrap(): Promise<void> {
   process.once('SIGINT', () => { void shutdown('SIGINT'); });
   startBackgroundProcesses({
     config,
-    runsWorkers,
-    runsSchedulers,
+    capabilities,
     composition,
     startBackgroundLoop,
     registerStop: (stop) => backgroundStops.push(stop),

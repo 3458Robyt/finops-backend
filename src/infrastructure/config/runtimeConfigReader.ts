@@ -163,10 +163,21 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
 function readProcessRole(value: string | undefined): ProcessRole {
   const normalized = value?.trim().toLowerCase();
   if (normalized === undefined || normalized === '') return 'all';
-  if (normalized === 'api' || normalized === 'worker' || normalized === 'scheduler' || normalized === 'all') {
+  if (normalized === 'api'
+    || normalized === 'worker'
+    || normalized === 'scheduler'
+    || normalized === 'ingestion-worker'
+    || normalized === 'learning-worker'
+    || normalized === 'recommendation-analysis-worker'
+    || normalized === 'savings-reconciliation-worker'
+    || normalized === 'ingestion-scheduler'
+    || normalized === 'recommendation-analysis-scheduler'
+    || normalized === 'notification-scheduler'
+    || normalized === 'auth-cleanup-scheduler'
+    || normalized === 'all') {
     return normalized;
   }
-  throw new Error('Configuracion runtime invalida. APP_PROCESS_ROLE: Debe ser api, worker, scheduler o all.');
+  throw new Error('Configuracion runtime invalida. APP_PROCESS_ROLE: Debe ser api, worker, scheduler, un rol granular o all.');
 }
 
 function readString(value: string | undefined, fallback: string): string {

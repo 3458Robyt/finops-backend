@@ -1,4 +1,16 @@
-export type ProcessRole = 'api' | 'worker' | 'scheduler' | 'all';
+export type ProcessRole =
+  | 'api'
+  | 'worker'
+  | 'scheduler'
+  | 'ingestion-worker'
+  | 'learning-worker'
+  | 'recommendation-analysis-worker'
+  | 'savings-reconciliation-worker'
+  | 'ingestion-scheduler'
+  | 'recommendation-analysis-scheduler'
+  | 'notification-scheduler'
+  | 'auth-cleanup-scheduler'
+  | 'all';
 export type TrustProxy = boolean | number | string;
 export type SameSitePolicy = 'strict' | 'lax' | 'none';
 

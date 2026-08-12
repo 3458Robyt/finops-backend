@@ -88,7 +88,7 @@ export interface ApplicationComposition {
 }
 
 export function createApplicationComposition(
-  runsWorkers: boolean,
+  runsIngestionWorker: boolean,
   config: RuntimeConfig = loadRuntimeConfig(),
 ): ApplicationComposition {
   const metricsRegistry = new MetricsRegistry();
@@ -285,7 +285,7 @@ export function createApplicationComposition(
       })
       : undefined,
   );
-  const ingestionWorker = runsWorkers && config.workers.ingestion.enabled
+  const ingestionWorker = runsIngestionWorker && config.workers.ingestion.enabled
     ? new CloudIngestionWorkerService(
       new PrismaCloudIngestionJobRepository(
         prisma,
@@ -296,7 +296,10 @@ export function createApplicationComposition(
         config.workers.ingestion.jobLeaseMs,
       ),
       ingestionProviders,
-      config.finops.savingsReconciliationEnabled
+      // The legacy `worker` alias may keep the post-ingestion hook. Granular
+      // ingestion workers stay isolated; reconciliation runs in its own role.
+      (config.environment.processRole === 'worker' || config.environment.processRole === 'all')
+        && config.finops.savingsReconciliationEnabled
         ? ({ tenantId }) => valueRealizationService.reconcile(
           tenantId,
           config.finops.savingsReconciliationBatchSize,

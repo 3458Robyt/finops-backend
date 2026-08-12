@@ -4,6 +4,7 @@ import type { AiRecommendationDraft } from '../finOpsAiTypes.js';
 import { isRecord } from '../jsonReadHelpers.js';
 import type { RecommendationEvidenceSnapshot } from '../RecommendationEvidenceSnapshot.js';
 import { collectText, looksLikeSpanish } from '../aiLanguageGuard.js';
+import { buildNoSensitiveOutputCheck } from './qualitySensitiveOutput.js';
 import { containsUnsafeExecutionPayload } from './unsafeExecutionPayload.js';
 
 /**
@@ -199,6 +200,8 @@ export function evaluateRecommendationDrafts(
     'Hay recomendaciones vacías o redactadas sin señales suficientes de español.',
   ));
 
+  checks.push(buildNoSensitiveOutputCheck(drafts, 'artefacto'));
+
   return toReport(checks);
 }
 
@@ -270,6 +273,8 @@ export function evaluateExecutionPlan(
       ? 'El plan contiene señales suficientes de español.'
       : 'El plan no contiene señales suficientes de español.',
   });
+
+  checks.push(buildNoSensitiveOutputCheck(plan, 'plan'));
 
   return toReport(checks);
 }

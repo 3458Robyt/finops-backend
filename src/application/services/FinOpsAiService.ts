@@ -18,6 +18,7 @@ import type { TechnicalRecommendationEvidenceProvider } from './ai/TechnicalReco
 import type { RecommendationReadinessReport } from './ai/RecommendationReadinessGate.js';
 import { buildDeterministicTrendAnalysis } from './ai/DeterministicTrendAnalysis.js';
 import { looksLikeSpanish } from './ai/aiLanguageGuard.js';
+import { containsSensitiveOutput } from './ai/evaluation/sensitiveOutputGuard.js';
 import { loadRuntimeConfig } from '../../infrastructure/config/runtimeConfigReader.js';
 import type { RuntimeConfig } from '../../infrastructure/config/runtimeConfigTypes.js';
 
@@ -170,6 +171,12 @@ export class FinOpsAiService {
       if (!looksLikeSpanish(answer)) {
         throw new FinOpsBaseError(
           'El proveedor IA devolvió una respuesta que no cumple el idioma español requerido.',
+          'AI_RESPONSE_ERROR',
+        );
+      }
+      if (containsSensitiveOutput(answer)) {
+        throw new FinOpsBaseError(
+          'El proveedor IA devolvió un patrón que parece secreto o credencial utilizable.',
           'AI_RESPONSE_ERROR',
         );
       }

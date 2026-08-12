@@ -287,6 +287,20 @@ describe('FinOpsAiService', () => {
     })).rejects.toMatchObject({ code: 'AI_RESPONSE_ERROR' });
   });
 
+  test('rejects a chat response that contains a credential pattern', async () => {
+    const gateway = new FakeAiGateway('Usa la clave sk-abcdefghijklmnop para consultar el proveedor.');
+    const service = new FinOpsAiService(
+      new FakeCostAnalyticsRepository(),
+      new FakeRecommendationRepository(),
+      gateway,
+    );
+
+    await expect(service.answerChat({
+      tenantId: 'tenant-1',
+      message: 'Explicame el mayor costo',
+    })).rejects.toMatchObject({ code: 'AI_RESPONSE_ERROR' });
+  });
+
   test('generates AI recommendations only after auditor approval and persists audit evidence', async () => {
     const recommendationResponse = JSON.stringify({
       recommendations: [

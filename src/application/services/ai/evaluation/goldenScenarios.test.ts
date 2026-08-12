@@ -296,6 +296,14 @@ describe('qualityRubric — execution plan', () => {
     expect(report.checks.find((check) => check.name === 'spanishText')?.passed).toBe(false);
   });
 
+  test('rejects recommendation output that contains a provider credential pattern', () => {
+    const report = evaluateRecommendationDrafts([
+      draft({ description: 'Usar esta clave sk-abcdefghijklmnop para consultar el proveedor.' }),
+    ], snapshot);
+
+    expect(report.checks.find((check) => check.name === 'noSensitiveOutput')?.passed).toBe(false);
+  });
+
   test('rejects an execution plan without Spanish language signals', () => {
     const report = evaluateExecutionPlan({
       summary: 'Optimize the storage resource.',
@@ -309,6 +317,15 @@ describe('qualityRubric — execution plan', () => {
     }, snapshot);
 
     expect(report.checks.find((check) => check.name === 'spanishText')?.passed).toBe(false);
+  });
+
+  test('rejects an execution plan that contains an authenticated database URL', () => {
+    const report = evaluateExecutionPlan({
+      ...validPlan,
+      validation: ['Consultar postgresql://finops:supersecret@db.example.com/finops antes del cambio.'],
+    }, snapshot);
+
+    expect(report.checks.find((check) => check.name === 'noSensitiveOutput')?.passed).toBe(false);
   });
 
   test('fails when a plan contradicts the recommendation resource', () => {

@@ -5,8 +5,6 @@ const sourceRoot = resolve(process.cwd(), 'src');
 const maxLines = 400;
 const exceptions = new Map([
   ['application/services/ai/evaluation/goldenScenarios.ts', 500],
-  ['domain/interfaces/IRecommendationRepository.ts', 470],
-  ['domain/interfaces/ICloudConnectionRepository.ts', 450],
 ]);
 
 const files = await collectSourceFiles(sourceRoot);

@@ -5,6 +5,11 @@ import type {
   AiAuditVerdict,
   RecommendationExecutionPlan,
 } from '../models/RecommendationExecutionPlan.js';
+import type {
+  IRecommendationCoreRepository,
+  IRecommendationLifecycleRepository,
+  IRecommendationSavingsRepository,
+} from './recommendationRepositoryCapabilities.js';
 
 /**
  * Criterios de consulta para listar recomendaciones de un tenant.
@@ -323,134 +328,7 @@ export interface AdoptionKpis {
  * creación, planes de ejecución generados por IA, decisiones, ejecuciones
  * manuales, línea de tiempo y KPIs de ahorro y adopción.
  */
-export interface IRecommendationRepository {
-  /**
-   * Lista las recomendaciones de un tenant según los criterios indicados.
-   *
-   * @param query - Tenant y filtros opcionales (cuenta, estado).
-   * @returns Recomendaciones que cumplen los criterios.
-   */
-  findByTenant(query: RecommendationQuery): Promise<FinOpsRecommendation[]>;
-
-  /**
-   * Busca una recomendación por su identificador dentro de un tenant.
-   *
-   * @param tenantId         - Tenant propietario.
-   * @param recommendationId - Identificador de la recomendación.
-   * @returns La recomendación si existe; `null` si no se encuentra o no pertenece al tenant.
-   */
-  findById(tenantId: string, recommendationId: string): Promise<FinOpsRecommendation | null>;
-
-  /**
-   * Crea múltiples recomendaciones en lote.
-   *
-   * @param input - Conjunto de recomendaciones a crear.
-   * @returns Las recomendaciones creadas.
-   */
-  createMany(input: readonly CreateRecommendationInput[]): Promise<FinOpsRecommendation[]>;
-
-  /**
-   * Crea un plan de ejecución (generado y auditado por IA) para una recomendación.
-   *
-   * @param input - Contenido del plan y resultados de su auditoría.
-   * @returns El plan de ejecución creado.
-   */
-  createExecutionPlan(input: CreateRecommendationExecutionPlanInput): Promise<RecommendationExecutionPlan>;
-
-  /**
-   * Busca un plan de ejecución por su identificador dentro de un tenant.
-   *
-   * @param tenantId        - Tenant propietario.
-   * @param executionPlanId - Identificador del plan.
-   * @returns El plan si existe; `null` si no se encuentra.
-   */
-  findExecutionPlanById(
-    tenantId: string,
-    executionPlanId: string,
-  ): Promise<RecommendationExecutionPlan | null>;
-
-  /**
-   * Obtiene el último plan de ejecución generado para una recomendación.
-   *
-   * @param tenantId         - Tenant propietario.
-   * @param recommendationId - Identificador de la recomendación.
-   * @returns El plan más reciente; `null` si la recomendación aún no tiene planes.
-   */
-  findLatestExecutionPlanByRecommendation(
-    tenantId: string,
-    recommendationId: string,
-  ): Promise<RecommendationExecutionPlan | null>;
-
-  /**
-   * Registra una decisión sobre una recomendación y actualiza su estado.
-   *
-   * @param input - Datos de la decisión.
-   * @returns Identificador de la decisión y la recomendación actualizada.
-   */
-  createDecision(input: CreateRecommendationDecisionInput): Promise<CreateRecommendationDecisionResult>;
-
-  /**
-   * Registra la ejecución manual de una recomendación.
-   *
-   * @param input - Datos de la ejecución manual.
-   * @returns El registro de ejecución manual creado.
-   */
-  createManualExecution(input: CreateManualExecutionInput): Promise<RecommendationManualExecution>;
-
-  /**
-   * Lista las ejecuciones manuales asociadas a una recomendación.
-   *
-   * @param tenantId         - Tenant propietario.
-   * @param recommendationId - Identificador de la recomendación.
-   * @returns Ejecuciones manuales registradas (posiblemente vacío).
-   */
-  findManualExecutionsByRecommendation(
-    tenantId: string,
-    recommendationId: string,
-  ): Promise<RecommendationManualExecution[]>;
-
-  /**
-   * Obtiene la línea de tiempo de eventos de una recomendación.
-   *
-   * @param tenantId         - Tenant propietario.
-   * @param recommendationId - Identificador de la recomendación.
-   * @returns Eventos cronológicos de la recomendación.
-   */
-  findTimelineByRecommendation(
-    tenantId: string,
-    recommendationId: string,
-  ): Promise<RecommendationTimelineEvent[]>;
-
-  /**
-   * Calcula los KPIs de ahorro de un tenant.
-   *
-   * @param tenantId - Tenant a evaluar.
-   * @returns Indicadores de ahorro agregados.
-   */
-  getSavingsKpis(tenantId: string): Promise<SavingsKpis>;
-
-  /**
-   * Calcula los KPIs de adopción de un tenant.
-   *
-   * @param tenantId - Tenant a evaluar.
-   * @returns Indicadores de adopción agregados.
-   */
-  getAdoptionKpis(tenantId: string): Promise<AdoptionKpis>;
-
-  getSavingsMeasurementReadiness(
-    tenantId: string,
-    recommendationId: string,
-  ): Promise<SavingsMeasurementReadiness>;
-  createSavingsMeasurement(input: CreateSavingsMeasurementInput): Promise<RecommendationSavingsMeasurement>;
-  findSavingsMeasurementsByRecommendation(
-    tenantId: string,
-    recommendationId: string,
-  ): Promise<RecommendationSavingsMeasurement[]>;
-  findSavingsMeasurementById(
-    tenantId: string,
-    recommendationId: string,
-    measurementId: string,
-  ): Promise<RecommendationSavingsMeasurement | null>;
-  verifySavingsMeasurement(input: VerifySavingsMeasurementInput): Promise<RecommendationSavingsMeasurement>;
-  rejectSavingsMeasurement(input: RejectSavingsMeasurementInput): Promise<RecommendationSavingsMeasurement>;
-}
+export interface IRecommendationRepository
+  extends IRecommendationCoreRepository,
+    IRecommendationLifecycleRepository,
+    IRecommendationSavingsRepository {}

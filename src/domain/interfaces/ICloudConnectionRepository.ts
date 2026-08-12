@@ -7,6 +7,11 @@ import type {
   ProviderCode,
 } from '../models/CloudConnection.js';
 import type { CloudIngestionConnection } from './ICloudIngestionProvider.js';
+import type {
+  ICloudConnectionCatalogRepository,
+  ICloudConnectionConfigurationRepository,
+  ICloudIngestionRepository,
+} from './cloudConnectionRepositoryCapabilities.js';
 
 /**
  * Datos de entrada para crear una conexión cloud de un tenant.
@@ -271,164 +276,7 @@ export interface ConfigureMetricDefinitionsForConnectionResult {
  * infraestructura. Gestiona el catálogo de proveedores, las conexiones de cada
  * tenant y la programación/seguimiento de la ingesta de datos de costo.
  */
-export interface ICloudConnectionRepository {
-  /**
-   * Lista todas las entradas del catálogo de proveedores soportados.
-   *
-   * @returns Catálogo de proveedores disponibles.
-   */
-  listProviderCatalog(): Promise<readonly ProviderCatalogEntry[]>;
-
-  /**
-   * Busca una entrada del catálogo por su código de proveedor.
-   *
-   * @param providerCode - Código del proveedor a localizar.
-   * @returns La entrada del catálogo si existe; `null` si el proveedor no está soportado.
-   */
-  findProviderCatalog(providerCode: string): Promise<ProviderCatalogEntry | null>;
-
-  /**
-   * Crea una nueva conexión cloud para un tenant.
-   *
-   * @param input - Datos del tenant, proveedor y cuenta raíz.
-   * @returns Resumen de la conexión recién creada.
-   */
-  createCloudConnection(input: CreateCloudConnectionInput): Promise<CloudConnectionSummary>;
-
-  updateCloudConnection(input: UpdateCloudConnectionInput): Promise<CloudConnectionSummary | null>;
-
-  /**
-   * Busca una conexión cloud concreta perteneciente a un tenant.
-   *
-   * @param tenantId          - Tenant propietario de la conexión.
-   * @param cloudConnectionId - Identificador de la conexión.
-   * @returns Resumen de la conexión si pertenece al tenant; `null` si no existe o no le pertenece.
-   */
-  findCloudConnectionForTenant(
-    tenantId: string,
-    cloudConnectionId: string,
-  ): Promise<CloudConnectionSummary | null>;
-
-  /**
-   * Lista las conexiones cloud asociadas a un tenant.
-   *
-   * @param tenantId - Tenant cuyas conexiones se desean listar.
-   * @returns Conexiones del tenant (posiblemente vacío).
-   */
-  listCloudConnectionsForTenant(tenantId: string): Promise<readonly CloudConnectionSummary[]>;
-
-  setCloudConnectionStatus(
-    tenantId: string,
-    cloudConnectionId: string,
-    status: 'ACTIVE' | 'DISABLED',
-  ): Promise<CloudConnectionSummary | null>;
-
-  listCredentialSummaries(
-    tenantId: string,
-    cloudConnectionId: string,
-  ): Promise<readonly CloudCredentialSummary[] | null>;
-
-  storeCredential(input: StoreCloudCredentialInput): Promise<CloudCredentialSummary | null>;
-
-  revokeCredential(
-    tenantId: string,
-    cloudConnectionId: string,
-    credentialId: string,
-  ): Promise<CloudCredentialSummary | null>;
-
-  getIngestionConnectionForTenant(
-    tenantId: string,
-    cloudConnectionId: string,
-  ): Promise<CloudIngestionConnection | null>;
-
-  saveConnectionValidation(
-    tenantId: string,
-    cloudConnectionId: string,
-    validation: Readonly<Record<string, unknown>>,
-    validatedAt: Date,
-  ): Promise<CloudConnectionSummary | null>;
-
-  createCloudAuditEvent(input: CreateCloudAuditEventInput): Promise<void>;
-
-  /**
-   * Marca una conexión cloud como validada en un instante dado.
-   *
-   * @param cloudConnectionId - Identificador de la conexión validada.
-   * @param validatedAt       - Instante en que se completó la validación.
-   */
-  markCloudConnectionValidated(cloudConnectionId: string, validatedAt: Date): Promise<void>;
-
-  /**
-   * Crea y encola un trabajo de ingesta de costos.
-   *
-   * @param input - Conexión, origen y rango temporal a ingerir.
-   * @returns Resumen del trabajo de ingesta creado.
-   */
-  createIngestionJob(input: CreateIngestionJobInput): Promise<IngestionJobSummary>;
-
-  listIngestionJobsForConnectionRange(
-    input: IngestionJobRangeQuery,
-  ): Promise<readonly IngestionJobWindowItem[]>;
-
-  listFailedIngestionJobsForConnection(
-    tenantId: string,
-    cloudConnectionId: string,
-    sourceType?: IngestionSourceType,
-  ): Promise<readonly IngestionJobWindowItem[]>;
-
-  cancelPendingIngestionJobs(
-    tenantId: string,
-    cloudConnectionId: string,
-    sourceType: IngestionSourceType,
-  ): Promise<number>;
-
-  /**
-   * Obtiene un resumen de salud de la ingesta para una conexión cloud.
-   *
-   * @param tenantId          - Tenant propietario de la conexión.
-   * @param cloudConnectionId - Identificador de la conexión.
-   * @returns Resumen de salud de ingesta; `null` si no hay datos disponibles para la conexión.
-   */
-  getIngestionHealth(
-    tenantId: string,
-    cloudConnectionId: string,
-  ): Promise<IngestionHealthSummary | null>;
-
-  /**
-   * Lista el historial de trabajos de ingesta de un tenant (todas sus
-   * conexiones), del más reciente al más antiguo.
-   *
-   * @param tenantId - Tenant cuyo historial se consulta (aislamiento multi-tenant).
-   * @param limit    - Número máximo de trabajos a devolver.
-   * @returns Historial de trabajos de ingesta (posiblemente vacío).
-   */
-  listIngestionJobsForTenant(
-    tenantId: string,
-    limit: number,
-  ): Promise<readonly IngestionJobHistoryItem[]>;
-
-  /**
-   * Lista los controles de calidad de datos de un tenant, del más reciente al
-   * más antiguo.
-   *
-   * @param tenantId - Tenant cuyos controles se consultan (aislamiento multi-tenant).
-   * @param limit    - Número máximo de controles a devolver.
-   * @returns Controles de calidad de datos (posiblemente vacío).
-   */
-  listDataQualityChecksForTenant(
-    tenantId: string,
-    limit: number,
-  ): Promise<readonly DataQualityCheckItem[]>;
-
-  listIngestionReadinessForTenant(tenantId: string): Promise<IngestionReadinessSummary>;
-
-  configureFocusSourceForConnection(
-    input: ConfigureFocusSourceForConnectionInput,
-  ): Promise<ConfigureFocusSourceForConnectionResult | null>;
-  configureBillingSourceForConnection(
-    input: ConfigureBillingSourceForConnectionInput,
-  ): Promise<ConfigureBillingSourceForConnectionResult | null>;
-  configureMetricDefinitionsForConnection(
-    input: ConfigureMetricDefinitionsForConnectionInput,
-  ): Promise<ConfigureMetricDefinitionsForConnectionResult | null>;
-}
+export interface ICloudConnectionRepository
+  extends ICloudConnectionCatalogRepository,
+    ICloudIngestionRepository,
+    ICloudConnectionConfigurationRepository {}

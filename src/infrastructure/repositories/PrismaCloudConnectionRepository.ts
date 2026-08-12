@@ -22,7 +22,6 @@ import type {
 import type { CloudIngestionConnection } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import type {
   CloudConnectionSummary,
-  DataQualityStatus,
   IngestionHealthSummary,
   IngestionSourceType,
   ProviderCatalogEntry,
@@ -33,14 +32,13 @@ import {
   isJsonObject,
   mapCloudConnection,
   mapProvider,
-  toDataQualityCheckItem,
-  toIngestionJobHistoryItem,
 } from './mappers/cloudConnectionMappers.js';
 import { PrismaCloudCredentialRepository } from './PrismaCloudCredentialRepository.js';
 import { PrismaCloudConnectionConfigurationRepository } from './PrismaCloudConnectionConfigurationRepository.js';
 import { invalidatedValidationData } from './cloudConnectionMetadata.js';
-import { buildIngestionReadinessSummary } from '../ingestion/ingestionReadiness.js';
 import { CredentialCipher } from '../security/CredentialCipher.js';
+import { PrismaCloudIngestionReadRepository } from './PrismaCloudIngestionReadRepository.js';
+import { PrismaCloudIngestionCommandRepository } from './PrismaCloudIngestionCommandRepository.js';
 
 /**
  * Adaptador de infraestructura (Clean Architecture) que implementa el puerto de
@@ -55,6 +53,8 @@ import { CredentialCipher } from '../security/CredentialCipher.js';
 export class PrismaCloudConnectionRepository implements ICloudConnectionRepository {
   private readonly credentialRepository: PrismaCloudCredentialRepository;
   private readonly configurationRepository: PrismaCloudConnectionConfigurationRepository;
+  private readonly ingestionReadRepository: PrismaCloudIngestionReadRepository;
+  private readonly ingestionCommandRepository: PrismaCloudIngestionCommandRepository;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -62,6 +62,8 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
   ) {
     this.credentialRepository = new PrismaCloudCredentialRepository(prisma, credentialCipher);
     this.configurationRepository = new PrismaCloudConnectionConfigurationRepository(prisma);
+    this.ingestionReadRepository = new PrismaCloudIngestionReadRepository(prisma);
+    this.ingestionCommandRepository = new PrismaCloudIngestionCommandRepository(prisma);
   }
 
   /**
@@ -283,312 +285,36 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     });
   }
 
-  /**
-   * Crea un trabajo de ingesta (`ingestion_jobs`) para una conexión cloud,
-   * acotado a un rango temporal objetivo.
-   *
-   * Los campos opcionales (`requestedByUserId`, `maxAttempts`) solo se incluyen
-   * cuando están definidos. La proyección de salida se construye en línea (no usa
-   * un mapper compartido).
-   *
-   * @param input Datos del trabajo (tenant, conexión, tipo de fuente, rango
-   *   objetivo y opciones).
-   * @returns Resumen del trabajo de ingesta creado.
-   */
-  public async createIngestionJob(input: CreateIngestionJobInput): Promise<IngestionJobSummary> {
-    try {
-      return toIngestionJobSummary(await this.prisma.ingestionJob.create({
-        data: {
-          tenantId: input.tenantId,
-          cloudConnectionId: input.cloudConnectionId,
-          sourceType: input.sourceType,
-          targetStart: input.targetStart,
-          targetEnd: input.targetEnd,
-          ...(input.requestedByUserId !== undefined
-            ? { requestedByUserId: input.requestedByUserId }
-            : {}),
-          ...(input.maxAttempts !== undefined ? { maxAttempts: input.maxAttempts } : {}),
-        },
-      }));
-    } catch (error: unknown) {
-      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') throw error;
-      const existing = await this.prisma.ingestionJob.findFirst({
-        where: {
-          tenantId: input.tenantId,
-          cloudConnectionId: input.cloudConnectionId,
-          sourceType: input.sourceType,
-          targetStart: input.targetStart,
-          targetEnd: input.targetEnd,
-          status: { in: ['PENDING', 'RUNNING'] },
-        },
-      });
-      if (existing === null) throw error;
-      return toIngestionJobSummary(existing);
-    }
+  public createIngestionJob(input: CreateIngestionJobInput): Promise<IngestionJobSummary> {
+    return this.ingestionCommandRepository.createIngestionJob(input);
   }
 
-  /**
-   * Obtiene un resumen de salud de ingesta para una conexión cloud de un tenant.
-   *
-   * Carga la conexión junto con su proveedor, los watermarks de ingesta y los
-   * últimos 20 controles de calidad de datos. Además, cuenta en paralelo los
-   * trabajos en estado `PENDING`, `RUNNING` y `FAILED`. Los campos anulables de
-   * watermarks/checks solo se incluyen cuando no son `null`, y los `details`
-   * solo cuando son un objeto JSON (ver {@link isJsonObject}).
-   *
-   * @param tenantId Tenant propietario de la conexión (aislamiento multi-tenant).
-   * @param cloudConnectionId Identificador de la conexión.
-   * @returns Resumen de salud de ingesta de dominio, o `null` si la conexión no
-   *   existe o no pertenece al tenant.
-   */
-  public async getIngestionHealth(
-    tenantId: string,
-    cloudConnectionId: string,
-  ): Promise<IngestionHealthSummary | null> {
-    const connection = await this.prisma.cloudConnection.findFirst({
-      where: { id: cloudConnectionId, tenantId },
-      include: {
-        providerCatalog: true,
-        ingestionWatermarks: true,
-        dataQualityChecks: {
-          orderBy: { observedAt: 'desc' },
-          take: 20,
-        },
-      },
-    });
-
-    if (connection === null) {
-      return null;
-    }
-
-    const [pending, running, failed] = await Promise.all([
-      this.countJobs(tenantId, cloudConnectionId, 'PENDING'),
-      this.countJobs(tenantId, cloudConnectionId, 'RUNNING'),
-      this.countJobs(tenantId, cloudConnectionId, 'FAILED'),
-    ]);
-
-    return {
-      cloudConnection: mapCloudConnection(connection),
-      provider: mapProvider(connection.providerCatalog),
-      jobs: { pending, running, failed },
-      watermarks: connection.ingestionWatermarks.map((watermark) => ({
-        sourceType: watermark.sourceType as IngestionSourceType,
-        ...(watermark.watermarkStart !== null ? { watermarkStart: watermark.watermarkStart } : {}),
-        ...(watermark.watermarkEnd !== null ? { watermarkEnd: watermark.watermarkEnd } : {}),
-        ...(watermark.lastSuccessfulRunAt !== null
-          ? { lastSuccessfulRunAt: watermark.lastSuccessfulRunAt }
-          : {}),
-        ...(watermark.freshnessDeadlineAt !== null
-          ? { freshnessDeadlineAt: watermark.freshnessDeadlineAt }
-          : {}),
-      })),
-      qualityChecks: connection.dataQualityChecks.map((check) => ({
-        sourceType: check.sourceType as IngestionSourceType,
-        checkName: check.checkName,
-        status: check.status as DataQualityStatus,
-        observedAt: check.observedAt,
-        ...(check.expectedAt !== null ? { expectedAt: check.expectedAt } : {}),
-        ...(isJsonObject(check.details)
-          ? { details: check.details as Record<string, unknown> }
-          : {}),
-      })),
-    };
+  public getIngestionHealth(tenantId: string, cloudConnectionId: string): Promise<IngestionHealthSummary | null> {
+    return this.ingestionReadRepository.getIngestionHealth(tenantId, cloudConnectionId);
   }
 
-  /**
-   * Cuenta los trabajos de ingesta de una conexión que se encuentran en un
-   * estado concreto, dentro de un tenant.
-   *
-   * @param tenantId Tenant propietario (aislamiento multi-tenant).
-   * @param cloudConnectionId Conexión cuyos trabajos se cuentan.
-   * @param status Estado del trabajo a contabilizar.
-   * @returns Número de trabajos en ese estado.
-   */
-  private async countJobs(
-    tenantId: string,
-    cloudConnectionId: string,
-    status: 'PENDING' | 'RUNNING' | 'FAILED',
-  ): Promise<number> {
-    return this.prisma.ingestionJob.count({
-      where: { tenantId, cloudConnectionId, status },
-    });
+  public listIngestionJobsForTenant(tenantId: string, limit: number): Promise<readonly IngestionJobHistoryItem[]> {
+    return this.ingestionReadRepository.listIngestionJobsForTenant(tenantId, limit);
   }
 
-  /**
-   * Lista el historial de trabajos de ingesta de un tenant (todas sus
-   * conexiones), del más reciente al más antiguo, acotado a `limit`.
-   *
-   * Filtra por `tenantId` (aislamiento multi-tenant) y ordena por `createdAt`
-   * descendente. Mapea cada fila con {@link toIngestionJobHistoryItem}.
-   *
-   * @param tenantId Tenant cuyo historial se consulta.
-   * @param limit Número máximo de trabajos a devolver.
-   * @returns Historial de trabajos de ingesta; arreglo vacío si no hay.
-   */
-  public async listIngestionJobsForTenant(
-    tenantId: string,
-    limit: number,
-  ): Promise<readonly IngestionJobHistoryItem[]> {
-    const jobs = await this.prisma.ingestionJob.findMany({
-      where: { tenantId },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-    });
-
-    return jobs.map((job) => toIngestionJobHistoryItem(job));
+  public listDataQualityChecksForTenant(tenantId: string, limit: number): Promise<readonly DataQualityCheckItem[]> {
+    return this.ingestionReadRepository.listDataQualityChecksForTenant(tenantId, limit);
   }
 
-  /**
-   * Lista los controles de calidad de datos de un tenant, del más reciente al
-   * más antiguo, acotado a `limit`.
-   *
-   * Filtra por `tenantId` (aislamiento multi-tenant) y ordena por `observedAt`
-   * descendente. Mapea cada fila con {@link toDataQualityCheckItem}.
-   *
-   * @param tenantId Tenant cuyos controles se consultan.
-   * @param limit Número máximo de controles a devolver.
-   * @returns Controles de calidad de datos; arreglo vacío si no hay.
-   */
-  public async listDataQualityChecksForTenant(
-    tenantId: string,
-    limit: number,
-  ): Promise<readonly DataQualityCheckItem[]> {
-    const checks = await this.prisma.dataQualityCheck.findMany({
-      where: { tenantId },
-      orderBy: { observedAt: 'desc' },
-      take: limit,
-    });
-
-    return checks.map((check) => toDataQualityCheckItem(check));
+  public listIngestionJobsForConnectionRange(input: IngestionJobRangeQuery): Promise<readonly IngestionJobWindowItem[]> {
+    return this.ingestionReadRepository.listIngestionJobsForConnectionRange(input);
   }
 
-  public async listIngestionJobsForConnectionRange(
-    input: IngestionJobRangeQuery,
-  ): Promise<readonly IngestionJobWindowItem[]> {
-    const jobs = await this.prisma.ingestionJob.findMany({
-      where: {
-        tenantId: input.tenantId,
-        cloudConnectionId: input.cloudConnectionId,
-        sourceType: input.sourceType,
-        status: { in: ['PENDING', 'RUNNING', 'SUCCESS'] },
-        targetStart: { lt: input.targetEnd },
-        targetEnd: { gt: input.targetStart },
-      },
-      orderBy: { targetStart: 'asc' },
-      select: {
-        id: true,
-        sourceType: true,
-        status: true,
-        targetStart: true,
-        targetEnd: true,
-      },
-    });
-
-    return jobs.map((job) => ({
-      id: job.id,
-      sourceType: job.sourceType,
-      status: job.status,
-      targetStart: job.targetStart,
-      targetEnd: job.targetEnd,
-    }));
+  public listFailedIngestionJobsForConnection(tenantId: string, cloudConnectionId: string, sourceType?: IngestionSourceType): Promise<readonly IngestionJobWindowItem[]> {
+    return this.ingestionReadRepository.listFailedIngestionJobsForConnection(tenantId, cloudConnectionId, sourceType);
   }
 
-  public async listFailedIngestionJobsForConnection(
-    tenantId: string,
-    cloudConnectionId: string,
-    sourceType?: IngestionSourceType,
-  ): Promise<readonly IngestionJobWindowItem[]> {
-    const jobs = await this.prisma.ingestionJob.findMany({
-      where: {
-        tenantId,
-        cloudConnectionId,
-        status: 'FAILED',
-        ...(sourceType !== undefined ? { sourceType } : {}),
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 200,
-      select: { id: true, sourceType: true, status: true, targetStart: true, targetEnd: true },
-    });
-    return jobs.map((job) => ({
-      id: job.id,
-      sourceType: job.sourceType,
-      status: job.status,
-      targetStart: job.targetStart,
-      targetEnd: job.targetEnd,
-    }));
+  public cancelPendingIngestionJobs(tenantId: string, cloudConnectionId: string, sourceType: IngestionSourceType): Promise<number> {
+    return this.ingestionReadRepository.cancelPendingIngestionJobs(tenantId, cloudConnectionId, sourceType);
   }
 
-  public async cancelPendingIngestionJobs(
-    tenantId: string,
-    cloudConnectionId: string,
-    sourceType: IngestionSourceType,
-  ): Promise<number> {
-    const result = await this.prisma.ingestionJob.updateMany({
-      where: { tenantId, cloudConnectionId, sourceType, status: 'PENDING' },
-      data: { status: 'CANCELLED', completedAt: new Date(), errorMessage: 'Cancelado por el usuario.' },
-    });
-    return result.count;
-  }
-
-  public async listIngestionReadinessForTenant(tenantId: string): Promise<IngestionReadinessSummary> {
-    const connections = await this.prisma.cloudConnection.findMany({
-      where: {
-        tenantId,
-        providerCode: { in: ['aws', 'oci'] },
-        status: 'ACTIVE',
-      },
-      orderBy: [{ providerCode: 'asc' }, { createdAt: 'desc' }],
-      select: {
-        id: true,
-        name: true,
-        providerCode: true,
-        defaultRegion: true,
-        lastValidatedAt: true,
-        metadata: true,
-        credentials: {
-          where: { status: 'ACTIVE' },
-          select: { purpose: true },
-        },
-        ingestionJobs: {
-          orderBy: { createdAt: 'desc' },
-          take: 5,
-          select: {
-            id: true,
-            sourceType: true,
-            status: true,
-            targetStart: true,
-            targetEnd: true,
-            errorMessage: true,
-            resultSummary: true,
-            completedAt: true,
-          },
-        },
-      },
-    });
-
-    return buildIngestionReadinessSummary({
-      generatedAt: new Date(),
-      missingProviderMessageSuffix: ' for this tenant',
-      connections: connections.map((connection) => ({
-        id: connection.id,
-        name: connection.name,
-        providerCode: connection.providerCode,
-        defaultRegion: connection.defaultRegion,
-        lastValidatedAt: connection.lastValidatedAt,
-        metadata: connection.metadata,
-        credentialPurposes: connection.credentials.map((credential) => credential.purpose),
-        recentJobs: connection.ingestionJobs.map((job) => ({
-          id: job.id,
-          sourceType: job.sourceType,
-          status: job.status,
-          targetStart: job.targetStart,
-          targetEnd: job.targetEnd,
-          completedAt: job.completedAt,
-          errorMessage: job.errorMessage,
-          resultSummary: job.resultSummary,
-        })),
-      })),
-    });
+  public listIngestionReadinessForTenant(tenantId: string): Promise<IngestionReadinessSummary> {
+    return this.ingestionReadRepository.listIngestionReadinessForTenant(tenantId);
   }
 
   public async configureFocusSourceForConnection(
@@ -608,32 +334,4 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
   ): Promise<ConfigureMetricDefinitionsForConnectionResult | null> {
     return this.configurationRepository.configureMetricDefinitionsForConnection(input);
   }
-}
-
-function toIngestionJobSummary(job: {
-  readonly id: string;
-  readonly tenantId: string;
-  readonly cloudConnectionId: string;
-  readonly sourceType: IngestionSourceType;
-  readonly status: IngestionJobSummary['status'];
-  readonly targetStart: Date;
-  readonly targetEnd: Date;
-  readonly attempts: number;
-  readonly maxAttempts: number;
-  readonly createdAt: Date;
-  readonly updatedAt: Date;
-}): IngestionJobSummary {
-  return {
-    id: job.id,
-    tenantId: job.tenantId,
-    cloudConnectionId: job.cloudConnectionId,
-    sourceType: job.sourceType,
-    status: job.status,
-    targetStart: job.targetStart,
-    targetEnd: job.targetEnd,
-    attempts: job.attempts,
-    maxAttempts: job.maxAttempts,
-    createdAt: job.createdAt,
-    updatedAt: job.updatedAt,
-  };
 }

@@ -1,8 +1,6 @@
 import 'dotenv/config';
 
-import { execFile } from 'node:child_process';
 import { resolve } from 'node:path';
-import { promisify } from 'node:util';
 import { Pool } from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../../src/generated/prisma/client.js';
@@ -12,8 +10,7 @@ import { PrismaProcessHeartbeatRepository } from '../../src/infrastructure/repos
 import { PrismaOperationalReadinessRepository } from '../../src/infrastructure/repositories/PrismaOperationalReadinessRepository.js';
 import { createTenantAwarePool, runWithDatabaseContext } from '../../src/infrastructure/database/tenantContext.js';
 import type { RuntimeConfig } from '../../src/infrastructure/config/runtimeConfigTypes.js';
-
-const execFileAsync = promisify(execFile);
+import { assertIntegrationSchema, createIntegrationPool, runIntegrationCommand } from './integrationRuntime.js';
 const sourceUrl = process.env['DATABASE_URL'];
 if (sourceUrl === undefined || sourceUrl.trim() === '') {
   throw new Error('DATABASE_URL is required for the isolated process heartbeat integration.');
@@ -110,7 +107,7 @@ try {
 }
 
 function withSchema(connectionString: string, schemaName: string): string {
-  assertIsolatedSchema(schemaName);
+  assertIntegrationSchema(schemaName);
   const url = new URL(connectionString);
   url.searchParams.set('schema', schemaName);
   return url.toString();
@@ -123,25 +120,19 @@ function withoutSchema(connectionString: string): string {
 }
 
 async function createSchema(connectionString: string, schemaName: string): Promise<void> {
-  const pool = new Pool({ connectionString });
+  assertIntegrationSchema(schemaName);
+  const pool = createIntegrationPool(connectionString);
   try { await pool.query(`CREATE SCHEMA "${schemaName}"`); } finally { await pool.end(); }
 }
 
 async function dropSchema(connectionString: string, schemaName: string): Promise<void> {
-  const pool = new Pool({ connectionString });
+  assertIntegrationSchema(schemaName);
+  const pool = createIntegrationPool(connectionString);
   try { await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`); } finally { await pool.end(); }
 }
 
-function assertIsolatedSchema(schemaName: string): void {
-  if (!/^finops_e2e_[a-z0-9_]+$/.test(schemaName)) throw new Error('Refusing to operate outside finops_e2e_* schema.');
-}
-
 async function runCommand(command: string, args: readonly string[], overrides: NodeJS.ProcessEnv): Promise<void> {
-  await execFileAsync(command, args, {
-    cwd: process.cwd(),
-    env: { ...process.env, ...overrides },
-    maxBuffer: 20 * 1024 * 1024,
-  });
+  await runIntegrationCommand(command, args, overrides);
 }
 
 function assert(condition: boolean, message: string): asserts condition {

@@ -1,11 +1,7 @@
 import 'dotenv/config';
 
-import { execFile } from 'node:child_process';
 import { resolve } from 'node:path';
-import { promisify } from 'node:util';
-import { Pool } from 'pg';
-
-const execFileAsync = promisify(execFile);
+import { assertIntegrationSchema, createIntegrationPool, runIntegrationCommand } from './integrationRuntime.js';
 const sourceUrl = process.env['DATABASE_URL'];
 if (sourceUrl === undefined || sourceUrl.trim() === '') {
   throw new Error('DATABASE_URL is required to run the isolated resource-lineage integration suite.');
@@ -45,7 +41,8 @@ function withoutSchema(connectionString: string): string {
 }
 
 async function createSchema(connectionString: string, schemaName: string): Promise<void> {
-  const pool = new Pool({ connectionString });
+  assertIntegrationSchema(schemaName);
+  const pool = createIntegrationPool(connectionString);
   try {
     await pool.query(`CREATE SCHEMA "${schemaName}"`);
   } finally {
@@ -54,7 +51,8 @@ async function createSchema(connectionString: string, schemaName: string): Promi
 }
 
 async function dropSchema(connectionString: string, schemaName: string): Promise<void> {
-  const pool = new Pool({ connectionString });
+  assertIntegrationSchema(schemaName);
+  const pool = createIntegrationPool(connectionString);
   try {
     await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
   } finally {
@@ -67,9 +65,5 @@ async function runCommand(
   args: readonly string[],
   overrides: NodeJS.ProcessEnv,
 ): Promise<{ readonly stdout: string; readonly stderr: string }> {
-  return execFileAsync(command, args, {
-    cwd: process.cwd(),
-    env: { ...process.env, ...overrides },
-    maxBuffer: 20 * 1024 * 1024,
-  });
+  return runIntegrationCommand(command, args, overrides);
 }

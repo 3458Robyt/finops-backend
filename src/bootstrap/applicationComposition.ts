@@ -5,6 +5,7 @@ import { AgentQualityService } from '../application/services/AgentQualityService
 import { AiObservabilityService } from '../application/services/AiObservabilityService.js';
 import { AuthService } from '../application/services/AuthService.js';
 import { AuthLifecycleCleanupService } from '../application/services/AuthLifecycleCleanupService.js';
+import { ProcessHeartbeatService } from '../application/services/ProcessHeartbeatService.js';
 import { BudgetService } from '../application/services/BudgetService.js';
 import { CloudConnectionService } from '../application/services/CloudConnectionService.js';
 import { ContextEngineService } from '../application/services/ContextEngineService.js';
@@ -44,6 +45,7 @@ import { PrismaAgentLearningRepository } from '../infrastructure/repositories/Pr
 import { PrismaAgentQualityRepository } from '../infrastructure/repositories/PrismaAgentQualityRepository.js';
 import { PrismaAuthSecurityRepository } from '../infrastructure/repositories/PrismaAuthSecurityRepository.js';
 import { PrismaAuthLifecycleCleanupRepository } from '../infrastructure/repositories/PrismaAuthLifecycleCleanupRepository.js';
+import { PrismaProcessHeartbeatRepository } from '../infrastructure/repositories/PrismaProcessHeartbeatRepository.js';
 import { PrismaAuthSessionRepository } from '../infrastructure/repositories/PrismaAuthSessionRepository.js';
 import { PrismaAccountRecoveryRepository } from '../infrastructure/repositories/PrismaAccountRecoveryRepository.js';
 import { PrismaBudgetRepository } from '../infrastructure/repositories/PrismaBudgetRepository.js';
@@ -78,6 +80,7 @@ export interface ApplicationComposition {
   readonly valueRealizationService: ValueRealizationService;
   readonly learningService: AgentLearningService;
   readonly authLifecycleCleanupService: AuthLifecycleCleanupService;
+  readonly processHeartbeatService: ProcessHeartbeatService;
   readonly ingestionWorker: CloudIngestionWorkerService | null;
 }
 
@@ -111,6 +114,10 @@ export function createApplicationComposition(
   const authLifecycleCleanupService = new AuthLifecycleCleanupService(
     new PrismaAuthLifecycleCleanupRepository(prisma),
     config.schedulers.authCleanup.batchSize,
+  );
+  const processHeartbeatService = new ProcessHeartbeatService(
+    new PrismaProcessHeartbeatRepository(prisma),
+    config.operations.processHeartbeat.staleAfterMs,
   );
   const accountRecoveryRepository = new PrismaAccountRecoveryRepository(prisma);
   const mfaRepository = new PrismaMfaRepository(prisma);
@@ -339,6 +346,7 @@ export function createApplicationComposition(
     valueRealizationService,
     learningService,
     authLifecycleCleanupService,
+    processHeartbeatService,
     ingestionWorker,
   };
 }

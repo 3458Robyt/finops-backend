@@ -128,6 +128,13 @@ export interface RuntimeConfig {
       readonly batchSize: number;
     };
   };
+  readonly operations: {
+    readonly processHeartbeat: {
+      readonly enabled: boolean;
+      readonly intervalMs: number;
+      readonly staleAfterMs: number;
+    };
+  };
   readonly finops: {
     readonly valueRealizationOutboundEnabled: boolean;
     readonly savingsReconciliationEnabled: boolean;

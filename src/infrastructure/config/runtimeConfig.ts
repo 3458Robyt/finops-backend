@@ -19,8 +19,29 @@ const productionOnlyRequired = [
   'METRICS_TOKEN',
 ] as const;
 
+const booleanConfigKeys = [
+  'DB_RUNTIME_ENFORCE',
+  'MFA_REQUIRED_FOR_PRIVILEGED',
+  'EMAIL_ENABLED',
+  'SMTP_SECURE',
+  'TELEGRAM_ENABLED',
+  'INGESTION_WORKER_ENABLED',
+  'AGENT_LEARNING_WORKER_ENABLED',
+  'RECOMMENDATION_ANALYSIS_WORKER_ENABLED',
+  'MESSAGE_SCHEDULER_ENABLED',
+  'INGESTION_SCHEDULER_ENABLED',
+  'RECOMMENDATION_ANALYSIS_SCHEDULER_ENABLED',
+  'SAVINGS_RECONCILIATION_SCHEDULER_ENABLED',
+  'SAVINGS_RECONCILIATION_RUN_ON_START',
+  'AUTH_CLEANUP_SCHEDULER_ENABLED',
+  'PROCESS_HEARTBEAT_ENABLED',
+  'VALUE_REALIZATION_OUTBOUND_ENABLED',
+  'SAVINGS_RECONCILIATION_ENABLED',
+] as const;
+
 export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): void {
   const issues: RuntimeValidationIssue[] = [];
+  validateBooleanVariables(env, issues);
   const isProduction = env['NODE_ENV'] === 'production';
 
   // An omitted role is a valid development shorthand for `all`, but an
@@ -49,7 +70,7 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
 
     validateCorsOrigins(env['CORS_ORIGIN'], issues);
 
-    if (env['DB_RUNTIME_ENFORCE'] !== 'true') {
+    if (!isEnabled(env['DB_RUNTIME_ENFORCE'])) {
       issues.push({ key: 'DB_RUNTIME_ENFORCE', message: 'Debe ser true en produccion.' });
     }
 
@@ -57,7 +78,7 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
       issues.push({ key: 'DB_RUNTIME_ROLE', message: 'Debe ser finops_runtime en produccion.' });
     }
 
-    if (env['MFA_REQUIRED_FOR_PRIVILEGED'] !== 'true') {
+    if (!isEnabled(env['MFA_REQUIRED_FOR_PRIVILEGED'])) {
       issues.push({ key: 'MFA_REQUIRED_FOR_PRIVILEGED', message: 'Debe ser true en produccion.' });
     }
 
@@ -75,7 +96,9 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
     validatePositiveBound(env, 'PASSWORD_RESET_TTL_SECONDS', 300, 3600, issues);
     validatePositiveBound(env, 'AUTH_CLEANUP_SCHEDULER_INTERVAL_MS', 60_000, 7 * 24 * 60 * 60 * 1000, issues);
     validateIntegerBound(env, 'AUTH_CLEANUP_BATCH_SIZE', 1, 5000, issues);
-    if (env['EMAIL_ENABLED'] === 'true' && !isHttpUrl(env['PASSWORD_RESET_URL'])) {
+    validatePositiveBound(env, 'PROCESS_HEARTBEAT_INTERVAL_MS', 5_000, 24 * 60 * 60 * 1000, issues);
+    validatePositiveBound(env, 'PROCESS_HEARTBEAT_STALE_AFTER_MS', 10_000, 7 * 24 * 60 * 60 * 1000, issues);
+    if (isEnabled(env['EMAIL_ENABLED']) && !isHttpUrl(env['PASSWORD_RESET_URL'])) {
       issues.push({ key: 'PASSWORD_RESET_URL', message: 'Debe ser una URL HTTP(S) válida cuando el correo está habilitado.' });
     }
     validatePositiveBound(env, 'INGESTION_SCHEDULER_VALIDATION_MAX_AGE_MINUTES', 5, 7 * 24 * 60, issues);
@@ -164,31 +187,43 @@ function validateProcessRole(value: string | undefined, issues: RuntimeValidatio
 }
 
 function validateEnabledIntegrations(env: NodeJS.ProcessEnv, issues: RuntimeValidationIssue[]): void {
-  if (env['EMAIL_ENABLED'] === 'true') {
+  if (isEnabled(env['EMAIL_ENABLED'])) {
     for (const key of ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD']) {
       if (isBlank(env[key])) issues.push({ key, message: 'Es obligatoria cuando EMAIL_ENABLED=true.' });
     }
   }
 
-  if (env['TELEGRAM_ENABLED'] === 'true') {
+  if (isEnabled(env['TELEGRAM_ENABLED'])) {
     for (const key of ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_WEBHOOK_SECRET']) {
       if (isBlank(env[key])) issues.push({ key, message: 'Es obligatoria cuando TELEGRAM_ENABLED=true.' });
     }
   }
 
-  if (env['MESSAGE_SCHEDULER_ENABLED'] === 'true') {
+  if (isEnabled(env['MESSAGE_SCHEDULER_ENABLED'])) {
     for (const key of ['MESSAGE_SCHEDULER_TENANT_ID', 'MESSAGE_SCHEDULER_USER_ID']) {
       if (isBlank(env[key])) issues.push({ key, message: 'Es obligatoria cuando MESSAGE_SCHEDULER_ENABLED=true.' });
     }
   }
 
-  if (env['SAVINGS_RECONCILIATION_SCHEDULER_ENABLED'] === 'true'
+  if (isEnabled(env['SAVINGS_RECONCILIATION_SCHEDULER_ENABLED'])
     && isBlank(env['SAVINGS_RECONCILIATION_TENANT_ID'])) {
     issues.push({
       key: 'SAVINGS_RECONCILIATION_TENANT_ID',
       message: 'Es obligatoria cuando SAVINGS_RECONCILIATION_SCHEDULER_ENABLED=true.',
     });
   }
+}
+
+function validateBooleanVariables(env: NodeJS.ProcessEnv, issues: RuntimeValidationIssue[]): void {
+  for (const key of booleanConfigKeys) {
+    const value = env[key];
+    if (value === undefined || /^(true|false)$/i.test(value.trim())) continue;
+    issues.push({ key, message: 'Debe ser true o false.' });
+  }
+}
+
+function isEnabled(value: string | undefined): boolean {
+  return value?.trim().toLowerCase() === 'true';
 }
 
 function validatePositiveBound(

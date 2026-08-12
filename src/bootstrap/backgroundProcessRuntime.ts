@@ -6,6 +6,7 @@ import type { RuntimeConfig } from '../infrastructure/config/runtimeConfigTypes.
 import { runWithDatabaseContext } from '../infrastructure/database/tenantContext.js';
 import { runPrismaIngestionJobScheduler } from '../infrastructure/ingestion/PrismaIngestionJobScheduler.js';
 import { queueRecommendationAnalysisAfterIngestion } from '../infrastructure/repositories/PrismaRecommendationAnalysisScheduler.js';
+import { startProcessHeartbeat } from './processHeartbeatRuntime.js';
 
 export interface BackgroundProcessRuntimeInput {
   readonly config: RuntimeConfig;
@@ -22,6 +23,7 @@ export function startBackgroundProcesses(input: BackgroundProcessRuntimeInput): 
   const { prisma, recommendationAnalysisRepository, recommendationAnalysisService, valueRealizationService, learningService, ingestionWorker } = composition;
   const { outboundMessageService } = composition.serverDependencies;
 
+  startProcessHeartbeat(input, composition.processHeartbeatService);
   startMessageScheduler(input, outboundMessageService);
   startIngestionWorker(input, ingestionWorker);
   startLearningWorker(input, learningService);

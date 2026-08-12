@@ -46,6 +46,21 @@ describe('validateRuntimeConfig', () => {
     warning.mockRestore();
   });
 
+  it.each(['yes', '1', 'enabled', ''])('rejects an invalid boolean configuration value: %s', (value) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(() => validateRuntimeConfig({ NODE_ENV: 'development', EMAIL_ENABLED: value }))
+      .toThrow('EMAIL_ENABLED');
+    warning.mockRestore();
+  });
+
+  it('accepts case-insensitive boolean values consistently in production', () => {
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      DB_RUNTIME_ENFORCE: ' TRUE ',
+      MFA_REQUIRED_FOR_PRIVILEGED: 'TrUe',
+    })).not.toThrow();
+  });
+
   it.each([undefined, 'unknown'])('rejects production when APP_PROCESS_ROLE is %s', (role) => {
     expect(() => validateRuntimeConfig({ ...productionEnv, APP_PROCESS_ROLE: role }))
       .toThrow(`Configuracion runtime invalida.`);
@@ -82,6 +97,11 @@ describe('validateRuntimeConfig', () => {
       .toThrow(`Configuracion runtime invalida.`);
   });
 
+  it.each(['1000', '86400001'])('rejects a process heartbeat interval outside the production range: %s', (value) => {
+    expect(() => validateRuntimeConfig({ ...productionEnv, PROCESS_HEARTBEAT_INTERVAL_MS: value }))
+      .toThrow(`Configuracion runtime invalida.`);
+  });
+
   it('requires credentials for enabled outbound integrations and scheduler targets', () => {
     expect(() => validateRuntimeConfig({
       ...productionEnv,
@@ -94,6 +114,21 @@ describe('validateRuntimeConfig', () => {
     expect(() => validateRuntimeConfig({
       ...productionEnv,
       MESSAGE_SCHEDULER_ENABLED: 'true',
+    })).toThrow(`Configuracion runtime invalida.`);
+  });
+
+  it('validates credentials when integration flags use mixed case or whitespace', () => {
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      EMAIL_ENABLED: ' TRUE ',
+    })).toThrow(`Configuracion runtime invalida.`);
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      TELEGRAM_ENABLED: 'TrUe',
+    })).toThrow(`Configuracion runtime invalida.`);
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      MESSAGE_SCHEDULER_ENABLED: ' true ',
     })).toThrow(`Configuracion runtime invalida.`);
   });
 

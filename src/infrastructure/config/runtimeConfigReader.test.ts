@@ -20,6 +20,9 @@ describe('loadRuntimeConfig', () => {
       AUTH_CLEANUP_SCHEDULER_ENABLED: 'true',
       AUTH_CLEANUP_SCHEDULER_INTERVAL_MS: '120000',
       AUTH_CLEANUP_BATCH_SIZE: '25',
+      PROCESS_HEARTBEAT_ENABLED: ' TRUE ',
+      PROCESS_HEARTBEAT_INTERVAL_MS: '10000',
+      PROCESS_HEARTBEAT_STALE_AFTER_MS: '45000',
     });
 
     expect(config.environment.processRole).toBe('worker');
@@ -37,6 +40,7 @@ describe('loadRuntimeConfig', () => {
     expect(config.email.timeoutMs).toBe(15_000);
     expect(config.telegram.timeoutMs).toBe(15_000);
     expect(config.schedulers.authCleanup).toEqual({ enabled: true, intervalMs: 120_000, batchSize: 25 });
+    expect(config.operations.processHeartbeat).toEqual({ enabled: true, intervalMs: 10_000, staleAfterMs: 45_000 });
     expect(config.cloud.requiredTagKeys).toEqual(['environment', 'owner']);
 
     warning.mockRestore();
@@ -54,6 +58,7 @@ describe('loadRuntimeConfig', () => {
     expect(config.telegram.timeoutMs).toBe(15_000);
     expect(config.schedulers.ingestion.enabled).toBe(false);
     expect(config.schedulers.authCleanup).toEqual({ enabled: false, intervalMs: 21_600_000, batchSize: 500 });
+    expect(config.operations.processHeartbeat).toEqual({ enabled: true, intervalMs: 30_000, staleAfterMs: 90_000 });
 
     warning.mockRestore();
   });

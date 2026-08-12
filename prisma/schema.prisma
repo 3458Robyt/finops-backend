@@ -1865,3 +1865,18 @@ model AuditEvent {
   @@index([entityType, entityId])
   @@map("audit_events")
 }
+
+model RuntimeProcessHeartbeat {
+  processId        String    @id @map("process_id")
+  processRole      String    @map("process_role")
+  status           String    @default("RUNNING")
+  pid              Int?
+  startedAt        DateTime  @map("started_at") @db.Timestamptz(6)
+  lastHeartbeatAt  DateTime  @map("last_heartbeat_at") @db.Timestamptz(6)
+  stoppedAt        DateTime? @map("stopped_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([processRole, status, lastHeartbeatAt])
+  @@map("runtime_process_heartbeats")
+}

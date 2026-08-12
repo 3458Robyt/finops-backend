@@ -143,6 +143,13 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
         batchSize: readPositiveInteger(env['AUTH_CLEANUP_BATCH_SIZE'], 500),
       },
     },
+    operations: {
+      processHeartbeat: {
+        enabled: readBoolean(env['PROCESS_HEARTBEAT_ENABLED'], true),
+        intervalMs: readPositiveInteger(env['PROCESS_HEARTBEAT_INTERVAL_MS'], 30_000),
+        staleAfterMs: readPositiveInteger(env['PROCESS_HEARTBEAT_STALE_AFTER_MS'], 90_000),
+      },
+    },
     finops: {
       valueRealizationOutboundEnabled: readBoolean(env['VALUE_REALIZATION_OUTBOUND_ENABLED'], false),
       savingsReconciliationEnabled: readBoolean(env['SAVINGS_RECONCILIATION_ENABLED'], false),

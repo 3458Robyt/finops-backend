@@ -17,6 +17,7 @@
     "test:integration": "cross-env RUN_DB_INTEGRATION_TESTS=true vitest run src/testing/e2eFixtures.test.ts src/testing/technicalMetrics.integration.test.ts src/testing/recommendationAnalysis.integration.test.ts src/testing/verifiedSavingsMeasurement.integration.test.ts src/testing/tenantContext.integration.test.ts src/testing/agentQuality.integration.test.ts",
     "test:integration:agent-quality": "tsx scripts/testing/agent-quality-integration.ts",
     "test:integration:auth-cleanup": "tsx scripts/testing/auth-lifecycle-cleanup-integration.ts",
+    "test:integration:process-heartbeat": "tsx scripts/testing/process-heartbeat-integration.ts",
     "test:integration:docker": "docker compose -f docker-compose.test.yml up -d --wait && cross-env DATABASE_URL=postgresql://finops:finops@localhost:55432/finops_test prisma migrate deploy && cross-env TEST_DATABASE_URL=postgresql://finops:finops@localhost:55432/finops_test ALLOW_DESTRUCTIVE_TEST_DATABASE=true RUN_DB_INTEGRATION_TESTS=true vitest run src/testing/e2eFixtures.test.ts src/testing/**/*.integration.test.ts",
     "test:integration:resource-lineage": "tsx scripts/testing/resource-linkage-integration.ts",
     "test:integration:cost-allocation": "tsx scripts/testing/cost-allocation-integration.ts",

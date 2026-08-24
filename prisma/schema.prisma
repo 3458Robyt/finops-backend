@@ -413,6 +413,8 @@ model Tenant {
   cloudMetricDefinitions      CloudMetricDefinition[]
   operatorStorageLocations    OperatorStorageLocation[]
   ingestionJobs               IngestionJob[]
+  ingestionJobParts           IngestionJobPart[]
+  ingestionCoverageSegments   IngestionCoverageSegment[]
   ingestionObjects            IngestionObject[]
   ingestionWatermarks         IngestionWatermark[]
   focusCostLineItems          FocusCostLineItem[]
@@ -591,6 +593,8 @@ model CloudConnection {
   credentials           CloudConnectionCredential[]
   exportConfigs         CloudExportConfig[]
   ingestionJobs         IngestionJob[]
+  ingestionJobParts     IngestionJobPart[]
+  ingestionCoverageSegments IngestionCoverageSegment[]
   ingestionRuns         IngestionRun[]
   ingestionObjects      IngestionObject[]
   ingestionWatermarks   IngestionWatermark[]
@@ -867,6 +871,11 @@ model IngestionJob {
   requestedBy       User?               @relation("IngestionJobRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
   cancelRequestedBy User?               @relation("IngestionJobCancelRequestedBy", fields: [cancelRequestedByUserId], references: [id], onDelete: SetNull)
   archivedBy        User?               @relation("IngestionJobArchivedBy", fields: [archivedByUserId], references: [id], onDelete: SetNull)
+  parts             IngestionJobPart[]
+  coverageSegments  IngestionCoverageSegment[]
+  objects           IngestionObject[]
+  focusCostLineItems FocusCostLineItem[]
+  metricSamples     ResourceMetricSample[]
 
   @@index([status, availableAt, priority, createdAt], map: "ingestion_jobs_queue_idx")
   @@index([status, sourceType, createdAt])
@@ -878,11 +887,71 @@ model IngestionJob {
   @@map("ingestion_jobs")
 }
 
+model IngestionJobPart {
+  id                String             @id @default(cuid())
+  tenantId          String             @map("tenant_id")
+  cloudConnectionId String             @map("cloud_connection_id")
+  ingestionJobId    String             @map("ingestion_job_id")
+  partKey           String             @map("part_key")
+  sourceType        IngestionSourceType @map("source_type")
+  status            IngestionJobStatus @default(PENDING)
+  targetStart       DateTime           @map("target_start") @db.Timestamptz(6)
+  targetEnd         DateTime           @map("target_end") @db.Timestamptz(6)
+  sequence          Int                @default(0)
+  apiCalls          Int                @default(0) @map("api_calls")
+  rowsRead          Int                @default(0) @map("rows_read")
+  rowsWritten       Int                @default(0) @map("rows_written")
+  samplesRead       Int                @default(0) @map("samples_read")
+  samplesWritten    Int                @default(0) @map("samples_written")
+  cursor            String?
+  metadata          Json?
+  startedAt         DateTime?          @map("started_at") @db.Timestamptz(6)
+  completedAt       DateTime?          @map("completed_at") @db.Timestamptz(6)
+  errorMessage      String?            @map("error_message") @db.Text
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cloudConnection   CloudConnection    @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
+  ingestionJob      IngestionJob       @relation(fields: [ingestionJobId], references: [id], onDelete: Cascade)
+
+  @@unique([ingestionJobId, partKey], map: "ingestion_job_parts_job_part_key")
+  @@index([tenantId, status, updatedAt], map: "ingestion_job_parts_tenant_status_idx")
+  @@index([cloudConnectionId, sourceType, targetStart, targetEnd], map: "ingestion_job_parts_connection_window_idx")
+  @@map("ingestion_job_parts")
+}
+
+model IngestionCoverageSegment {
+  id                String             @id @default(cuid())
+  tenantId          String             @map("tenant_id")
+  cloudConnectionId String             @map("cloud_connection_id")
+  ingestionJobId    String?            @map("ingestion_job_id")
+  sourceType        IngestionSourceType @map("source_type")
+  scopeKey          String             @default("global") @map("scope_key")
+  status            String             @default("COVERED")
+  targetStart       DateTime           @map("target_start") @db.Timestamptz(6)
+  targetEnd         DateTime           @map("target_end") @db.Timestamptz(6)
+  configurationHash String?            @map("configuration_hash") @db.VarChar(64)
+  rowsWritten       Int                @default(0) @map("rows_written")
+  samplesWritten    Int                @default(0) @map("samples_written")
+  objectsProcessed  Int                @default(0) @map("objects_processed")
+  evidence          Json?
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cloudConnection   CloudConnection    @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
+  ingestionJob      IngestionJob?      @relation(fields: [ingestionJobId], references: [id], onDelete: SetNull)
+
+  @@index([cloudConnectionId, sourceType, scopeKey, targetStart, targetEnd], map: "ingestion_coverage_segments_window_idx")
+  @@index([tenantId, status, updatedAt], map: "ingestion_coverage_segments_tenant_status_idx")
+  @@map("ingestion_coverage_segments")
+}
+
 model IngestionObject {
   id                String              @id @default(cuid())
   tenantId          String              @map("tenant_id")
   cloudConnectionId String              @map("cloud_connection_id")
   exportConfigId    String?             @map("export_config_id")
+  ingestionJobId    String?             @map("ingestion_job_id")
   sourceType        IngestionSourceType @map("source_type")
   objectUri         String              @map("object_uri")
   objectEtag        String?             @map("object_etag")
@@ -896,10 +965,12 @@ model IngestionObject {
   tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   cloudConnection   CloudConnection     @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
   exportConfig      CloudExportConfig?  @relation(fields: [exportConfigId], references: [id], onDelete: SetNull)
+  ingestionJob      IngestionJob?      @relation(fields: [ingestionJobId], references: [id], onDelete: SetNull)
 
   @@unique([cloudConnectionId, objectUri, objectEtag])
   @@index([tenantId, sourceType, status])
   @@index([exportConfigId], map: "ingestion_objects_export_config_id_idx")
+  @@index([ingestionJobId], map: "ingestion_objects_ingestion_job_id_idx")
   @@map("ingestion_objects")
 }
 
@@ -1004,14 +1075,19 @@ model FocusCostLineItem {
   tags               Json?
   rawRow             Json            @map("raw_row")
   lineItemHash       String          @map("line_item_hash")
+  ingestionJobId     String?         @map("ingestion_job_id")
+  sourceObjectUri    String?         @map("source_object_uri")
+  sourceObjectEtag   String?         @map("source_object_etag")
   createdAt          DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
   tenant             Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   cloudConnection    CloudConnection @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
+  ingestionJob        IngestionJob?   @relation(fields: [ingestionJobId], references: [id], onDelete: SetNull)
 
   @@unique([cloudConnectionId, chargePeriodStart, lineItemHash])
   @@index([tenantId, provider, chargePeriodStart])
   @@index([tenantId, serviceName, chargePeriodStart])
   @@index([resourceId])
+  @@index([ingestionJobId], map: "focus_cost_line_items_ingestion_job_id_idx")
   @@map("focus_cost_line_items")
 }
 
@@ -1067,10 +1143,12 @@ model ResourceMetricSample {
   granularitySeconds Int                 @default(1800) @map("granularity_seconds")
   sourceType         IngestionSourceType @default(TECHNICAL_METRIC) @map("source_type")
   rawMetric          Json?               @map("raw_metric")
+  ingestionJobId     String?             @map("ingestion_job_id")
   createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   cloudConnection    CloudConnection     @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
   cloudResource      CloudResource?      @relation(fields: [cloudResourceId], references: [id], onDelete: SetNull)
+  ingestionJob        IngestionJob?      @relation(fields: [ingestionJobId], references: [id], onDelete: SetNull)
 
   @@unique([cloudConnectionId, providerNamespace, regionId, externalResourceId, metricName, statistic, granularitySeconds, sampledAt, dimensionsHash], map: "resource_metric_samples_identity_key")
   @@index([tenantId, sampledAt])
@@ -1079,6 +1157,7 @@ model ResourceMetricSample {
   @@index([tenantId, externalResourceId, metricName, statistic, sampledAt])
   @@index([tenantId, providerNamespace, regionId, metricName, statistic, sampledAt], map: "resource_metric_samples_tenant_provider_region_metric_idx")
   @@index([cloudResourceId, sampledAt])
+  @@index([ingestionJobId], map: "resource_metric_samples_ingestion_job_id_idx")
   @@map("resource_metric_samples")
 }
 

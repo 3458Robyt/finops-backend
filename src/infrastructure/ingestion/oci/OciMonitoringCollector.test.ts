@@ -40,8 +40,9 @@ describe('OCI monitoring collector', () => {
       withRetry: (operation) => operation(),
     });
 
+    const samples = await materializeSamples(result);
     expect(close).toHaveBeenCalledOnce();
-    expect(result.metricSamples).toEqual([
+    expect(samples).toEqual([
       expect.objectContaining({
         externalResourceId: 'instance-1',
         metricName: 'CpuUtilization',
@@ -81,11 +82,12 @@ describe('OCI monitoring collector', () => {
       withRetry: (operation) => operation(),
     });
 
+    const samples = await materializeSamples(result);
     expect(queries).toEqual([
       'CpuUtilization[30m]{resourceId = "instance-1"}.percentile(0.95)',
       'CpuUtilization[30m]{resourceId = "instance-1"}.last()',
     ]);
-    expect(result.metricSamples.map((sample) => sample.statistic)).toEqual(['P95', 'LATEST']);
+    expect(samples.map((sample) => sample.statistic)).toEqual(['P95', 'LATEST']);
   });
 
   test('groups confirmed resources into one MQL request and keeps each returned stream', async () => {
@@ -111,14 +113,42 @@ describe('OCI monitoring collector', () => {
       withRetry: (operation) => operation(),
     });
 
+    const samples = await materializeSamples(result);
     expect(queries).toEqual(['CpuUtilization[30m].groupBy(resourceId).mean()']);
-    expect(result.metricSamples.map((sample) => sample.externalResourceId)).toEqual(['instance-1', 'instance-2']);
+    expect(samples.map((sample) => sample.externalResourceId)).toEqual(['instance-1', 'instance-2']);
     expect(result.apiCallCount).toBe(1);
   });
 
+  test('drains more than the bounded queue without leaving producers blocked', async () => {
+    const definitions = Array.from({ length: 40 }, (_, index) => ({
+      compartmentId: 'compartment-1',
+      namespace: 'oci_computeagent',
+      metricName: `Metric${index}`,
+      resourceId: 'instance-1',
+      unit: 'Percent',
+    }));
+    const result = await collectOciTechnicalMetrics(buildJob({ ociMetricDefinitions: definitions }), {
+      createClient: () => ({
+        summarizeMetricsData: async () => ({ items: [metricStream('instance-1', 42)] }),
+      }),
+      withRetry: (operation) => operation(),
+    });
+
+    const samples = [];
+    if (result.metricBatches !== undefined) {
+      for await (const batch of result.metricBatches) {
+        samples.push(...batch);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+    }
+
+    expect(samples).toHaveLength(40);
+    expect(result.apiCallCount).toBe(40);
+  }, 10_000);
+
   test('queries confirmed resources at tenancy scope before falling back to compartments', async () => {
     const requests: Array<{ compartmentId: string; compartmentIdInSubtree?: boolean }> = [];
-    await collectOciTechnicalMetrics(buildJob({
+    const result = await collectOciTechnicalMetrics(buildJob({
       ociMetricDefinitions: [
         metricDefinition('instance-1', 'compartment-1'),
         metricDefinition('instance-2', 'compartment-2'),
@@ -138,6 +168,7 @@ describe('OCI monitoring collector', () => {
       withRetry: (operation) => operation(),
     });
 
+    await materializeSamples(result);
     expect(requests).toEqual([{
       compartmentId: 'ocid1.tenancy.oc1.test',
       compartmentIdInSubtree: true,
@@ -200,4 +231,12 @@ function metricStream(resourceId: string, value: number): {
     dimensions: { resourceId },
     aggregatedDatapoints: [{ timestamp: '2026-08-10T00:30:00Z', value }],
   };
+}
+
+async function materializeSamples(result: Awaited<ReturnType<typeof collectOciTechnicalMetrics>>) {
+  const samples = [...result.metricSamples];
+  if (result.metricBatches !== undefined) {
+    for await (const batch of result.metricBatches) samples.push(...batch);
+  }
+  return samples;
 }

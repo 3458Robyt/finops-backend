@@ -4,14 +4,18 @@ import { CredentialCipher } from '../src/infrastructure/security/CredentialCiphe
 import { PrismaCloudConnectionRepository } from '../src/infrastructure/repositories/PrismaCloudConnectionRepository.js';
 import { CloudConnectionService } from '../src/application/services/CloudConnectionService.js';
 import { OciSdkIngestionProvider } from '../src/infrastructure/ingestion/OciSdkIngestionProvider.js';
+import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
 
 async function main(): Promise<void> {
   const connectionId = readRequiredArgument('--connection-id');
   const prisma = getPrismaClient();
-  const connection = await prisma.cloudConnection.findUnique({
-    where: { id: connectionId },
-    select: { tenantId: true, providerCode: true },
-  });
+  const connection = await runWithDatabaseContext(
+    { role: 'MASTER_ADMIN', workerId: 'oci-validation-cli' },
+    () => prisma.cloudConnection.findUnique({
+      where: { id: connectionId },
+      select: { tenantId: true, providerCode: true },
+    }),
+  );
   if (connection === null) throw new Error('La conexión indicada no existe.');
   if (connection.providerCode !== 'oci') throw new Error('La conexión indicada no es OCI.');
 
@@ -22,10 +26,13 @@ async function main(): Promise<void> {
     ),
     [new OciSdkIngestionProvider()],
   );
-  const result = await service.validateConnection({
-    tenantId: connection.tenantId,
-    cloudConnectionId: connectionId,
-  });
+  const result = await runWithDatabaseContext(
+    { tenantId: connection.tenantId, role: 'MASTER_ADMIN', workerId: 'oci-validation-cli' },
+    () => service.validateConnection({
+      tenantId: connection.tenantId,
+      cloudConnectionId: connectionId,
+    }),
+  );
   console.log(JSON.stringify({
     success: true,
     connectionId,

@@ -15,6 +15,7 @@ const defaultOptions = {
   billingWindowHours: 24,
   billingCooldownHours: 6,
   maxAttempts: 1,
+  metricCatchupDays: 90,
 };
 
 describe('buildIngestionSchedulePlan', () => {
@@ -42,7 +43,7 @@ describe('buildIngestionSchedulePlan', () => {
       cloudConnectionId: 'oci_1',
       providerCode: 'oci',
       sourceType: 'TECHNICAL_METRIC',
-      targetStart: new Date('2026-05-06T12:00:00.000Z'),
+      targetStart: new Date('2026-03-07T12:00:00.000Z'),
       targetEnd: now,
       maxAttempts: 1,
     }));

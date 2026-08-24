@@ -3,6 +3,7 @@ import * as usageapi from 'oci-usageapi';
 import type {
   CloudIngestionJobContext,
   CloudIngestionResult,
+  IngestionObjectDescriptor,
   NormalizedFocusCostLineItem,
   NormalizedProviderCostLineItem,
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
@@ -18,6 +19,7 @@ import {
   readOciFocusLocations,
   readOciFocusObjects,
 } from './OciFocusSource.js';
+import { safeOciProviderError } from './OciCapabilityValidator.js';
 import { withOciProviderRetry } from './OciRetryPolicy.js';
 import { normalizeOciDailyUsageRange } from './OciUsageDateRange.js';
 
@@ -76,13 +78,14 @@ export class OciBillingCollector {
     const objects = discoveredObjects.filter((object) => isFocusObjectInWindow(object, job));
     if (objects.length === 0) {
       client.close?.();
-      return this.emptyResult(0, [
+      return this.emptyResult(discovery.apiCallCount, [
         discoveredObjects.length === 0
           ? 'No se encontraron objetos de reporte FOCUS OCI configurados o descubiertos. Configura ociFocusReportObjects u ociFocusReportLocations.'
           : 'No se encontraron objetos de reporte FOCUS OCI para el periodo solicitado.',
       ], {
         costSource: 'OCI Cost Reports FOCUS',
         expectedRefreshHours: 6,
+        apiCallCount: discovery.apiCallCount,
         objectsConfigured: 0,
         objectsDiscovered: discovery.objects.length,
         objectsExcludedByRange: discoveredObjects.length,
@@ -93,6 +96,7 @@ export class OciBillingCollector {
     return {
       apiCallCount: discovery.apiCallCount + objects.length,
       objectsProcessed: objects.length,
+      sourceObjects: objects.map(toIngestionObjectDescriptor),
       focusRows: [],
       focusBatches: this.streamFocusObjects(job, client, objects),
       resources: [],
@@ -189,16 +193,35 @@ export class OciBillingCollector {
     warning: string,
     focusCoverage?: Readonly<Record<string, unknown>>,
   ): Promise<CloudIngestionResult> {
-    const result = await this.collectProviderApiCosts(job);
-    return {
-      ...result,
-      warnings: [warning, ...result.warnings],
-      coverage: {
-        ...result.coverage,
+    try {
+      const result = await this.collectProviderApiCosts(job);
+      return {
+        ...result,
+        warnings: [warning, ...result.warnings],
+        coverage: {
+          ...result.coverage,
+          billingSourceFallback: 'FOCUS_TO_PROVIDER_API',
+          ...(focusCoverage === undefined ? {} : { focusCoverage }),
+        },
+      };
+    } catch (error) {
+      // AUTO is deliberately best-effort: a missing current FOCUS object plus
+      // a tenant without Usage API permission must not turn the scheduler
+      // into a permanently failing retry loop. Preserve the gap as a partial
+      // coverage result so the next run can retry after reports are published
+      // or permissions are corrected. Explicit FOCUS/PROVIDER_API modes still
+      // fail fast in their respective collectors.
+      return this.emptyResult(readCoverageNumber(focusCoverage, 'apiCallCount') ?? 0, [
+        warning,
+        'OCI Usage API tampoco estuvo disponible; el periodo queda pendiente de una nueva sincronizacion.',
+      ], {
+        billingSource: 'OCI Cost Reports FOCUS',
         billingSourceFallback: 'FOCUS_TO_PROVIDER_API',
+        fallbackError: safeOciProviderError(error),
+        apiCallCount: readCoverageNumber(focusCoverage, 'apiCallCount') ?? 0,
         ...(focusCoverage === undefined ? {} : { focusCoverage }),
-      },
-    };
+      });
+    }
   }
 
   private async *streamFocusObjects(
@@ -262,6 +285,14 @@ export class OciBillingCollector {
   }
 }
 
+function toIngestionObjectDescriptor(object: OciFocusReportObject): IngestionObjectDescriptor {
+  return {
+    objectUri: `${object.namespaceName}/${object.bucketName}/${object.objectName}`,
+    ...(object.sizeBytes === undefined ? {} : { sizeBytes: object.sizeBytes }),
+    ...(object.lastModified === undefined ? {} : { lastModified: object.lastModified }),
+  };
+}
+
 function isFocusObjectInWindow(
   object: OciFocusReportObject,
   job: CloudIngestionJobContext,
@@ -294,7 +325,8 @@ function uniqueFocusObjects(objects: readonly OciFocusReportObject[]): readonly 
   return [...byKey.values()];
 }
 
-function readCoverageNumber(coverage: Readonly<Record<string, unknown>>, key: string): number | undefined {
+function readCoverageNumber(coverage: Readonly<Record<string, unknown>> | undefined, key: string): number | undefined {
+  if (coverage === undefined) return undefined;
   const value = coverage[key];
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }

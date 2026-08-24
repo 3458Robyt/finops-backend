@@ -44,7 +44,22 @@ export async function runPrismaIngestionJobScheduler(
   prisma: PrismaClient,
   options: PrismaIngestionJobSchedulerRunOptions,
 ): Promise<PrismaIngestionJobSchedulerRunResult> {
-  const connections = await prisma.cloudConnection.findMany({
+  return prisma.$transaction(async (tx) => {
+    const lockRows = await tx.$queryRaw<readonly { readonly locked: boolean }[]>(Prisma.sql`
+      SELECT pg_try_advisory_xact_lock(hashtext('finops:ingestion:scheduler')) AS locked
+    `);
+    if (lockRows[0]?.locked !== true) {
+      return {
+        mode: options.apply ? 'apply' : 'dry-run',
+        generatedAt: options.schedule.now,
+        connectionsEvaluated: 0,
+        plannedJobs: [],
+        createdJobs: [],
+        skipped: [],
+      } satisfies PrismaIngestionJobSchedulerRunResult;
+    }
+
+    const connections = await tx.cloudConnection.findMany({
     where: {
       providerCode: options.providerCode === undefined ? { in: ['aws', 'oci'] } : options.providerCode,
       status: 'ACTIVE',
@@ -77,12 +92,31 @@ export async function runPrismaIngestionJobScheduler(
           configurationHash: true,
         },
       },
+      metricDefinitions: {
+        where: { enabled: true },
+        select: { enabled: true },
+      },
+      ingestionCoverageSegments: {
+        where: {
+          sourceType: { in: ['INVENTORY', 'TECHNICAL_METRIC', 'BILLING_EXPORT'] },
+          status: { in: ['COVERED', 'PARTIAL'] },
+        },
+        orderBy: { targetEnd: 'desc' },
+        take: 200,
+        select: {
+          sourceType: true,
+          status: true,
+          targetStart: true,
+          targetEnd: true,
+          configurationHash: true,
+        },
+      },
     },
-  });
+    });
 
   const plan = buildIngestionSchedulePlan(connections, options.schedule);
   const createdJobs = options.apply
-    ? await Promise.all(plan.jobs.map((job) => prisma.ingestionJob.create({
+    ? await Promise.all(plan.jobs.map((job) => tx.ingestionJob.create({
         data: {
           tenantId: job.tenantId,
           cloudConnectionId: job.cloudConnectionId,
@@ -104,19 +138,23 @@ export async function runPrismaIngestionJobScheduler(
       })))
     : [];
 
-  return {
-    mode: options.apply ? 'apply' : 'dry-run',
-    generatedAt: options.schedule.now,
-    connectionsEvaluated: connections.length,
-    plannedJobs: plan.jobs.map((job) => ({
-      cloudConnectionId: job.cloudConnectionId,
-      providerCode: job.providerCode,
-      sourceType: job.sourceType,
-      targetStart: job.targetStart,
-      targetEnd: job.targetEnd,
-      reason: job.reason,
-    })),
-    createdJobs,
-    skipped: plan.skipped,
-  };
+    return {
+      mode: options.apply ? 'apply' : 'dry-run',
+      generatedAt: options.schedule.now,
+      connectionsEvaluated: connections.length,
+      plannedJobs: plan.jobs.map((job) => ({
+        cloudConnectionId: job.cloudConnectionId,
+        providerCode: job.providerCode,
+        sourceType: job.sourceType,
+        targetStart: job.targetStart,
+        targetEnd: job.targetEnd,
+        reason: job.reason,
+      })),
+      createdJobs,
+      skipped: plan.skipped,
+    };
+  }, {
+    maxWait: 10_000,
+    timeout: 60_000,
+  });
 }

@@ -174,6 +174,14 @@ export interface NormalizedResourceMetricSample {
   readonly rawMetric?: Readonly<Record<string, unknown>>;
 }
 
+export interface IngestionObjectDescriptor {
+  readonly objectUri: string;
+  readonly objectEtag?: string;
+  readonly objectVersion?: string;
+  readonly sizeBytes?: number;
+  readonly lastModified?: Date;
+}
+
 export type MetricStatistic =
   | 'MEAN'
   | 'MIN'
@@ -212,6 +220,7 @@ export const OCI_CORE_METRIC_STATISTICS = ['MEAN', 'MIN', 'MAX', 'P95'] as const
 export interface CloudIngestionResult {
   readonly apiCallCount: number;
   readonly objectsProcessed: number;
+  readonly sourceObjects?: readonly IngestionObjectDescriptor[];
   readonly focusRows: readonly NormalizedFocusCostLineItem[];
   /** Optional streaming path for large FOCUS exports; consumed once by the worker. */
   readonly focusBatches?: AsyncIterable<readonly NormalizedFocusCostLineItem[]>;
@@ -219,6 +228,8 @@ export interface CloudIngestionResult {
   readonly providerCostRows?: readonly NormalizedProviderCostLineItem[];
   readonly resources: readonly NormalizedCloudResource[];
   readonly metricSamples: readonly NormalizedResourceMetricSample[];
+  /** Optional stream for high-volume technical samples; consumed by the worker in bounded batches. */
+  readonly metricBatches?: AsyncIterable<readonly NormalizedResourceMetricSample[]>;
   readonly warnings: readonly string[];
   readonly coverage: Readonly<Record<string, unknown>>;
   /** Optional explicit result; legacy providers are classified centrally. */

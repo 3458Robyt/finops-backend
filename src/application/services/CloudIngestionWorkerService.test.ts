@@ -95,7 +95,7 @@ describe('CloudIngestionWorkerService', () => {
     const result = await service.runOnce('worker-1');
 
     expect(provider.collect).toHaveBeenCalledWith(job);
-    expect(completeJob).toHaveBeenCalledWith(job, expect.any(Object), expect.any(Date), 'worker-1');
+    expect(completeJob).toHaveBeenCalledWith(job, expect.any(Object), expect.any(Date), 'worker-1', expect.any(Function));
     expect(result).toEqual({
       processed: true,
       jobId: 'job-1',

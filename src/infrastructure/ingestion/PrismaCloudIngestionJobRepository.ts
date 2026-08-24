@@ -1,13 +1,8 @@
-import type {
-  CloudIngestionConnection,
-  CloudIngestionCredential,
-  CloudIngestionJobContext,
-  CloudIngestionResult,
-} from '../../domain/interfaces/ICloudIngestionProvider.js';
+import type { CloudIngestionJobContext, CloudIngestionResult } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { loadRuntimeConfig } from '../config/runtimeConfigReader.js';
-import { CredentialCipher, type EncryptedCredentialPayload } from '../security/CredentialCipher.js';
+import { CredentialCipher } from '../security/CredentialCipher.js';
 import { upsertNormalizedCloudResources } from './PrismaCloudResourceCatalog.js';
 import {
   buildMetricDerivedResources,
@@ -19,13 +14,11 @@ import { mergeResourceLinkageStats } from './ingestionResourceLinkage.js';
 import { PrismaIngestionSamplePersistence } from './PrismaIngestionSamplePersistence.js';
 import { PrismaIngestionJobLifecycleRepository, type IngestionJobProgress } from './PrismaIngestionJobLifecycleRepository.js';
 import { PrismaIngestionJobFailureHandler } from './PrismaIngestionJobFailureHandler.js';
-import { mergeEnabledMetricDefinitions } from './ingestionMetricDefinitionMetadata.js';
+import { PrismaIngestionJobSupport } from './PrismaIngestionJobSupport.js';
 
 interface ClaimedJobRow {
   readonly id: string;
 }
-
-type PrismaIngestionJobWithConnection = NonNullable<Awaited<ReturnType<PrismaCloudIngestionJobRepository['findJobContext']>>>;
 
 export type { IngestionJobExecutionSummary } from './PrismaIngestionJobCompletionSupport.js';
 
@@ -41,6 +34,7 @@ export class PrismaCloudIngestionJobRepository {
   private readonly completionSupport = new PrismaIngestionJobCompletionSupport();
   private readonly lifecycle: PrismaIngestionJobLifecycleRepository;
   private readonly failureHandler: PrismaIngestionJobFailureHandler;
+  private readonly support: PrismaIngestionJobSupport;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -50,6 +44,7 @@ export class PrismaCloudIngestionJobRepository {
   ) {
     this.lifecycle = new PrismaIngestionJobLifecycleRepository(prisma);
     this.failureHandler = new PrismaIngestionJobFailureHandler(prisma, retryBackoffMs);
+    this.support = new PrismaIngestionJobSupport(prisma, credentialCipher);
   }
 
   public async claimNextPendingJob(workerId: string): Promise<CloudIngestionJobContext | null> {
@@ -114,8 +109,8 @@ export class PrismaCloudIngestionJobRepository {
         },
       });
 
-      const job = await this.findJobContext(claimed.id, tx);
-      return job === null ? null : this.toJobContext(job);
+      const job = await this.support.findJobContext(claimed.id, tx);
+      return job === null ? null : this.support.toJobContext(job);
     });
   }
 
@@ -149,19 +144,94 @@ export class PrismaCloudIngestionJobRepository {
     result: CloudIngestionResult,
     startedAt: Date,
     workerId: string,
+    onProgress?: (progress: IngestionJobProgress) => Promise<void>,
   ): Promise<IngestionJobExecutionSummary> {
     if (!await this.refreshJobLease(job.id, workerId, job.attempt)) {
       throw new Error('Ingestion job lease was lost before persistence');
     }
-    const metricDerivedResources = buildMetricDerivedResources({
+    const initialMetricDerivedResources = buildMetricDerivedResources({
       tenantId: job.tenantId,
       cloudConnectionId: job.cloudConnectionId,
       ...(job.connection.defaultRegion !== undefined ? { defaultRegion: job.connection.defaultRegion } : {}),
     }, result.metricSamples);
-    const resources = mergeNormalizedResources([...result.resources, ...metricDerivedResources]);
-    const resourceIdsByExternalId = await upsertNormalizedCloudResources(this.prisma, resources);
+    const resources = mergeNormalizedResources([...result.resources, ...initialMetricDerivedResources]);
+    const resourceIdsByExternalId = new Map(await upsertNormalizedCloudResources(this.prisma, resources));
+    await this.support.registerSourceObjects(job, result.sourceObjects);
+    const metricDerivedResourceKeys = new Set(initialMetricDerivedResources.map((resource) => `${resource.cloudConnectionId}:${resource.externalResourceId}`));
+    let metricDerivedResources = initialMetricDerivedResources.length;
+    let metricSamplesProcessed = 0;
+    let metricSamplesLinked = 0;
+    let metricLinkage = mergeResourceLinkageStats(
+      { linked: 0, unresolved: 0, reasons: {} },
+      { linked: 0, unresolved: 0, reasons: {} },
+    );
+    let metricBatchSequence = 0;
+    const persistMetricBatch = async (batch: readonly CloudIngestionResult['metricSamples'][number][]): Promise<void> => {
+      if (batch.length === 0) return;
+      const partKey = `TECHNICAL_METRIC:${metricBatchSequence}`;
+      await this.support.updateJobPart(job, partKey, {
+        status: 'RUNNING',
+        samplesRead: batch.length,
+        startedAt: new Date(),
+      });
+      try {
+        const derived = buildMetricDerivedResources({
+          tenantId: job.tenantId,
+          cloudConnectionId: job.cloudConnectionId,
+          ...(job.connection.defaultRegion !== undefined ? { defaultRegion: job.connection.defaultRegion } : {}),
+        }, batch);
+        if (derived.length > 0) {
+          const persisted = await upsertNormalizedCloudResources(this.prisma, derived);
+          for (const [externalResourceId, resourceId] of persisted) resourceIdsByExternalId.set(externalResourceId, resourceId);
+          for (const resource of derived) {
+            const key = `${resource.cloudConnectionId}:${resource.externalResourceId}`;
+            if (!metricDerivedResourceKeys.has(key)) {
+              metricDerivedResourceKeys.add(key);
+              metricDerivedResources += 1;
+            }
+          }
+        }
+        const linkage = await this.samplePersistence.insertMetricSamples(
+          this.prisma,
+          batch,
+          resourceIdsByExternalId,
+          job.id,
+        );
+        metricLinkage = mergeResourceLinkageStats(metricLinkage, linkage);
+        metricSamplesProcessed += batch.length;
+        metricSamplesLinked += linkage.linked;
+        if (onProgress !== undefined) {
+          await onProgress({
+            phase: 'PERSISTING',
+            message: `Persistiendo lote técnico ${metricBatchSequence + 1}.`,
+            providerCalls: result.apiCallCount,
+            rowsRead: result.focusRows.length,
+            resources: resources.length + metricDerivedResources,
+            samples: metricSamplesProcessed,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+        await this.support.updateJobPart(job, partKey, {
+          status: 'SUCCESS',
+          samplesRead: batch.length,
+          samplesWritten: batch.length,
+          completedAt: new Date(),
+        });
+      } catch (error) {
+        await this.support.updateJobPart(job, partKey, {
+          status: 'FAILED',
+          samplesRead: batch.length,
+          completedAt: new Date(),
+          errorMessage: error instanceof Error ? error.message : String(error),
+        }).catch(() => undefined);
+        throw error;
+      }
+      metricBatchSequence += 1;
+    };
+
+    await persistMetricBatch(result.metricSamples);
     let focusRowsProcessed = result.focusRows.length;
-    let focusRowsInserted = await this.samplePersistence.insertFocusRows(this.prisma, result.focusRows);
+    let focusRowsInserted = await this.samplePersistence.insertFocusRows(this.prisma, result.focusRows, job.id);
     let costMetricProjection = await this.costProjector.projectFocusRowsToCostMetrics(this.prisma, job, result.focusRows, resourceIdsByExternalId);
     const providerProjection = await this.costProjector.projectProviderCostsToCostMetrics(this.prisma, job, result.providerCostRows ?? [], resourceIdsByExternalId);
     costMetricProjection = {
@@ -172,32 +242,62 @@ export class PrismaCloudIngestionJobRepository {
         + (providerProjection.historicalResourcesInserted ?? 0),
     };
 
+    let focusBatchSequence = 0;
     if (result.focusBatches !== undefined) {
       for await (const batch of result.focusBatches) {
-        focusRowsProcessed += batch.length;
-        focusRowsInserted += await this.samplePersistence.insertFocusRows(this.prisma, batch);
-        const batchProjection = await this.costProjector.projectFocusRowsToCostMetrics(this.prisma, job, batch, resourceIdsByExternalId);
-        costMetricProjection = {
-          projected: costMetricProjection.projected + batchProjection.projected,
-          inserted: costMetricProjection.inserted + batchProjection.inserted,
-          linkage: mergeResourceLinkageStats(costMetricProjection.linkage, batchProjection.linkage),
-          historicalResourcesInserted: (costMetricProjection.historicalResourcesInserted ?? 0)
-            + (batchProjection.historicalResourcesInserted ?? 0),
-        };
+        const partKey = `BILLING_EXPORT:${focusBatchSequence}`;
+        await this.support.updateJobPart(job, partKey, {
+          status: 'RUNNING',
+          rowsRead: batch.length,
+          startedAt: new Date(),
+        });
+        try {
+          focusRowsProcessed += batch.length;
+          focusRowsInserted += await this.samplePersistence.insertFocusRows(this.prisma, batch, job.id);
+          const batchProjection = await this.costProjector.projectFocusRowsToCostMetrics(this.prisma, job, batch, resourceIdsByExternalId);
+          costMetricProjection = {
+            projected: costMetricProjection.projected + batchProjection.projected,
+            inserted: costMetricProjection.inserted + batchProjection.inserted,
+            linkage: mergeResourceLinkageStats(costMetricProjection.linkage, batchProjection.linkage),
+            historicalResourcesInserted: (costMetricProjection.historicalResourcesInserted ?? 0)
+              + (batchProjection.historicalResourcesInserted ?? 0),
+          };
+          if (onProgress !== undefined) {
+            await onProgress({
+              phase: 'PERSISTING',
+              message: 'Persistiendo lote FOCUS.',
+              providerCalls: result.apiCallCount,
+              rowsRead: focusRowsProcessed,
+              rowsWritten: focusRowsInserted,
+              resources: resources.length + metricDerivedResources,
+              samples: metricSamplesProcessed,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+          await this.support.updateJobPart(job, partKey, {
+            status: 'SUCCESS',
+            rowsRead: batch.length,
+            rowsWritten: batch.length,
+            completedAt: new Date(),
+          });
+        } catch (error) {
+          await this.support.updateJobPart(job, partKey, {
+            status: 'FAILED',
+            rowsRead: batch.length,
+            completedAt: new Date(),
+            errorMessage: error instanceof Error ? error.message : String(error),
+          }).catch(() => undefined);
+          throw error;
+        }
+        focusBatchSequence += 1;
       }
     }
 
-    const metricLinkage = await this.samplePersistence.insertMetricSamples(
-      this.prisma,
-      result.metricSamples,
-      resourceIdsByExternalId,
-    );
-    await this.samplePersistence.reconcileMetricSampleResourceLinks(this.prisma, job.cloudConnectionId, resourceIdsByExternalId);
-    await this.samplePersistence.refreshMetricStreamSummaries(
-      this.prisma,
-      job.cloudConnectionId,
-      result.metricSamples,
-    );
+    if (result.metricBatches !== undefined) {
+      for await (const batch of result.metricBatches) await persistMetricBatch(batch);
+    }
+    await this.support.completeSourceObjects(job, result.sourceObjects, focusRowsProcessed);
+    await this.samplePersistence.refreshMetricStreamSummariesForJob(this.prisma, job.id);
 
     const completedAt = new Date();
     const summary = this.completionSupport.buildSummary(
@@ -208,8 +308,9 @@ export class PrismaCloudIngestionJobRepository {
       focusRowsInserted,
       focusRowsProcessed,
       resources.length,
-      metricDerivedResources.length,
-      metricLinkage.linked,
+      metricDerivedResources,
+      metricSamplesLinked,
+      metricSamplesProcessed,
       metricLinkage,
     );
 
@@ -250,6 +351,7 @@ export class PrismaCloudIngestionJobRepository {
         }
 
         await this.completionSupport.updateWatermark(tx, job, summary.dataOutcome);
+        await this.completionSupport.recordCoverageSegment(tx, job, summary);
         await this.completionSupport.recordQualityCheck(
           tx,
           job,
@@ -258,8 +360,9 @@ export class PrismaCloudIngestionJobRepository {
           focusRowsInserted,
           focusRowsProcessed,
           resources.length,
-          metricDerivedResources.length,
-          metricLinkage.linked,
+          metricDerivedResources,
+          metricSamplesLinked,
+          metricSamplesProcessed,
           metricLinkage,
         );
 
@@ -279,90 +382,5 @@ export class PrismaCloudIngestionJobRepository {
     return this.failureHandler.failJob(job, error, startedAt, workerId);
   }
 
-  private async findJobContext(
-    jobId: string,
-    client: Pick<PrismaClient, 'ingestionJob'> = this.prisma,
-  ) {
-    return client.ingestionJob.findUnique({
-      where: { id: jobId },
-      include: {
-        cloudConnection: {
-          include: {
-            credentials: {
-              where: {
-                status: 'ACTIVE',
-                purpose: { not: 'TEMPORARY_ADMIN' },
-              },
-            },
-            metricDefinitions: {
-              where: { enabled: true },
-              select: {
-                compartmentId: true,
-                namespace: true,
-                metricName: true,
-                externalResourceId: true,
-                regionId: true,
-                dimensions: true,
-                metricUnit: true,
-                statistics: true,
-              },
-            },
-          },
-        },
-      },
-    });
-  }
 
-  private toJobContext(job: PrismaIngestionJobWithConnection): CloudIngestionJobContext {
-    return {
-      id: job.id,
-      tenantId: job.tenantId,
-      cloudConnectionId: job.cloudConnectionId,
-      sourceType: job.sourceType,
-      targetStart: job.targetStart,
-      targetEnd: job.targetEnd,
-      attempt: job.attempts,
-      ...(job.configurationHash !== null ? { configurationHash: job.configurationHash } : {}),
-      ...(this.isJsonObject(job.requestContext) ? { requestContext: job.requestContext as Record<string, unknown> } : {}),
-      connection: {
-        id: job.cloudConnection.id,
-        tenantId: job.cloudConnection.tenantId,
-        providerCode: job.cloudConnection.providerCode,
-        rootExternalId: job.cloudConnection.rootExternalId,
-        ...(job.cloudConnection.defaultRegion !== null
-          ? { defaultRegion: job.cloudConnection.defaultRegion }
-          : {}),
-        ...(() => {
-          const metadata = mergeEnabledMetricDefinitions(
-            job.cloudConnection.metadata,
-            job.cloudConnection.metricDefinitions,
-          );
-          return metadata === undefined ? {} : { metadata };
-        })(),
-        credentials: job.cloudConnection.credentials.flatMap((credential): CloudIngestionCredential[] => {
-          if (credential.purpose === 'TEMPORARY_ADMIN') {
-            return [];
-          }
-
-          return [{
-            purpose: credential.purpose,
-            payload: this.credentialCipher.decrypt({
-              encryptedPayload: credential.encryptedPayload,
-              encryptionIv: credential.encryptionIv,
-              encryptionAuthTag: credential.encryptionAuthTag,
-              encryptionAlgorithm: 'aes-256-gcm',
-              encryptionKeyVersion: credential.encryptionKeyVersion,
-            } satisfies EncryptedCredentialPayload),
-            ...(credential.externalPrincipalId !== null
-              ? { externalPrincipalId: credential.externalPrincipalId }
-              : {}),
-          }];
-        }),
-      } satisfies CloudIngestionConnection,
-    };
-  }
-
-  private isJsonObject(value: unknown): value is Record<string, unknown> {
-    return value !== null && typeof value === 'object' && !Array.isArray(value);
-  }
 }

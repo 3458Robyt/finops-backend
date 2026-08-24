@@ -27,7 +27,26 @@ const contextStorage = new AsyncLocalStorage<DatabaseContext>();
 const contextKeys = ['app.tenant_id', 'app.user_id', 'app.user_role', 'app.login_email', 'app.refresh_token_hash', 'app.password_reset_token_hash', 'app.mfa_challenge_token_hash', 'app.client_invitation_token_hash', 'app.telegram_link_token_hash', 'app.request_id', 'app.worker_id'] as const;
 
 export function runWithDatabaseContext<T>(context: DatabaseContext, callback: () => T): T {
-  return contextStorage.run({ ...context }, callback);
+  const store = { ...context };
+  const result = contextStorage.run(store, callback);
+
+  // Prisma's driver-adapter client returns a thenable (PrismaPromise), not a
+  // native Promise. If the thenable is returned directly, the caller's
+  // `await` attaches `.then()` after AsyncLocalStorage.run() has already
+  // finished, so the database pool cannot see the tenant/worker context. By
+  // assimilating the thenable while the context is still active, the native
+  // promise chain used by the adapter retains the correct context.
+  if (isThenable(result)) {
+    return contextStorage.run(store, () => Promise.resolve(result)) as T;
+  }
+
+  return result;
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return value !== null
+    && (typeof value === 'object' || typeof value === 'function')
+    && typeof (value as { then?: unknown }).then === 'function';
 }
 
 export function getDatabaseContext(): DatabaseContext | undefined {
@@ -41,8 +60,21 @@ export function createTenantAwarePool(
 ): Pool {
   return new TenantAwarePool({
     connectionString,
-    ...(schema === undefined ? {} : { options: `-c search_path=${schema}` }),
+    options: buildPostgresSessionOptions(schema),
   }, runtimeConfig);
+}
+
+/**
+ * Prisma's PostgreSQL driver adapter serializes Date values as UTC text
+ * without an explicit offset. Pin every application session to UTC so
+ * PostgreSQL interprets those values as the same instant instead of applying
+ * the machine's local timezone.
+ */
+export function buildPostgresSessionOptions(schema?: string): string {
+  return [
+    schema === undefined ? undefined : `-c search_path=${schema}`,
+    '-c timezone=UTC',
+  ].filter((option): option is string => option !== undefined).join(' ');
 }
 
 class TenantAwarePool extends Pool {

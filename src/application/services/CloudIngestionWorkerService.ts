@@ -133,7 +133,16 @@ export class CloudIngestionWorkerService {
         updatedAt: new Date().toISOString(),
       };
       await this.writeProgress(job.id, workerId, job.attempt, progress);
-      const summary = await this.jobs.completeJob(job, result, startedAt, workerId);
+      const summary = await this.jobs.completeJob(
+        job,
+        result,
+        startedAt,
+        workerId,
+        (nextProgress) => {
+          progress = nextProgress;
+          return this.writeProgress(job.id, workerId, job.attempt, nextProgress).then(() => undefined);
+        },
+      );
       if (this.onSuccessfulIngestion !== undefined) {
         void this.onSuccessfulIngestion({
           tenantId: job.tenantId,

@@ -7,6 +7,8 @@ export type PrismaIngestionPersistenceClient = Pick<
   | 'costMetric'
   | 'dataQualityCheck'
   | 'focusCostLineItem'
+  | 'ingestionCoverageSegment'
+  | 'ingestionJobPart'
   | 'ingestionJob'
   | 'ingestionWatermark'
   | 'resourceMetricSample'

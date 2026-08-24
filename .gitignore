@@ -17,6 +17,12 @@ docs/erd/
 *.sqlite
 *.sqlite3
 *.db
+*.dump
+*.backup
+*.bak
+.finops-local/
+local-data/
+snapshots/
 .oci/
 .idea/dataSources.xml
 .claude/

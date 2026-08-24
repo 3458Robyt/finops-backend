@@ -109,6 +109,7 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
       issues.push({ key: 'PASSWORD_RESET_URL', message: 'Debe ser una URL HTTP(S) válida cuando el correo está habilitado.' });
     }
     validatePositiveBound(env, 'INGESTION_SCHEDULER_VALIDATION_MAX_AGE_MINUTES', 5, 7 * 24 * 60, issues);
+    validatePositiveBound(env, 'INGESTION_SCHEDULER_METRIC_CATCHUP_DAYS', 1, 90, issues);
   }
 
   validateEnabledIntegrations(env, issues);

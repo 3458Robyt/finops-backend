@@ -124,6 +124,7 @@ export interface RuntimeConfig {
       readonly billingWindowHours: number;
       readonly billingCooldownHours: number;
       readonly maxAttempts: number;
+      readonly metricCatchupDays: number;
       readonly validationMaxAgeMinutes: number;
       readonly provider: string | undefined;
       readonly connectionId: string | undefined;

@@ -188,6 +188,7 @@ function startIngestionScheduler(input: BackgroundProcessRuntimeInput, prisma: A
             billingWindowHours: options.billingWindowHours,
             billingCooldownHours: options.billingCooldownHours,
             maxAttempts: options.maxAttempts,
+            metricCatchupDays: options.metricCatchupDays,
             validationMaxAgeMinutes: options.validationMaxAgeMinutes,
           },
           ...(options.provider !== undefined ? { providerCode: options.provider } : {}),

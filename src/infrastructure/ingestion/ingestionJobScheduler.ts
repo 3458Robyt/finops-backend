@@ -18,6 +18,8 @@ export interface ScheduleableIngestionConnection {
   readonly metadata: unknown;
   readonly credentials: readonly ScheduleableCredential[];
   readonly ingestionJobs: readonly ScheduleableIngestionJob[];
+  readonly ingestionCoverageSegments?: readonly ScheduleableCoverageSegment[];
+  readonly metricDefinitions?: readonly ScheduleableMetricDefinition[];
 }
 
 export interface ScheduleableCredential {
@@ -43,6 +45,8 @@ export interface IngestionScheduleOptions {
   readonly billingWindowHours: number;
   readonly billingCooldownHours: number;
   readonly maxAttempts: number;
+  /** Días máximos de histórico técnico que el scheduler puede recuperar automáticamente. */
+  readonly metricCatchupDays?: number;
   /** Edad máxima de una validación de capacidades antes de exigir otra. */
   readonly validationMaxAgeMinutes?: number;
 }
@@ -131,7 +135,7 @@ function evaluateSource(
     return { kind: 'skip', reason: 'No hay credencial activa con permisos esperados para esta fuente.' };
   }
 
-  if (!hasMetadataForSource(providerCode, sourceType, connection.metadata)) {
+  if (!hasMetadataForSource(providerCode, sourceType, connection.metadata, connection.metricDefinitions)) {
     return { kind: 'skip', reason: 'No hay metadata configurada para programar esta fuente sin inventar datos.' };
   }
 
@@ -166,7 +170,13 @@ function evaluateSource(
   const windowMs = getWindowMs(sourceType, options);
   const cooldownMs = getCooldownMs(sourceType, options);
   const freshnessThreshold = new Date(targetEnd.getTime() - cooldownMs);
-  const recentJob = connection.ingestionJobs.find((job) => {
+  const recentCoverage = connection.ingestionCoverageSegments?.find((segment) => {
+    return segment.sourceType === sourceType
+      && (segment.status === 'COVERED' || segment.status === 'PARTIAL')
+      && (segment.configurationHash === configurationHash || segment.configurationHash === undefined || segment.configurationHash === null)
+      && segment.targetEnd >= freshnessThreshold;
+  });
+  const recentJob = recentCoverage === undefined ? connection.ingestionJobs.find((job) => {
     return (
       job.sourceType === sourceType &&
       (job.configurationHash === configurationHash
@@ -174,7 +184,13 @@ function evaluateSource(
       completedOrActiveJobStatuses.has(job.status) &&
       job.targetEnd >= freshnessThreshold
     );
-  });
+  }) : undefined;
+  if (recentCoverage !== undefined) {
+    return {
+      kind: 'skip',
+      reason: `La fuente ya tiene cobertura ${recentCoverage.status === 'PARTIAL' ? 'parcial' : 'reciente'} hasta ${recentCoverage.targetEnd.toISOString()}.`,
+    };
+  }
   if (recentJob !== undefined) {
     return {
       kind: 'skip',
@@ -182,6 +198,13 @@ function evaluateSource(
     };
   }
 
+  const latestCoveredSegment = connection.ingestionCoverageSegments
+    ?.filter((segment) => (
+      segment.sourceType === sourceType
+      && (segment.status === 'COVERED' || segment.status === 'PARTIAL')
+      && (segment.configurationHash === configurationHash || segment.configurationHash === undefined || segment.configurationHash === null)
+    ))
+    .sort((left, right) => right.targetEnd.getTime() - left.targetEnd.getTime())[0];
   const latestCoveredJob = connection.ingestionJobs
     .filter((job) => (
       job.sourceType === sourceType
@@ -191,11 +214,12 @@ function evaluateSource(
     .sort((left, right) => right.targetEnd.getTime() - left.targetEnd.getTime())[0];
   const defaultStart = new Date(targetEnd.getTime() - windowMs);
   const catchupFloor = sourceType === 'TECHNICAL_METRIC'
-    ? new Date(targetEnd.getTime() - 30 * 24 * 60 * 60 * 1000)
+    ? new Date(targetEnd.getTime() - (options.metricCatchupDays ?? 90) * 24 * 60 * 60 * 1000)
     : defaultStart;
-  const targetStart = latestCoveredJob === undefined
+  const latestCoveredEnd = latestCoveredSegment?.targetEnd ?? latestCoveredJob?.targetEnd;
+  const targetStart = latestCoveredEnd === undefined
     ? (sourceType === 'TECHNICAL_METRIC' ? catchupFloor : defaultStart)
-    : new Date(Math.max(catchupFloor.getTime(), latestCoveredJob.targetEnd.getTime()));
+    : new Date(Math.max(catchupFloor.getTime(), latestCoveredEnd.getTime()));
 
   return {
     kind: 'job',
@@ -247,22 +271,27 @@ function hasMetadataForSource(
   providerCode: 'aws' | 'oci',
   sourceType: IngestionSourceType,
   metadata: unknown,
+  metricDefinitions: readonly ScheduleableMetricDefinition[] | undefined,
 ): boolean {
   if (!isRecord(metadata)) {
-    return sourceType === 'INVENTORY' || sourceType === 'BILLING_EXPORT';
+    return sourceType === 'INVENTORY'
+      || sourceType === 'BILLING_EXPORT'
+      || (providerCode === 'oci' && sourceType === 'TECHNICAL_METRIC' && (metricDefinitions?.some((item) => item.enabled !== false) ?? false));
   }
 
   if (sourceType === 'INVENTORY') return true;
 
   if (providerCode === 'oci' && sourceType === 'TECHNICAL_METRIC') {
-    return hasArrayItems(metadata['ociMetricDefinitions']);
+    return hasArrayItems(metadata['ociMetricDefinitions']) || (metricDefinitions?.some((item) => item.enabled !== false) ?? false);
   }
   if (providerCode === 'aws' && sourceType === 'TECHNICAL_METRIC') {
     return hasArrayItems(metadata['awsMetricDefinitions']);
   }
   if (providerCode === 'oci' && sourceType === 'BILLING_EXPORT') {
     if (billingSourceMode(metadata) !== 'FOCUS') return true;
-    return hasArrayItems(metadata['ociFocusReportObjects']) || hasArrayItems(metadata['ociFocusReportLocations']);
+    return hasArrayItems(metadata['ociFocusReportObjects'])
+      || hasArrayItems(metadata['ociFocusReportLocations'])
+      || billingSourceMode(metadata) === 'AUTO';
   }
   if (providerCode === 'aws' && sourceType === 'BILLING_EXPORT') {
     if (billingSourceMode(metadata) !== 'FOCUS') return true;
@@ -289,6 +318,18 @@ function requiredCapabilityForSource(
     ? ['awsFocusExportObjects', 'awsFocusExportLocations']
     : ['ociFocusReportObjects', 'ociFocusReportLocations'];
   return focusKeys.some((key) => hasArrayItems(metadata[key])) ? 'STORAGE' : 'STORAGE_OR_COSTS';
+}
+
+export interface ScheduleableCoverageSegment {
+  readonly sourceType: IngestionSourceType | string;
+  readonly status: string;
+  readonly targetStart: Date;
+  readonly targetEnd: Date;
+  readonly configurationHash?: string | null;
+}
+
+export interface ScheduleableMetricDefinition {
+  readonly enabled?: boolean;
 }
 
 function hasRequiredCapability(

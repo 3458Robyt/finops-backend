@@ -71,6 +71,36 @@ export class PrismaIngestionJobCompletionSupport {
     });
   }
 
+  public async recordCoverageSegment(
+    tx: PrismaIngestionPersistenceClient,
+    job: CloudIngestionJobContext,
+    summary: IngestionJobExecutionSummary,
+  ): Promise<void> {
+    const status = summary.dataOutcome === 'PARTIAL'
+      ? 'PARTIAL'
+      : summary.dataOutcome === 'INVALID_CONFIGURATION' || summary.dataOutcome === 'PROVIDER_ERROR'
+        ? 'INVALID'
+        : 'COVERED';
+    await tx.ingestionCoverageSegment.create({
+      data: {
+        id: `coverage_${job.id}`,
+        tenantId: job.tenantId,
+        cloudConnectionId: job.cloudConnectionId,
+        ingestionJobId: job.id,
+        sourceType: job.sourceType,
+        scopeKey: this.resolveScopeKey(job),
+        status,
+        targetStart: job.targetStart,
+        targetEnd: job.targetEnd,
+        ...(job.configurationHash !== undefined ? { configurationHash: job.configurationHash } : {}),
+        rowsWritten: summary.focusRowsInserted,
+        samplesWritten: summary.metricSamples,
+        objectsProcessed: summary.objectsProcessed,
+        evidence: summary.coverage as Prisma.InputJsonValue,
+      },
+    });
+  }
+
   public async recordQualityCheck(
     tx: PrismaIngestionPersistenceClient,
     job: CloudIngestionJobContext,
@@ -81,6 +111,7 @@ export class PrismaIngestionJobCompletionSupport {
     resourcesPersisted: number,
     metricDerivedResources: number,
     metricSamplesLinkedToResource: number,
+    metricSamplesProcessed: number,
     metricLinkage: ResourceLinkageRunStats,
   ): Promise<void> {
     await tx.dataQualityCheck.create({
@@ -89,11 +120,11 @@ export class PrismaIngestionJobCompletionSupport {
         cloudConnectionId: job.cloudConnectionId,
         sourceType: job.sourceType,
         checkName: 'ingestion_job_execution',
-        status: this.resolveQualityStatus(result),
+        status: this.resolveQualityStatus(result, metricSamplesProcessed),
         expectedAt: job.targetEnd,
         details: {
           jobId: job.id,
-          dataOutcome: this.resolveDataOutcome(result),
+          dataOutcome: this.resolveDataOutcome(result, metricSamplesProcessed),
           apiCallCount: result.apiCallCount,
           objectsProcessed: result.objectsProcessed,
           focusRows: focusRowsProcessed,
@@ -103,7 +134,7 @@ export class PrismaIngestionJobCompletionSupport {
           historicalResourcesInserted: costMetricProjection.historicalResourcesInserted ?? 0,
           resources: resourcesPersisted,
           metricDerivedResources,
-          metricSamples: result.metricSamples.length,
+          metricSamples: metricSamplesProcessed,
           metricSamplesLinkedToResource,
           resourceLinkage: { costs: costMetricProjection.linkage, metrics: metricLinkage },
           warnings: result.warnings,
@@ -123,9 +154,10 @@ export class PrismaIngestionJobCompletionSupport {
     resourcesPersisted: number,
     metricDerivedResources: number,
     metricSamplesLinkedToResource: number,
+    metricSamplesProcessed: number,
     metricLinkage: ResourceLinkageRunStats,
   ): IngestionJobExecutionSummary {
-    const dataOutcome = this.resolveDataOutcome(result);
+    const dataOutcome = this.resolveDataOutcome(result, metricSamplesProcessed);
     return {
       durationMs,
       providerCode: job.connection.providerCode,
@@ -139,7 +171,7 @@ export class PrismaIngestionJobCompletionSupport {
       costMetricsInserted: costMetricProjection.inserted,
       resources: resourcesPersisted,
       metricDerivedResources,
-      metricSamples: result.metricSamples.length,
+      metricSamples: metricSamplesProcessed,
       metricSamplesLinkedToResource,
       resourceLinkage: { costs: costMetricProjection.linkage, metrics: metricLinkage },
       warnings: result.warnings,
@@ -150,20 +182,23 @@ export class PrismaIngestionJobCompletionSupport {
     };
   }
 
-  public resolveDataOutcome(result: CloudIngestionResult): IngestionDataOutcome {
+  public resolveDataOutcome(
+    result: CloudIngestionResult,
+    metricSamplesProcessed = result.metricSamples.length,
+  ): IngestionDataOutcome {
     if (result.dataOutcome !== undefined) return result.dataOutcome;
     const hasData = result.focusRows.length > 0
       || (result.providerCostRows?.length ?? 0) > 0
       || result.resources.length > 0
-      || result.metricSamples.length > 0
+      || metricSamplesProcessed > 0
       || result.objectsProcessed > 0;
     if (result.apiCallCount === 0 && !hasData) return 'INVALID_CONFIGURATION';
     if (result.warnings.length > 0) return 'PARTIAL';
     return hasData ? 'DATA_WRITTEN' : 'NO_DATA';
   }
 
-  private resolveQualityStatus(result: CloudIngestionResult): 'PASSED' | 'WARNING' | 'FAILED' {
-    return this.resolveDataOutcome(result) === 'DATA_WRITTEN' && result.warnings.length === 0
+  private resolveQualityStatus(result: CloudIngestionResult, metricSamplesProcessed = result.metricSamples.length): 'PASSED' | 'WARNING' | 'FAILED' {
+    return this.resolveDataOutcome(result, metricSamplesProcessed) === 'DATA_WRITTEN' && result.warnings.length === 0
       ? 'PASSED'
       : 'WARNING';
   }

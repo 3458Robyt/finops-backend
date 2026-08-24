@@ -126,6 +126,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
         billingWindowHours: readPositiveInteger(env['INGESTION_SCHEDULER_BILLING_WINDOW_HOURS'], 24),
         billingCooldownHours: readPositiveInteger(env['INGESTION_SCHEDULER_BILLING_COOLDOWN_HOURS'], 6),
         maxAttempts: readPositiveInteger(env['INGESTION_SCHEDULER_MAX_ATTEMPTS'], 1),
+        metricCatchupDays: readPositiveInteger(env['INGESTION_SCHEDULER_METRIC_CATCHUP_DAYS'], 90),
         validationMaxAgeMinutes: readPositiveInteger(env['INGESTION_SCHEDULER_VALIDATION_MAX_AGE_MINUTES'], 1440),
         provider: readOptionalString(env['INGESTION_SCHEDULER_PROVIDER']),
         connectionId: readOptionalString(env['INGESTION_SCHEDULER_CONNECTION_ID']),

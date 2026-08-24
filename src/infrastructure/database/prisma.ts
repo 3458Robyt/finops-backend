@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../../generated/prisma/client.js';
 import { ConfigurationError } from '../../domain/errors/errors.js';
-import { createTenantAwarePool, type TenantDatabaseRuntimeConfig } from './tenantContext.js';
+import { buildPostgresSessionOptions, createTenantAwarePool, type TenantDatabaseRuntimeConfig } from './tenantContext.js';
 import { loadRuntimeConfig } from '../config/runtimeConfigReader.js';
 
 /** Instancia singleton del cliente Prisma, reutilizada entre llamadas. */
@@ -51,7 +51,7 @@ export function getPrismaClient(
   const adapter = new PrismaPg(
     pool ?? {
       connectionString,
-      ...(schema === undefined ? {} : { options: `-c search_path=${schema}` }),
+      options: buildPostgresSessionOptions(schema),
     },
     schema === undefined ? undefined : { schema },
   );

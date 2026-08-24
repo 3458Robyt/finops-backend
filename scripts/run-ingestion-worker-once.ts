@@ -27,14 +27,18 @@ async function main(): Promise<void> {
     ],
   );
 
-  const result = await worker.runBatch(workerId, concurrency);
-  const durationMs = Date.now() - startedAt;
+  try {
+    const result = await worker.runBatch(workerId, concurrency);
+    const durationMs = Date.now() - startedAt;
 
-  console.log(JSON.stringify({
-    durationMs,
-    concurrency,
-    result,
-  }, null, 2));
+    console.log(JSON.stringify({
+      durationMs,
+      concurrency,
+      result,
+    }, null, 2));
+  } finally {
+    await prisma.$disconnect();
+  }
 }
 
 function readConcurrency(): number {

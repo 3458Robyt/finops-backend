@@ -62,6 +62,7 @@ describe('loadRuntimeConfig', () => {
     expect(config.email.timeoutMs).toBe(15_000);
     expect(config.telegram.timeoutMs).toBe(15_000);
     expect(config.schedulers.ingestion.enabled).toBe(false);
+    expect(config.schedulers.ingestion.metricCatchupDays).toBe(90);
     expect(config.schedulers.authCleanup).toEqual({ enabled: false, intervalMs: 21_600_000, batchSize: 500 });
     expect(config.schedulers.budget).toEqual({ enabled: false, tenantId: undefined, userId: undefined, intervalMs: 300_000 });
     expect(config.operations.processHeartbeat).toEqual({ enabled: true, intervalMs: 30_000, staleAfterMs: 90_000 });

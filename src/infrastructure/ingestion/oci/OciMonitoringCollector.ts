@@ -9,6 +9,7 @@ import { normalizeExternalResourceId } from '../../../domain/models/ResourceLink
 import { optionalString, readObjectArray, readStringArray, requireString } from '../providerConfig.js';
 import type { OciMetricDefinition, OciMonitoringClient } from './OciSdkContracts.js';
 import { buildOciCollectionTasks, type OciCollectionTask } from './OciMonitoringQueryBuilder.js';
+import { getOrCreateRegionalClient, mapWithConcurrency, regionKey } from './OciMonitoringCollectionSupport.js';
 export { buildOciGroupedMetricQuery, buildOciResourceMetricQuery } from './OciMonitoringQueryBuilder.js';
 
 export interface OciMonitoringDependencies {
@@ -31,110 +32,189 @@ export async function collectOciTechnicalMetrics(
     });
   }
 
-  const client = dependencies.createClient(job);
   const collection = resolveOciCollectionWindow(job);
   const requestRange = resolveOciRequestRange(job);
   const tasks = buildOciCollectionTasks(definitions, collection.interval, {
     subtreeCompartmentId: job.connection.rootExternalId,
   });
-  const clientsByRegion = new Map<string, OciMonitoringClient>();
-  let apiCallCount = 0;
+  const stats = { apiCallCount: 0, sampleCount: 0, statistics: {} as Record<string, number> };
+  const coverage: Record<string, unknown> = {
+    requestedStart: requestRange.startTime.toISOString(),
+    requestedEnd: requestRange.endTime.toISOString(),
+    interval: collection.interval,
+    granularitySeconds: collection.granularitySeconds,
+    datapointsReturned: 0,
+    metricDefinitions: definitions.length,
+    samples: 0,
+    statistics: stats.statistics,
+    memoryRequiresComputeAgent: true,
+    agentlessCpuNamespace: 'oci_vmi_resource_utilization',
+  };
+  const warnings: string[] = [];
+  const metricBatches = streamOciMetricBatches(job, dependencies, tasks, collection, requestRange, stats, coverage, warnings);
 
-  // The initial client is kept for the common single-region path. Additional
-  // clients are created lazily when a confirmed definition belongs to another
-  // OCI region; this prevents querying Phoenix metrics through an Ashburn
-  // endpoint while still reusing one client per region per job.
-  clientsByRegion.set(regionKey(job), client);
+  return {
+    get apiCallCount() { return stats.apiCallCount; },
+    objectsProcessed: 0,
+    focusRows: [],
+    resources: [],
+    metricSamples: [],
+    metricBatches,
+    warnings,
+    coverage,
+  };
+}
+
+async function* streamOciMetricBatches(
+  job: CloudIngestionJobContext,
+  dependencies: OciMonitoringDependencies,
+  tasks: readonly OciCollectionTask[],
+  collection: { readonly interval: '1m' | '5m' | '30m' | '1h'; readonly granularitySeconds: 60 | 300 | 1800 | 3600 },
+  requestRange: { readonly startTime: Date; readonly endTime: Date },
+  stats: { apiCallCount: number; sampleCount: number; statistics: Record<string, number> },
+  coverage: Record<string, unknown>,
+  warnings: string[],
+): AsyncGenerator<readonly NormalizedResourceMetricSample[]> {
+  const clientsByRegion = new Map<string, OciMonitoringClient>();
+  const queue: NormalizedResourceMetricSample[][] = [];
+  let done = false;
+  let cancelled = false;
+  let producerError: unknown;
+  let wakeConsumer: (() => void) | undefined;
+  const producerWaiters: (() => void)[] = [];
+  const wait = (setter: (resolve: () => void) => void): Promise<void> => new Promise((resolve) => setter(resolve));
+  const enqueue = async (batch: NormalizedResourceMetricSample[]): Promise<void> => {
+    while (!cancelled && queue.length >= 8) await wait((resolve) => { producerWaiters.push(resolve); });
+    if (cancelled || batch.length === 0) return;
+    queue.push(batch);
+    wakeConsumer?.();
+    wakeConsumer = undefined;
+  };
+  const producer = mapWithConcurrency(tasks, 4, async (task) => {
+    await collectOciTask(task, job, dependencies, collection, requestRange, clientsByRegion, stats, enqueue);
+  }).then(() => {
+    done = true;
+    wakeConsumer?.();
+    wakeConsumer = undefined;
+  }).catch((error: unknown) => {
+    producerError = error;
+    done = true;
+    wakeConsumer?.();
+    wakeConsumer = undefined;
+  });
 
   try {
-    const samplesByTask = await mapWithConcurrency(tasks, 4, async (task) => {
-      const definition = task.definition;
-      const statistic = task.statistic;
-      const taskRegion = definition.regionId ?? regionKey(job);
-      const taskJob = taskRegion === regionKey(job)
-        ? job
-        : { ...job, requestContext: { ...(job.requestContext ?? {}), regionId: taskRegion } };
-      const taskClient = getOrCreateRegionalClient(taskJob, taskRegion, dependencies, clientsByRegion);
-      const query = task.query;
-        const request = (compartmentId: string, compartmentIdInSubtree = false) => dependencies.withRetry(() => taskClient.summarizeMetricsData({
-          compartmentId,
-          ...(compartmentIdInSubtree ? { compartmentIdInSubtree: true } : {}),
-          summarizeMetricsDataDetails: {
-          namespace: definition.namespace,
-          query,
-          startTime: requestRange.startTime,
-          endTime: requestRange.endTime,
-          resolution: collection.interval,
-        },
-        }));
-      const execute = async (compartmentId: string, compartmentIdInSubtree = false) => {
-        apiCallCount += 1;
-        const operation = () => request(compartmentId, compartmentIdInSubtree);
-        return dependencies.withRateLimit === undefined
-          ? operation()
-          : dependencies.withRateLimit(taskJob, operation);
-      };
-      let response;
-      try {
-        response = await execute(
-          task.queryCompartmentId ?? definition.compartmentId,
-          task.compartmentIdInSubtree === true,
-        );
-      } catch (error) {
-        if (!shouldFallbackFromSubtree(task, error)) throw error;
-        const fallbackResponses = await mapWithConcurrency(task.fallbackCompartmentIds ?? [], 2, (compartmentId) => execute(compartmentId));
-        response = {
-          items: fallbackResponses.flatMap((item) => item.items ?? []),
-          summarizedMetricsData: fallbackResponses.flatMap((item) => item.summarizedMetricsData ?? []),
-        };
+    while (!done || queue.length > 0) {
+      if (queue.length === 0) await wait((resolve) => { wakeConsumer = resolve; });
+      while (queue.length > 0) {
+        const batch = queue.shift();
+        if (batch === undefined) continue;
+        yield batch;
+        producerWaiters.shift()?.();
       }
-      const taskSamples: NormalizedResourceMetricSample[] = [];
-      for (const metric of response.items ?? response.summarizedMetricsData ?? []) {
-        const dimensions = normalizeDimensions(metric.dimensions ?? definition.dimensions);
-        const externalResourceId = dimensions?.['resourceId'] ?? dimensions?.['resource_id'] ?? definition.resourceId;
-        if (task.allowedResourceIds !== undefined
-          && (externalResourceId === undefined || !task.allowedResourceIds.has(externalResourceId))) {
-          continue;
-        }
-        const regionId = definition.regionId ?? dimensions?.['regionId'] ?? dimensions?.['region'];
-        for (const point of metric.aggregatedDatapoints ?? []) {
-          if (point.timestamp === undefined || point.value === undefined) continue;
-          taskSamples.push({
-            tenantId: job.tenantId,
-            cloudConnectionId: job.cloudConnectionId,
-            provider: 'OCI',
-            externalResourceId,
-            providerNamespace: metric.namespace ?? definition.namespace,
-            ...(regionId !== undefined ? { regionId } : {}),
-            compartmentId: definition.compartmentId,
-            ...(dimensions !== undefined ? { dimensions, dimensionsHash: hashDimensions(dimensions) } : {}),
-            metricName: metric.name ?? definition.metricName,
-            statistic,
-            value: point.value,
-            sampledAt: point.timestamp instanceof Date ? point.timestamp : new Date(point.timestamp),
-            granularitySeconds: collection.granularitySeconds,
-            ...(definition.unit !== undefined ? { metricUnit: definition.unit } : {}),
-            rawMetric: {
-              namespace: metric.namespace ?? definition.namespace,
-              query,
-              statistic,
-              interval: collection.interval,
-              resolution: collection.interval,
-              compartmentId: definition.compartmentId,
-              ...(regionId !== undefined ? { regionId } : {}),
-              ...(dimensions !== undefined ? { dimensions } : {}),
-            },
-          });
-        }
-      }
-      return taskSamples;
-    });
-    const samples = samplesByTask.flat();
-
-    return buildMetricResult(collection, requestRange, definitions.length, apiCallCount, samples);
+    }
+    await producer;
+    if (producerError !== undefined) throw producerError;
+    coverage.datapointsReturned = stats.sampleCount;
+    coverage.samples = stats.sampleCount;
+    if (stats.sampleCount === 0) warnings.push('OCI Monitoring no devolvió muestras para las definiciones configuradas y el periodo solicitado.');
   } finally {
+    cancelled = true;
+    for (const wakeProducer of producerWaiters.splice(0)) wakeProducer();
+    wakeConsumer?.();
+    await producer.catch(() => undefined);
     for (const regionalClient of clientsByRegion.values()) regionalClient.close?.();
   }
+}
+
+async function collectOciTask(
+  task: OciCollectionTask,
+  job: CloudIngestionJobContext,
+  dependencies: OciMonitoringDependencies,
+  collection: { readonly interval: '1m' | '5m' | '30m' | '1h'; readonly granularitySeconds: 60 | 300 | 1800 | 3600 },
+  requestRange: { readonly startTime: Date; readonly endTime: Date },
+  clientsByRegion: Map<string, OciMonitoringClient>,
+  stats: { apiCallCount: number; sampleCount: number; statistics: Record<string, number> },
+  enqueue: (batch: NormalizedResourceMetricSample[]) => Promise<void>,
+): Promise<void> {
+  const definition = task.definition;
+  const statistic = task.statistic;
+  const taskRegion = definition.regionId ?? regionKey(job);
+  const taskJob = taskRegion === regionKey(job)
+    ? job
+    : { ...job, requestContext: { ...(job.requestContext ?? {}), regionId: taskRegion } };
+  const taskClient = getOrCreateRegionalClient(taskJob, taskRegion, dependencies.createClient, clientsByRegion);
+  const query = task.query;
+  const request = (compartmentId: string, compartmentIdInSubtree = false) => dependencies.withRetry(() => taskClient.summarizeMetricsData({
+    compartmentId,
+    ...(compartmentIdInSubtree ? { compartmentIdInSubtree: true } : {}),
+    summarizeMetricsDataDetails: {
+      namespace: definition.namespace,
+      query,
+      startTime: requestRange.startTime,
+      endTime: requestRange.endTime,
+      resolution: collection.interval,
+    },
+  }));
+  const execute = async (compartmentId: string, compartmentIdInSubtree = false) => {
+    stats.apiCallCount += 1;
+    const operation = () => request(compartmentId, compartmentIdInSubtree);
+    return dependencies.withRateLimit === undefined ? operation() : dependencies.withRateLimit(taskJob, operation);
+  };
+  let response;
+  try {
+    response = await execute(task.queryCompartmentId ?? definition.compartmentId, task.compartmentIdInSubtree === true);
+  } catch (error) {
+    if (!shouldFallbackFromSubtree(task, error)) throw error;
+    const fallbackResponses = await mapWithConcurrency(task.fallbackCompartmentIds ?? [], 2, (compartmentId) => execute(compartmentId));
+    response = {
+      items: fallbackResponses.flatMap((item) => item.items ?? []),
+      summarizedMetricsData: fallbackResponses.flatMap((item) => item.summarizedMetricsData ?? []),
+    };
+  }
+  let batch: NormalizedResourceMetricSample[] = [];
+  for (const metric of response.items ?? response.summarizedMetricsData ?? []) {
+    const dimensions = normalizeDimensions(metric.dimensions ?? definition.dimensions);
+    const externalResourceId = dimensions?.['resourceId'] ?? dimensions?.['resource_id'] ?? definition.resourceId;
+    if (task.allowedResourceIds !== undefined && (externalResourceId === undefined || !task.allowedResourceIds.has(externalResourceId))) continue;
+    const regionId = definition.regionId ?? dimensions?.['regionId'] ?? dimensions?.['region'];
+    for (const point of metric.aggregatedDatapoints ?? []) {
+      if (point.timestamp === undefined || point.value === undefined) continue;
+      batch.push({
+        tenantId: job.tenantId,
+        cloudConnectionId: job.cloudConnectionId,
+        provider: 'OCI',
+        externalResourceId,
+        providerNamespace: metric.namespace ?? definition.namespace,
+        ...(regionId !== undefined ? { regionId } : {}),
+        compartmentId: definition.compartmentId,
+        ...(dimensions !== undefined ? { dimensions, dimensionsHash: hashDimensions(dimensions) } : {}),
+        metricName: metric.name ?? definition.metricName,
+        statistic,
+        value: point.value,
+        sampledAt: point.timestamp instanceof Date ? point.timestamp : new Date(point.timestamp),
+        granularitySeconds: collection.granularitySeconds,
+        ...(definition.unit !== undefined ? { metricUnit: definition.unit } : {}),
+        rawMetric: {
+          namespace: metric.namespace ?? definition.namespace,
+          query,
+          statistic,
+          interval: collection.interval,
+          resolution: collection.interval,
+          compartmentId: definition.compartmentId,
+          ...(regionId !== undefined ? { regionId } : {}),
+          ...(dimensions !== undefined ? { dimensions } : {}),
+        },
+      });
+      stats.sampleCount += 1;
+      stats.statistics[statistic] = (stats.statistics[statistic] ?? 0) + 1;
+      if (batch.length >= 1000) {
+        await enqueue(batch);
+        batch = [];
+      }
+    }
+  }
+  if (batch.length > 0) await enqueue(batch);
 }
 
 function shouldFallbackFromSubtree(task: OciCollectionTask, error: unknown): boolean {
@@ -153,83 +233,6 @@ function normalizeDimensions(
     if (canonical !== undefined) normalized[key] = canonical;
   }
   return normalized;
-}
-
-function buildMetricResult(
-  collection: { readonly interval: '1m' | '5m' | '30m' | '1h'; readonly granularitySeconds: 60 | 300 | 1800 | 3600 },
-  requestRange: { readonly startTime: Date; readonly endTime: Date },
-  definitionCount: number,
-  apiCallCount: number,
-  samples: readonly NormalizedResourceMetricSample[],
-): CloudIngestionResult {
-  return {
-    apiCallCount,
-    objectsProcessed: 0,
-    focusRows: [],
-    resources: [],
-    metricSamples: samples,
-    warnings: samples.length === 0
-      ? ['OCI Monitoring returned no datapoints for the configured metric definitions.']
-      : [],
-    coverage: {
-      requestedStart: requestRange.startTime.toISOString(),
-      requestedEnd: requestRange.endTime.toISOString(),
-      interval: collection.interval,
-      granularitySeconds: collection.granularitySeconds,
-      datapointsReturned: samples.length,
-      metricDefinitions: definitionCount,
-      samples: samples.length,
-      statistics: summarizeStatistics(samples),
-      memoryRequiresComputeAgent: true,
-      agentlessCpuNamespace: 'oci_vmi_resource_utilization',
-    },
-  };
-}
-
-function summarizeStatistics(
-  samples: readonly NormalizedResourceMetricSample[],
-): Readonly<Record<string, number>> {
-  return samples.reduce<Record<string, number>>((counts, sample) => {
-    const statistic = sample.statistic ?? 'MEAN';
-    counts[statistic] = (counts[statistic] ?? 0) + 1;
-    return counts;
-  }, {});
-}
-
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  concurrency: number,
-  mapper: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (cursor < items.length) {
-      const index = cursor;
-      cursor += 1;
-      results[index] = await mapper(items[index]!);
-    }
-  });
-  await Promise.all(workers);
-  return results;
-}
-
-function getOrCreateRegionalClient(
-  job: CloudIngestionJobContext,
-  regionId: string,
-  dependencies: OciMonitoringDependencies,
-  clientsByRegion: Map<string, OciMonitoringClient>,
-): OciMonitoringClient {
-  const existing = clientsByRegion.get(regionId);
-  if (existing !== undefined) return existing;
-  const created = dependencies.createClient(job);
-  clientsByRegion.set(regionId, created);
-  return created;
-}
-
-function regionKey(job: Pick<CloudIngestionJobContext, 'connection' | 'requestContext'>): string {
-  const requestRegion = optionalString(job.requestContext?.['regionId']);
-  return requestRegion ?? job.connection.defaultRegion ?? 'default';
 }
 
 export function readOciMetricDefinitions(

@@ -134,9 +134,13 @@ it('normalizes metric samples from OCI TypeScript SDK items response', async () 
     });
 
     const result = await provider.collect(buildMetricJob());
+    const samples = [...result.metricSamples];
+    if (result.metricBatches !== undefined) {
+      for await (const batch of result.metricBatches) samples.push(...batch);
+    }
 
     expect(requests).toHaveLength(1);
-    expect(result.metricSamples).toEqual([
+    expect(samples).toEqual([
       expect.objectContaining({
         provider: 'OCI',
         externalResourceId: 'ocid1.instance.oc1.test',

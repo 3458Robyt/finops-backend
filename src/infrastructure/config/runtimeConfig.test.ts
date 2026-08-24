@@ -107,6 +107,11 @@ describe('validateRuntimeConfig', () => {
     })).toThrow(`Configuracion runtime invalida.`);
   });
 
+  it.each(['0', '91'])('rejects a technical metric catchup window outside OCI retention: %s', (value) => {
+    expect(() => validateRuntimeConfig({ ...productionEnv, INGESTION_SCHEDULER_METRIC_CATCHUP_DAYS: value }))
+      .toThrow(`Configuracion runtime invalida.`);
+  });
+
   it('rejects an auth cleanup batch outside the bounded production range', () => {
     expect(() => validateRuntimeConfig({ ...productionEnv, AUTH_CLEANUP_BATCH_SIZE: '5001' }))
       .toThrow(`Configuracion runtime invalida.`);

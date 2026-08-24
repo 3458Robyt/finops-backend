@@ -4,6 +4,7 @@ import type {
   AgentMemory,
   AgentMemoryScope,
   AgentMemoryType,
+  GlobalLearningCanaryEvidence,
   RecommendationFeedbackReason,
 } from '../models/AgentLearning.js';
 import type {
@@ -196,13 +197,13 @@ export interface IAgentLearningRepository {
   }): Promise<AgentMemory | null>;
 
   /**
-   * Promueve una memoria GLOBAL previamente persistida en modo shadow.
-   *
-   * La promoción se identifica por el evento que originó el candidato para no
-   * permitir activar memorias de otro evento o de otro alcance.
+   * Promueve un candidato GLOBAL únicamente con evidencia de canary live
+   * comparativo y un actor trazable. No se expone como una promoción genérica.
    */
-  promoteGlobalMemory?(input: {
+  promoteGlobalMemoryWithEvidence?(input: {
     readonly sourceLearningEventId: string;
+    readonly actorUserId: string;
+    readonly evidence: GlobalLearningCanaryEvidence;
   }): Promise<AgentMemory | null>;
 
   /** Persiste memorias auditadas y cierra evento/decisión en una transacción. */

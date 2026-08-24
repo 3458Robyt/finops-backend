@@ -58,6 +58,34 @@ export type AgentMemoryType =
   | 'REJECTION_PATTERN'
   | 'DECISION_PATTERN';
 
+/** Métricas sanitizadas de un brazo del canary comparativo de aprendizaje. */
+export interface GlobalLearningCanaryArmEvidence {
+  readonly recommendationCount: number;
+  readonly approvedRecommendationCount: number;
+  readonly invalidOutputCount: number;
+  readonly nonNegativeSavings: boolean;
+  readonly qualityScore: number;
+  readonly tokenEstimate: number;
+  readonly latencyMs: number;
+  /** Código sanitizado cuando el proveedor no entrega un brazo evaluable. */
+  readonly failureCode?: string;
+  /** Estado resumido del auditor, sin conservar el payload del proveedor. */
+  readonly auditVerdict?: string;
+  readonly auditScore?: number;
+  /** Motivos sanitizados para diagnosticar un brazo no evaluable sin guardar el payload bruto. */
+  readonly failureReasons?: readonly string[];
+}
+
+/** Evidencia mínima y portable para activar un candidato GLOBAL en producción. */
+export interface GlobalLearningCanaryEvidence {
+  readonly mode: 'LIVE_COMPARATIVE_CANARY';
+  readonly runId: string;
+  readonly candidateMemoryId: string;
+  readonly baseline: GlobalLearningCanaryArmEvidence;
+  readonly candidate: GlobalLearningCanaryArmEvidence;
+  readonly generatedAt: string;
+}
+
 /**
  * Evento de aprendizaje generado a partir de la decisión humana sobre una
  * recomendación. Es la materia prima del proceso de aprendizaje del agente.

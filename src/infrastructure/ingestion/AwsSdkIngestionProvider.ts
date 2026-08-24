@@ -52,6 +52,11 @@ export class AwsSdkIngestionProvider implements CloudIngestionProvider {
     if (credential === undefined) {
       return {
         providerCode: this.providerCode,
+        authentication: {
+          status: 'NOT_CONFIGURED',
+          message: 'No hay una credencial AWS de lectura para autenticar la conexión.',
+          checkedAt,
+        },
         capabilities: missingCredentialCapabilities(checkedAt, 'No hay una credencial AWS de lectura activa.'),
       };
     }
@@ -64,6 +69,11 @@ export class AwsSdkIngestionProvider implements CloudIngestionProvider {
       const failure = failedCapability('IDENTITY', error, checkedAt);
       return {
         providerCode: this.providerCode,
+        authentication: {
+          status: 'REJECTED',
+          message: 'AWS STS rechazó la autenticación del Role ARN o del External ID.',
+          checkedAt,
+        },
         capabilities: [
           failure,
           ...(['INVENTORY', 'COSTS', 'METRICS', 'STORAGE'] as const).map((capability) => ({
@@ -112,7 +122,17 @@ export class AwsSdkIngestionProvider implements CloudIngestionProvider {
     });
 
     const storage = await this.validateStorageCapability(connection, assumed, region, checkedAt);
-    return { providerCode: this.providerCode, capabilities: [identity, inventory, costs, metrics, storage] };
+    return {
+      providerCode: this.providerCode,
+      authentication: {
+        status: identity.status === 'AVAILABLE' ? 'VERIFIED' : 'RETRYABLE_ERROR',
+        message: identity.status === 'AVAILABLE'
+          ? 'AWS STS aceptó el AssumeRole y la identidad.'
+          : 'AWS no pudo confirmar la identidad del rol; revisa el error de STS.',
+        checkedAt,
+      },
+      capabilities: [identity, inventory, costs, metrics, storage],
+    };
   }
 
   public async previewFocus(connection: CloudIngestionConnection, limit: number): Promise<FocusSourcePreviewResult> {

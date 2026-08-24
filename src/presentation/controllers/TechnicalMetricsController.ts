@@ -6,6 +6,8 @@ import type {
   TechnicalMetricsService,
 } from '../../application/services/TechnicalMetricsService.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import { METRIC_STATISTICS, type MetricStatistic } from '../../domain/interfaces/ICloudIngestionProvider.js';
+import type { CloudResourceCostFilter, CloudResourceFilters, CloudResourceStatus } from '../../domain/interfaces/IResourceMetricRepository.js';
 import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 /**
@@ -28,6 +30,10 @@ export class TechnicalMetricsController {
    *
    * Parámetros de consulta (`req.query`):
    * - `limit` (opcional): máximo de resultados; el servicio lo acota a [1, 200].
+   * - `costFilter=WITH_COST|ALL`: filtra recursos con costo asociado.
+   * - `status`: lista separada por comas de estados ACTIVE, STOPPED, TERMINATED o UNKNOWN.
+   * - `provider`: OCI, AWS u otro proveedor normalizado.
+   * - `query`: búsqueda por nombre, identificador, servicio o tipo.
    *
    * Respuestas:
    * - 200: `{ success: true, resources }`.
@@ -40,6 +46,7 @@ export class TechnicalMetricsController {
       const resources = await this.technicalMetricsService.listResources(
         tenantId,
         this.parseLimit(req.query['limit']),
+        this.parseResourceFilters(req),
       );
 
       res.status(200).json({ success: true, resources });
@@ -201,6 +208,7 @@ export class TechnicalMetricsController {
     const bucket = includeBucket ? this.parseBucket(req.query['bucket']) : undefined;
     const cursor = includeBucket ? this.parseString(req.query['cursor']) : undefined;
     const pageSize = includeBucket ? this.parseLimit(req.query['pageSize']) : undefined;
+    const statistic = this.parseStatistic(req.query['statistic']);
 
     return {
       ...(startDate !== undefined ? { startDate } : {}),
@@ -211,6 +219,7 @@ export class TechnicalMetricsController {
       ...(bucket !== undefined ? { bucket } : {}),
       ...(cursor !== undefined ? { cursor } : {}),
       ...(pageSize !== undefined ? { pageSize } : {}),
+      ...(statistic !== undefined ? { statistic } : {}),
     };
   }
 
@@ -268,6 +277,42 @@ export class TechnicalMetricsController {
     }
 
     return raw;
+  }
+
+  private parseResourceFilters(req: Request): CloudResourceFilters {
+    const rawCostFilter = this.parseString(req.query['costFilter'])?.toUpperCase();
+    if (rawCostFilter !== undefined && rawCostFilter !== 'ALL' && rawCostFilter !== 'WITH_COST') {
+      throw new FinOpsBaseError('Invalid resource cost filter', 'VALIDATION_ERROR');
+    }
+    const costFilter = rawCostFilter as CloudResourceCostFilter | undefined;
+    const rawStatuses = this.parseStringList(req.query['status']);
+    const allowedStatuses: readonly CloudResourceStatus[] = ['ACTIVE', 'STOPPED', 'TERMINATED', 'UNKNOWN'];
+    const statuses = rawStatuses?.map((status) => status.toUpperCase() as CloudResourceStatus);
+    if (statuses?.some((status) => !allowedStatuses.includes(status))) {
+      throw new FinOpsBaseError('Invalid resource status filter', 'VALIDATION_ERROR');
+    }
+    const provider = this.parseString(req.query['provider']);
+    const query = this.parseString(req.query['query']);
+
+    return {
+      ...(costFilter !== undefined ? { costFilter } : {}),
+      ...(statuses !== undefined ? { statuses } : {}),
+      ...(provider !== undefined ? { provider } : {}),
+      ...(query !== undefined ? { query } : {}),
+    };
+  }
+
+  private parseStatistic(value: unknown): MetricStatistic | undefined {
+    const raw = this.parseString(value)?.toUpperCase();
+    if (raw === undefined) {
+      return undefined;
+    }
+
+    if (!(METRIC_STATISTICS as readonly string[]).includes(raw)) {
+      throw new FinOpsBaseError('Invalid metric statistic', 'VALIDATION_ERROR');
+    }
+
+    return raw as MetricStatistic;
   }
 
   /**

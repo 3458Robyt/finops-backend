@@ -43,6 +43,20 @@ describe('ingestionResourceNormalizer', () => {
     expect(mergeNormalizedResources([derived, inventory])).toEqual([inventory]);
     expect(mergeNormalizedResources([inventory, derived])).toEqual([inventory]);
   });
+
+  test('uses the provider regionId before the legacy region field', () => {
+    const [resource] = buildMetricDerivedResources({
+      tenantId: 'tenant-1',
+      cloudConnectionId: 'connection-1',
+      defaultRegion: 'us-ashburn-1',
+    }, [metricSample('ocid1.instance.demo', 'CpuUtilization', {
+      namespace: 'oci_computeagent',
+      regionId: 'us-phoenix-1',
+      region: 'legacy-wrong-region',
+    })]);
+
+    expect(resource?.regionId).toBe('us-phoenix-1');
+  });
 });
 
 function metricSample(

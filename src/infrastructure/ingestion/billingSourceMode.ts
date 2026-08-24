@@ -6,7 +6,10 @@ export type ResolvedBillingSource = 'FOCUS' | 'PROVIDER_API';
 export function resolveBillingSource(job: CloudIngestionJobContext): ResolvedBillingSource {
   const configured = readBillingSourceMode(job.connection.metadata);
   if (configured === 'FOCUS' || configured === 'PROVIDER_API') return configured;
-  return hasFocusSource(job) ? 'FOCUS' : 'PROVIDER_API';
+  // OCI Cost Reports have a provider-managed default location. AUTO therefore
+  // tries FOCUS first even when the user did not copy bucket metadata; the
+  // collector owns the bounded fallback to Usage API.
+  return job.connection.providerCode === 'oci' || hasFocusSource(job) ? 'FOCUS' : 'PROVIDER_API';
 }
 
 export function readBillingSourceMode(metadata: Readonly<Record<string, unknown>> | undefined): BillingSourceMode {

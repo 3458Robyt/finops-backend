@@ -31,6 +31,7 @@ import type {
   IngestionHealthSummary,
   ProviderCatalogEntry,
 } from '../../domain/models/CloudConnection.js';
+import { buildIngestionConfigurationHash } from '../../infrastructure/ingestion/ingestionConfigurationHash.js';
 
 const awsProvider: ProviderCatalogEntry = {
   code: 'aws',
@@ -290,6 +291,8 @@ class FakeCloudConnectionRepository implements ICloudConnectionRepository {
       targetEnd: input.targetEnd,
       attempts: 0,
       maxAttempts: 3,
+      ...(input.configurationHash !== undefined ? { configurationHash: input.configurationHash } : {}),
+      ...(input.requestContext !== undefined ? { requestContext: input.requestContext } : {}),
       createdAt: new Date('2026-05-01T00:00:00.000Z'),
       updatedAt: new Date('2026-05-01T00:00:00.000Z'),
     };
@@ -649,7 +652,7 @@ describe('CloudConnectionService', () => {
       cloudConnectionId: 'conn-1',
       sourceType: 'TECHNICAL_METRIC',
       requestedByUserId: 'user-1',
-      maxAttempts: 1,
+      maxAttempts: 3,
     });
     expect(repository.rangeQuery).toMatchObject({
       tenantId: 'tenant-1',
@@ -670,6 +673,12 @@ describe('CloudConnectionService', () => {
       status: 'SUCCESS',
       targetStart: coveredStart,
       targetEnd: rangeEnd,
+      configurationHash: buildIngestionConfigurationHash({
+        providerCode: repository.connection?.providerCode ?? 'aws',
+        sourceType: 'TECHNICAL_METRIC',
+        metadata: repository.connection?.metadata,
+        requestContext: { interval: '30m', resolutionSeconds: 1800, scopeKey: 'technical:30m' },
+      }),
     }];
 
     const result = await service.queueTechnicalMetricBackfill({

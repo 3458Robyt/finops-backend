@@ -1,6 +1,7 @@
 import type { FinOpsAiService } from './FinOpsAiService.js';
 import type { TelegramMessageFormatter } from './TelegramMessageFormatter.js';
 import type { ITelegramClient } from './TelegramClient.js';
+import type { TelegramLinkService } from './TelegramLinkService.js';
 import type { SavingsReminderService } from './SavingsReminderService.js';
 import type { ICostAnalyticsRepository } from '../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
@@ -58,6 +59,7 @@ export class TelegramBotService {
     private readonly recommendationRepository: IRecommendationRepository,
     private readonly analyticsRepository: ICostAnalyticsRepository,
     private readonly botUsername?: string,
+    private readonly telegramLinkService?: TelegramLinkService,
   ) {}
 
   /**
@@ -89,6 +91,24 @@ export class TelegramBotService {
     const parsed = parseCommand(message.text);
 
     try {
+      if (parsed.command === '/start' && parsed.argument !== '' && this.telegramLinkService !== undefined) {
+        const linked = await this.telegramLinkService.consumeSelfLinkCode({
+          code: parsed.argument,
+          chatId: message.chatId,
+          ...(message.telegramUserId === undefined ? {} : { telegramUserId: message.telegramUserId }),
+          ...(message.telegramUsername === undefined ? {} : { telegramUsername: message.telegramUsername }),
+        });
+
+        if (linked !== null) {
+          await this.sendChunks(message.chatId, [
+            'Tu cuenta FinOps quedó vinculada correctamente a Telegram.',
+            'Ya puedes usar /ayuda para consultar los comandos disponibles.',
+          ].join('\n'));
+          await this.logMessage(message, linked, parsed.command, 'PROCESSED', undefined, { reason: 'self_link_consumed' });
+          return;
+        }
+      }
+
       const link = await this.repository.findActiveLinkByChatId(message.chatId);
 
       if (link === null || link.user?.status === 'DISABLED') {
@@ -121,7 +141,9 @@ export class TelegramBotService {
    * Efectos secundarios: envía mensajes por Telegram y persiste un log de interacción.
    */
   private async handleUnlinkedMessage(message: ParsedTelegramMessage, parsed: ParsedCommand): Promise<void> {
-    const reply = parsed.command === '/start'
+    const reply = parsed.command === '/start' && parsed.argument !== ''
+      ? 'El código de vinculación no es válido o ya expiró. Genera uno nuevo desde tu portal FinOps.'
+      : parsed.command === '/start'
       ? this.formatter.unlinkedStartMessage(message.chatId)
       : this.formatter.unlinkedMessage(message.chatId);
 

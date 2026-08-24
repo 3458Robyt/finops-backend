@@ -44,7 +44,10 @@ export function buildMetricDerivedResources(
   }
 
   return [...byExternalResourceId.values()].map(({ sample, metricNames, sampleCount }) => {
-    const regionId = readRawMetricString(sample.rawMetric, 'region') ?? context.defaultRegion;
+    const regionId = readRawMetricString(sample.rawMetric, 'regionId')
+      ?? readRawMetricString(sample.rawMetric, 'region')
+      ?? readRawMetricString(sample.rawMetric, 'dimensions.regionId')
+      ?? context.defaultRegion;
     return {
       tenantId: context.tenantId,
       cloudConnectionId: context.cloudConnectionId,
@@ -53,6 +56,8 @@ export function buildMetricDerivedResources(
       name: readRawMetricString(sample.rawMetric, 'resourceName') ?? sample.externalResourceId,
       resourceType: inferResourceType(sample),
       serviceName: inferServiceName(sample),
+      identitySource: 'METRIC_DERIVED',
+      identityPriority: 0,
       ...(regionId !== undefined ? { regionId } : {}),
       status: 'UNKNOWN',
       rawResource: {
@@ -118,6 +123,19 @@ function readRawMetricString(
     return undefined;
   }
 
-  const value = rawMetric[field];
+  const directValue = rawMetric[field];
+  const value = directValue ?? readNestedRawMetricValue(rawMetric, field);
   return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
+
+function readNestedRawMetricValue(
+  rawMetric: Readonly<Record<string, unknown>>,
+  field: string,
+): unknown {
+  const [parent, child] = field.split('.', 2);
+  if (child === undefined) return undefined;
+  const nested = rawMetric[parent ?? ''];
+  return nested !== null && typeof nested === 'object' && !Array.isArray(nested)
+    ? (nested as Record<string, unknown>)[child]
+    : undefined;
 }

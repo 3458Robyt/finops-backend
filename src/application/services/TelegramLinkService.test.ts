@@ -1,15 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AuthorizationError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import type {
   CreateOrUpdateTelegramLinkInput,
   CreateTelegramAuditEventInput,
   CreateTelegramInteractionLogInput,
+  CreateTelegramSelfLinkCodeInput,
+  ConsumeTelegramSelfLinkCodeInput,
   ITelegramRepository,
 } from '../../domain/interfaces/ITelegramRepository.js';
 import type { AuthContext } from '../../domain/models/AuthContext.js';
 import type { TelegramChatLink, TelegramInteractionLog, TelegramLinkedUser } from '../../domain/models/Telegram.js';
 import type { ITelegramClient } from './TelegramClient.js';
 import { TelegramLinkService } from './TelegramLinkService.js';
+import { hashOpaqueToken } from '../auth/opaqueToken.js';
 
 describe('TelegramLinkService', () => {
   it('rejects link creation by non-admin users', async () => {
@@ -60,6 +63,43 @@ describe('TelegramLinkService', () => {
     expect(client.messages[0]?.text).toContain('Vinculacion Telegram activa');
     expect(repository.auditEvents[0]?.action).toBe('TELEGRAM_TEST_MESSAGE_SENT');
   });
+
+  it('generates a short-lived self-link code without persisting plaintext', async () => {
+    const repository = {
+      createSelfLinkCode: vi.fn(async () => undefined),
+    } as unknown as ITelegramRepository;
+    const service = new TelegramLinkService(repository, new ClientFake(), 'finops_bot');
+
+    const result = await service.createSelfLinkCode(clientActor());
+
+    expect(result.startCommand).toContain(result.code);
+    expect(result.deepLink).toContain('t.me/finops_bot');
+    expect(repository.createSelfLinkCode).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: 'tenant-1',
+      userId: 'user-1',
+      tokenHash: hashOpaqueToken(result.code),
+    }));
+  });
+
+  it('audits a successful self-link code consumption', async () => {
+    const repository = {
+      consumeSelfLinkCode: vi.fn(async () => buildLink({ chatId: 'telegram-chat' })),
+      createAuditEvent: vi.fn(async () => undefined),
+    } as unknown as ITelegramRepository;
+    const service = new TelegramLinkService(repository, new ClientFake());
+
+    const link = await service.consumeSelfLinkCode({ code: 'one-time-code', chatId: 'telegram-chat' });
+
+    expect(link?.chatId).toBe('telegram-chat');
+    expect(repository.consumeSelfLinkCode).toHaveBeenCalledWith({
+      tokenHash: hashOpaqueToken('one-time-code'),
+      chatId: 'telegram-chat',
+    });
+    expect(repository.createAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'TELEGRAM_SELF_LINK_CONSUMED',
+      entityId: link?.id,
+    }));
+  });
 });
 
 class LinkRepositoryFake implements ITelegramRepository {
@@ -109,6 +149,14 @@ class LinkRepositoryFake implements ITelegramRepository {
     });
     this.linkById = link;
     return link;
+  }
+
+  public async createSelfLinkCode(_input: CreateTelegramSelfLinkCodeInput): Promise<void> {
+    return undefined;
+  }
+
+  public async consumeSelfLinkCode(_input: ConsumeTelegramSelfLinkCodeInput): Promise<TelegramChatLink | null> {
+    return null;
   }
 
   public async disableLink(_tenantId: string, _id: string): Promise<TelegramChatLink | null> {

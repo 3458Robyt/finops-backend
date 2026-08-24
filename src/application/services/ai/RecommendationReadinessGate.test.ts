@@ -35,6 +35,17 @@ describe('RecommendationReadinessGate', () => {
     ]);
   });
 
+  it('keeps service cost reviews financial and does not require technical validation', () => {
+    const report = buildRecommendationReadinessReport({ snapshot: buildSnapshot() });
+    const serviceCandidate = report.candidates.find((candidate) => candidate.id === 'service-1');
+
+    expect(serviceCandidate?.readiness).toBe('GENERATABLE');
+    expect(serviceCandidate?.requiresTechnicalValidation).toBe(false);
+    expect(serviceCandidate?.evidenceLevelAllowed).toBe('COST_ONLY');
+    expect(serviceCandidate?.reviewScope).toBe('FINANCIAL');
+    expect(serviceCandidate?.costEvidenceRefs[0]).toContain('cost_metrics:aggregate:');
+  });
+
   it('blocks duplicate external ids until a canonical resource is selected', () => {
     const first = buildEvidenceSnapshot({ cloudResourceId: 'cloud-a', cloudConnectionId: 'connection-a' });
     const second = buildEvidenceSnapshot({ cloudResourceId: 'cloud-b', cloudConnectionId: 'connection-b' });

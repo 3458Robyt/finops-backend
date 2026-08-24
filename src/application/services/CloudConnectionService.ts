@@ -37,6 +37,8 @@ import type {
   StoreOperationalCredentialInput,
   TechnicalBackfillResult,
   UpdateCloudConnectionInput,
+  ValidateCloudCredentialInput,
+  ValidateCloudCredentialResult,
   ValidateCloudConnectionInput,
 } from './cloud-connections/CloudConnectionContracts.js';
 
@@ -85,6 +87,10 @@ export class CloudConnectionService {
     return this.onboarding.revokeOperationalCredential(tenantId, cloudConnectionId, credentialId, userId);
   }
 
+  public validateCredential(input: ValidateCloudCredentialInput): Promise<ValidateCloudCredentialResult> {
+    return this.onboarding.validateCredential(input);
+  }
+
   public registerConnection(input: RegisterCloudConnectionInput): Promise<CloudConnectionSummary> {
     return this.onboarding.registerConnection(input);
   }
@@ -125,8 +131,20 @@ export class CloudConnectionService {
     return this.ingestion.getHealth(tenantId, cloudConnectionId);
   }
 
-  public listIngestionHistory(tenantId: string, limit?: number): Promise<readonly IngestionJobHistoryItem[]> {
-    return this.ingestion.listIngestionHistory(tenantId, limit);
+  public listIngestionHistory(tenantId: string, limit?: number, includeArchived = false): Promise<readonly IngestionJobHistoryItem[]> {
+    return this.ingestion.listIngestionHistory(tenantId, limit, includeArchived);
+  }
+
+  public getIngestionJob(tenantId: string, jobId: string): Promise<IngestionJobHistoryItem> {
+    return this.ingestion.getIngestionJob(tenantId, jobId);
+  }
+
+  public cancelIngestionJob(tenantId: string, jobId: string, userId: string): Promise<IngestionJobHistoryItem> {
+    return this.ingestion.cancelIngestionJob(tenantId, jobId, userId);
+  }
+
+  public archiveIngestionJob(tenantId: string, jobId: string, userId: string): Promise<IngestionJobHistoryItem> {
+    return this.ingestion.archiveIngestionJob(tenantId, jobId, userId);
   }
 
   public listDataQualityChecks(tenantId: string, limit?: number): Promise<readonly DataQualityCheckItem[]> {

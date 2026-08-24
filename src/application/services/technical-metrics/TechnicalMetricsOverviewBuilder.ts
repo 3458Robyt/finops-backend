@@ -11,6 +11,7 @@ import type {
   TechnicalMetricResourceSummary,
   TechnicalMetricsOverview,
 } from './TechnicalMetricsContracts.js';
+import { METRIC_STATISTICS } from '../../../domain/interfaces/ICloudIngestionProvider.js';
 import {
   average,
   classifyMetric,
@@ -26,6 +27,7 @@ export function buildOverview(
   samples: readonly ResourceMetricSampleItem[],
   resources: readonly CloudResourceItem[],
   costContext: readonly TechnicalCostContextItem[],
+  availableStatisticsByMetric?: ReadonlyMap<string, ReadonlySet<string>>,
 ): TechnicalMetricsOverview {
   if (samples.length === 0) {
     return {
@@ -45,7 +47,7 @@ export function buildOverview(
   const resourceMap = new Map(resources.map((resource) => [resourceIdentity(resource), resource]));
   const costMap = new Map(costContext.map((item) => [resourceIdentity(item), item]));
   const resourceSummaries = buildResourceSummaries(samples, resourceMap, costMap);
-  const metrics = buildMetricCatalog(samples);
+  const metrics = buildMetricCatalog(samples, availableStatisticsByMetric);
   const kpis = buildKpis(samples);
 
   return {
@@ -113,7 +115,10 @@ function buildResourceSummaries(
   }).sort((left, right) => right.maxSampledAt.getTime() - left.maxSampledAt.getTime());
 }
 
-function buildMetricCatalog(samples: readonly ResourceMetricSampleItem[]): readonly TechnicalMetricCatalogItem[] {
+function buildMetricCatalog(
+  samples: readonly ResourceMetricSampleItem[],
+  availableStatisticsByMetric?: ReadonlyMap<string, ReadonlySet<string>>,
+): readonly TechnicalMetricCatalogItem[] {
   const grouped = new Map<string, ResourceMetricSampleItem[]>();
 
   for (const sample of samples) {
@@ -127,6 +132,9 @@ function buildMetricCatalog(samples: readonly ResourceMetricSampleItem[]): reado
     const first = metricSamples[0]!;
     const metricUnit = normalizeUnit(first.metricName, first.metricUnit);
 
+    const availableStatistics = availableStatisticsByMetric?.get(first.metricName)
+      ?? new Set(metricSamples.map((sample) => sample.statistic));
+
     return {
       metricName: first.metricName,
       ...(metricUnit !== undefined ? { metricUnit } : {}),
@@ -134,6 +142,7 @@ function buildMetricCatalog(samples: readonly ResourceMetricSampleItem[]): reado
       sampleCount: metricSamples.length,
       minSampledAt: minDate(metricSamples.map((sample) => sample.sampledAt)) ?? first.sampledAt,
       maxSampledAt: maxDate(metricSamples.map((sample) => sample.sampledAt)) ?? first.sampledAt,
+      availableStatistics: METRIC_STATISTICS.filter((statistic) => availableStatistics.has(statistic)),
     };
   }).sort((left, right) => left.group.localeCompare(right.group) || left.metricName.localeCompare(right.metricName));
 }

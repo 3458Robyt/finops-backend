@@ -8,12 +8,10 @@ import {
 describe('PrismaCloudResourceCatalog', () => {
   test('inserts historical references without updating existing live inventory', async () => {
     const createMany = vi.fn().mockResolvedValue({ count: 1 });
-    const upsert = vi.fn();
     const resource = historicalResource();
 
-    await insertHistoricalCloudResources({ cloudResource: { createMany, upsert } } as never, [resource]);
+    await insertHistoricalCloudResources({ cloudResource: { createMany } } as never, [resource]);
 
-    expect(upsert).not.toHaveBeenCalled();
     expect(createMany).toHaveBeenCalledWith(expect.objectContaining({
       skipDuplicates: true,
       data: [expect.objectContaining({
@@ -25,16 +23,40 @@ describe('PrismaCloudResourceCatalog', () => {
   });
 
   test('uses provider observation times when upserting live resources', async () => {
-    const upsert = vi.fn().mockResolvedValue({ id: 'resource-1', externalResourceId: 'ocid1.instance.oc1.test' });
+    const findUnique = vi.fn().mockResolvedValue(null);
+    const create = vi.fn().mockResolvedValue({ id: 'resource-1', externalResourceId: 'ocid1.instance.oc1.test' });
     const resource = { ...historicalResource(), externalResourceId: 'ocid1.instance.oc1.test' };
 
-    const ids = await upsertNormalizedCloudResources({ cloudResource: { upsert } } as never, [resource]);
+    const ids = await upsertNormalizedCloudResources({ cloudResource: { findUnique, create } } as never, [resource]);
 
     expect(ids.get(resource.externalResourceId)).toBe('resource-1');
-    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
-      update: expect.objectContaining({ lastSeenAt: resource.lastSeenAt }),
-      create: expect.objectContaining({ firstSeenAt: resource.firstSeenAt, lastSeenAt: resource.lastSeenAt }),
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ firstSeenAt: resource.firstSeenAt, lastSeenAt: resource.lastSeenAt }),
     }));
+  });
+
+  test('does not let metric-derived identity overwrite authoritative inventory fields', async () => {
+    const findUnique = vi.fn().mockResolvedValue({
+      id: 'resource-1',
+      externalResourceId: 'ocid1.instance.oc1.test',
+      identityPriority: 4,
+      lastSeenAt: new Date('2026-05-03T00:00:00Z'),
+    });
+    const update = vi.fn().mockResolvedValue({ id: 'resource-1', externalResourceId: 'ocid1.instance.oc1.test' });
+
+    await upsertNormalizedCloudResources({ cloudResource: { findUnique, update } } as never, [{
+      ...historicalResource(),
+      externalResourceId: 'ocid1.instance.oc1.test',
+      name: undefined,
+      identitySource: 'METRIC_DERIVED',
+      identityPriority: 0,
+      rawResource: { source: 'METRIC_DERIVED' },
+    }]);
+
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.not.objectContaining({ resourceType: 'BOOT_VOLUME', serviceName: 'Oracle Block Volume' }),
+    }));
+    expect(update.mock.calls[0]?.[0].data).toEqual({ lastSeenAt: expect.any(Date) });
   });
 });
 

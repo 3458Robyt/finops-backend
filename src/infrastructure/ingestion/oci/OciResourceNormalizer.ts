@@ -11,6 +11,8 @@ export function normalizeOciSearchResource(
   const externalResourceId = summary.identifier.trim();
   if (externalResourceId === '') return undefined;
   const catalog = classifyResourceType(summary.resourceType);
+  const regionId = readRegionId(summary, job.connection.defaultRegion);
+  const timeCreated = normalizeTimestamp(summary.timeCreated);
   return {
     tenantId: job.tenantId,
     cloudConnectionId: job.cloudConnectionId,
@@ -19,7 +21,7 @@ export function normalizeOciSearchResource(
     name: summary.displayName?.trim() || externalResourceId,
     resourceType: catalog.resourceType,
     serviceName: catalog.serviceName,
-    ...(job.connection.defaultRegion !== undefined ? { regionId: job.connection.defaultRegion } : {}),
+    ...(regionId !== undefined ? { regionId } : {}),
     status: normalizeOciResourceStatus(summary.lifecycleState),
     tags: mergeOciTags(summary.freeformTags, summary.definedTags),
     rawResource: {
@@ -28,11 +30,23 @@ export function normalizeOciSearchResource(
       ociResourceType: summary.resourceType,
       compartmentId: summary.compartmentId,
       ...(summary.availabilityDomain !== undefined ? { availabilityDomain: summary.availabilityDomain } : {}),
-      ...(summary.timeCreated !== undefined ? { timeCreated: summary.timeCreated.toISOString() } : {}),
+      ...(timeCreated !== undefined ? { timeCreated } : {}),
       ...(summary.lifecycleState !== undefined ? { lifecycleState: summary.lifecycleState } : {}),
       ...(summary.additionalDetails !== undefined ? { additionalDetails: summary.additionalDetails } : {}),
     },
   };
+}
+
+function normalizeTimestamp(value: Date | string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function readRegionId(summary: OciResourceSearchSummary, fallback?: string): string | undefined {
+  const details = summary.additionalDetails;
+  const region = details?.['regionId'] ?? details?.['region'];
+  return typeof region === 'string' && region.trim() !== '' ? region.trim() : fallback;
 }
 
 export function normalizeOciResourceStatus(status: string | undefined): NormalizedCloudResource['status'] {

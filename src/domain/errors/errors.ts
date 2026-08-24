@@ -17,12 +17,14 @@
 export class FinOpsBaseError extends Error {
   public readonly code: string;
   public readonly timestamp: Date;
+  public readonly details?: Readonly<Record<string, unknown>> | undefined;
 
-  constructor(message: string, code: string) {
+  constructor(message: string, code: string, details?: Readonly<Record<string, unknown>>) {
     super(message);
     this.name = this.constructor.name;
     this.code = code;
     this.timestamp = new Date();
+    this.details = details;
 
     // Restaurar la cadena de prototipos (necesario en TypeScript para herencia de Error)
     Object.setPrototypeOf(this, new.target.prototype);

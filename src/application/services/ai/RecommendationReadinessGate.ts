@@ -20,8 +20,12 @@ export interface RecommendationOpportunityCandidate {
   readonly maxEstimatedMonthlySavings: number;
   readonly currency: string;
   readonly sourceFacts: readonly string[];
+  /** Referencias agregadas canónicas a la fuente FOCUS/costos usada por el candidato. */
+  readonly costEvidenceRefs: readonly string[];
   readonly technicalEvidenceRefs: readonly string[];
   readonly evidenceStrength?: 'LOW' | 'MEDIUM' | 'HIGH';
+  /** Permite distinguir una revisión financiera de una validación técnica. */
+  readonly reviewScope?: 'FINANCIAL' | 'TECHNICAL';
   readonly ruleMatches?: readonly string[];
   readonly blockers?: readonly string[];
   readonly metricSummary?: unknown;
@@ -117,6 +121,7 @@ function buildUsageCandidates(
         `Costo observado del consumo: ${usage.totalCost} ${usage.currency}.`,
         `Costo unitario observado: ${usage.unitCost ?? 'no disponible'} ${usage.currency}/${usage.consumedUnit}.`,
       ],
+      costEvidenceRefs: [costEvidenceRef(snapshot, 'usage', usage.provider, usage.serviceName)],
       technicalEvidenceRefs: [],
       reasons: ['Existe consumo facturado FOCUS con unidad y costo unitario.'],
       forbiddenClaims: ['No afirmes CPU, memoria, IOPS, throughput ni utilizacion tecnica.'],
@@ -167,6 +172,7 @@ function buildResourceCandidates(
         `Cantidad de registros FOCUS asociados: ${resource.metricCount}.`,
         ...(ruleEvaluation?.sourceFacts ?? []),
       ],
+      costEvidenceRefs: [costEvidenceRef(snapshot, 'resource', resource.provider, resource.resourceId)],
       technicalEvidenceRefs: ruleEvaluation?.technicalEvidenceRefs ?? refsForResource,
       ...(ruleEvaluation?.evidenceStrength !== undefined ? { evidenceStrength: ruleEvaluation.evidenceStrength } : {}),
       ...(ruleEvaluation?.ruleMatches !== undefined ? { ruleMatches: ruleEvaluation.ruleMatches } : {}),
@@ -200,21 +206,25 @@ function buildServiceCandidates(
     const account = pickAccountForProvider(snapshot, accountById, service.provider);
     return {
       id: `service-${index + 1}`,
-      readiness: service.metricCount > 0 ? 'VALIDATION_ONLY' : 'BLOCKED_NO_EVIDENCE',
+      // Un SERVICE_COST_REVIEW es una oportunidad financiera basada en FOCUS;
+      // no debe heredar el estado de validación técnica de los recursos.
+      readiness: service.metricCount > 0 ? 'GENERATABLE' : 'BLOCKED_NO_EVIDENCE',
       cloudAccountId: account.cloudAccountId,
       provider: service.provider,
       serviceName: service.serviceName,
       opportunityType: 'SERVICE_COST_REVIEW',
       evidenceLevelAllowed: 'COST_ONLY',
-      requiresTechnicalValidation: true,
+      requiresTechnicalValidation: false,
+      reviewScope: 'FINANCIAL',
       maxEstimatedMonthlySavings: round(Math.max(service.totalCost * costSavingsRate, 0)),
       currency: snapshot.currency,
       sourceFacts: [
         `Servicio ${service.serviceName} costo ${service.totalCost} ${snapshot.currency}.`,
         `Cantidad de registros FOCUS asociados: ${service.metricCount}.`,
       ],
+      costEvidenceRefs: [costEvidenceRef(snapshot, 'service', service.provider, service.serviceName)],
       technicalEvidenceRefs: [],
-      reasons: ['Costo agregado por servicio disponible; requiere analisis tecnico antes de ejecutar cambios.'],
+      reasons: ['Costo agregado por servicio disponible; requiere revisión financiera antes de cualquier decisión operativa.'],
       forbiddenClaims: ['No afirmes metricas tecnicas ni ahorro garantizado.'],
     };
   });
@@ -233,4 +243,18 @@ function pickAccountForProvider(
 
 function round(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+/**
+ * Identificador estable de evidencia agregada de costos. No es un ID de fila:
+ * representa la consulta FOCUS/cost_metrics delimitada por período y alcance,
+ * por lo que puede auditarse sin enviar al modelo datos crudos innecesarios.
+ */
+function costEvidenceRef(
+  snapshot: CostAnalyticsSnapshot,
+  scope: 'usage' | 'resource' | 'service',
+  provider: string,
+  key: string,
+): string {
+  return `cost_metrics:aggregate:${snapshot.periodStart}:${snapshot.periodEnd}:${scope}:${provider}:${key}`;
 }

@@ -107,6 +107,61 @@ describe('AwsSdkIngestionProvider', () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it('preserves CloudWatch percentile and maximum statistics', async () => {
+    const provider = new AwsSdkIngestionProvider();
+    const baseJob = buildMetricJob();
+    const job = {
+      ...baseJob,
+      connection: {
+        ...baseJob.connection,
+        metadata: {
+          awsMetricDefinitions: [
+            {
+              externalResourceId: 'i-0123456789abcdef0',
+              namespace: 'AWS/EC2',
+              metricName: 'CPUUtilization',
+              stat: 'p95',
+              unit: 'Percent',
+              dimensions: [{ Name: 'InstanceId', Value: 'i-0123456789abcdef0' }],
+            },
+            {
+              externalResourceId: 'i-0123456789abcdef0',
+              namespace: 'AWS/EC2',
+              metricName: 'CPUUtilization',
+              stat: 'Maximum',
+              unit: 'Percent',
+              dimensions: [{ Name: 'InstanceId', Value: 'i-0123456789abcdef0' }],
+            },
+          ],
+        },
+      },
+    };
+
+    Object.assign(provider as unknown as {
+      assumeRole: () => Promise<unknown>;
+      createCloudWatchClient: () => unknown;
+    }, {
+      assumeRole: async () => ({
+        accessKeyId: 'test',
+        secretAccessKey: 'test',
+        sessionToken: 'test',
+      }),
+      createCloudWatchClient: () => ({
+        send: async () => ({
+          MetricDataResults: [
+            { Id: 'm0', Timestamps: [new Date('2026-06-04T01:30:00Z')], Values: [95] },
+            { Id: 'm1', Timestamps: [new Date('2026-06-04T01:30:00Z')], Values: [99] },
+          ],
+        }),
+      }),
+    });
+
+    const result = await provider.collect(job);
+
+    expect(result.metricSamples.map((sample) => sample.statistic)).toEqual(['P95', 'MAX']);
+    expect(result.metricSamples.map((sample) => sample.rawMetric?.['statistic'])).toEqual(['P95', 'MAX']);
+  });
+
   it('discovers and parses AWS FOCUS exports from S3 prefixes', async () => {
     const provider = new AwsSdkIngestionProvider();
     const commands: string[] = [];

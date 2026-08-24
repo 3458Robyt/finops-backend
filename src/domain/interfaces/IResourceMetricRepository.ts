@@ -2,6 +2,7 @@ import type {
   ResourceEvidenceStatus,
   ResourceFreshness,
 } from '../models/ResourceLinkage.js';
+import type { MetricStatistic } from './ICloudIngestionProvider.js';
 
 /**
  * Estado del ciclo de vida de un recurso cloud inventariado.
@@ -10,6 +11,14 @@ import type {
  * `TERMINATED`, `UNKNOWN`).
  */
 export type CloudResourceStatus = 'ACTIVE' | 'STOPPED' | 'TERMINATED' | 'UNKNOWN';
+export type CloudResourceCostFilter = 'ALL' | 'WITH_COST';
+
+export interface CloudResourceFilters {
+  readonly costFilter?: CloudResourceCostFilter;
+  readonly statuses?: readonly CloudResourceStatus[];
+  readonly provider?: string;
+  readonly query?: string;
+}
 
 /**
  * Resumen de un recurso cloud inventariado de un tenant.
@@ -58,6 +67,7 @@ export interface ResourceMetricSampleItem {
   readonly metricName: string;
   /** Unidad de la métrica (p. ej. `Percent`, `Bytes`, `IOPS`), si se conoce. */
   readonly metricUnit?: string;
+  readonly statistic: MetricStatistic;
   /** Valor observado de la métrica. */
   readonly value: number;
   /** Instante de la observación. */
@@ -72,7 +82,19 @@ export interface TechnicalMetricSampleFilters {
   readonly externalResourceId?: string;
   readonly cloudResourceId?: string;
   readonly metricNames?: readonly string[];
+  readonly statistic?: MetricStatistic;
   readonly limit: number;
+}
+
+export interface TechnicalMetricStatisticFilters {
+  readonly startDate?: Date;
+  readonly endDate?: Date;
+  readonly externalResourceId?: string;
+  readonly cloudResourceId?: string;
+  readonly providerNamespace?: string;
+  readonly regionId?: string;
+  readonly dimensionsHash?: string;
+  readonly metricNames?: readonly string[];
 }
 
 export type TechnicalMetricSeriesBucket = 'raw' | '30m' | 'hour' | 'day';
@@ -83,6 +105,7 @@ export interface TechnicalMetricSeriesFilters {
   readonly externalResourceId?: string;
   readonly cloudResourceId?: string;
   readonly metricNames?: readonly string[];
+  readonly statistic?: MetricStatistic;
   readonly bucket: TechnicalMetricSeriesBucket;
   readonly cursor?: string;
   readonly pageSize: number;
@@ -92,8 +115,15 @@ export interface TechnicalMetricSeriesRepositoryPoint {
   readonly bucketStart: Date;
   readonly externalResourceId: string;
   readonly cloudResourceId?: string;
+  readonly providerNamespace?: string;
+  readonly regionId?: string;
+  readonly dimensionsHash?: string;
   readonly metricName: string;
   readonly metricUnit?: string;
+  readonly statistic: MetricStatistic;
+  readonly value: number;
+  readonly aggregationSemantics: string;
+  readonly sourceGranularitiesSeconds: readonly number[];
   readonly avg: number;
   readonly min: number;
   readonly max: number;
@@ -116,6 +146,7 @@ export interface TechnicalMetricCoverageFilters {
   readonly endDate?: Date;
   readonly externalResourceId?: string;
   readonly cloudResourceId?: string;
+  readonly statistic?: MetricStatistic;
 }
 
 export interface TechnicalMetricCoverageSampleItem {
@@ -161,6 +192,7 @@ export interface TechnicalMetricSummaryFilters {
   readonly externalResourceIds?: readonly string[];
   readonly cloudResourceIds?: readonly string[];
   readonly metricNames?: readonly string[];
+  readonly statistic?: MetricStatistic;
   readonly limit: number;
 }
 
@@ -169,10 +201,14 @@ export interface TechnicalMetricSummaryItem {
   readonly externalResourceId: string;
   readonly cloudResourceId?: string;
   readonly cloudConnectionId?: string;
+  readonly providerNamespace?: string;
+  readonly regionId?: string;
+  readonly dimensionsHash?: string;
   readonly resourceType?: string;
   readonly serviceName?: string;
   readonly metricName: string;
   readonly metricUnit?: string;
+  readonly statistic: MetricStatistic;
   readonly sampleCount: number;
   readonly coverageDays: number;
   readonly min: number;
@@ -207,7 +243,11 @@ export interface IResourceMetricRepository {
    * @param limit    - Número máximo de recursos a devolver.
    * @returns Recursos cloud del tenant (posiblemente vacío).
    */
-  listResourcesForTenant(tenantId: string, limit: number): Promise<readonly CloudResourceItem[]>;
+  listResourcesForTenant(
+    tenantId: string,
+    limit: number,
+    filters?: CloudResourceFilters,
+  ): Promise<readonly CloudResourceItem[]>;
 
   getResourceForTenantById?(tenantId: string, cloudResourceId: string): Promise<CloudResourceItem | undefined>;
 
@@ -228,6 +268,11 @@ export interface IResourceMetricRepository {
     tenantId: string,
     filters: TechnicalMetricSampleFilters,
   ): Promise<readonly ResourceMetricSampleItem[]>;
+
+  listMetricStatisticsForTenant?(
+    tenantId: string,
+    filters: TechnicalMetricStatisticFilters,
+  ): Promise<readonly { readonly metricName: string; readonly statistic: MetricStatistic }[]>;
 
   listMetricSeriesForTenant(
     tenantId: string,

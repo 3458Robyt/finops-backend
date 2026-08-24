@@ -18,6 +18,10 @@ export interface E2eFixtureManifest {
     readonly email: string;
     readonly name: string;
   };
+  readonly viewer: {
+    readonly email: string;
+    readonly name: string;
+  };
   readonly tenants: readonly {
     readonly id: string;
     readonly name: string;
@@ -195,6 +199,16 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
       status: 'ACTIVE',
     },
   });
+  const viewer = await prisma.user.create({
+    data: {
+      tenantId: tenantA.id,
+      email: `${fixturePrefix}-viewer-${runId}@example.test`,
+      name: `E2E Viewer ${runId}`,
+      passwordHash,
+      role: 'VIEWER',
+      status: 'ACTIVE',
+    },
+  });
 
   const tenantAFixture = await seedTenantData(prisma, {
     runId,
@@ -229,6 +243,10 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
     admin: {
       email: user.email,
       name: user.name,
+    },
+    viewer: {
+      email: viewer.email,
+      name: viewer.name,
     },
     tenants: [
       { id: tenantA.id, name: tenantA.name, slug: tenantA.slug },

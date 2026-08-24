@@ -4,6 +4,7 @@ import type {
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
 import { optionalString, readObjectArray, requireString } from '../providerConfig.js';
 import type { OciCompartmentDiscoveryResult } from './OciCompartmentDiscovery.js';
+import type { OciRegionDiscoveryResult } from './OciRegionDiscovery.js';
 import { readOciMetricDefinitions } from './OciMonitoringCollector.js';
 import type { OciComputeClient, OciResourceSearchClient } from './OciSdkContracts.js';
 import { collectOciResourceSearchInventory } from './OciResourceSearchCollector.js';
@@ -24,7 +25,11 @@ export interface OciInventoryDependencies {
   readonly discoverCompartments: (
     job: CloudIngestionJobContext,
   ) => Promise<OciCompartmentDiscoveryResult>;
+  readonly discoverRegions?: (
+    job: CloudIngestionJobContext,
+  ) => Promise<OciRegionDiscoveryResult>;
   readonly withRetry: <T>(operation: () => Promise<T>) => Promise<T>;
+  readonly withRateLimit?: <T>(job: CloudIngestionJobContext, api: 'resourceSearch' | 'compute', operation: () => Promise<T>) => Promise<T>;
 }
 
 export async function collectOciInventory(
@@ -43,10 +48,13 @@ export async function collectOciInventory(
 
   if (dependencies.createResourceSearchClient !== undefined) {
     try {
-      const search = await collectOciResourceSearchInventory(job, {
-        createClient: dependencies.createResourceSearchClient,
+      const searchOperation = () => collectOciResourceSearchInventory(job, {
+        createClient: dependencies.createResourceSearchClient!,
         withRetry: dependencies.withRetry,
       });
+      const search = dependencies.withRateLimit === undefined
+        ? await searchOperation()
+        : await dependencies.withRateLimit(job, 'resourceSearch', searchOperation);
       searchResources = search.resources;
       resourceSearchStatus = 'COMPLETE';
       resourceSearchFilteredCount = search.filteredResourceCount;
@@ -67,6 +75,7 @@ export async function collectOciInventory(
     sdkResources = inventory.resources;
     apiCallCount += inventory.apiCallCount;
     coverage = inventory.coverage;
+    warnings.push(...inventory.warnings);
   } catch (error) {
     warnings.push(`OCI inventory SDK skipped: ${safeErrorMessage(error)}`);
     coverage = { inventoryCompartmentDiscovery: 'FAILED' };
@@ -105,50 +114,64 @@ async function collectComputeInventory(
   readonly apiCallCount: number;
   readonly resources: readonly NormalizedCloudResource[];
   readonly coverage: Readonly<Record<string, unknown>>;
+  readonly warnings: readonly string[];
 }> {
   const discovery = await dependencies.discoverCompartments(job);
-  const client = dependencies.createComputeClient(job);
+  const regions = dependencies.discoverRegions === undefined
+    ? { regionIds: job.connection.defaultRegion === undefined ? [] : [job.connection.defaultRegion], apiCallCount: 0, status: 'FALLBACK' as const, warnings: [] }
+    : await dependencies.discoverRegions(job);
   const resources: NormalizedCloudResource[] = [];
-  let apiCallCount = discovery.apiCallCount;
+  let apiCallCount = discovery.apiCallCount + regions.apiCallCount;
+  const warnings = [...regions.warnings];
 
-  try {
-    for (const compartmentId of discovery.compartmentIds) {
-      let page: string | undefined;
-      do {
-        apiCallCount += 1;
-        const response = await dependencies.withRetry(() => client.listInstances({
-          compartmentId,
-          ...(page !== undefined ? { page } : {}),
-        }));
-        for (const instance of response.items ?? []) {
-          if (instance.id === undefined) continue;
-          resources.push({
-            tenantId: job.tenantId,
-            cloudConnectionId: job.cloudConnectionId,
-            provider: 'OCI',
-            externalResourceId: instance.id,
-            name: instance.displayName ?? instance.id,
-            resourceType: 'COMPUTE_INSTANCE',
-            serviceName: 'Oracle Compute',
-            ...(job.connection.defaultRegion !== undefined
-              ? { regionId: job.connection.defaultRegion }
-              : {}),
-            status: normalizeOciResourceStatus(instance.lifecycleState),
-            tags: mergeOciTags(instance.freeformTags, instance.definedTags),
-            rawResource: {
-              source: 'OCI_COMPUTE_SDK',
-              normalizerVersion: 'oci-compute-v1',
-              compartmentId,
-              shape: instance.shape,
-              lifecycleState: instance.lifecycleState,
-            },
-          });
-        }
-        page = response.opcNextPage;
-      } while (page !== undefined);
+  for (const regionId of regions.regionIds) {
+    const regionalJob = withRegion(job, regionId);
+    const client = dependencies.createComputeClient(regionalJob);
+    try {
+      for (const compartmentId of discovery.compartmentIds) {
+        let page: string | undefined;
+        do {
+          apiCallCount += 1;
+          const request = () => dependencies.withRetry(() => client.listInstances({
+            compartmentId,
+            ...(page !== undefined ? { page } : {}),
+          }));
+          const response = dependencies.withRateLimit === undefined
+            ? await request()
+            : await dependencies.withRateLimit(regionalJob, 'compute', request);
+          for (const instance of response.items ?? []) {
+            if (instance.id === undefined) continue;
+            resources.push({
+              tenantId: job.tenantId,
+              cloudConnectionId: job.cloudConnectionId,
+              provider: 'OCI',
+              externalResourceId: instance.id,
+              name: instance.displayName ?? instance.id,
+              resourceType: 'COMPUTE_INSTANCE',
+              serviceName: 'Oracle Compute',
+              // OCI Compute may return the short region key (for example `phx`)
+              // even though the request was made against the canonical region
+              // name (`us-phoenix-1`). Persist the region used by the discovery
+              // loop so inventory, metrics and costs can be joined reliably.
+              regionId,
+              status: normalizeOciResourceStatus(instance.lifecycleState),
+              tags: mergeOciTags(instance.freeformTags, instance.definedTags),
+              rawResource: {
+                source: 'OCI_COMPUTE_SDK',
+                normalizerVersion: 'oci-compute-v1',
+                compartmentId,
+                regionId,
+                shape: instance.shape,
+                lifecycleState: instance.lifecycleState,
+              },
+            });
+          }
+          page = response.opcNextPage;
+        } while (page !== undefined);
+      }
+    } finally {
+      client.close?.();
     }
-  } finally {
-    client.close?.();
   }
 
   return {
@@ -162,6 +185,19 @@ async function collectComputeInventory(
       includedCompartmentCount: discovery.includedCompartmentCount,
       excludedCompartmentCount: discovery.excludedCompartmentCount,
       compartmentDiscoveryApiCalls: discovery.apiCallCount,
+      regionDiscoveryStatus: regions.status,
+      regions: regions.regionIds,
+    },
+    warnings,
+  };
+}
+
+function withRegion(job: CloudIngestionJobContext, regionId: string): CloudIngestionJobContext {
+  return {
+    ...job,
+    requestContext: {
+      ...(job.requestContext ?? {}),
+      regionId,
     },
   };
 }
@@ -196,7 +232,9 @@ function readMetricResources(job: CloudIngestionJobContext): readonly Normalized
     name: definition.resourceId,
     resourceType: 'COMPUTE_INSTANCE',
     serviceName: 'Oracle Compute',
-    ...(job.connection.defaultRegion !== undefined ? { regionId: job.connection.defaultRegion } : {}),
+    ...((definition.regionId ?? job.connection.defaultRegion) !== undefined
+      ? { regionId: definition.regionId ?? job.connection.defaultRegion }
+      : {}),
     status: 'UNKNOWN',
     rawResource: {
       source: 'OCI_METRIC_DEFINITION',

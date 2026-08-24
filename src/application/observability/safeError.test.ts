@@ -19,6 +19,19 @@ describe('safeErrorMessage', () => {
     expect(safeErrorMessage('abcdefghijklmnopqrstuvwxyz', 10)).toBe('abcdefghij');
   });
 
+  it('extracts useful details from structured provider errors', () => {
+    const sanitized = safeErrorMessage({
+      statusCode: 403,
+      serviceCode: 'NotAuthorizedOrNotFound',
+      message: 'The caller is not authorized to perform this operation.',
+      apiKey: 'do-not-log',
+    });
+
+    expect(sanitized).toContain('NotAuthorizedOrNotFound');
+    expect(sanitized).toContain('not authorized');
+    expect(sanitized).not.toContain('do-not-log');
+  });
+
   it('redacts bearer and cookie header material', () => {
     const sanitized = safeErrorMessage(
       'Authorization: Bearer abcdefghijklmnop Cookie: session=super-secret; refresh=other-secret',

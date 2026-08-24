@@ -28,19 +28,20 @@ export function resolveRequestedBucket(requested: TechnicalMetricBucket): Techni
 export function classifyMetric(metricName: string): TechnicalMetricGroup {
   const normalized = metricName.toLowerCase();
 
-  if (normalized.includes('cpu')) {
+  if (/(^|[^a-z])(cpu|processor|loadaverage|load_avg)([^a-z]|$)/.test(normalized)
+    || normalized.includes('cpu')) {
     return 'CPU';
   }
-  if (normalized.includes('memory')) {
+  if (/(memory|mem|ram|swap|pagefile|paging)/.test(normalized)) {
     return 'MEMORY';
   }
-  if (normalized.includes('network')) {
+  if (/(network|vnic|nic|packet|bandwidth|throughput|rx|tx|receive|transmit)/.test(normalized)) {
     return 'NETWORK';
   }
-  if (normalized.includes('disk') || normalized.includes('iops')) {
+  if (/(disk|iops|filesystem|file_system|volume|storage|block|read|write|latency)/.test(normalized)) {
     return 'DISK';
   }
-  if (normalized.includes('load')) {
+  if (/(load|availability|available|uptime|health|status|process|thread|connection)/.test(normalized)) {
     return 'SYSTEM';
   }
 

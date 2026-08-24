@@ -3,6 +3,7 @@ import {
   buildIngestionSchedulePlan,
   type ScheduleableIngestionConnection,
 } from './ingestionJobScheduler.js';
+import { buildIngestionConfigurationHash } from './ingestionConfigurationHash.js';
 
 const now = new Date('2026-06-05T12:00:00.000Z');
 const defaultOptions = {
@@ -41,7 +42,7 @@ describe('buildIngestionSchedulePlan', () => {
       cloudConnectionId: 'oci_1',
       providerCode: 'oci',
       sourceType: 'TECHNICAL_METRIC',
-      targetStart: new Date('2026-06-05T11:30:00.000Z'),
+      targetStart: new Date('2026-05-06T12:00:00.000Z'),
       targetEnd: now,
       maxAttempts: 1,
     }));
@@ -99,6 +100,7 @@ describe('buildIngestionSchedulePlan', () => {
             sourceType: 'TECHNICAL_METRIC',
             status: 'SUCCESS',
             targetEnd: new Date('2026-06-05T11:40:00.000Z'),
+            configurationHash: technicalConfigurationHash(),
           },
         ],
       }),
@@ -225,4 +227,14 @@ function capabilityValidation(capabilities: readonly string[]): Readonly<Record<
     checkedAt: '2026-06-05T10:00:00.000Z',
     capabilities: capabilities.map((capability) => ({ capability, status: 'AVAILABLE' })),
   };
+}
+
+function technicalConfigurationHash(): string {
+  const connection = buildOciConnection();
+  return buildIngestionConfigurationHash({
+    providerCode: 'oci',
+    sourceType: 'TECHNICAL_METRIC',
+    metadata: connection.metadata,
+    requestContext: { interval: '30m', resolutionSeconds: 1800 },
+  });
 }

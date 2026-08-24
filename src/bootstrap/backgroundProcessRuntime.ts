@@ -66,12 +66,13 @@ function startIngestionWorker(input: BackgroundProcessRuntimeInput, worker: Appl
   if (!input.capabilities.runsIngestionWorker || worker === null) return;
   const workerId = input.config.workers.ingestion.id ?? `finops-worker-${process.pid}`;
   const intervalMs = input.config.workers.ingestion.intervalMs;
-  console.log(`   Ingestion worker: enabled (${workerId}, ${intervalMs}ms)`);
+  const concurrency = input.config.workers.ingestion.concurrency;
+  console.log(`   Ingestion worker: enabled (${workerId}, ${intervalMs}ms, concurrency=${concurrency})`);
   input.startBackgroundLoop({
     metricName: 'ingestion_worker_iteration',
-    run: () => worker.runOnce(workerId),
+    run: () => worker.runBatch(workerId, concurrency),
     intervalMs,
-    fallbackIntervalMs: 30_000,
+    fallbackIntervalMs: 1_000,
     onError: (error) => console.error(JSON.stringify({ level: 'error', event: 'ingestion_worker_iteration_failed', error: safeErrorMessage(error) })),
     onSkip: () => console.warn('Ingestion worker iteration skipped because previous run is still active'),
   });

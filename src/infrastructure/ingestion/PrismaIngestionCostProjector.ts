@@ -11,7 +11,12 @@ import { CostBillingSource, Prisma } from '../../generated/prisma/client.js';
 import {
   insertHistoricalCloudResources,
 } from './PrismaCloudResourceCatalog.js';
-import { buildHistoricalOciResources } from './oci/OciHistoricalResourceCatalog.js';
+import {
+  buildHistoricalOciProviderResources,
+  buildHistoricalOciResources,
+  isOciAggregateResourceId,
+  isOciHistoricalResourceId,
+} from './oci/OciHistoricalResourceCatalog.js';
 import {
   buildFocusCostMetricRows,
   getFocusCloudAccountExternalId,
@@ -39,6 +44,10 @@ export class PrismaIngestionCostProjector {
     resourceIdsByExternalId: ReadonlyMap<string, string>,
   ): Promise<FocusCostMetricProjectionResult> {
     if (rows.length === 0) return { projected: 0, inserted: 0, linkage: emptyResourceLinkageStats() };
+    const historicalResourcesInserted = await insertHistoricalCloudResources(
+      tx,
+      buildHistoricalOciProviderResources(job, rows),
+    );
     const resolvedResourceIds = await this.resolveResourceIdsForRows(tx, job, resourceIdsByExternalId, rows);
     const account = await tx.cloudAccount.upsert({
       where: { tenantId_provider_externalAccountId: { tenantId: job.tenantId, provider: rows[0]!.provider, externalAccountId: job.connection.rootExternalId } },
@@ -46,23 +55,19 @@ export class PrismaIngestionCostProjector {
       create: { tenantId: job.tenantId, provider: rows[0]!.provider, externalAccountId: job.connection.rootExternalId, name: job.connection.rootExternalId },
       select: { id: true },
     });
-    await tx.costMetric.deleteMany({ where: { cloudConnectionId: job.cloudConnectionId, chargePeriodStart: { gte: job.targetStart, lt: job.targetEnd }, billingSource: CostBillingSource.FOCUS } });
+    await tx.costMetric.deleteMany({ where: { cloudConnectionId: job.cloudConnectionId, chargePeriodStart: { gte: job.targetStart, lt: job.targetEnd }, billingSource: CostBillingSource.PROVIDER_API } });
     const data = rows.map((row) => {
       const normalizedResourceId = normalizeExternalResourceId(row.resourceId);
       const knownResourceId = normalizedResourceId === undefined ? undefined : resolvedResourceIds.get(normalizedResourceId);
       const resourceLink = knownResourceId === undefined
-        ? resolveExactResourceLink({
-          cloudConnectionId: row.cloudConnectionId,
-          externalResourceId: normalizedResourceId,
-          resourceIdsByKey: new Map(),
-          serviceLevel: normalizedResourceId === undefined && !Object.prototype.hasOwnProperty.call(row.rawRow, 'ResourceId'),
-        })
+        ? resolveProviderCostResourceLink(row.provider, normalizedResourceId, row.rawRow)
         : { cloudResourceId: knownResourceId };
       return {
         tenantId: row.tenantId, cloudAccountId: account.id, cloudConnectionId: row.cloudConnectionId,
         provider: row.provider, billingSource: CostBillingSource.PROVIDER_API,
         ...(row.billingAccountId === undefined ? {} : { billingAccountId: row.billingAccountId }),
         serviceName: row.serviceName, resourceId: row.resourceId,
+        ...(row.resourceName === undefined ? {} : { resourceName: row.resourceName }),
         ...(resourceLink.cloudResourceId === undefined ? {} : { cloudResourceId: resourceLink.cloudResourceId }),
         ...(resourceLink.reason === undefined ? {} : { resourceLinkReason: resourceLink.reason }),
         ...(row.regionId === undefined ? {} : { regionId: row.regionId }),
@@ -71,11 +76,11 @@ export class PrismaIngestionCostProjector {
         ...(row.consumedQuantity === undefined ? {} : { consumedQuantity: row.consumedQuantity }),
         ...(row.consumedUnit === undefined ? {} : { consumedUnit: row.consumedUnit }),
         sourceMetric: row.sourceMetric, metricIdentityHash: row.lineItemHash,
-        providerRaw: { source: 'PROVIDER_API', cloudConnectionId: row.cloudConnectionId, raw: row.rawRow } as Prisma.InputJsonValue,
+        providerRaw: { source: 'PROVIDER_API', cloudConnectionId: row.cloudConnectionId, compartmentId: row.compartmentId, skuName: row.skuName, skuPartNumber: row.skuPartNumber, raw: row.rawRow } as Prisma.InputJsonValue,
       };
     });
     const result = await tx.costMetric.createMany({ data, skipDuplicates: true });
-    return { projected: rows.length, inserted: result.count, linkage: summarizeResourceLinkage(data) };
+    return { projected: rows.length, inserted: result.count, linkage: summarizeResourceLinkage(data), historicalResourcesInserted };
   }
 
   public async projectFocusRowsToCostMetrics(
@@ -138,4 +143,20 @@ export class PrismaIngestionCostProjector {
     }
     return accountIdsByExternalId;
   }
+}
+
+function resolveProviderCostResourceLink(
+  provider: string,
+  normalizedResourceId: string | undefined,
+  rawRow: Readonly<Record<string, unknown>>,
+): ReturnType<typeof resolveExactResourceLink> {
+  if (provider === 'OCI' && normalizedResourceId !== undefined) {
+    if (isOciAggregateResourceId(normalizedResourceId)) return { reason: 'SERVICE_LEVEL_COST' };
+    if (!isOciHistoricalResourceId(normalizedResourceId)) return { reason: 'UNSUPPORTED_RESOURCE_ID' };
+  }
+  return resolveExactResourceLink({
+    externalResourceId: normalizedResourceId,
+    resourceIdsByKey: new Map(),
+    serviceLevel: normalizedResourceId === undefined && !Object.prototype.hasOwnProperty.call(rawRow, 'ResourceId'),
+  });
 }

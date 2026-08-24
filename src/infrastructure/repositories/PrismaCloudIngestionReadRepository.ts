@@ -62,13 +62,70 @@ export class PrismaCloudIngestionReadRepository {
     };
   }
 
-  public async listIngestionJobsForTenant(tenantId: string, limit: number): Promise<readonly IngestionJobHistoryItem[]> {
+  public async listIngestionJobsForTenant(
+    tenantId: string,
+    limit: number,
+    includeArchived = false,
+  ): Promise<readonly IngestionJobHistoryItem[]> {
     const jobs = await this.prisma.ingestionJob.findMany({
-      where: { tenantId },
+      where: { tenantId, ...(includeArchived ? {} : { archivedAt: null }) },
       orderBy: { createdAt: 'desc' },
       take: limit,
     });
     return jobs.map((job) => toIngestionJobHistoryItem(job));
+  }
+
+  public async getIngestionJobForTenant(tenantId: string, jobId: string): Promise<IngestionJobHistoryItem | null> {
+    const job = await this.prisma.ingestionJob.findFirst({ where: { id: jobId, tenantId } });
+    return job === null ? null : toIngestionJobHistoryItem(job);
+  }
+
+  public async requestIngestionJobCancellation(
+    tenantId: string,
+    jobId: string,
+    userId: string,
+  ): Promise<IngestionJobHistoryItem | null> {
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const pending = await tx.ingestionJob.updateMany({
+        where: { id: jobId, tenantId, status: 'PENDING', archivedAt: null },
+        data: {
+          status: 'CANCELLED',
+          completedAt: now,
+          cancelRequestedAt: now,
+          cancelRequestedByUserId: userId,
+          errorMessage: 'Cancelado por el usuario.',
+          progress: { phase: 'CANCELLED', message: 'Trabajo cancelado antes de iniciar.', updatedAt: now.toISOString() },
+        },
+      });
+      if (pending.count === 1) return;
+      await tx.ingestionJob.updateMany({
+        where: { id: jobId, tenantId, status: 'RUNNING', archivedAt: null },
+        data: {
+          cancelRequestedAt: now,
+          cancelRequestedByUserId: userId,
+          progress: { phase: 'CANCELLATION_REQUESTED', message: 'Cancelación solicitada; se detendrá al finalizar la fase actual.', updatedAt: now.toISOString() },
+        },
+      });
+    });
+    return this.getIngestionJobForTenant(tenantId, jobId);
+  }
+
+  public async archiveIngestionJob(
+    tenantId: string,
+    jobId: string,
+    userId: string,
+  ): Promise<IngestionJobHistoryItem | null> {
+    await this.prisma.ingestionJob.updateMany({
+      where: {
+        id: jobId,
+        tenantId,
+        archivedAt: null,
+        status: { in: ['SUCCESS', 'FAILED', 'CANCELLED', 'SKIPPED'] },
+      },
+      data: { archivedAt: new Date(), archivedByUserId: userId },
+    });
+    return this.getIngestionJobForTenant(tenantId, jobId);
   }
 
   public async listDataQualityChecksForTenant(tenantId: string, limit: number): Promise<readonly DataQualityCheckItem[]> {
@@ -88,19 +145,22 @@ export class PrismaCloudIngestionReadRepository {
         tenantId: input.tenantId,
         cloudConnectionId: input.cloudConnectionId,
         sourceType: input.sourceType,
+        ...(input.configurationHash !== undefined ? { configurationHash: input.configurationHash } : {}),
         status: { in: ['PENDING', 'RUNNING', 'SUCCESS'] },
         targetStart: { lt: input.targetEnd },
         targetEnd: { gt: input.targetStart },
       },
       orderBy: { targetStart: 'asc' },
-      select: { id: true, sourceType: true, status: true, targetStart: true, targetEnd: true },
+      select: { id: true, sourceType: true, status: true, dataOutcome: true, targetStart: true, targetEnd: true, configurationHash: true },
     });
     return jobs.map((job) => ({
       id: job.id,
       sourceType: job.sourceType,
       status: job.status,
+      ...(job.dataOutcome !== null ? { dataOutcome: job.dataOutcome } : {}),
       targetStart: job.targetStart,
       targetEnd: job.targetEnd,
+      ...(job.configurationHash !== null ? { configurationHash: job.configurationHash } : {}),
     }));
   }
 
@@ -118,12 +178,13 @@ export class PrismaCloudIngestionReadRepository {
       },
       orderBy: { createdAt: 'desc' },
       take: 200,
-      select: { id: true, sourceType: true, status: true, targetStart: true, targetEnd: true },
+      select: { id: true, sourceType: true, status: true, dataOutcome: true, targetStart: true, targetEnd: true },
     });
     return jobs.map((job) => ({
       id: job.id,
       sourceType: job.sourceType,
       status: job.status,
+      ...(job.dataOutcome !== null ? { dataOutcome: job.dataOutcome } : {}),
       targetStart: job.targetStart,
       targetEnd: job.targetEnd,
     }));
@@ -151,6 +212,7 @@ export class PrismaCloudIngestionReadRepository {
         providerCode: true,
         defaultRegion: true,
         lastValidatedAt: true,
+        lastValidationAttemptAt: true,
         metadata: true,
         credentials: { where: { status: 'ACTIVE' }, select: { purpose: true } },
         ingestionJobs: {
@@ -170,6 +232,7 @@ export class PrismaCloudIngestionReadRepository {
         providerCode: connection.providerCode,
         defaultRegion: connection.defaultRegion,
         lastValidatedAt: connection.lastValidatedAt,
+        lastValidationAttemptAt: connection.lastValidationAttemptAt,
         metadata: connection.metadata,
         credentialPurposes: connection.credentials.map((credential) => credential.purpose),
         recentJobs: connection.ingestionJobs.map((job) => ({

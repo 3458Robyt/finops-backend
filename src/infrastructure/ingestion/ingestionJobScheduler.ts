@@ -1,4 +1,5 @@
 import type { IngestionJobStatus, IngestionSourceType } from '../../domain/models/CloudConnection.js';
+import { buildIngestionConfigurationHash } from './ingestionConfigurationHash.js';
 
 type CredentialPurpose =
   | 'TEMPORARY_ADMIN'
@@ -28,6 +29,7 @@ export interface ScheduleableIngestionJob {
   readonly sourceType: IngestionSourceType | string;
   readonly status: IngestionJobStatus | string;
   readonly targetEnd: Date;
+  readonly configurationHash?: string | null;
 }
 
 export interface IngestionScheduleOptions {
@@ -53,6 +55,8 @@ export interface PlannedIngestionJob {
   readonly targetStart: Date;
   readonly targetEnd: Date;
   readonly maxAttempts: number;
+  readonly configurationHash: string;
+  readonly requestContext?: Readonly<Record<string, unknown>>;
   readonly reason: string;
 }
 
@@ -132,12 +136,24 @@ function evaluateSource(
   }
 
   const requiredCapability = requiredCapabilityForSource(providerCode, sourceType, connection.metadata);
-  if (!capabilities.has(requiredCapability)) {
+  if (!hasRequiredCapability(capabilities, requiredCapability)) {
     return {
       kind: 'skip',
-      reason: `La validación vigente no confirmó la capacidad ${requiredCapability} para esta fuente.`,
+      reason: requiredCapability === 'STORAGE_OR_COSTS'
+        ? 'La validación vigente no confirmó STORAGE (FOCUS) ni COSTS (API directa) para facturación.'
+        : `La validación vigente no confirmó la capacidad ${requiredCapability} para esta fuente.`,
     };
   }
+
+  const requestContext = sourceType === 'TECHNICAL_METRIC'
+    ? { interval: '30m', resolutionSeconds: 1800 }
+    : undefined;
+  const configurationHash = buildIngestionConfigurationHash({
+    providerCode,
+    sourceType,
+    metadata: connection.metadata,
+    ...(requestContext !== undefined ? { requestContext } : {}),
+  });
 
   const runningJob = connection.ingestionJobs.find((job) => {
     return job.sourceType === sourceType && activeJobStatuses.has(job.status);
@@ -153,6 +169,8 @@ function evaluateSource(
   const recentJob = connection.ingestionJobs.find((job) => {
     return (
       job.sourceType === sourceType &&
+      (job.configurationHash === configurationHash
+        || (sourceType !== 'TECHNICAL_METRIC' && (job.configurationHash === undefined || job.configurationHash === null))) &&
       completedOrActiveJobStatuses.has(job.status) &&
       job.targetEnd >= freshnessThreshold
     );
@@ -164,6 +182,21 @@ function evaluateSource(
     };
   }
 
+  const latestCoveredJob = connection.ingestionJobs
+    .filter((job) => (
+      job.sourceType === sourceType
+      && completedOrActiveJobStatuses.has(job.status)
+      && job.configurationHash === configurationHash
+    ))
+    .sort((left, right) => right.targetEnd.getTime() - left.targetEnd.getTime())[0];
+  const defaultStart = new Date(targetEnd.getTime() - windowMs);
+  const catchupFloor = sourceType === 'TECHNICAL_METRIC'
+    ? new Date(targetEnd.getTime() - 30 * 24 * 60 * 60 * 1000)
+    : defaultStart;
+  const targetStart = latestCoveredJob === undefined
+    ? (sourceType === 'TECHNICAL_METRIC' ? catchupFloor : defaultStart)
+    : new Date(Math.max(catchupFloor.getTime(), latestCoveredJob.targetEnd.getTime()));
+
   return {
     kind: 'job',
     job: {
@@ -171,13 +204,15 @@ function evaluateSource(
       cloudConnectionId: connection.id,
       providerCode,
       sourceType,
-      targetStart: new Date(targetEnd.getTime() - windowMs),
+      targetStart,
       targetEnd,
       maxAttempts: options.maxAttempts,
+      configurationHash,
+      ...(requestContext !== undefined ? { requestContext } : {}),
       reason: sourceType === 'INVENTORY'
         ? 'Inventario de recursos habilitado y sin lectura reciente.'
         : sourceType === 'TECHNICAL_METRIC'
-          ? 'Metricas tecnicas configuradas y sin job reciente.'
+          ? 'Metricas tecnicas configuradas; se recupera la ventana faltante desde la última cobertura.'
           : 'Facturación configurada y sin job reciente.',
     },
   };
@@ -214,7 +249,7 @@ function hasMetadataForSource(
   metadata: unknown,
 ): boolean {
   if (!isRecord(metadata)) {
-    return sourceType === 'INVENTORY';
+    return sourceType === 'INVENTORY' || sourceType === 'BILLING_EXPORT';
   }
 
   if (sourceType === 'INVENTORY') return true;
@@ -241,10 +276,10 @@ function requiredCapabilityForSource(
   providerCode: 'aws' | 'oci',
   sourceType: IngestionSourceType,
   metadata: unknown,
-): 'INVENTORY' | 'METRICS' | 'STORAGE' | 'COSTS' {
+): 'INVENTORY' | 'METRICS' | 'STORAGE' | 'COSTS' | 'STORAGE_OR_COSTS' {
   if (sourceType === 'INVENTORY') return 'INVENTORY';
   if (sourceType === 'TECHNICAL_METRIC') return 'METRICS';
-  if (!isRecord(metadata)) return 'COSTS';
+  if (!isRecord(metadata)) return 'STORAGE_OR_COSTS';
 
   const mode = billingSourceMode(metadata);
   if (mode === 'FOCUS') return 'STORAGE';
@@ -253,7 +288,16 @@ function requiredCapabilityForSource(
   const focusKeys = providerCode === 'aws'
     ? ['awsFocusExportObjects', 'awsFocusExportLocations']
     : ['ociFocusReportObjects', 'ociFocusReportLocations'];
-  return focusKeys.some((key) => hasArrayItems(metadata[key])) ? 'STORAGE' : 'COSTS';
+  return focusKeys.some((key) => hasArrayItems(metadata[key])) ? 'STORAGE' : 'STORAGE_OR_COSTS';
+}
+
+function hasRequiredCapability(
+  capabilities: ReadonlySet<string>,
+  required: 'INVENTORY' | 'METRICS' | 'STORAGE' | 'COSTS' | 'STORAGE_OR_COSTS',
+): boolean {
+  return required === 'STORAGE_OR_COSTS'
+    ? capabilities.has('STORAGE') || capabilities.has('COSTS')
+    : capabilities.has(required);
 }
 
 function availableCapabilities(metadata: unknown): ReadonlySet<string> {

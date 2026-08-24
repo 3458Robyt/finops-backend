@@ -1,9 +1,12 @@
 import type {
+  ConsumeTelegramSelfLinkCodeInput,
   CreateOrUpdateTelegramLinkInput,
   CreateTelegramAuditEventInput,
   CreateTelegramInteractionLogInput,
+  CreateTelegramSelfLinkCodeInput,
   ITelegramRepository,
 } from '../../domain/interfaces/ITelegramRepository.js';
+import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import type {
   TelegramChatLink,
   TelegramInteractionLog,
@@ -181,6 +184,89 @@ export class PrismaTelegramRepository implements ITelegramRepository {
     });
 
     return toChatLink(row);
+  }
+
+  /**
+   * Guarda únicamente el hash de un código de auto-vinculación. El registro
+   * queda protegido por RLS para que solo el usuario que lo solicitó pueda
+   * verlo dentro del portal.
+   */
+  public async createSelfLinkCode(input: CreateTelegramSelfLinkCodeInput): Promise<void> {
+    await this.prisma.telegramLinkCode.create({
+      data: {
+        tenantId: input.tenantId,
+        userId: input.userId,
+        tokenHash: input.tokenHash,
+        expiresAt: input.expiresAt,
+      },
+    });
+  }
+
+  /**
+   * Consume de forma atómica un código de un solo uso y vincula el chat. El
+   * hash se expone temporalmente mediante un GUC dentro de la transacción para
+   * que el webhook pueda pasar RLS sin abrir acceso global a los códigos.
+   */
+  public async consumeSelfLinkCode(
+    input: ConsumeTelegramSelfLinkCodeInput,
+  ): Promise<TelegramChatLink | null> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw(Prisma.sql`
+        SELECT set_config('app.telegram_link_token_hash', ${input.tokenHash}, true)
+      `);
+
+      const code = await tx.telegramLinkCode.findFirst({
+        where: {
+          tokenHash: input.tokenHash,
+          consumedAt: null,
+          revokedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+      });
+
+      if (code === null) return null;
+
+      const existing = await tx.telegramChatLink.findUnique({
+        where: { chatId: input.chatId },
+      });
+
+      if (
+        existing !== null
+        && existing.status === 'ACTIVE'
+        && (existing.tenantId !== code.tenantId || existing.userId !== code.userId)
+      ) {
+        throw new FinOpsBaseError('El chat de Telegram ya está vinculado a otra cuenta', 'CONFLICT');
+      }
+
+      const link = await tx.telegramChatLink.upsert({
+        where: { chatId: input.chatId },
+        update: {
+          tenantId: code.tenantId,
+          userId: code.userId,
+          ...(input.telegramUserId === undefined ? {} : { telegramUserId: input.telegramUserId }),
+          ...(input.telegramUsername === undefined ? {} : { telegramUsername: input.telegramUsername }),
+          linkedByUserId: code.userId,
+          status: 'ACTIVE',
+          disabledAt: null,
+        },
+        create: {
+          tenantId: code.tenantId,
+          userId: code.userId,
+          chatId: input.chatId,
+          ...(input.telegramUserId === undefined ? {} : { telegramUserId: input.telegramUserId }),
+          ...(input.telegramUsername === undefined ? {} : { telegramUsername: input.telegramUsername }),
+          linkedByUserId: code.userId,
+        },
+        include: { user: { select: userSelect } },
+      });
+
+      await tx.telegramLinkCode.update({
+        where: { id: code.id },
+        data: { consumedAt: new Date() },
+      });
+
+      return toChatLink(link);
+    });
   }
 
   /**

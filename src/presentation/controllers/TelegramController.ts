@@ -2,8 +2,8 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { TelegramBotService } from '../../application/services/TelegramBotService.js';
 import type { TelegramLinkService } from '../../application/services/TelegramLinkService.js';
-import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import { safeSecretEqual } from '../../infrastructure/security/safeSecretCompare.js';
+import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const createLinkSchema = z.object({
@@ -71,7 +71,14 @@ export class TelegramController {
     }
 
     try {
-      await this.botService.handleUpdate(req.body);
+      await runWithDatabaseContext(
+        {
+          role: 'MASTER_ADMIN',
+          workerId: 'telegram-webhook',
+          ...(res.locals?.requestId === undefined ? {} : { requestId: res.locals.requestId }),
+        },
+        () => this.botService.handleUpdate(req.body),
+      );
       res.status(200).json({ success: true });
     } catch (error: unknown) {
       respondWithFinOpsError(res, error, 'No fue posible procesar el webhook de Telegram', 'telegram_operation_failed', req.path);
@@ -100,6 +107,27 @@ export class TelegramController {
       res.status(200).json({ success: true, links });
     } catch (error: unknown) {
       respondWithFinOpsError(res, error, 'No fue posible cargar vinculos Telegram', 'telegram_operation_failed', req.path);
+    }
+  };
+
+  /**
+   * Genera un código de auto-vinculación para el usuario autenticado.
+   *
+   * Sirve: POST /api/v1/telegram/self-link-code
+   * El código expira rápidamente y solo puede consumirse una vez mediante el
+   * webhook autenticado de Telegram.
+   */
+  public createSelfLinkCode = async (req: Request, res: Response): Promise<void> => {
+    if (req.auth === undefined) {
+      res.status(401).json({ success: false, error: 'Authentication is required', code: 'AUTHENTICATION_REQUIRED' });
+      return;
+    }
+
+    try {
+      const result = await this.linkService.createSelfLinkCode(req.auth);
+      res.status(201).json({ success: true, ...result });
+    } catch (error: unknown) {
+      respondWithFinOpsError(res, error, 'No fue posible generar el código de vinculación', 'telegram_operation_failed', req.path);
     }
   };
 

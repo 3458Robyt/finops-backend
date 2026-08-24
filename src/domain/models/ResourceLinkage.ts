@@ -93,7 +93,13 @@ export function normalizeExternalResourceId(value: unknown): string | undefined 
   }
 
   const normalized = value.trim();
-  return normalized === '' ? undefined : normalized;
+  if (normalized === '') return undefined;
+
+  // OCI OCIDs are case-insensitive identifiers. Some Monitoring responses
+  // return them in uppercase while Resource Search and Compute return the
+  // canonical lowercase form. Normalize only OCIDs; AWS identifiers and
+  // provider-specific names must retain their original case.
+  return /^ocid1\./i.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 
 export function resourceLookupKey(cloudConnectionId: string, externalResourceId: string): string {

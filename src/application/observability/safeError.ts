@@ -6,7 +6,7 @@ const DEFAULT_MAX_LENGTH = 300;
  * conexión en sus mensajes.
  */
 export function safeErrorMessage(error: unknown, maxLength = DEFAULT_MAX_LENGTH): string {
-  const raw = error instanceof Error ? error.message : String(error);
+  const raw = error instanceof Error ? error.message : stringifyUnknownError(error);
   const normalizedLimit = Number.isInteger(maxLength) && maxLength > 0 ? maxLength : DEFAULT_MAX_LENGTH;
   const sanitized = raw
     .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/gi, '[REDACTED_PEM]')
@@ -22,6 +22,24 @@ export function safeErrorMessage(error: unknown, maxLength = DEFAULT_MAX_LENGTH)
     .trim();
 
   return (sanitized === '' ? 'Unknown error' : sanitized).slice(0, normalizedLimit);
+}
+
+function stringifyUnknownError(error: unknown): string {
+  if (typeof error === 'string') return error;
+  if (error === null || error === undefined) return String(error);
+  if (typeof error !== 'object') return String(error);
+
+  try {
+    const serialized = JSON.stringify(error, (key, value: unknown) => {
+      if (/authorization|cookie|secret|password|token|private.?key|api.?key|credential/i.test(key)) {
+        return '[REDACTED]';
+      }
+      return value;
+    });
+    return serialized === undefined ? String(error) : serialized;
+  } catch {
+    return String(error);
+  }
 }
 
 export function safeErrorName(error: unknown): string {

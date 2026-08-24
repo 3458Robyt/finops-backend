@@ -79,13 +79,15 @@ export function buildCoverageFromAggregate(
   rangeStart: Date | undefined,
   rangeEnd: Date | undefined,
 ): TechnicalMetricCoverage {
-  const expectedDays = countDays(rangeStart, rangeEnd);
-  const days = buildCoverageDaysFromAggregate(aggregate.days, rangeStart, rangeEnd);
+  const effectiveStart = rangeStart ?? aggregate.minSampledAt;
+  const effectiveEnd = rangeEnd ?? aggregate.maxSampledAt;
+  const expectedDays = countDays(effectiveStart, effectiveEnd);
+  const days = buildCoverageDaysFromAggregate(aggregate.days, effectiveStart, effectiveEnd);
   const daysWithData = days.filter((day) => day.status === 'WITH_DATA').length;
 
   return {
-    ...(rangeStart !== undefined ? { rangeStart } : {}),
-    ...(rangeEnd !== undefined ? { rangeEnd } : {}),
+    ...(effectiveStart !== undefined ? { rangeStart: effectiveStart } : {}),
+    ...(effectiveEnd !== undefined ? { rangeEnd: effectiveEnd } : {}),
     ...(aggregate.minSampledAt !== undefined ? { minSampledAt: aggregate.minSampledAt } : {}),
     ...(aggregate.maxSampledAt !== undefined ? { maxSampledAt: aggregate.maxSampledAt } : {}),
     totalSamples: aggregate.totalSamples,

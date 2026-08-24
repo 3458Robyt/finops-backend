@@ -75,6 +75,28 @@ describe('qualityRubric — recommendations', () => {
     expect(report.checks.find((check) => check.name === 'focusHonesty')?.passed).toBe(true);
   });
 
+  test('passes a cost-only financial review without pretending to have technical evidence', () => {
+    const report = evaluateRecommendationDrafts(
+      [draft({
+        type: 'SERVICE_COST_REVIEW',
+        title: 'Revisar facturación de S3',
+        description: 'Revisar el costo facturado y el consumo registrado del servicio.',
+        evidence: {
+          candidateId: 'service-1',
+          evidenceLevel: 'COST_ONLY',
+          costEvidenceRefs: ['cost_metrics:aggregate:2026-04-01:2026-05-01:service:AWS:Amazon S3'],
+          financialReviewOnly: true,
+          reviewScope: 'FINANCIAL',
+          requiresManualValidation: true,
+          operationalAuthorization: 'NONE',
+        },
+      })],
+      snapshot,
+    );
+
+    expect(report.checks.find((check) => check.name === 'focusHonesty')?.passed).toBe(true);
+  });
+
   test('fails savings realism when savings exceed the total cost', () => {
     const report = evaluateRecommendationDrafts([draft({ estimatedMonthlySavings: 999999 })], snapshot);
     expect(report.checks.find((check) => check.name === 'savingsRealism')?.passed).toBe(false);

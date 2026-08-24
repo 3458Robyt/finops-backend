@@ -12,6 +12,8 @@ import { CostAllocationController } from './controllers/CostAllocationController
 import { CostController } from './controllers/CostController.js';
 import { KpiController } from './controllers/KpiController.js';
 import { MasterAdminController } from './controllers/MasterAdminController.js';
+import { MasterAdminIngestionController } from './controllers/MasterAdminIngestionController.js';
+import { ClientInvitationController } from './controllers/ClientInvitationController.js';
 import { MfaController } from './controllers/MfaController.js';
 import { NotificationController } from './controllers/NotificationController.js';
 import { OutboundMessageController } from './controllers/OutboundMessageController.js';
@@ -35,6 +37,7 @@ import { createCostRoutes } from './routes/costRoutes.js';
 import { createIngestionRoutes } from './routes/ingestionRoutes.js';
 import { createKpiRoutes } from './routes/kpiRoutes.js';
 import { createMasterAdminRoutes } from './routes/masterAdminRoutes.js';
+import { createClientInvitationRoutes } from './routes/clientInvitationRoutes.js';
 import { createNotificationRoutes } from './routes/notificationRoutes.js';
 import { createOutboundMessageRoutes } from './routes/outboundMessageRoutes.js';
 import { createRecommendationRoutes } from './routes/recommendationRoutes.js';
@@ -95,6 +98,7 @@ export function registerApiRoutes(app: Express, dependencies: ServerDependencies
   app.use('/api/v1/auth/refresh', authRefreshLimiter);
   app.use('/api/v1/auth/mfa', authSensitiveLimiter);
   app.use('/api/v1/auth/password-reset', authSensitiveLimiter);
+  app.use('/api/v1/auth/client-invitations/accept', authSensitiveLimiter);
   app.use('/api/v1/ai', aiLimiter);
   app.use('/api/v1/telegram/webhook', telegramWebhookLimiter);
 
@@ -110,13 +114,15 @@ export function registerApiRoutes(app: Express, dependencies: ServerDependencies
     controllers.passwordRecovery,
     controllers.mfa,
     config.http.corsOrigins,
+    controllers.clientInvitation,
   ));
   app.use('/api/v1/cloud-connections', createCloudConnectionRoutes(controllers.cloudConnection, requireAuth, requireCloudManager));
   app.use('/api/v1/costs', createCostRoutes(controllers.cost, requireAuth));
   app.use('/api/v1/ingestion', createIngestionRoutes(controllers.cloudConnection, requireAuth, requireIngestionManager, controllers.resourceLinkage));
   app.use('/api/v1/technical-metrics', createTechnicalMetricsRoutes(controllers.technicalMetrics, requireAuth));
   app.use('/api/v1/kpis', createKpiRoutes(controllers.kpi, requireAuth));
-  app.use('/api/v1/master-admin', createMasterAdminRoutes(controllers.masterAdmin, requireAuth));
+  app.use('/api/v1/master-admin', createMasterAdminRoutes(controllers.masterAdmin, controllers.masterAdminIngestion, requireAuth));
+  app.use('/api/v1', createClientInvitationRoutes(controllers.clientInvitation, requireAuth));
   app.use('/api/v1/notifications', createNotificationRoutes(controllers.notification, requireAuth));
   app.use('/api/v1/outbound-messages', createOutboundMessageRoutes(controllers.outbound, requireAuth));
   app.use('/api/v1/recommendations', createRecommendationRoutes(controllers.recommendation, requireAuth));
@@ -135,6 +141,13 @@ function createControllers(dependencies: ServerDependencies, config: NonNullable
     analysis: new RecommendationAnalysisController(dependencies.recommendationAnalysisService),
     analytics: new AnalyticsController(dependencies.analyticsService),
     auth: new AuthController(dependencies.authService, authCookieConfig, config.security.refreshTokenTtlSeconds),
+    clientInvitation: new ClientInvitationController(
+      dependencies.clientInvitationService,
+      dependencies.authService,
+      authCookieConfig,
+      config.security.refreshTokenTtlSeconds,
+      config.security.clientPortalUrl,
+    ),
     authSession: new AuthSessionController(dependencies.authService, authCookieConfig, config.security.refreshTokenTtlSeconds),
     passwordRecovery: new PasswordRecoveryController(dependencies.passwordRecoveryService),
     mfa: new MfaController(dependencies.mfaService),
@@ -149,6 +162,7 @@ function createControllers(dependencies: ServerDependencies, config: NonNullable
     outbound: new OutboundMessageController(dependencies.outboundMessageService),
     telegram: new TelegramController(dependencies.telegramBotService, dependencies.telegramLinkService, dependencies.telegramWebhookSecret, dependencies.telegramEnabled),
     masterAdmin: new MasterAdminController(dependencies.masterAdminService),
+    masterAdminIngestion: new MasterAdminIngestionController(dependencies.masterAdminIngestionJobService),
     valueRealization: new ValueRealizationController(dependencies.valueRealizationService),
     resourceLinkage: new ResourceLinkageController(dependencies.resourceLinkageReadinessService),
   };

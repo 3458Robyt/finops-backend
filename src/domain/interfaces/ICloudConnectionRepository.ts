@@ -1,6 +1,7 @@
 import type {
   CloudConnectionSummary,
   DataQualityStatus,
+  IngestionDataOutcome,
   IngestionHealthSummary,
   IngestionSourceType,
   ProviderCatalogEntry,
@@ -48,6 +49,12 @@ export interface CreateIngestionJobInput {
   readonly targetEnd: Date;
   /** Número máximo de intentos antes de marcar el trabajo como fallido; opcional. */
   readonly maxAttempts?: number;
+  /** Lower values run first; source defaults keep interactive inventory/billing ahead of long metric backfills. */
+  readonly priority?: number;
+  /** Fingerprint of the immutable ingestion configuration used by this job. */
+  readonly configurationHash?: string;
+  /** Non-secret execution context, such as statistic profile and resolution. */
+  readonly requestContext?: Readonly<Record<string, unknown>>;
 }
 
 export interface IngestionJobRangeQuery {
@@ -56,14 +63,17 @@ export interface IngestionJobRangeQuery {
   readonly sourceType: IngestionSourceType;
   readonly targetStart: Date;
   readonly targetEnd: Date;
+  readonly configurationHash?: string;
 }
 
 export interface IngestionJobWindowItem {
   readonly id: string;
   readonly sourceType: IngestionSourceType;
-  readonly status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED';
+  readonly status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'SKIPPED';
+  readonly dataOutcome?: IngestionDataOutcome;
   readonly targetStart: Date;
   readonly targetEnd: Date;
+  readonly configurationHash?: string;
 }
 
 /**
@@ -75,7 +85,8 @@ export interface IngestionJobSummary {
   readonly cloudConnectionId: string;
   readonly sourceType: IngestionSourceType;
   /** Estado actual del ciclo de vida del trabajo de ingesta. */
-  readonly status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED';
+  readonly status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'SKIPPED';
+  readonly dataOutcome?: IngestionDataOutcome;
   readonly targetStart: Date;
   readonly targetEnd: Date;
   /** Cantidad de intentos ya ejecutados. */
@@ -84,6 +95,8 @@ export interface IngestionJobSummary {
   readonly maxAttempts: number;
   readonly createdAt: Date;
   readonly updatedAt: Date;
+  readonly configurationHash?: string;
+  readonly requestContext?: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -98,7 +111,7 @@ export interface IngestionJobHistoryItem {
   readonly cloudConnectionId: string;
   readonly sourceType: IngestionSourceType;
   /** Estado actual del ciclo de vida del trabajo de ingesta. */
-  readonly status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED';
+  readonly status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'SKIPPED';
   /** Cantidad de intentos ya ejecutados. */
   readonly attempts: number;
   /** Cantidad máxima de intentos permitidos. */
@@ -107,6 +120,14 @@ export interface IngestionJobHistoryItem {
   readonly targetEnd: Date;
   /** Mensaje de error del último intento fallido, si lo hubo. */
   readonly errorMessage?: string;
+  readonly progress?: Readonly<Record<string, unknown>>;
+  readonly resultSummary?: Readonly<Record<string, unknown>>;
+  readonly priority: number;
+  readonly startedAt?: Date;
+  readonly completedAt?: Date;
+  readonly availableAt: Date;
+  readonly cancelRequestedAt?: Date;
+  readonly archivedAt?: Date;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -152,11 +173,17 @@ export interface IngestionReadinessConnectionSummary {
   readonly providerCode: ProviderCode;
   readonly defaultRegion?: string;
   readonly lastValidatedAt?: Date;
+  readonly lastValidationAttemptAt?: Date;
   readonly onboardingStatus: 'NO_CREDENTIAL' | 'REQUIRES_VALIDATION' | 'SYNCING' | 'PARTIAL' | 'READY' | 'REQUIRES_ATTENTION';
   readonly credentialPurposes: readonly string[];
+  readonly authentication?: {
+    readonly status: 'VERIFIED' | 'REJECTED' | 'RETRYABLE_ERROR' | 'NOT_CONFIGURED';
+    readonly message: string;
+    readonly checkedAt?: Date;
+  };
   readonly capabilities: readonly {
     readonly capability: string;
-    readonly status: 'AVAILABLE' | 'NOT_CONFIGURED' | 'DENIED' | 'ERROR';
+    readonly status: 'AVAILABLE' | 'NOT_CONFIGURED' | 'DENIED' | 'BLOCKED' | 'ERROR';
     readonly message: string;
     readonly checkedAt?: Date;
   }[];
@@ -164,7 +191,7 @@ export interface IngestionReadinessConnectionSummary {
   readonly recentJobs: readonly {
     readonly id: string;
     readonly sourceType: IngestionSourceType;
-    readonly status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED';
+    readonly status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'SKIPPED';
     readonly targetStart: Date;
     readonly targetEnd: Date;
     readonly completedAt?: Date;
@@ -220,17 +247,28 @@ export interface StoreCloudCredentialInput {
   readonly label: string;
   readonly payload: Readonly<Record<string, unknown>>;
   readonly externalPrincipalId?: string;
+  /** Fingerprint derived from the credential material; never a user secret. */
+  readonly keyFingerprint?: string;
+  readonly initialStatus?: 'PENDING' | 'ACTIVE';
 }
 
 export interface CloudCredentialSummary {
   readonly id: string;
   readonly purpose: CloudCredentialPurpose;
-  readonly status: 'ACTIVE' | 'DISABLED' | 'REVOKED' | 'EXPIRED';
+  readonly status: 'PENDING' | 'ACTIVE' | 'DISABLED' | 'REVOKED' | 'EXPIRED' | 'INVALID';
   readonly label: string;
   readonly externalPrincipalId?: string;
+  /** OCI public-key fingerprint, safe to display for comparison with the provider. */
+  readonly keyFingerprint?: string;
   readonly createdAt: Date;
   readonly disabledAt?: Date;
   readonly revokedAt?: Date;
+  readonly validationStatus?: 'VERIFIED' | 'REJECTED' | 'RETRYABLE_ERROR' | 'NOT_CONFIGURED';
+  readonly validationMessage?: string;
+  readonly validationAttemptedAt?: Date;
+  /** Present only in the store response; omitted from ordinary list/validation summaries. */
+  readonly reused?: boolean;
+  readonly nextAction?: 'VALIDATE' | 'NONE';
 }
 
 export interface CreateCloudAuditEventInput {
@@ -267,6 +305,18 @@ export interface ConfigureMetricDefinitionsForConnectionResult {
   readonly updatedKey: 'awsMetricDefinitions' | 'ociMetricDefinitions';
   readonly configuredCount: number;
   readonly replaced: boolean;
+}
+
+export interface CloudMetricDefinitionSummary {
+  readonly id: string;
+  readonly compartmentId: string;
+  readonly namespace: string;
+  readonly metricName: string;
+  readonly externalResourceId: string;
+  readonly regionId?: string;
+  readonly dimensions?: Readonly<Record<string, unknown>>;
+  readonly metricUnit?: string;
+  readonly statistics: unknown;
 }
 
 /**

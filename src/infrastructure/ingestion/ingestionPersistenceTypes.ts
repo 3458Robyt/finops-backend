@@ -10,4 +10,6 @@ export type PrismaIngestionPersistenceClient = Pick<
   | 'ingestionJob'
   | 'ingestionWatermark'
   | 'resourceMetricSample'
+  | 'resourceMetricStreamSummary'
+  | '$executeRaw'
 >;

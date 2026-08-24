@@ -107,11 +107,45 @@ describe('OCI inventory modules', () => {
     ]);
     expect(result.coverage).toMatchObject({ sdkResourceCount: 2, mergedResourceCount: 2 });
   });
+
+  test('persists the canonical discovered region instead of OCI short region keys', async () => {
+    const result = await collectOciInventory(buildJob({ defaultRegion: 'us-phoenix-1' }), {
+      discoverCompartments: async () => ({
+        compartmentIds: ['tenancy-1'],
+        apiCallCount: 0,
+        status: 'CONFIGURED_ONLY',
+        configuredCompartmentCount: 1,
+        discoveredCompartmentCount: 0,
+      }),
+      discoverRegions: async () => ({
+        regionIds: ['us-phoenix-1'],
+        apiCallCount: 1,
+        status: 'COMPLETE',
+        warnings: [],
+      }),
+      createComputeClient: () => ({
+        listInstances: async () => ({
+          items: [{
+            id: 'instance-1',
+            displayName: 'Phoenix instance',
+            region: 'phx',
+            lifecycleState: 'RUNNING',
+          }],
+        }),
+      }),
+      withRetry: (operation) => operation(),
+    });
+
+    expect(result.resources).toEqual([
+      expect.objectContaining({ externalResourceId: 'instance-1', regionId: 'us-phoenix-1' }),
+    ]);
+  });
 });
 
 function buildJob(overrides: {
   readonly metadata?: Readonly<Record<string, unknown>>;
   readonly credentials?: CloudIngestionJobContext['connection']['credentials'];
+  readonly defaultRegion?: string;
 }): CloudIngestionJobContext {
   return {
     id: 'job-1',
@@ -127,6 +161,7 @@ function buildJob(overrides: {
       rootExternalId: 'tenancy-1',
       credentials: overrides.credentials ?? [],
       metadata: overrides.metadata ?? {},
+      defaultRegion: overrides.defaultRegion ?? 'us-ashburn-1',
     },
   };
 }

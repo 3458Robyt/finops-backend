@@ -32,6 +32,7 @@ export class PrismaResourceMetricCoverageReader {
         ...(filters.cloudResourceId !== undefined
           ? { cloudResourceId: filters.cloudResourceId }
           : {}),
+        statistic: filters.statistic ?? 'MEAN',
       },
       orderBy: { sampledAt: 'asc' },
       select: {

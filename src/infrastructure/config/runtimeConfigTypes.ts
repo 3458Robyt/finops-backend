@@ -51,6 +51,7 @@ export interface RuntimeConfig {
     readonly metricsToken: string | undefined;
     readonly passwordResetUrl: string;
     readonly passwordResetTtlSeconds: number;
+    readonly clientPortalUrl: string;
   };
   readonly ai: {
     readonly apiKey: string | undefined;
@@ -91,6 +92,9 @@ export interface RuntimeConfig {
       readonly intervalMs: number;
       readonly jobLeaseMs: number;
       readonly jobHeartbeatMs: number;
+      readonly concurrency: number;
+      readonly retryBackoffMs: number;
+      readonly progressUpdateMs: number;
     };
     readonly learning: { readonly enabled: boolean; readonly id: string | undefined; readonly intervalMs: number; readonly leaseMs: number };
     readonly recommendationAnalysis: {

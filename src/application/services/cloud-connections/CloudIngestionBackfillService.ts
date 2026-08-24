@@ -1,9 +1,11 @@
 import type {
   ICloudConnectionRepository,
+  CloudMetricDefinitionSummary,
   IngestionJobSummary,
 } from '../../../domain/interfaces/ICloudConnectionRepository.js';
 import { FinOpsBaseError } from '../../../domain/errors/errors.js';
 import { buildBackfillWindows, currentMinute } from '../cloudConnectionPolicies.js';
+import { buildIngestionConfigurationHash } from '../../../infrastructure/ingestion/ingestionConfigurationHash.js';
 import type {
   QueueTechnicalBackfillInput,
   TechnicalBackfillResult,
@@ -29,7 +31,20 @@ export class CloudIngestionBackfillService {
     const windowHours = this.resolveWindowHours(input.windowHours);
     const rangeEnd = currentMinute();
     const rangeStart = new Date(rangeEnd.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
-    const windows = buildBackfillWindows(rangeStart, rangeEnd, windowHours);
+    const windows = this.buildProviderWindows(connection.providerCode, rangeStart, rangeEnd, windowHours);
+    const catalogDefinitions = connection.providerCode === 'oci' && this.repository.listEnabledMetricDefinitions !== undefined
+      ? await this.repository.listEnabledMetricDefinitions(input.tenantId, input.cloudConnectionId)
+      : [];
+    const ingestionMetadata = mergeMetricCatalogIntoMetadata(connection.metadata, catalogDefinitions);
+    const definitionCount = catalogDefinitions.length > 0
+      ? catalogDefinitions.length
+      : this.countMetricDefinitions(connection.metadata);
+    if (connection.providerCode === 'oci' && definitionCount === 0) {
+      throw new FinOpsBaseError(
+        'No hay métricas OCI confirmadas para esta conexión. Ejecuta el descubrimiento y confirma al menos una métrica antes del backfill.',
+        'VALIDATION_ERROR',
+      );
+    }
     const existingJobs = [...await this.repository.listIngestionJobsForConnectionRange({
       tenantId: input.tenantId,
       cloudConnectionId: input.cloudConnectionId,
@@ -41,7 +56,18 @@ export class CloudIngestionBackfillService {
     const createdJobs: IngestionJobSummary[] = [];
     const skippedWindows: TechnicalBackfillWindow[] = [];
     for (const window of windows) {
-      if (this.isCovered(existingJobs, window)) {
+      const requestContext = {
+        interval: window.interval,
+        resolutionSeconds: intervalSeconds(window.interval),
+        scopeKey: `technical:${window.interval}`,
+      };
+      const configurationHash = buildIngestionConfigurationHash({
+        providerCode: connection.providerCode,
+        sourceType: 'TECHNICAL_METRIC',
+        metadata: ingestionMetadata,
+        requestContext,
+      });
+      if (this.isCovered(existingJobs, window, configurationHash)) {
         skippedWindows.push(window);
         continue;
       }
@@ -50,13 +76,15 @@ export class CloudIngestionBackfillService {
         tenantId: input.tenantId,
         cloudConnectionId: input.cloudConnectionId,
         sourceType: 'TECHNICAL_METRIC',
-        requestedByUserId: input.userId,
+        ...(input.userId !== undefined ? { requestedByUserId: input.userId } : {}),
         targetStart: window.targetStart,
         targetEnd: window.targetEnd,
-        maxAttempts: 1,
+        maxAttempts: 3,
+        configurationHash,
+        requestContext,
       });
       createdJobs.push(job);
-      existingJobs.push(job);
+      existingJobs.push({ ...job, configurationHash });
     }
 
     return {
@@ -68,7 +96,46 @@ export class CloudIngestionBackfillService {
       rangeEnd,
       createdJobs,
       skippedWindows,
+      estimatedApiCalls: windows.length * definitionCount * 4,
     };
+  }
+
+  private buildProviderWindows(
+    providerCode: string,
+    rangeStart: Date,
+    rangeEnd: Date,
+    windowHours: number,
+  ): readonly TechnicalBackfillWindow[] {
+    if (providerCode !== 'oci') {
+      return buildBackfillWindows(rangeStart, rangeEnd, windowHours)
+        .map((window) => ({ ...window, interval: '30m' as const }));
+    }
+
+    const sevenDayBoundary = new Date(rangeEnd.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const thirtyDayBoundary = new Date(rangeEnd.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const ninetyDayBoundary = new Date(rangeEnd.getTime() - 90 * 24 * 60 * 60 * 1000);
+    const windows: TechnicalBackfillWindow[] = [];
+    const historicalStart = new Date(Math.max(rangeStart.getTime(), ninetyDayBoundary.getTime()));
+    const historicalEnd = new Date(Math.min(rangeEnd.getTime(), thirtyDayBoundary.getTime()));
+    if (historicalStart.getTime() < historicalEnd.getTime()) {
+      windows.push(...buildBackfillWindows(
+        historicalStart,
+        historicalEnd,
+        24,
+      ).map((window) => ({ ...window, interval: '1h' as const })));
+    }
+    const mediumStart = new Date(Math.max(rangeStart.getTime(), thirtyDayBoundary.getTime()));
+    const mediumEnd = new Date(Math.min(rangeEnd.getTime(), sevenDayBoundary.getTime()));
+    if (mediumStart.getTime() < mediumEnd.getTime()) {
+      windows.push(...buildBackfillWindows(mediumStart, mediumEnd, Math.min(windowHours, 12))
+        .map((window) => ({ ...window, interval: '5m' as const })));
+    }
+    const recentStart = new Date(Math.max(rangeStart.getTime(), sevenDayBoundary.getTime()));
+    if (recentStart.getTime() < rangeEnd.getTime()) {
+      windows.push(...buildBackfillWindows(recentStart, rangeEnd, Math.min(windowHours, 6))
+        .map((window) => ({ ...window, interval: '1m' as const })));
+    }
+    return windows;
   }
 
   private isCovered(
@@ -76,14 +143,23 @@ export class CloudIngestionBackfillService {
       readonly status: string;
       readonly targetStart: Date;
       readonly targetEnd: Date;
+      readonly configurationHash?: string;
     }[],
     window: TechnicalBackfillWindow,
+    configurationHash: string,
   ): boolean {
     return jobs.some((job) =>
       job.status !== 'FAILED'
       && job.status !== 'CANCELLED'
+      && job.configurationHash === configurationHash
       && job.targetStart.getTime() <= window.targetStart.getTime()
       && job.targetEnd.getTime() >= window.targetEnd.getTime());
+  }
+
+  private countMetricDefinitions(metadata: unknown): number {
+    if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) return 0;
+    const definitions = (metadata as Record<string, unknown>)['ociMetricDefinitions'];
+    return Array.isArray(definitions) ? definitions.length : 0;
   }
 
   private resolveLookbackDays(value: number | undefined): number {
@@ -102,5 +178,35 @@ export class CloudIngestionBackfillService {
       throw new FinOpsBaseError('La ventana debe estar entre 1 y 24 horas.', 'VALIDATION_ERROR');
     }
     return normalized;
+  }
+}
+
+function mergeMetricCatalogIntoMetadata(
+  metadataValue: Readonly<Record<string, unknown>> | undefined,
+  definitions: readonly CloudMetricDefinitionSummary[],
+): Readonly<Record<string, unknown>> | undefined {
+  const metadata = { ...(metadataValue ?? {}) };
+  if (definitions.length > 0) {
+    metadata['ociMetricDefinitions'] = definitions.map((definition) => ({
+      compartmentId: definition.compartmentId,
+      namespace: definition.namespace,
+      metricName: definition.metricName,
+      resourceId: definition.externalResourceId,
+      ...(definition.regionId === undefined ? {} : { regionId: definition.regionId }),
+      ...(definition.dimensions === undefined ? {} : { dimensions: definition.dimensions }),
+      ...(definition.metricUnit === undefined ? {} : { unit: definition.metricUnit }),
+      statistics: definition.statistics,
+    }));
+  }
+  return Object.keys(metadata).length === 0 ? undefined : metadata;
+}
+
+function intervalSeconds(interval: TechnicalBackfillWindow['interval']): number {
+  switch (interval) {
+    case '1m': return 60;
+    case '5m': return 300;
+    case '30m': return 1800;
+    case '1h': return 3600;
+    default: return 1800;
   }
 }

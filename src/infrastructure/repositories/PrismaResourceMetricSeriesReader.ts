@@ -60,8 +60,14 @@ export class PrismaResourceMetricSeriesReader {
       : cursor.kind === 'legacy-date'
         ? Prisma.sql`AND sampled_at > ${cursor.bucketStart}`
         : Prisma.sql`
-          AND (sampled_at, external_resource_id, COALESCE(cloud_resource_id, ''), metric_name) >
-            (${cursor.bucketStart}, ${cursor.externalResourceId}, ${cursor.cloudResourceId}, ${cursor.metricName})
+          AND (
+            sampled_at, external_resource_id, COALESCE(cloud_resource_id, ''),
+            provider_namespace, region_id, metric_name, dimensions_hash, granularity_seconds
+          ) > (
+            ${cursor.bucketStart}, ${cursor.externalResourceId}, ${cursor.cloudResourceId},
+            ${cursor.providerNamespace}, ${cursor.regionId}, ${cursor.metricName},
+            ${cursor.dimensionsHash}, ${cursor.granularitySeconds}
+          )
         `;
 
     return this.prisma.$queryRaw<RawMetricSeriesRow[]>(Prisma.sql`
@@ -69,8 +75,16 @@ export class PrismaResourceMetricSeriesReader {
         sampled_at AS bucket_start,
         external_resource_id,
         cloud_resource_id,
+        provider_namespace,
+        region_id,
+        dimensions_hash,
         metric_name,
         metric_unit,
+        statistic::text AS statistic,
+        granularity_seconds,
+        value::float8 AS selected_value,
+        'RAW_NATIVE'::text AS aggregation_semantics,
+        ARRAY[granularity_seconds]::int[] AS source_granularities,
         value::float8 AS avg_value,
         value::float8 AS min_value,
         value::float8 AS max_value,
@@ -82,7 +96,8 @@ export class PrismaResourceMetricSeriesReader {
       FROM resource_metric_samples
       WHERE ${where}
       ${cursorCondition}
-      ORDER BY sampled_at ASC, external_resource_id ASC, COALESCE(cloud_resource_id, '') ASC, metric_name ASC
+      ORDER BY sampled_at ASC, external_resource_id ASC, COALESCE(cloud_resource_id, '') ASC,
+        provider_namespace ASC, region_id ASC, metric_name ASC, dimensions_hash ASC, granularity_seconds ASC
       LIMIT ${limit}
     `);
   }
@@ -98,10 +113,16 @@ export class PrismaResourceMetricSeriesReader {
     const cursorCondition = cursor === undefined
       ? Prisma.empty
       : cursor.kind === 'legacy-date'
-        ? Prisma.sql`AND ${bucketExpression} > ${cursor.bucketStart}`
+        ? Prisma.sql`WHERE bucket_start > ${cursor.bucketStart}`
         : Prisma.sql`
-          AND (${bucketExpression}, ${resourceExpression}, COALESCE(cloud_resource_id, ''), metric_name) >
-            (${cursor.bucketStart}, ${cursor.externalResourceId}, ${cursor.cloudResourceId}, ${cursor.metricName})
+          WHERE (
+            bucket_start, external_resource_id, COALESCE(cloud_resource_id, ''),
+            provider_namespace, region_id, metric_name, dimensions_hash, granularity_seconds
+          ) > (
+            ${cursor.bucketStart}, ${cursor.externalResourceId}, ${cursor.cloudResourceId},
+            ${cursor.providerNamespace}, ${cursor.regionId}, ${cursor.metricName},
+            ${cursor.dimensionsHash}, ${cursor.granularitySeconds}
+          )
         `;
 
     return this.prisma.$queryRaw<RawMetricSeriesRow[]>(Prisma.sql`
@@ -110,21 +131,49 @@ export class PrismaResourceMetricSeriesReader {
           ${bucketExpression} AS bucket_start,
           ${resourceExpression} AS external_resource_id,
           cloud_resource_id,
+          provider_namespace,
+          region_id,
+          dimensions_hash,
           metric_name,
           metric_unit,
+          statistic,
+          granularity_seconds,
           sampled_at,
+          granularity_seconds,
           value::float8 AS value
         FROM resource_metric_samples
         WHERE ${where}
-        ${cursorCondition}
       ),
       grouped AS (
         SELECT
           bucket_start,
           external_resource_id,
           cloud_resource_id,
+          provider_namespace,
+          region_id,
+          dimensions_hash,
           metric_name,
           metric_unit,
+          statistic,
+          granularity_seconds,
+          CASE statistic::text
+            WHEN 'MEAN' THEN avg(value)
+            WHEN 'MIN' THEN min(value)
+            WHEN 'MAX' THEN max(value)
+            WHEN 'P50' THEN percentile_cont(0.50) WITHIN GROUP (ORDER BY value)
+            WHEN 'P90' THEN percentile_cont(0.90) WITHIN GROUP (ORDER BY value)
+            WHEN 'P95' THEN percentile_cont(0.95) WITHIN GROUP (ORDER BY value)
+            WHEN 'P99' THEN percentile_cont(0.99) WITHIN GROUP (ORDER BY value)
+            WHEN 'SUM' THEN sum(value)
+            WHEN 'COUNT' THEN count(*)::float8
+            WHEN 'LATEST' THEN (array_agg(value ORDER BY sampled_at DESC))[1]
+            ELSE avg(value)
+          END::float8 AS selected_value,
+          CASE statistic::text
+            WHEN 'P95' THEN 'P95_OF_NATIVE_P95'
+            ELSE concat(upper(statistic::text), '_OF_NATIVE')
+          END::text AS aggregation_semantics,
+          array_agg(DISTINCT granularity_seconds ORDER BY granularity_seconds)::int[] AS source_granularities,
           avg(value)::float8 AS avg_value,
           min(value)::float8 AS min_value,
           max(value)::float8 AS max_value,
@@ -134,11 +183,14 @@ export class PrismaResourceMetricSeriesReader {
           (array_agg(sampled_at ORDER BY value DESC, sampled_at ASC))[1] AS max_sampled_at,
           max(sampled_at) AS latest_sampled_at
         FROM filtered
-        GROUP BY bucket_start, external_resource_id, cloud_resource_id, metric_name, metric_unit
+        GROUP BY bucket_start, external_resource_id, cloud_resource_id, provider_namespace, region_id,
+          dimensions_hash, metric_name, metric_unit, statistic, granularity_seconds
       )
       SELECT *
       FROM grouped
-      ORDER BY bucket_start ASC, external_resource_id ASC, COALESCE(cloud_resource_id, '') ASC, metric_name ASC
+      ${cursorCondition}
+      ORDER BY bucket_start ASC, external_resource_id ASC, COALESCE(cloud_resource_id, '') ASC,
+        provider_namespace ASC, region_id ASC, metric_name ASC, dimensions_hash ASC, granularity_seconds ASC
       LIMIT ${limit}
     `);
   }

@@ -17,7 +17,9 @@ import { PrismaIngestionCostProjector } from './PrismaIngestionCostProjector.js'
 import { PrismaIngestionJobCompletionSupport, type IngestionJobExecutionSummary } from './PrismaIngestionJobCompletionSupport.js';
 import { mergeResourceLinkageStats } from './ingestionResourceLinkage.js';
 import { PrismaIngestionSamplePersistence } from './PrismaIngestionSamplePersistence.js';
-import { safeErrorMessage } from '../../application/observability/safeError.js';
+import { PrismaIngestionJobLifecycleRepository, type IngestionJobProgress } from './PrismaIngestionJobLifecycleRepository.js';
+import { PrismaIngestionJobFailureHandler } from './PrismaIngestionJobFailureHandler.js';
+import { mergeEnabledMetricDefinitions } from './ingestionMetricDefinitionMetadata.js';
 
 interface ClaimedJobRow {
   readonly id: string;
@@ -27,6 +29,8 @@ type PrismaIngestionJobWithConnection = NonNullable<Awaited<ReturnType<PrismaClo
 
 export type { IngestionJobExecutionSummary } from './PrismaIngestionJobCompletionSupport.js';
 
+export type { IngestionJobProgress } from './PrismaIngestionJobLifecycleRepository.js';
+
 export class PrismaCloudIngestionJobRepository {
   private static readonly COMPLETION_TRANSACTION_OPTIONS = {
     maxWait: 10_000,
@@ -35,12 +39,18 @@ export class PrismaCloudIngestionJobRepository {
   private readonly costProjector = new PrismaIngestionCostProjector();
   private readonly samplePersistence = new PrismaIngestionSamplePersistence();
   private readonly completionSupport = new PrismaIngestionJobCompletionSupport();
+  private readonly lifecycle: PrismaIngestionJobLifecycleRepository;
+  private readonly failureHandler: PrismaIngestionJobFailureHandler;
 
   constructor(
     private readonly prisma: PrismaClient,
     private readonly credentialCipher: CredentialCipher,
     private readonly jobLeaseMs = loadRuntimeConfig().workers.ingestion.jobLeaseMs,
-  ) {}
+    private readonly retryBackoffMs = loadRuntimeConfig().workers.ingestion.retryBackoffMs,
+  ) {
+    this.lifecycle = new PrismaIngestionJobLifecycleRepository(prisma);
+    this.failureHandler = new PrismaIngestionJobFailureHandler(prisma, retryBackoffMs);
+  }
 
   public async claimNextPendingJob(workerId: string): Promise<CloudIngestionJobContext | null> {
     const now = new Date();
@@ -58,15 +68,30 @@ export class PrismaCloudIngestionJobRepository {
           AND locked_at < ${leaseExpiredBefore}
           AND attempts >= max_attempts
       `;
+      await tx.$executeRaw`
+        UPDATE ingestion_jobs
+        SET status = 'CANCELLED',
+            completed_at = ${now},
+            error_message = 'Cancelado mientras el trabajo estaba bloqueado.',
+            locked_at = NULL,
+            locked_by = NULL,
+            progress = jsonb_build_object('phase', 'CANCELLED', 'message', 'Cancelado tras expirar el bloqueo.', 'updatedAt', CAST(${now.toISOString()} AS text))
+        WHERE status = 'RUNNING'
+          AND cancel_requested_at IS NOT NULL
+          AND locked_at < ${leaseExpiredBefore}
+      `;
       const rows = await tx.$queryRaw<ClaimedJobRow[]>`
         SELECT id
         FROM ingestion_jobs
         WHERE attempts < max_attempts
+          AND available_at <= ${now}
+          AND cancel_requested_at IS NULL
+          AND archived_at IS NULL
           AND (
             status = 'PENDING'
             OR (status = 'RUNNING' AND locked_at < ${leaseExpiredBefore})
           )
-        ORDER BY created_at ASC
+        ORDER BY priority ASC, created_at ASC
         FOR UPDATE SKIP LOCKED
         LIMIT 1
       `;
@@ -85,6 +110,7 @@ export class PrismaCloudIngestionJobRepository {
           lockedBy: workerId,
           startedAt: now,
           errorMessage: null,
+          progress: { phase: 'DISCOVERING', message: 'Trabajo tomado por el worker.', updatedAt: now.toISOString() },
         },
       });
 
@@ -99,6 +125,23 @@ export class PrismaCloudIngestionJobRepository {
       data: { lockedAt: new Date() },
     });
     return updated.count === 1;
+  }
+
+  public async updateJobProgress(
+    jobId: string,
+    workerId: string,
+    attempt: number,
+    progress: IngestionJobProgress,
+  ): Promise<boolean> {
+    return this.lifecycle.updateJobProgress(jobId, workerId, attempt, progress);
+  }
+
+  public async isCancellationRequested(jobId: string, workerId: string, attempt: number): Promise<boolean> {
+    return this.lifecycle.isCancellationRequested(jobId, workerId, attempt);
+  }
+
+  public async markCancelled(job: CloudIngestionJobContext, workerId: string, message = 'Cancelado por el usuario.'): Promise<boolean> {
+    return this.lifecycle.markCancelled(job, workerId, message);
   }
 
   public async completeJob(
@@ -150,6 +193,11 @@ export class PrismaCloudIngestionJobRepository {
       resourceIdsByExternalId,
     );
     await this.samplePersistence.reconcileMetricSampleResourceLinks(this.prisma, job.cloudConnectionId, resourceIdsByExternalId);
+    await this.samplePersistence.refreshMetricStreamSummaries(
+      this.prisma,
+      job.cloudConnectionId,
+      result.metricSamples,
+    );
 
     const completedAt = new Date();
     const summary = this.completionSupport.buildSummary(
@@ -170,11 +218,30 @@ export class PrismaCloudIngestionJobRepository {
         const completed = await tx.ingestionJob.updateMany({
           where: { id: job.id, status: 'RUNNING', lockedBy: workerId, attempts: job.attempt },
           data: {
-            status: 'SUCCESS',
+            status: summary.dataOutcome === 'INVALID_CONFIGURATION' ? 'SKIPPED' : 'SUCCESS',
+            dataOutcome: summary.dataOutcome,
             completedAt,
             lockedAt: null,
             lockedBy: null,
-            errorMessage: null,
+            errorMessage: summary.dataOutcome === 'INVALID_CONFIGURATION'
+              ? (summary.warnings[0] ?? 'La fuente no está configurada.')
+              : null,
+            progress: {
+              phase: summary.dataOutcome === 'INVALID_CONFIGURATION' ? 'SKIPPED' : 'COMPLETED',
+              message: summary.dataOutcome === 'INVALID_CONFIGURATION'
+                ? 'Trabajo omitido: la fuente no está configurada.'
+                : summary.dataOutcome === 'PARTIAL'
+                  ? 'Ingesta completada parcialmente; revisa las advertencias.'
+                  : summary.dataOutcome === 'NO_DATA'
+                    ? 'Proveedor consultado correctamente, sin datos para el periodo.'
+                    : 'Ingesta completada correctamente.',
+              providerCalls: summary.apiCallCount,
+              rowsRead: summary.focusRows,
+              rowsWritten: summary.focusRowsInserted,
+              resources: summary.resources,
+              samples: summary.metricSamples,
+              updatedAt: completedAt.toISOString(),
+            } as unknown as Prisma.InputJsonValue,
             resultSummary: summary as unknown as Prisma.InputJsonValue,
           },
         });
@@ -182,7 +249,7 @@ export class PrismaCloudIngestionJobRepository {
           throw new Error('Ingestion job lease was lost before completion');
         }
 
-        await this.completionSupport.updateWatermark(tx, job);
+        await this.completionSupport.updateWatermark(tx, job, summary.dataOutcome);
         await this.completionSupport.recordQualityCheck(
           tx,
           job,
@@ -209,50 +276,7 @@ export class PrismaCloudIngestionJobRepository {
     startedAt: Date,
     workerId: string,
   ): Promise<void> {
-    const completedAt = new Date();
-    const message = safeErrorMessage(error);
-    const current = await this.prisma.ingestionJob.findFirst({
-      where: { id: job.id, status: 'RUNNING', lockedBy: workerId, attempts: job.attempt },
-      select: { attempts: true, maxAttempts: true },
-    });
-    const shouldRetry = current !== null && current.attempts < current.maxAttempts;
-
-    const failed = await this.prisma.ingestionJob.updateMany({
-      where: { id: job.id, status: 'RUNNING', lockedBy: workerId, attempts: job.attempt },
-      data: {
-        status: shouldRetry ? 'PENDING' : 'FAILED',
-        completedAt,
-        lockedAt: null,
-        lockedBy: null,
-        errorMessage: message,
-        resultSummary: {
-          durationMs: completedAt.getTime() - startedAt.getTime(),
-          providerCode: job.connection.providerCode,
-          sourceType: job.sourceType,
-          error: message,
-          retryScheduled: shouldRetry,
-        } as unknown as Prisma.InputJsonValue,
-      },
-    });
-    if (failed.count !== 1) {
-      return;
-    }
-
-    await this.prisma.dataQualityCheck.create({
-      data: {
-        tenantId: job.tenantId,
-        cloudConnectionId: job.cloudConnectionId,
-        sourceType: job.sourceType,
-        checkName: 'ingestion_job_execution',
-        status: shouldRetry ? 'WARNING' : 'FAILED',
-        expectedAt: job.targetEnd,
-        details: {
-          jobId: job.id,
-          error: message,
-          retryScheduled: shouldRetry,
-        } as unknown as Prisma.InputJsonValue,
-      },
-    });
+    return this.failureHandler.failJob(job, error, startedAt, workerId);
   }
 
   private async findJobContext(
@@ -267,9 +291,20 @@ export class PrismaCloudIngestionJobRepository {
             credentials: {
               where: {
                 status: 'ACTIVE',
-                purpose: {
-                  not: 'TEMPORARY_ADMIN',
-                },
+                purpose: { not: 'TEMPORARY_ADMIN' },
+              },
+            },
+            metricDefinitions: {
+              where: { enabled: true },
+              select: {
+                compartmentId: true,
+                namespace: true,
+                metricName: true,
+                externalResourceId: true,
+                regionId: true,
+                dimensions: true,
+                metricUnit: true,
+                statistics: true,
               },
             },
           },
@@ -287,6 +322,8 @@ export class PrismaCloudIngestionJobRepository {
       targetStart: job.targetStart,
       targetEnd: job.targetEnd,
       attempt: job.attempts,
+      ...(job.configurationHash !== null ? { configurationHash: job.configurationHash } : {}),
+      ...(this.isJsonObject(job.requestContext) ? { requestContext: job.requestContext as Record<string, unknown> } : {}),
       connection: {
         id: job.cloudConnection.id,
         tenantId: job.cloudConnection.tenantId,
@@ -295,9 +332,13 @@ export class PrismaCloudIngestionJobRepository {
         ...(job.cloudConnection.defaultRegion !== null
           ? { defaultRegion: job.cloudConnection.defaultRegion }
           : {}),
-        ...(this.isJsonObject(job.cloudConnection.metadata)
-          ? { metadata: job.cloudConnection.metadata as Record<string, unknown> }
-          : {}),
+        ...(() => {
+          const metadata = mergeEnabledMetricDefinitions(
+            job.cloudConnection.metadata,
+            job.cloudConnection.metricDefinitions,
+          );
+          return metadata === undefined ? {} : { metadata };
+        })(),
         credentials: job.cloudConnection.credentials.flatMap((credential): CloudIngestionCredential[] => {
           if (credential.purpose === 'TEMPORARY_ADMIN') {
             return [];

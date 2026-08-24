@@ -1,11 +1,24 @@
 import type { CloudConnectionSummary } from '../../../domain/models/CloudConnection.js';
 import { FinOpsBaseError } from '../../../domain/errors/errors.js';
+import {
+  METRIC_STATISTICS,
+  OCI_CORE_METRIC_STATISTICS,
+  type MetricStatistic,
+} from '../../../domain/interfaces/ICloudIngestionProvider.js';
 import { isRecord } from '../cloudConnectionPolicies.js';
+import {
+  inspectOciPrivateKey,
+  normalizeOciFingerprint,
+} from './ociPrivateKey.js';
 
 export function normalizeOperationalCredential(
   connection: CloudConnectionSummary,
   payload: Readonly<Record<string, unknown>>,
-): { readonly payload: Readonly<Record<string, unknown>>; readonly externalPrincipalId: string } {
+): {
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly externalPrincipalId: string;
+  readonly keyFingerprint?: string;
+} {
   if (connection.providerCode === 'aws') {
     const roleArn = requirePayloadString(payload, 'roleArn');
     const externalId = requirePayloadString(payload, 'externalId');
@@ -27,8 +40,9 @@ export function normalizeOperationalCredential(
   if (connection.providerCode === 'oci') {
     const tenancyId = requirePayloadString(payload, 'tenancyId');
     const userId = requirePayloadString(payload, 'userId');
-    const fingerprint = requirePayloadString(payload, 'fingerprint');
+    const suppliedFingerprint = optionalPayloadString(payload, 'fingerprint');
     const privateKey = requirePayloadString(payload, 'privateKey');
+    const passphrase = optionalSecretPayloadString(payload, 'passphrase');
     const region = optionalPayloadString(payload, 'region') ?? connection.defaultRegion;
     if (tenancyId !== connection.rootExternalId) {
       throw new FinOpsBaseError('El Tenancy OCID de la credencial no coincide con la conexión.', 'VALIDATION_ERROR');
@@ -36,24 +50,31 @@ export function normalizeOperationalCredential(
     if (!/^ocid1\.tenancy\./.test(tenancyId) || !/^ocid1\.user\./.test(userId)) {
       throw new FinOpsBaseError('El Tenancy OCID y el User OCID deben ser identificadores OCI válidos.', 'VALIDATION_ERROR');
     }
-    if (!/-----BEGIN (?:ENCRYPTED )?PRIVATE KEY-----/.test(privateKey)) {
-      throw new FinOpsBaseError('La clave privada debe estar en formato PEM.', 'VALIDATION_ERROR');
-    }
     if (region === undefined) {
       throw new FinOpsBaseError('La región es obligatoria para las credenciales OCI.', 'VALIDATION_ERROR');
     }
-    const passphrase = optionalPayloadString(payload, 'passphrase');
+    const inspection = inspectOciPrivateKey(privateKey, passphrase);
+    if (suppliedFingerprint !== undefined) {
+      const normalizedSuppliedFingerprint = normalizeOciFingerprint(suppliedFingerprint);
+      if (normalizedSuppliedFingerprint !== inspection.fingerprint) {
+        throw new FinOpsBaseError(
+          'El fingerprint OCI no coincide con la clave privada enviada. Se calculó automáticamente otro fingerprint.',
+          'VALIDATION_ERROR',
+        );
+      }
+    }
 
     return {
       payload: {
         tenancyId,
         userId,
-        fingerprint,
-        privateKey,
+        fingerprint: inspection.fingerprint,
+        privateKey: inspection.normalizedPrivateKey,
         region,
         ...(passphrase !== undefined ? { passphrase } : {}),
       },
       externalPrincipalId: userId,
+      keyFingerprint: inspection.fingerprint,
     };
   }
 
@@ -75,6 +96,14 @@ function optionalPayloadString(
 ): string | undefined {
   const value = payload[fieldName];
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
+function optionalSecretPayloadString(
+  payload: Readonly<Record<string, unknown>>,
+  fieldName: string,
+): string | undefined {
+  const value = payload[fieldName];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 export function requireNonEmpty(value: string, fieldName: string): string {
@@ -100,12 +129,14 @@ export function normalizeMetricDefinition(
   if (providerCode === 'oci') {
     const query = optional('query');
     const unit = optional('unit');
+    const statistics = normalizeOciStatistics(value, index, query);
     return {
       compartmentId: text('compartmentId'),
       namespace: text('namespace'),
       metricName: text('metricName'),
       resourceId: text('resourceId'),
       ...(query !== undefined ? { query } : {}),
+      statistics,
       ...(unit !== undefined ? { unit } : {}),
     };
   }
@@ -135,4 +166,51 @@ export function normalizeMetricDefinition(
     };
   }
   throw new FinOpsBaseError('El proveedor no soporta configuración de métricas.', 'VALIDATION_ERROR');
+}
+
+function normalizeOciStatistics(
+  value: Readonly<Record<string, unknown>>,
+  index: number,
+  query: string | undefined,
+): readonly MetricStatistic[] {
+  const raw = value['statistics'];
+  const values = raw === undefined
+    ? [...OCI_CORE_METRIC_STATISTICS]
+    : Array.isArray(raw) ? raw : [raw];
+  const normalized = [...new Set(values.map((item) => {
+    if (typeof item !== 'string') {
+      throw new FinOpsBaseError(`definitions[${index}].statistics contiene un valor inválido.`, 'VALIDATION_ERROR');
+    }
+    const statistic = item.trim().toUpperCase();
+    if (!(METRIC_STATISTICS as readonly string[]).includes(statistic)) {
+      throw new FinOpsBaseError(`definitions[${index}].statistics contiene una estadística no soportada.`, 'VALIDATION_ERROR');
+    }
+    return statistic as MetricStatistic;
+  }))];
+
+  if (normalized.length === 0 || normalized.length > 6) {
+    throw new FinOpsBaseError(`definitions[${index}].statistics debe contener entre 1 y 6 valores.`, 'VALIDATION_ERROR');
+  }
+  if (query !== undefined && normalized.length > 1) {
+    throw new FinOpsBaseError(
+      `definitions[${index}] no puede combinar una query OCI fija con varias estadísticas. Usa query por estadística o elimina query.`,
+      'VALIDATION_ERROR',
+    );
+  }
+  if (query !== undefined && !queryContainsStatistic(query, normalized[0]!)) {
+    throw new FinOpsBaseError(
+      `definitions[${index}].query no coincide con la estadística configurada.`,
+      'VALIDATION_ERROR',
+    );
+  }
+  return normalized;
+}
+
+function queryContainsStatistic(query: string, statistic: MetricStatistic): boolean {
+  const normalized = query.toLowerCase().replace(/\s+/g, '');
+  if (statistic === 'P50') return normalized.includes('percentile(0.5)') || normalized.includes('percentile(.5)');
+  if (statistic === 'P90') return normalized.includes('percentile(0.9)') || normalized.includes('percentile(.9)');
+  if (statistic === 'P95') return normalized.includes('percentile(0.95)') || normalized.includes('percentile(.95)');
+  if (statistic === 'P99') return normalized.includes('percentile(0.99)') || normalized.includes('percentile(.99)');
+  return normalized.includes(`${statistic.toLowerCase()}()`);
 }

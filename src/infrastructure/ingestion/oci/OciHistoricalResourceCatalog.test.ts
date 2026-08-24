@@ -2,8 +2,13 @@ import { describe, expect, test } from 'vitest';
 import type {
   CloudIngestionJobContext,
   NormalizedFocusCostLineItem,
+  NormalizedProviderCostLineItem,
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
-import { buildHistoricalOciResources } from './OciHistoricalResourceCatalog.js';
+import {
+  buildHistoricalOciProviderResources,
+  buildHistoricalOciResources,
+  isOciAggregateResourceId,
+} from './OciHistoricalResourceCatalog.js';
 
 describe('buildHistoricalOciResources', () => {
   test('creates exact historical references only for supported OCI OCIDs', () => {
@@ -32,6 +37,29 @@ describe('buildHistoricalOciResources', () => {
       }),
     ]);
   });
+
+  test('creates UNKNOWN historical references for provider OCIDs but excludes logical and aggregate identifiers', () => {
+    const resources = buildHistoricalOciProviderResources(job(), [
+      providerRow('ocid1.instance.oc1.iad.example', 'Compute', 'us-ashburn-1'),
+      providerRow('ocid1.instance.oc1.iad.example', 'Compute', 'us-ashburn-1', '2026-05-03'),
+      providerRow('bucket-name', 'Object Storage', 'us-ashburn-1'),
+      providerRow('oci_computeagent', 'Telemetry', 'us-ashburn-1'),
+    ]);
+
+    expect(resources).toHaveLength(1);
+    expect(resources[0]).toEqual(expect.objectContaining({
+      externalResourceId: 'ocid1.instance.oc1.iad.example',
+      resourceType: 'COMPUTE_INSTANCE',
+      serviceName: 'Compute',
+      regionId: 'us-ashburn-1',
+      status: 'UNKNOWN',
+      rawResource: expect.objectContaining({
+        source: 'OCI_USAGE_API_HISTORICAL_REFERENCE',
+        historicalReference: true,
+      }),
+    }));
+    expect(isOciAggregateResourceId('oci_computeagent')).toBe(true);
+  });
 });
 
 function job(): CloudIngestionJobContext {
@@ -48,5 +76,28 @@ function row(resourceId: string, serviceName: string, start: string, end: string
     chargePeriodStart: new Date(`${start}T00:00:00Z`), chargePeriodEnd: new Date(`${end}T00:00:00Z`),
     serviceName, resourceId, chargeCategory: 'Usage', billedCost: 1, billingCurrency: 'USD',
     rawRow: { ResourceId: resourceId }, lineItemHash: `${resourceId}:${start}`,
+  };
+}
+
+function providerRow(
+  resourceId: string,
+  serviceName: string,
+  regionId: string,
+  start = '2026-05-01',
+): NormalizedProviderCostLineItem {
+  return {
+    tenantId: 'tenant-1',
+    cloudConnectionId: 'connection-1',
+    provider: 'OCI',
+    chargePeriodStart: new Date(`${start}T00:00:00Z`),
+    chargePeriodEnd: new Date(`${start}T01:00:00Z`),
+    serviceName,
+    resourceId,
+    regionId,
+    billedCost: 1,
+    billingCurrency: 'USD',
+    sourceMetric: 'OCIUsageCost',
+    rawRow: { resourceId },
+    lineItemHash: `${resourceId}:${start}`,
   };
 }

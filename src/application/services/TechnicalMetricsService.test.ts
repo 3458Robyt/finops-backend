@@ -119,6 +119,10 @@ class FakeResourceMetricRepository implements IResourceMetricRepository {
           externalResourceId: 'i-0abc',
           metricName: 'cpu_utilization',
           metricUnit: 'Percent',
+          statistic: 'MEAN',
+          value: 11.25,
+          aggregationSemantics: 'MEAN_OF_NATIVE',
+          sourceGranularitiesSeconds: [1800],
           avg: 11.25,
           min: 10,
           max: 12.5,
@@ -166,7 +170,7 @@ describe('TechnicalMetricsService', () => {
   test('returns a resource summary scoped to its tenant resource', async () => {
     const repository = new FakeResourceMetricRepository();
     repository.summaries = [{
-      provider: 'AWS', externalResourceId: 'i-0abc', metricName: 'cpu_utilization', sampleCount: 2,
+      provider: 'AWS', externalResourceId: 'i-0abc', metricName: 'cpu_utilization', statistic: 'MEAN', sampleCount: 2,
       coverageDays: 1, min: 10, max: 12.5, avg: 11.25, p50: 11.25, p95: 12.5, p99: 12.5,
       latest: 10, firstSampledAt: new Date('2026-04-30T00:00:00.000Z'), latestSampledAt: new Date('2026-04-30T00:30:00.000Z'),
     }];

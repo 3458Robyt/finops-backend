@@ -14,7 +14,10 @@ async function main(): Promise<void> {
   const region = args.get('region') ?? 'us-east-1';
   const purpose = parsePurpose(args.get('purpose') ?? 'OPERATIONAL');
   const label = args.get('label') ?? `AWS role ${purpose}`;
-  const cipher = new CredentialCipher();
+  const cipher = new CredentialCipher(
+    process.env['CREDENTIAL_ENCRYPTION_KEY'],
+    process.env['CREDENTIAL_KEY_VERSION'] ?? 'v1',
+  );
   const encrypted = cipher.encrypt({
     roleArn,
     region,

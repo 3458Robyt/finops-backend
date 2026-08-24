@@ -3,6 +3,7 @@ import { Prisma } from '../../generated/prisma/client.js';
 export function invalidatedValidationData(metadata: unknown): {
   readonly metadata: Prisma.InputJsonValue;
   readonly lastValidatedAt: null;
+  readonly lastValidationAttemptAt: null;
 } {
   const nextMetadata = metadata !== null && typeof metadata === 'object' && !Array.isArray(metadata)
     ? { ...(metadata as Record<string, unknown>) }
@@ -11,5 +12,6 @@ export function invalidatedValidationData(metadata: unknown): {
   return {
     metadata: nextMetadata as Prisma.InputJsonValue,
     lastValidatedAt: null,
+    lastValidationAttemptAt: null,
   };
 }

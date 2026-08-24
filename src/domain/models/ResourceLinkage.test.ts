@@ -31,6 +31,8 @@ describe('ResourceLinkage', () => {
     const links = new Map<string, readonly string[]>();
 
     expect(normalizeExternalResourceId('  ')).toBeUndefined();
+    expect(normalizeExternalResourceId('OCID1.INSTANCE.OC1.IAD.Example')).toBe('ocid1.instance.oc1.iad.example');
+    expect(normalizeExternalResourceId('MyCaseSensitiveResource')).toBe('MyCaseSensitiveResource');
     expect(resolveExactResourceLink({
       cloudConnectionId: 'connection-a',
       resourceIdsByKey: links,

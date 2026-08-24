@@ -1,5 +1,6 @@
 import type {
   CloudResourceItem,
+  CloudResourceFilters,
   IResourceMetricRepository,
   ResourceMetricSampleItem,
 } from '../../domain/interfaces/IResourceMetricRepository.js';
@@ -16,6 +17,7 @@ import {
   buildCoverage,
   buildCoverageFromAggregate,
 } from './technical-metrics/TechnicalMetricCoverageBuilder.js';
+import { buildOverviewFromSummaries } from './technical-metrics/TechnicalMetricsAggregateOverviewBuilder.js';
 import { buildOverview } from './technical-metrics/TechnicalMetricsOverviewBuilder.js';
 import {
   resolveRequestedBucket,
@@ -24,7 +26,7 @@ import {
 
 export type * from './technical-metrics/TechnicalMetricsContracts.js';
 
-const maxOverviewSamples = 5000;
+const maxOverviewSummaries = 5000;
 const defaultSeriesPageSize = 1000;
 const maxSeriesPageSize = 5000;
 
@@ -39,8 +41,12 @@ const maxSeriesPageSize = 5000;
 export class TechnicalMetricsService {
   constructor(private readonly repository: IResourceMetricRepository) {}
 
-  public listResources(tenantId: string, limit?: number): Promise<readonly CloudResourceItem[]> {
-    return this.repository.listResourcesForTenant(tenantId, this.clampLimit(limit));
+  public listResources(
+    tenantId: string,
+    limit?: number,
+    filters?: CloudResourceFilters,
+  ): Promise<readonly CloudResourceItem[]> {
+    return this.repository.listResourcesForTenant(tenantId, this.clampLimit(limit), filters);
   }
 
   public async getResource(tenantId: string, externalResourceId: string, cloudResourceId?: string): Promise<CloudResourceItem | undefined> {
@@ -110,20 +116,62 @@ export class TechnicalMetricsService {
     tenantId: string,
     input: TechnicalMetricOverviewInput = {},
   ): Promise<TechnicalMetricsOverview> {
-    const samples = await this.repository.listMetricSamplesForTenantByFilter(tenantId, {
+    const summaryFilters = {
+      ...(input.startDate !== undefined ? { startDate: input.startDate } : {}),
+      ...(input.endDate !== undefined ? { endDate: input.endDate } : {}),
+      ...(input.externalResourceId !== undefined ? { externalResourceIds: [input.externalResourceId] } : {}),
+      ...(input.cloudResourceId !== undefined ? { cloudResourceIds: [input.cloudResourceId] } : {}),
+      ...(input.metricNames !== undefined ? { metricNames: input.metricNames } : {}),
+      statistic: input.statistic ?? 'MEAN',
+      limit: maxOverviewSummaries,
+    } as const;
+    const availableStatisticFilters = {
       ...(input.startDate !== undefined ? { startDate: input.startDate } : {}),
       ...(input.endDate !== undefined ? { endDate: input.endDate } : {}),
       ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
       ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
       ...(input.metricNames !== undefined ? { metricNames: input.metricNames } : {}),
-      limit: maxOverviewSamples,
-    });
-    const resources = await this.repository.listResourcesForTenant(tenantId, 200);
-    const resourceIds = unique(samples.map((sample) => sample.externalResourceId));
-    const cloudResourceIds = unique(samples.map((sample) => sample.cloudResourceId).filter((value): value is string => value !== undefined));
+    } as const;
+    const catalogSummaryFilters = {
+      ...summaryFilters,
+      statistic: 'MEAN' as const,
+    };
+    const [summaries, resources, availableStatistics] = await Promise.all([
+      this.repository.listMetricSummariesForTenant(tenantId, summaryFilters),
+      this.repository.listResourcesForTenant(tenantId, 200),
+      this.repository.listMetricStatisticsForTenant?.(tenantId, availableStatisticFilters)
+        ?? Promise.resolve([]),
+    ]);
+    const catalogSummaries = input.statistic === undefined || input.statistic === 'MEAN'
+      ? summaries
+      : await this.repository.listMetricSummariesForTenant(tenantId, catalogSummaryFilters);
+    const resourceIds = unique(summaries.map((sample) => sample.externalResourceId));
+    const cloudResourceIds = unique(summaries.map((sample) => sample.cloudResourceId).filter((value): value is string => value !== undefined));
     const costContext = await this.repository.listCostContextForResources(tenantId, resourceIds, cloudResourceIds);
 
-    return buildOverview(samples, resources, costContext);
+    const statisticMap = new Map<string, Set<string>>();
+    for (const item of availableStatistics) {
+      const values = statisticMap.get(item.metricName) ?? new Set<string>();
+      values.add(item.statistic);
+      statisticMap.set(item.metricName, values);
+    }
+    if (summaries.length > 0 || catalogSummaries.length > 0) {
+      return buildOverviewFromSummaries(summaries, resources, costContext, statisticMap, catalogSummaries);
+    }
+
+    // Compatibility fallback for repositories that predate SQL summaries. In
+    // production Prisma returns the aggregate rows above; this branch keeps
+    // adapters and old fixtures useful while they are migrated.
+    const legacySamples = await this.repository.listMetricSamplesForTenantByFilter(tenantId, {
+      ...(input.startDate !== undefined ? { startDate: input.startDate } : {}),
+      ...(input.endDate !== undefined ? { endDate: input.endDate } : {}),
+      ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
+      ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
+      ...(input.metricNames !== undefined ? { metricNames: input.metricNames } : {}),
+      statistic: input.statistic ?? 'MEAN',
+      limit: maxOverviewSummaries,
+    });
+    return buildOverview(legacySamples, resources, costContext, statisticMap);
   }
 
   public async getSeries(
@@ -139,6 +187,7 @@ export class TechnicalMetricsService {
       ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
       ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
       ...(input.metricNames !== undefined ? { metricNames: input.metricNames } : {}),
+      statistic: input.statistic ?? 'MEAN',
       ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
       bucket,
       pageSize,
@@ -154,6 +203,7 @@ export class TechnicalMetricsService {
         queryMs: Date.now() - startedAt,
         bucket,
         pageSize,
+        statistic: input.statistic ?? 'MEAN',
       },
     };
   }
@@ -168,6 +218,7 @@ export class TechnicalMetricsService {
         ...(input.endDate !== undefined ? { endDate: input.endDate } : {}),
         ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
         ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
+        statistic: input.statistic ?? 'MEAN',
       });
 
       return buildCoverageFromAggregate(aggregate, input.startDate, input.endDate);
@@ -178,6 +229,7 @@ export class TechnicalMetricsService {
       ...(input.endDate !== undefined ? { endDate: input.endDate } : {}),
       ...(input.externalResourceId !== undefined ? { externalResourceId: input.externalResourceId } : {}),
       ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
+      statistic: input.statistic ?? 'MEAN',
     });
 
     return buildCoverage(samples, input.startDate, input.endDate);

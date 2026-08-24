@@ -1,4 +1,5 @@
 import type { PrismaClient } from '../../generated/prisma/client.js';
+import { Prisma } from '../../generated/prisma/client.js';
 import {
   buildIngestionSchedulePlan,
   type IngestionScheduleOptions,
@@ -73,6 +74,7 @@ export async function runPrismaIngestionJobScheduler(
           sourceType: true,
           status: true,
           targetEnd: true,
+          configurationHash: true,
         },
       },
     },
@@ -88,6 +90,8 @@ export async function runPrismaIngestionJobScheduler(
           targetStart: job.targetStart,
           targetEnd: job.targetEnd,
           maxAttempts: job.maxAttempts,
+          ...(job.configurationHash !== undefined ? { configurationHash: job.configurationHash } : {}),
+          ...(job.requestContext !== undefined ? { requestContext: job.requestContext as Prisma.InputJsonValue } : {}),
         },
         select: {
           id: true,

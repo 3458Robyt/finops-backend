@@ -1,6 +1,7 @@
-import type * as common from 'oci-common';
+import * as common from 'oci-common';
 import * as usageapi from 'oci-usageapi';
 import type {
+  CloudAuthenticationValidation,
   CloudCapabilityValidation,
   CloudConnectionValidationResult,
   CloudIngestionConnection,
@@ -8,6 +9,7 @@ import type {
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
 import { getCredential, requireString } from '../providerConfig.js';
 import { buildOciResourceMetricQuery, readOciMetricDefinitions } from './OciMonitoringCollector.js';
+import { normalizeOciDailyUsageRange } from './OciUsageDateRange.js';
 import type {
   OciComputeClient,
   OciIdentityClient,
@@ -19,15 +21,18 @@ import { safeErrorMessage } from '../../../application/observability/safeError.j
 export interface OciCapabilityValidationDependencies {
   readonly providerCode: string;
   readonly createAuthProvider: (job: CloudIngestionJobContext) => common.AuthenticationDetailsProvider;
-  readonly createIdentityClient: (provider: common.AuthenticationDetailsProvider) => OciIdentityClient;
-  readonly createComputeClient: (job: CloudIngestionJobContext) => OciComputeClient;
-  readonly createMonitoringClient: (job: CloudIngestionJobContext) => OciMonitoringClient;
+  readonly createIdentityClient: (provider: common.AuthenticationDetailsProvider, signal?: AbortSignal) => OciIdentityClient;
+  readonly createComputeClient: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciComputeClient;
+  readonly createMonitoringClient: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciMonitoringClient;
   readonly validateStorage: (
     connection: CloudIngestionConnection,
     job: CloudIngestionJobContext,
     checkedAt: Date,
+    signal?: AbortSignal,
   ) => Promise<CloudCapabilityValidation>;
 }
+
+const OCI_VALIDATION_DEADLINE_MS = 18_000;
 
 export async function validateOciCapabilities(
   connection: CloudIngestionConnection,
@@ -44,67 +49,97 @@ export async function validateOciCapabilities(
   if (credential === undefined) {
     return {
       providerCode: dependencies.providerCode,
+      authentication: {
+        status: 'NOT_CONFIGURED',
+        message: 'No hay una credencial OCI de lectura para autenticar la conexión.',
+        checkedAt,
+      },
       capabilities: missingCredentialCapabilities(checkedAt),
     };
   }
 
-  const job = buildOciValidationJob(connection);
-  let authProvider: common.AuthenticationDetailsProvider;
+  const validationController = new AbortController();
+  const validationTimer = setTimeout(
+    () => validationController.abort(new Error('OCI capability validation deadline exceeded')),
+    OCI_VALIDATION_DEADLINE_MS,
+  );
+
   try {
-    authProvider = dependencies.createAuthProvider(job);
-  } catch (error) {
-    const failure = failedOciCapability('IDENTITY', error, checkedAt);
-    return {
-      providerCode: dependencies.providerCode,
-      capabilities: [
-        failure,
-        ...(['INVENTORY', 'COSTS', 'METRICS', 'STORAGE'] as const).map((capability) => ({
-          capability,
-          status: failure.status,
-          message: 'No se puede comprobar esta capacidad porque la credencial OCI no es válida.',
+    const job = buildOciValidationJob(connection);
+    let authProvider: common.AuthenticationDetailsProvider;
+    try {
+      authProvider = dependencies.createAuthProvider(job);
+    } catch (error) {
+      const failure = failedOciCapability('IDENTITY', error, checkedAt);
+      return {
+        providerCode: dependencies.providerCode,
+        authentication: {
+          status: 'REJECTED',
+          message: 'La credencial OCI no pudo construir una autenticación válida. Revisa el par de clave y el fingerprint.',
           checkedAt,
-        })),
-      ],
-    };
-  }
+        },
+        capabilities: [
+          failure,
+          ...blockedCapabilities(checkedAt, 'La autenticación OCI fue rechazada; esta capacidad no se consultó.'),
+        ],
+      };
+    }
 
   const userId = requireString(credential.payload['userId'], 'OCI userId');
   const identity = await validateOciCall('IDENTITY', checkedAt, () => withOciClient(
-    dependencies.createIdentityClient(authProvider),
+    dependencies.createIdentityClient(authProvider, validationController.signal),
     async (client) => {
       await client.getUser({ userId });
       return { message: 'Firma OCI e identidad de usuario validadas.', metadata: { userId } };
     },
   ));
 
-  const inventory = await validateOciCall('INVENTORY', checkedAt, () => withOciClient(
-    dependencies.createComputeClient(job),
+  const authentication = authenticationFromIdentity(identity, checkedAt);
+  if (authentication.status !== 'VERIFIED') {
+    return {
+      providerCode: dependencies.providerCode,
+      authentication,
+      capabilities: [
+        identity,
+        ...blockedCapabilities(checkedAt, authentication.message),
+      ],
+    };
+  }
+
+  const [inventory, costs, metrics, storage] = await Promise.all([
+    validateOciCall('INVENTORY', checkedAt, () => withOciClient(
+    dependencies.createComputeClient(job, validationController.signal),
     async (client) => {
       await client.listInstances({ compartmentId: connection.rootExternalId, limit: 1 });
       return { message: 'Lectura de inventario OCI Compute disponible.' };
     },
-  ));
-
-  const costs = await validateOciCall('COSTS', checkedAt, () => withOciClient(
-    new usageapi.UsageapiClient({ authenticationDetailsProvider: authProvider }) as unknown as OciUsageClient,
+    )),
+    validateOciCall('COSTS', checkedAt, () => withOciClient(
+    new usageapi.UsageapiClient(
+      { authenticationDetailsProvider: authProvider },
+      {
+        circuitBreaker: new common.CircuitBreaker({ disableClientCircuitBreaker: true }),
+        httpOptions: { signal: validationController.signal },
+      },
+    ) as unknown as OciUsageClient,
     async (client) => {
       const end = new Date();
       const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+      const range = normalizeOciDailyUsageRange(start, end);
       await client.requestSummarizedUsages({
         requestSummarizedUsagesDetails: {
           tenantId: connection.rootExternalId,
-          timeUsageStarted: start,
-          timeUsageEnded: end,
+          timeUsageStarted: range.start,
+          timeUsageEnded: range.end,
           granularity: 'DAILY',
           queryType: 'COST',
         },
       });
       return { message: 'OCI Usage API disponible.' };
     },
-  ));
-
-  const metrics = await validateOciCall('METRICS', checkedAt, () => withOciClient(
-    dependencies.createMonitoringClient(job),
+    )),
+    validateOciCall('METRICS', checkedAt, () => withOciClient(
+    dependencies.createMonitoringClient(job, validationController.signal),
     async (client) => {
       const definition = readOciMetricDefinitions(job)[0];
       if (definition === undefined) {
@@ -128,12 +163,52 @@ export async function validateOciCapabilities(
       }
       return { message: 'Lectura de métricas OCI Monitoring disponible.' };
     },
-  ));
+    )),
+    dependencies.validateStorage(connection, job, checkedAt, validationController.signal),
+  ]);
+    return {
+      providerCode: dependencies.providerCode,
+      authentication,
+      capabilities: [identity, inventory, costs, metrics, storage],
+    };
+  } finally {
+    clearTimeout(validationTimer);
+  }
+}
 
-  const storage = await dependencies.validateStorage(connection, job, checkedAt);
+function authenticationFromIdentity(
+  identity: CloudCapabilityValidation,
+  checkedAt: Date,
+): CloudAuthenticationValidation {
+  if (identity.status === 'AVAILABLE') {
+    return {
+      status: 'VERIFIED',
+      message: 'La firma OCI fue aceptada por el proveedor.',
+      checkedAt,
+    };
+  }
+
+  const reasonCode = identity.metadata?.['reasonCode'];
+  if (identity.status === 'DENIED' && reasonCode === 'AUTHORIZATION_DENIED') {
+    return {
+      status: 'VERIFIED',
+      message: 'La firma OCI fue aceptada, pero la policy no permite consultar la identidad del usuario.',
+      checkedAt,
+    };
+  }
+
+  if (identity.metadata?.['reasonCode'] === 'HTTP_SIGNATURE_REJECTED') {
+    return {
+      status: 'REJECTED',
+      message: 'OCI rechazó la firma HTTP. Verifica que el usuario, tenancy, clave pública y fingerprint pertenezcan al mismo API key.',
+      checkedAt,
+    };
+  }
+
   return {
-    providerCode: dependencies.providerCode,
-    capabilities: [identity, inventory, costs, metrics, storage],
+    status: 'RETRYABLE_ERROR',
+    message: 'OCI no permitió confirmar la autenticación. Revisa la conectividad y vuelve a intentar antes de reemplazar la credencial.',
+    checkedAt,
   };
 }
 
@@ -196,7 +271,9 @@ function failedOciCapability(
   checkedAt: Date,
 ): CloudCapabilityValidation {
   const message = safeOciProviderError(error);
-  const denied = /not.?authorized|notauthenticated|authorization failed|forbidden|401|403/i.test(message);
+  const metadata = providerErrorMetadata(error, message);
+  const denied = metadata['reasonCode'] === 'AUTHORIZATION_DENIED'
+    || metadata['reasonCode'] === 'HTTP_SIGNATURE_REJECTED';
   return {
     capability,
     status: denied ? 'DENIED' : 'ERROR',
@@ -204,7 +281,43 @@ function failedOciCapability(
       ? 'OCI rechazó esta lectura. Revisa las policies de solo lectura para la capacidad indicada.'
       : message,
     checkedAt,
+    metadata,
   };
+}
+
+function blockedCapabilities(
+  checkedAt: Date,
+  message: string,
+): readonly CloudCapabilityValidation[] {
+  return (['INVENTORY', 'COSTS', 'METRICS', 'STORAGE'] as const).map((capability) => ({
+    capability,
+    status: 'BLOCKED' as const,
+    message: `No se consultó ${capability.toLowerCase()} porque ${message.toLowerCase()}`,
+    checkedAt,
+  }));
+}
+
+function providerErrorMetadata(
+  error: unknown,
+  message: string,
+): Readonly<Record<string, string | number | boolean>> {
+  const candidate = error !== null && typeof error === 'object'
+    ? error as Record<string, unknown>
+    : {};
+  const statusCode = readNumber(candidate['statusCode']) ?? readNumber(candidate['status']);
+  const reasonCode = statusCode === 401 || /signature|not authenticated|notauthenticated/i.test(message)
+    ? 'HTTP_SIGNATURE_REJECTED'
+    : statusCode === 403 || /forbidden|not.?authorized|authorization failed/i.test(message)
+      ? 'AUTHORIZATION_DENIED'
+      : undefined;
+  return {
+    ...(statusCode === undefined ? {} : { statusCode }),
+    ...(reasonCode === undefined ? {} : { reasonCode }),
+  };
+}
+
+function readNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function missingCredentialCapabilities(

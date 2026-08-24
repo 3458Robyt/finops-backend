@@ -108,6 +108,7 @@ export class FinOpsArtifactGenerator {
       artifact: drafts,
       ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),
       ...(deterministicAnalysis === undefined ? {} : { deterministicAnalysis }),
+      ...(readinessReport === undefined ? {} : { readinessReport }),
     });
 
     const repairInstructions = auditReport.repairInstructions ?? auditReport.requiredChanges;
@@ -138,6 +139,7 @@ export class FinOpsArtifactGenerator {
         artifact: drafts,
         ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),
         ...(deterministicAnalysis === undefined ? {} : { deterministicAnalysis }),
+        ...(readinessReport === undefined ? {} : { readinessReport }),
       });
     }
 

@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import type { RequestHandler } from 'express';
 import { MasterAdminController } from '../controllers/MasterAdminController.js';
+import { MasterAdminIngestionController } from '../controllers/MasterAdminIngestionController.js';
 
 export function createMasterAdminRoutes(
   masterAdminController: MasterAdminController,
+  ingestionController: MasterAdminIngestionController,
   requireAuth: RequestHandler,
 ): Router {
   const router = Router();
@@ -16,6 +18,10 @@ export function createMasterAdminRoutes(
   router.get('/assignments', requireAuth, masterAdminController.listAssignments);
   router.put('/tenants/:tenantId/users/:userId', requireAuth, masterAdminController.assignTenant);
   router.delete('/tenants/:tenantId/users/:userId', requireAuth, masterAdminController.revokeTenant);
+  router.get('/ingestion-jobs', requireAuth, ingestionController.list);
+  router.delete('/ingestion-jobs/pending', requireAuth, ingestionController.deletePending);
+  router.post('/ingestion-jobs/:jobId/cancel', requireAuth, ingestionController.cancel);
+  router.post('/ingestion-jobs/:jobId/archive', requireAuth, ingestionController.archive);
 
   return router;
 }

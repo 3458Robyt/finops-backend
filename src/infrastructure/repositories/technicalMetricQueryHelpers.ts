@@ -3,14 +3,23 @@ import type {
   TechnicalMetricSeriesRepositoryPoint,
   TechnicalMetricSummaryFilters,
 } from '../../domain/interfaces/IResourceMetricRepository.js';
+import type { MetricStatistic } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import { Prisma } from '../../generated/prisma/client.js';
 
 export interface RawMetricSeriesRow {
   readonly bucket_start: Date;
   readonly external_resource_id: string;
   readonly cloud_resource_id: string | null;
+  readonly provider_namespace?: string;
+  readonly region_id?: string;
+  readonly dimensions_hash?: string;
   readonly metric_name: string;
   readonly metric_unit: string | null;
+  readonly statistic: string;
+  readonly granularity_seconds?: number;
+  readonly selected_value?: number;
+  readonly aggregation_semantics?: string;
+  readonly source_granularities?: number[];
   readonly avg_value: number;
   readonly min_value: number;
   readonly max_value: number;
@@ -26,10 +35,14 @@ export interface RawMetricSummaryRow {
   readonly external_resource_id: string;
   readonly cloud_resource_id: string | null;
   readonly cloud_connection_id: string | null;
+  readonly provider_namespace?: string;
+  readonly region_id?: string;
+  readonly dimensions_hash?: string;
   readonly resource_type: string | null;
   readonly service_name: string | null;
   readonly metric_name: string;
   readonly metric_unit: string | null;
+  readonly statistic: string;
   readonly sample_count: number;
   readonly coverage_days: number;
   readonly min_value: number;
@@ -50,7 +63,11 @@ export interface MetricSeriesCursor {
   readonly bucketStart: Date;
   readonly externalResourceId: string;
   readonly cloudResourceId: string;
+  readonly providerNamespace: string;
+  readonly regionId: string;
   readonly metricName: string;
+  readonly dimensionsHash: string;
+  readonly granularitySeconds: number;
 }
 
 export interface MetricWhereFilters {
@@ -59,6 +76,7 @@ export interface MetricWhereFilters {
   readonly externalResourceId?: string;
   readonly cloudResourceId?: string;
   readonly metricNames?: readonly string[];
+  readonly statistic?: MetricStatistic;
   readonly cursor?: string;
 }
 
@@ -71,7 +89,11 @@ export function buildMetricSeriesCursor(row: RawMetricSeriesRow | undefined): st
     row.bucket_start.toISOString(),
     row.external_resource_id,
     row.cloud_resource_id ?? '',
+    row.provider_namespace ?? '',
+    row.region_id ?? '',
     row.metric_name,
+    row.dimensions_hash ?? '',
+    String(row.granularity_seconds ?? 0),
   ].map((part) => encodeURIComponent(part)).join('|');
 }
 
@@ -81,17 +103,21 @@ export function parseMetricSeriesCursor(cursor: string | undefined): MetricSerie
   }
 
   const parts = cursor.split('|');
-  if (parts.length !== 4 && parts.length !== 3) {
+  if (parts.length !== 8 && parts.length !== 4 && parts.length !== 3) {
     return parseLegacyDateCursor(cursor);
   }
 
-  const [rawBucketStart, rawExternalResourceId, rawCloudResourceId, rawMetricName] = parts.length === 4
+  const [rawBucketStart, rawExternalResourceId, rawCloudResourceId, rawProviderNamespace, rawRegionId, rawMetricName, rawDimensionsHash, rawGranularitySeconds] = parts.length === 8
     ? parts
-    : [parts[0], parts[1], '', parts[2]];
+    : parts.length === 4
+      ? [parts[0], parts[1], parts[2], '', '', parts[3], '', '0']
+      : [parts[0], parts[1], '', '', '', parts[2], '', '0'];
   if (
     rawBucketStart === undefined ||
     rawExternalResourceId === undefined ||
     rawCloudResourceId === undefined ||
+    rawProviderNamespace === undefined ||
+    rawRegionId === undefined ||
     rawMetricName === undefined
   ) {
     return undefined;
@@ -100,7 +126,11 @@ export function parseMetricSeriesCursor(cursor: string | undefined): MetricSerie
   const bucketStart = new Date(decodeURIComponent(rawBucketStart));
   const externalResourceId = decodeURIComponent(rawExternalResourceId);
   const cloudResourceId = decodeURIComponent(rawCloudResourceId);
+  const providerNamespace = decodeURIComponent(rawProviderNamespace);
+  const regionId = decodeURIComponent(rawRegionId);
   const metricName = decodeURIComponent(rawMetricName);
+  const dimensionsHash = decodeURIComponent(rawDimensionsHash ?? '');
+  const granularitySeconds = Number(decodeURIComponent(rawGranularitySeconds ?? '0'));
 
   if (
     Number.isNaN(bucketStart.getTime()) ||
@@ -110,7 +140,17 @@ export function parseMetricSeriesCursor(cursor: string | undefined): MetricSerie
     return undefined;
   }
 
-  return { kind: 'compound', bucketStart, externalResourceId, cloudResourceId, metricName };
+  return {
+    kind: 'compound',
+    bucketStart,
+    externalResourceId,
+    cloudResourceId,
+    providerNamespace,
+    regionId,
+    metricName,
+    dimensionsHash,
+    granularitySeconds: Number.isFinite(granularitySeconds) ? granularitySeconds : 0,
+  };
 }
 
 function parseLegacyDateCursor(cursor: string): MetricSeriesCursor | undefined {
@@ -124,7 +164,11 @@ function parseLegacyDateCursor(cursor: string): MetricSeriesCursor | undefined {
     bucketStart,
     externalResourceId: '',
     cloudResourceId: '',
+    providerNamespace: '',
+    regionId: '',
     metricName: '',
+    dimensionsHash: '',
+    granularitySeconds: 0,
   };
 }
 
@@ -150,6 +194,7 @@ export function buildMetricWhereClause(
   if (filters.metricNames !== undefined && filters.metricNames.length > 0) {
     clauses.push(Prisma.sql`metric_name IN (${Prisma.join([...filters.metricNames])})`);
   }
+  clauses.push(Prisma.sql`statistic = ${(filters.statistic ?? 'MEAN')}::"MetricStatistic"`);
   if (includeCursor && filters.cursor !== undefined) {
     clauses.push(Prisma.sql`sampled_at > ${filters.cursor}`);
   }
@@ -192,6 +237,7 @@ export function buildMetricSummaryWhereClause(
   if (filters.metricNames !== undefined && filters.metricNames.length > 0) {
     clauses.push(Prisma.sql`metric_name IN (${Prisma.join([...filters.metricNames])})`);
   }
+  clauses.push(Prisma.sql`statistic = ${(filters.statistic ?? 'MEAN')}::"MetricStatistic"`);
 
   return Prisma.join(clauses, ' AND ');
 }
@@ -217,17 +263,26 @@ export function buildAliasedMetricSummaryWhereClause(
   if (filters.metricNames !== undefined && filters.metricNames.length > 0) {
     clauses.push(Prisma.sql`rms.metric_name IN (${Prisma.join([...filters.metricNames])})`);
   }
+  clauses.push(Prisma.sql`rms.statistic = ${(filters.statistic ?? 'MEAN')}::"MetricStatistic"`);
 
   return Prisma.join(clauses, ' AND ');
 }
 
 export function mapMetricSeriesRow(row: RawMetricSeriesRow): TechnicalMetricSeriesRepositoryPoint {
+  const selectedValue = row.selected_value ?? row.avg_value;
   return {
     bucketStart: row.bucket_start,
     externalResourceId: row.external_resource_id,
     ...(row.cloud_resource_id !== null ? { cloudResourceId: row.cloud_resource_id } : {}),
+    ...((row.provider_namespace ?? '') !== '' ? { providerNamespace: row.provider_namespace } : {}),
+    ...((row.region_id ?? '') !== '' ? { regionId: row.region_id } : {}),
+    ...((row.dimensions_hash ?? '') !== '' ? { dimensionsHash: row.dimensions_hash } : {}),
     metricName: row.metric_name,
     ...(row.metric_unit !== null ? { metricUnit: row.metric_unit } : {}),
+    statistic: (row.statistic ?? 'MEAN') as MetricStatistic,
+    value: roundMetric(selectedValue),
+    aggregationSemantics: row.aggregation_semantics ?? 'LEGACY_AGGREGATE',
+    sourceGranularitiesSeconds: (row.source_granularities ?? []).map(Number),
     avg: roundMetric(row.avg_value),
     min: roundMetric(row.min_value),
     max: roundMetric(row.max_value),

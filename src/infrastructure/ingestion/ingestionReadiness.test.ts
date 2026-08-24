@@ -76,7 +76,7 @@ describe('ingestionReadiness', () => {
     expect(summary.issues).toContainEqual(expect.objectContaining({
       provider: 'oci',
       severity: 'WARNING',
-      message: 'FOCUS OCI no está configurado; AUTO puede usar la API directa.',
+      message: 'No hay una ubicación FOCUS explícita; AUTO probará el reporte administrado por OCI y usará la API directa si no está disponible.',
       actionCode: 'CONFIGURE_FOCUS',
     }));
     expect(summary.issues).toContainEqual(expect.objectContaining({

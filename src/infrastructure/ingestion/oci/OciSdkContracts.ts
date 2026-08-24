@@ -3,7 +3,10 @@ export interface OciMetricDefinition {
   readonly namespace: string;
   readonly metricName: string;
   readonly resourceId: string;
+  readonly regionId?: string;
+  readonly dimensions?: Readonly<Record<string, string>>;
   readonly query?: string;
+  readonly statistics?: readonly import('../../../domain/interfaces/ICloudIngestionProvider.js').MetricStatistic[];
   readonly unit?: string;
 }
 
@@ -26,11 +29,22 @@ export interface OciFocusReportLocation {
 
 export interface OciMonitoringClient {
   close?(): void;
-  listMetrics(request: unknown): Promise<unknown>;
+  listMetrics(request: unknown): Promise<{
+    readonly items?: readonly OciMetricStream[];
+    readonly opcNextPage?: string;
+  }>;
   summarizeMetricsData(request: unknown): Promise<{
     readonly items?: readonly OciSummarizedMetric[];
     readonly summarizedMetricsData?: readonly OciSummarizedMetric[];
   }>;
+}
+
+export interface OciMetricStream {
+  readonly namespace?: string;
+  readonly name?: string;
+  readonly compartmentId?: string;
+  readonly dimensions?: Readonly<Record<string, string>>;
+  readonly unit?: string;
 }
 
 export interface OciSummarizedMetric {
@@ -72,6 +86,13 @@ export interface OciComputeClient {
 export interface OciIdentityClient {
   close?(): void;
   getUser(request: unknown): Promise<unknown>;
+  listRegionSubscriptions(request: unknown): Promise<{
+    readonly items?: readonly {
+      readonly regionName?: string;
+      readonly regionKey?: string;
+      readonly status?: string;
+    }[];
+  }>;
   listCompartments(request: unknown): Promise<{
     readonly items?: readonly OciCompartment[];
     readonly opcNextPage?: string;
@@ -86,15 +107,22 @@ export interface OciCompartment {
 export interface OciUsageClient {
   close?(): void;
   requestSummarizedUsages(request: unknown): Promise<{
+    readonly opcNextPage?: string;
     readonly usageAggregation?: {
       readonly items?: readonly {
         readonly service?: string;
+        readonly timeUsageStarted?: Date | string;
+        readonly timeUsageEnded?: Date | string;
         readonly computedAmount?: number;
         readonly currency?: string;
         readonly computedQuantity?: number;
+        readonly unit?: string;
         readonly resourceId?: string;
+        readonly resourceName?: string;
         readonly region?: string;
         readonly compartmentId?: string;
+        readonly skuName?: string;
+        readonly skuPartNumber?: string;
       }[];
     };
   }>;
@@ -124,7 +152,7 @@ export interface OciResourceSearchSummary {
   readonly resourceType: string;
   readonly identifier: string;
   readonly compartmentId: string;
-  readonly timeCreated?: Date;
+  readonly timeCreated?: Date | string;
   readonly displayName?: string;
   readonly availabilityDomain?: string;
   readonly lifecycleState?: string;

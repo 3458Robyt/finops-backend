@@ -3,6 +3,7 @@ import type {
   IngestionJobExecutionSummary,
   PrismaCloudIngestionJobRepository,
 } from '../../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
+import type { IngestionJobProgress } from '../../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 import { safeErrorMessage } from '../observability/safeError.js';
 import type { MetricsRegistry } from '../observability/MetricsRegistry.js';
@@ -25,6 +26,8 @@ export class CloudIngestionWorkerService {
     onSuccessfulIngestion?: (input: { readonly tenantId: string; readonly jobId: string; readonly providerCode: string }) => Promise<void>,
     private readonly metrics?: MetricsRegistry,
     private readonly heartbeatMs = 60_000,
+    private readonly progressUpdateMs = 2_000,
+    private readonly defaultConcurrency = 1,
   ) {
     this.providers = new Map(providers.map((provider) => [provider.providerCode, provider]));
     this.onSuccessfulIngestion = onSuccessfulIngestion;
@@ -58,6 +61,11 @@ export class CloudIngestionWorkerService {
     }
   }
 
+  public async runBatch(workerId: string, concurrency = this.defaultConcurrency): Promise<readonly CloudIngestionWorkerRunResult[]> {
+    const slots = Math.max(1, Math.min(16, Math.floor(concurrency)));
+    return Promise.all(Array.from({ length: slots }, () => this.runOnce(workerId)));
+  }
+
   private async processClaimedJob(
     job: Awaited<ReturnType<PrismaCloudIngestionJobRepository['claimNextPendingJob']>> & object,
     workerId: string,
@@ -81,14 +89,32 @@ export class CloudIngestionWorkerService {
     }
 
     let leaseLost = false;
+    let progress: IngestionJobProgress = {
+      phase: 'FETCHING',
+      message: 'Consultando datos del proveedor cloud.',
+      updatedAt: new Date().toISOString(),
+    };
+    await this.writeProgress(job.id, workerId, job.attempt, progress);
+    if (await this.cancellationRequested(job.id, workerId, job.attempt)) {
+      await this.cancel(job, workerId);
+      return { processed: true, jobId: job.id, providerCode: job.connection.providerCode, errorMessage: 'Cancelado por el usuario.' };
+    }
     const heartbeat = setInterval(() => {
       void this.jobs.refreshJobLease(job.id, workerId, job.attempt)
         .then((renewed) => { leaseLost ||= !renewed; })
         .catch(() => { leaseLost = true; });
     }, this.heartbeatMs);
 
+    const progressTimer = setInterval(() => {
+      void this.writeProgress(job.id, workerId, job.attempt, progress).catch(() => undefined);
+    }, this.progressUpdateMs);
+
     try {
       const result = await provider.collect(job);
+      if (await this.cancellationRequested(job.id, workerId, job.attempt)) {
+        await this.cancel(job, workerId);
+        return { processed: true, jobId: job.id, providerCode: job.connection.providerCode, errorMessage: 'Cancelado por el usuario.' };
+      }
       if (leaseLost) {
         return {
           processed: true,
@@ -97,6 +123,16 @@ export class CloudIngestionWorkerService {
           errorMessage: 'Ingestion job lease was lost while collecting provider data',
         };
       }
+      progress = {
+        phase: 'PERSISTING',
+        message: 'Persistiendo datos normalizados y controles de calidad.',
+        providerCalls: result.apiCallCount,
+        rowsRead: result.focusRows.length,
+        resources: result.resources.length,
+        samples: result.metricSamples.length,
+        updatedAt: new Date().toISOString(),
+      };
+      await this.writeProgress(job.id, workerId, job.attempt, progress);
       const summary = await this.jobs.completeJob(job, result, startedAt, workerId);
       if (this.onSuccessfulIngestion !== undefined) {
         void this.onSuccessfulIngestion({
@@ -121,7 +157,11 @@ export class CloudIngestionWorkerService {
         summary,
       };
     } catch (error) {
-      await this.jobs.failJob(job, error, startedAt, workerId);
+      if (await this.cancellationRequested(job.id, workerId, job.attempt)) {
+        await this.cancel(job, workerId);
+      } else {
+        await this.jobs.failJob(job, error, startedAt, workerId);
+      }
       return {
         processed: true,
         jobId: job.id,
@@ -130,6 +170,28 @@ export class CloudIngestionWorkerService {
       };
     } finally {
       clearInterval(heartbeat);
+      clearInterval(progressTimer);
     }
+  }
+
+  private async writeProgress(
+    jobId: string,
+    workerId: string,
+    attempt: number,
+    progress: IngestionJobProgress,
+  ): Promise<void> {
+    if (typeof this.jobs.updateJobProgress === 'function') {
+      await this.jobs.updateJobProgress(jobId, workerId, attempt, progress);
+    }
+  }
+
+  private async cancellationRequested(jobId: string, workerId: string, attempt: number): Promise<boolean> {
+    return typeof this.jobs.isCancellationRequested === 'function'
+      ? this.jobs.isCancellationRequested(jobId, workerId, attempt)
+      : false;
+  }
+
+  private async cancel(job: Parameters<PrismaCloudIngestionJobRepository['markCancelled']>[0], workerId: string): Promise<void> {
+    if (typeof this.jobs.markCancelled === 'function') await this.jobs.markCancelled(job, workerId);
   }
 }

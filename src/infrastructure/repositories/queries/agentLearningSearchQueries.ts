@@ -35,7 +35,9 @@ export interface RecommendationLearningRows {
  * contexto de aprendizaje de una recomendación:
  * - Memorias activas visibles para el tenant: incluye las de ámbito `GLOBAL`
  *   (compartidas entre tenants) y las `LOCAL` del propio `tenantId` (aislamiento
- *   multi-tenant). Prioriza las `GLOBAL`, luego por confianza y recencia.
+ *   multi-tenant). Las GLOBAL no se excluyen por FTS porque son patrones
+ *   agregados y anonimizados; las LOCAL sí deben coincidir con el snapshot.
+ *   Prioriza las `GLOBAL`, luego por confianza y recencia.
  * - Casos previos: decisiones sobre recomendaciones del tenant que tengan
  *   `reason_code`, uniendo `recommendation_decisions` con `recommendations` y
  *   buscando en título, descripción y motivo.
@@ -54,9 +56,9 @@ export async function queryRecommendationLearningContext(
   limit: number,
 ): Promise<RecommendationLearningRows> {
   const [memories, cases] = await Promise.all([
-    // Memorias activas relevantes: GLOBAL (compartidas) + LOCAL del tenant.
-    // Full-text search en español sobre el contenido; si queryText está vacío,
-    // se omite el filtro de texto. Prioriza GLOBAL, luego confianza y recencia.
+    // Memorias activas visibles: GLOBAL por alcance + LOCAL del tenant.
+    // El FTS solo restringe LOCAL para no perder una regla global cuyo texto no
+    // repita el proveedor o servicio del snapshot consultado.
     prisma.$queryRaw<MemoryContextRow[]>`
       select id,
              scope::text as scope,
@@ -66,10 +68,15 @@ export async function queryRecommendationLearningContext(
              created_at
       from agent_memory
       where active = true
-        and (scope = 'GLOBAL'::"AgentMemoryScope" or tenant_id = ${tenantId})
         and (
-          ${queryText} = ''
-          or to_tsvector('spanish', coalesce(content, '')) @@ plainto_tsquery('spanish', ${queryText})
+          scope = 'GLOBAL'::"AgentMemoryScope"
+          or (
+            tenant_id = ${tenantId}
+            and (
+              ${queryText} = ''
+              or to_tsvector('spanish', coalesce(content, '')) @@ plainto_tsquery('spanish', ${queryText})
+            )
+          )
         )
       order by
         case when scope = 'GLOBAL'::"AgentMemoryScope" then 0 else 1 end,

@@ -19,6 +19,8 @@ import type { TechnicalMetricsService } from '../application/services/TechnicalM
 import type { TelegramBotService } from '../application/services/TelegramBotService.js';
 import type { TelegramLinkService } from '../application/services/TelegramLinkService.js';
 import type { MasterAdminService } from '../application/services/MasterAdminService.js';
+import type { MasterAdminIngestionJobService } from '../application/services/MasterAdminIngestionJobService.js';
+import type { ClientInvitationService } from '../application/services/ClientInvitationService.js';
 import type { IAgentContextRepository } from '../domain/interfaces/IAgentContextRepository.js';
 import type { AgentQualityService } from '../application/services/AgentQualityService.js';
 import type { IAgentLearningService } from '../domain/interfaces/IAgentLearningService.js';
@@ -77,6 +79,8 @@ export interface ServerDependencies {
   /** Servicio de vinculación de cuentas con Telegram (links). */
   readonly telegramLinkService: TelegramLinkService;
   readonly masterAdminService: MasterAdminService;
+  readonly masterAdminIngestionJobService: MasterAdminIngestionJobService;
+  readonly clientInvitationService: ClientInvitationService;
   /** Secreto opcional para validar el webhook de Telegram. */
   readonly telegramWebhookSecret?: string;
   /** Indica si la integración con Telegram está habilitada. */

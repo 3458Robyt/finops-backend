@@ -29,7 +29,11 @@ describe('technical metric query helpers', () => {
       bucketStart,
       externalResourceId: 'ocid1.instance|demo',
       cloudResourceId: 'resource-1',
+      providerNamespace: '',
+      regionId: '',
       metricName: 'CpuUtilization',
+      dimensionsHash: '',
+      granularitySeconds: 0,
     });
   });
 
@@ -41,7 +45,11 @@ describe('technical metric query helpers', () => {
       bucketStart: new Date('2026-08-11T12:00:00.000Z'),
       externalResourceId: '',
       cloudResourceId: '',
+      providerNamespace: '',
+      regionId: '',
       metricName: '',
+      dimensionsHash: '',
+      granularitySeconds: 0,
     });
   });
 
@@ -67,6 +75,10 @@ describe('technical metric query helpers', () => {
       externalResourceId: 'resource-1',
       metricName: 'CpuUtilization',
       metricUnit: '%',
+      statistic: 'MEAN',
+      value: 42.123,
+      aggregationSemantics: 'LEGACY_AGGREGATE',
+      sourceGranularitiesSeconds: [],
       avg: 42.123,
       min: 10.1,
       max: 80.988,

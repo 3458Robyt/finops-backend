@@ -141,6 +141,10 @@ export function toTrace(row: {
   readonly promptTokenEstimate: number;
   readonly responseTokenEstimate: number | null;
   readonly latencyMs: number | null;
+  readonly artifactIds?: unknown | null;
+  readonly memoryIds?: unknown | null;
+  readonly tenantRuleIds?: unknown | null;
+  readonly conflicts?: unknown | null;
   readonly createdAt: Date;
   readonly expiresAt: Date;
 }): AiContextTrace {
@@ -155,9 +159,23 @@ export function toTrace(row: {
     promptTokenEstimate: row.promptTokenEstimate,
     ...(row.responseTokenEstimate !== null ? { responseTokenEstimate: row.responseTokenEstimate } : {}),
     ...(row.latencyMs !== null ? { latencyMs: row.latencyMs } : {}),
+    ...toOptionalStringArray('artifactIds', row.artifactIds),
+    ...toOptionalStringArray('memoryIds', row.memoryIds),
+    ...toOptionalStringArray('tenantRuleIds', row.tenantRuleIds),
+    ...toOptionalStringArray('conflicts', row.conflicts),
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
   };
+}
+
+function toOptionalStringArray(
+  key: 'artifactIds' | 'memoryIds' | 'tenantRuleIds' | 'conflicts',
+  value: unknown,
+): Partial<Pick<AiContextTrace, typeof key>> {
+  if (!Array.isArray(value) || !value.every((item): item is string => typeof item === 'string')) {
+    return {};
+  }
+  return { [key]: value } as Partial<Pick<AiContextTrace, typeof key>>;
 }
 
 /**

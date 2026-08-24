@@ -61,6 +61,22 @@ export interface CreateTelegramAuditEventInput {
   readonly metadata?: unknown;
 }
 
+/** Código temporal que permite al propietario de una cuenta vincular su chat. */
+export interface CreateTelegramSelfLinkCodeInput {
+  readonly tenantId: string;
+  readonly userId: string;
+  readonly tokenHash: string;
+  readonly expiresAt: Date;
+}
+
+/** Datos aportados por Telegram al consumir un código de auto-vinculación. */
+export interface ConsumeTelegramSelfLinkCodeInput {
+  readonly tokenHash: string;
+  readonly chatId: string;
+  readonly telegramUserId?: string;
+  readonly telegramUsername?: string;
+}
+
 /**
  * Contrato de repositorio para la integración con Telegram.
  *
@@ -118,6 +134,12 @@ export interface ITelegramRepository {
    * @returns El vínculo resultante.
    */
   createOrUpdateLink(input: CreateOrUpdateTelegramLinkInput): Promise<TelegramChatLink>;
+
+  /** Persiste el hash de un código temporal de auto-vinculación. */
+  createSelfLinkCode(input: CreateTelegramSelfLinkCodeInput): Promise<void>;
+
+  /** Consume atómicamente un código y crea/reactiva el vínculo del chat. */
+  consumeSelfLinkCode(input: ConsumeTelegramSelfLinkCodeInput): Promise<TelegramChatLink | null>;
 
   /**
    * Deshabilita un vínculo de Telegram.

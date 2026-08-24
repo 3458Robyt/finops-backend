@@ -66,7 +66,7 @@ try {
       database: {
         runtimeEnforce: true,
         runtimeRole: 'finops_runtime',
-        expectedMigration: '202608120005_runtime_process_heartbeats',
+        expectedMigration: '202608120008_revoke_login_tenant_api_grants',
       },
       operations: { processHeartbeat: { enabled: true, intervalMs: 30_000, staleAfterMs: 30_000 } },
       ai: { apiKey: undefined },

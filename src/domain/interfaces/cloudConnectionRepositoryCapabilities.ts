@@ -7,6 +7,7 @@ import type {
 import type { CloudIngestionConnection } from './ICloudIngestionProvider.js';
 import type {
   CloudCredentialSummary,
+  CloudMetricDefinitionSummary,
   ConfigureBillingSourceForConnectionInput,
   ConfigureBillingSourceForConnectionResult,
   ConfigureFocusSourceForConnectionInput,
@@ -56,6 +57,28 @@ export interface ICloudConnectionCatalogRepository {
     tenantId: string,
     cloudConnectionId: string,
   ): Promise<CloudIngestionConnection | null>;
+  /** Read a candidate credential without making it available to ingestion. */
+  getIngestionConnectionForCredential(
+    tenantId: string,
+    cloudConnectionId: string,
+    credentialId: string,
+  ): Promise<CloudIngestionConnection | null>;
+  /** Promote a previously validated candidate and disable the old one atomically. */
+  promoteCredential(
+    tenantId: string,
+    cloudConnectionId: string,
+    credentialId: string,
+  ): Promise<CloudCredentialSummary | null>;
+  /** Keep a candidate for a manual retry or mark it INVALID without displacing ACTIVE. */
+  updateCredentialValidation(
+    tenantId: string,
+    cloudConnectionId: string,
+    credentialId: string,
+    status: 'PENDING' | 'INVALID',
+    validationStatus: 'VERIFIED' | 'REJECTED' | 'RETRYABLE_ERROR' | 'NOT_CONFIGURED',
+    message: string,
+    attemptedAt: Date,
+  ): Promise<CloudCredentialSummary | null>;
   saveConnectionValidation(
     tenantId: string,
     cloudConnectionId: string,
@@ -64,6 +87,10 @@ export interface ICloudConnectionCatalogRepository {
   ): Promise<CloudConnectionSummary | null>;
   createCloudAuditEvent(input: CreateCloudAuditEventInput): Promise<void>;
   markCloudConnectionValidated(cloudConnectionId: string, validatedAt: Date): Promise<void>;
+  listEnabledMetricDefinitions?(
+    tenantId: string,
+    cloudConnectionId: string,
+  ): Promise<readonly CloudMetricDefinitionSummary[]>;
 }
 
 /** Encolado, seguimiento, historial y readiness de ingestas. */
@@ -89,7 +116,19 @@ export interface ICloudIngestionRepository {
   listIngestionJobsForTenant(
     tenantId: string,
     limit: number,
+    includeArchived?: boolean,
   ): Promise<readonly IngestionJobHistoryItem[]>;
+  getIngestionJobForTenant(tenantId: string, jobId: string): Promise<IngestionJobHistoryItem | null>;
+  requestIngestionJobCancellation(
+    tenantId: string,
+    jobId: string,
+    userId: string,
+  ): Promise<IngestionJobHistoryItem | null>;
+  archiveIngestionJob(
+    tenantId: string,
+    jobId: string,
+    userId: string,
+  ): Promise<IngestionJobHistoryItem | null>;
   listDataQualityChecksForTenant(
     tenantId: string,
     limit: number,

@@ -4,6 +4,7 @@ import type { AuthContext } from '../../domain/models/AuthContext.js';
 import type { TelegramChatLink } from '../../domain/models/Telegram.js';
 import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
 import type { ITelegramClient } from './TelegramClient.js';
+import { createOpaqueToken, hashOpaqueToken } from '../auth/opaqueToken.js';
 
 /** Datos de entrada para crear (o actualizar) la vinculación de un chat de Telegram con un usuario. */
 export interface CreateTelegramLinkInput {
@@ -15,6 +16,13 @@ export interface CreateTelegramLinkInput {
   readonly telegramUserId?: string;
   /** Nombre de usuario de Telegram, sin la `@` inicial (opcional). */
   readonly telegramUsername?: string;
+}
+
+export interface TelegramSelfLinkCodeResult {
+  readonly code: string;
+  readonly expiresAt: Date;
+  readonly startCommand: string;
+  readonly deepLink?: string;
 }
 
 /**
@@ -34,7 +42,67 @@ export class TelegramLinkService {
   constructor(
     private readonly repository: ITelegramRepository,
     private readonly telegramClient: ITelegramClient,
+    private readonly botUsername?: string,
   ) {}
+
+  /**
+   * Genera un código efímero para que el propio usuario conecte su chat sin
+   * conocer ni compartir el chat ID. El código se almacena como hash y se
+   * devuelve una sola vez al portal autenticado.
+   */
+  public async createSelfLinkCode(actor: AuthContext): Promise<TelegramSelfLinkCodeResult> {
+    requirePermission(actor.role, 'FINOPS_READ');
+
+    const token = createOpaqueToken(10 * 60);
+    await this.repository.createSelfLinkCode({
+      tenantId: actor.tenantId,
+      userId: actor.userId,
+      tokenHash: hashOpaqueToken(token.value),
+      expiresAt: token.expiresAt,
+    });
+
+    const normalizedBotUsername = this.botUsername?.trim().replace(/^@/, '');
+    return {
+      code: token.value,
+      expiresAt: token.expiresAt,
+      startCommand: `/start ${token.value}`,
+      ...(normalizedBotUsername === undefined || normalizedBotUsername === ''
+        ? {}
+        : { deepLink: `https://t.me/${encodeURIComponent(normalizedBotUsername)}?start=${encodeURIComponent(token.value)}` }),
+    };
+  }
+
+  /** Consume el código recibido desde el webhook de Telegram. */
+  public async consumeSelfLinkCode(input: {
+    readonly code: string;
+    readonly chatId: string;
+    readonly telegramUserId?: string;
+    readonly telegramUsername?: string;
+  }): Promise<TelegramChatLink | null> {
+    const code = input.code.trim();
+    const chatId = input.chatId.trim();
+    if (code === '' || chatId === '') return null;
+
+    const link = await this.repository.consumeSelfLinkCode({
+      tokenHash: hashOpaqueToken(code),
+      chatId,
+      ...(input.telegramUserId === undefined ? {} : { telegramUserId: input.telegramUserId.trim() }),
+      ...(input.telegramUsername === undefined ? {} : { telegramUsername: input.telegramUsername.trim().replace(/^@/, '') }),
+    });
+
+    if (link !== null) {
+      await this.repository.createAuditEvent({
+        tenantId: link.tenantId,
+        actorUserId: link.userId,
+        action: 'TELEGRAM_SELF_LINK_CONSUMED',
+        entityType: 'TelegramChatLink',
+        entityId: link.id,
+        metadata: { chatId: link.chatId, userId: link.userId },
+      });
+    }
+
+    return link;
+  }
 
   /**
    * Lista las vinculaciones de Telegram del tenant del actor.

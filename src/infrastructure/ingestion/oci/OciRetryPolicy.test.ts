@@ -10,7 +10,9 @@ describe('OCI retry policy', () => {
 
     await expect(withOciProviderRetry(operation, [25], sleep)).resolves.toBe('ok');
     expect(operation).toHaveBeenCalledTimes(2);
-    expect(sleep).toHaveBeenCalledWith(25);
+    expect(sleep).toHaveBeenCalledOnce();
+    expect(sleep.mock.calls[0]?.[0]).toBeGreaterThanOrEqual(20);
+    expect(sleep.mock.calls[0]?.[0]).toBeLessThanOrEqual(30);
   });
 
   test('does not retry non-rate-limit failures', async () => {

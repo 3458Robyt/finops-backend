@@ -87,11 +87,10 @@ export class LearningEventProcessor {
         memories: globalLearning === null ? [localMemory] : [localMemory, globalLearning.memory],
       });
 
-      if (globalLearning?.evaluation.readyForPromotion === true) {
-        await this.options.learningRepository.promoteGlobalMemory?.({
-          sourceLearningEventId: event.id,
-        });
-      }
+      // La evaluación offline nunca activa una memoria GLOBAL. La promoción
+      // requiere un canary live comparativo y se ejecuta por el mecanismo
+      // explícito `promoteGlobalMemoryWithEvidence`, no dentro del worker de
+      // aprendizaje de un evento individual.
       return { status: 'APPROVED', eventId: event.id };
     } catch (error: unknown) {
       return this.handleFailure(event, workerId, error);

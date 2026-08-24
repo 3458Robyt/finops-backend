@@ -2,7 +2,7 @@ import type {
   CloudIngestionJobContext,
   CloudIngestionResult,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
-import type { IngestionSourceType } from '../../domain/models/CloudConnection.js';
+import type { IngestionDataOutcome, IngestionSourceType } from '../../domain/models/CloudConnection.js';
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import type { FocusCostMetricProjectionResult } from './PrismaIngestionCostProjector.js';
 import type { PrismaIngestionPersistenceClient } from './ingestionPersistenceTypes.js';
@@ -12,6 +12,7 @@ export interface IngestionJobExecutionSummary {
   readonly durationMs: number;
   readonly providerCode: string;
   readonly sourceType: IngestionSourceType;
+  readonly dataOutcome: IngestionDataOutcome;
   readonly apiCallCount: number;
   readonly objectsProcessed: number;
   readonly focusRows: number;
@@ -35,27 +36,36 @@ export class PrismaIngestionJobCompletionSupport {
   public async updateWatermark(
     tx: PrismaIngestionPersistenceClient,
     job: CloudIngestionJobContext,
+    dataOutcome: IngestionDataOutcome,
   ): Promise<void> {
+    if (dataOutcome !== 'DATA_WRITTEN' && dataOutcome !== 'NO_DATA') return;
+    const scopeKey = this.resolveScopeKey(job);
     await tx.ingestionWatermark.upsert({
       where: {
-        cloudConnectionId_sourceType: {
+        cloudConnectionId_sourceType_scopeKey: {
           cloudConnectionId: job.cloudConnectionId,
           sourceType: job.sourceType,
+          scopeKey,
         },
       },
       update: {
         watermarkStart: job.targetStart,
         watermarkEnd: job.targetEnd,
         lastSuccessfulRunAt: new Date(),
+        ...(dataOutcome === 'DATA_WRITTEN' ? { lastDataAt: new Date() } : {}),
+        ...(job.configurationHash !== undefined ? { configurationHash: job.configurationHash } : {}),
         freshnessDeadlineAt: this.calculateFreshnessDeadline(job),
       },
       create: {
         tenantId: job.tenantId,
         cloudConnectionId: job.cloudConnectionId,
         sourceType: job.sourceType,
+        scopeKey,
+        ...(job.configurationHash !== undefined ? { configurationHash: job.configurationHash } : {}),
         watermarkStart: job.targetStart,
         watermarkEnd: job.targetEnd,
         lastSuccessfulRunAt: new Date(),
+        ...(dataOutcome === 'DATA_WRITTEN' ? { lastDataAt: new Date() } : {}),
         freshnessDeadlineAt: this.calculateFreshnessDeadline(job),
       },
     });
@@ -79,10 +89,11 @@ export class PrismaIngestionJobCompletionSupport {
         cloudConnectionId: job.cloudConnectionId,
         sourceType: job.sourceType,
         checkName: 'ingestion_job_execution',
-        status: result.warnings.length === 0 ? 'PASSED' : 'WARNING',
+        status: this.resolveQualityStatus(result),
         expectedAt: job.targetEnd,
         details: {
           jobId: job.id,
+          dataOutcome: this.resolveDataOutcome(result),
           apiCallCount: result.apiCallCount,
           objectsProcessed: result.objectsProcessed,
           focusRows: focusRowsProcessed,
@@ -114,10 +125,12 @@ export class PrismaIngestionJobCompletionSupport {
     metricSamplesLinkedToResource: number,
     metricLinkage: ResourceLinkageRunStats,
   ): IngestionJobExecutionSummary {
+    const dataOutcome = this.resolveDataOutcome(result);
     return {
       durationMs,
       providerCode: job.connection.providerCode,
       sourceType: job.sourceType,
+      dataOutcome,
       apiCallCount: result.apiCallCount,
       objectsProcessed: result.objectsProcessed,
       focusRows: focusRowsProcessed,
@@ -135,6 +148,29 @@ export class PrismaIngestionJobCompletionSupport {
         historicalResourcesInserted: costMetricProjection.historicalResourcesInserted ?? 0,
       },
     };
+  }
+
+  public resolveDataOutcome(result: CloudIngestionResult): IngestionDataOutcome {
+    if (result.dataOutcome !== undefined) return result.dataOutcome;
+    const hasData = result.focusRows.length > 0
+      || (result.providerCostRows?.length ?? 0) > 0
+      || result.resources.length > 0
+      || result.metricSamples.length > 0
+      || result.objectsProcessed > 0;
+    if (result.apiCallCount === 0 && !hasData) return 'INVALID_CONFIGURATION';
+    if (result.warnings.length > 0) return 'PARTIAL';
+    return hasData ? 'DATA_WRITTEN' : 'NO_DATA';
+  }
+
+  private resolveQualityStatus(result: CloudIngestionResult): 'PASSED' | 'WARNING' | 'FAILED' {
+    return this.resolveDataOutcome(result) === 'DATA_WRITTEN' && result.warnings.length === 0
+      ? 'PASSED'
+      : 'WARNING';
+  }
+
+  private resolveScopeKey(job: CloudIngestionJobContext): string {
+    const value = job.requestContext?.['scopeKey'];
+    return typeof value === 'string' && value.trim() !== '' ? value.trim() : 'global';
   }
 
   private calculateFreshnessDeadline(job: CloudIngestionJobContext): Date {

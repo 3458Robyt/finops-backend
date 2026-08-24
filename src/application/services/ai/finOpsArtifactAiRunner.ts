@@ -7,6 +7,7 @@ import { parseAuditReport } from './finOpsAiResponseParser.js';
 import type { AiTraceRecorder } from './aiTraceRecorder.js';
 import type { RecommendationEvidenceSnapshot } from './RecommendationEvidenceSnapshot.js';
 import type { DeterministicTrendAnalysis } from './DeterministicTrendAnalysis.js';
+import type { RecommendationReadinessReport } from './RecommendationReadinessGate.js';
 
 export interface ArtifactAuditInput {
   readonly artifactType: 'recommendations' | 'execution_plan';
@@ -17,6 +18,7 @@ export interface ArtifactAuditInput {
   readonly artifact: unknown;
   readonly technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot;
   readonly deterministicAnalysis?: DeterministicTrendAnalysis;
+  readonly readinessReport?: RecommendationReadinessReport;
 }
 
 /**
@@ -35,7 +37,9 @@ export class FinOpsArtifactAiRunner {
   public generateRecommendations(systemPrompt: string): Promise<string> {
     return this.aiGateway.generateText({
       responseFormat: 'json',
-      temperature: 0.2,
+      // Las recomendaciones deben ser reproducibles: el contenido creativo
+      // está acotado por candidatos/evidencia y no necesita aleatoriedad.
+      temperature: 0,
       maxTokens: 900,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -51,7 +55,7 @@ export class FinOpsArtifactAiRunner {
   public reviseRecommendations(systemPrompt: string, requiredChanges: readonly string[]): Promise<string> {
     return this.aiGateway.generateText({
       responseFormat: 'json',
-      temperature: 0.2,
+      temperature: 0,
       maxTokens: 900,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -72,7 +76,7 @@ export class FinOpsArtifactAiRunner {
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
-      temperature: 0.2,
+      temperature: 0,
       maxTokens: 1200,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -88,7 +92,7 @@ export class FinOpsArtifactAiRunner {
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
-      temperature: 0.2,
+      temperature: 0,
       maxTokens: 1200,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -125,6 +129,12 @@ export class FinOpsArtifactAiRunner {
             ...(input.deterministicAnalysis === undefined
               ? []
               : ['Preanalisis deterministico de tendencias:', JSON.stringify(input.deterministicAnalysis, null, 2)]),
+            ...(input.readinessReport === undefined
+              ? []
+              : [
+                  'Candidatos autorizados por la compuerta deterministica (candidateId pertenece a esta lista):',
+                  JSON.stringify(compactReadinessReport(input.readinessReport), null, 2),
+                ]),
             ...(input.recommendation === undefined
               ? []
               : ['Recomendacion original:', JSON.stringify(input.recommendation, null, 2)]),
@@ -149,4 +159,29 @@ export class FinOpsArtifactAiRunner {
 
     return parseAuditReport(rawResponse);
   }
+}
+
+function compactReadinessReport(report: RecommendationReadinessReport): Readonly<Record<string, unknown>> {
+  return {
+    summary: report.summary,
+    candidates: report.candidates.map((candidate) => ({
+      id: candidate.id,
+      readiness: candidate.readiness,
+      opportunityType: candidate.opportunityType,
+      evidenceLevelAllowed: candidate.evidenceLevelAllowed,
+      requiresTechnicalValidation: candidate.requiresTechnicalValidation,
+      ...(candidate.resourceId === undefined ? {} : { resourceId: candidate.resourceId }),
+      ...(candidate.cloudResourceId === undefined ? {} : { cloudResourceId: candidate.cloudResourceId }),
+      ...(candidate.technicalEvidenceRefs.length === 0 ? {} : { technicalEvidenceRefs: candidate.technicalEvidenceRefs }),
+      ...(candidate.blockers === undefined ? {} : { blockers: candidate.blockers }),
+      ...(candidate.ruleMatches === undefined ? {} : { ruleMatches: candidate.ruleMatches }),
+    })),
+    blocked: report.blocked.map((candidate) => ({
+      id: candidate.id,
+      readiness: candidate.readiness,
+      opportunityType: candidate.opportunityType,
+      ...(candidate.resourceId === undefined ? {} : { resourceId: candidate.resourceId }),
+      ...(candidate.blockers === undefined ? {} : { blockers: candidate.blockers }),
+    })),
+  };
 }

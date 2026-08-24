@@ -5,7 +5,13 @@ import type {
   IngestionReadinessSummary,
   IngestionJobSummary,
 } from '../../../domain/interfaces/ICloudConnectionRepository.js';
-import type { CloudConnectionSummary, IngestionSourceType } from '../../../domain/models/CloudConnection.js';
+import type {
+  CloudConnectionSummary,
+  IngestionSourceType,
+} from '../../../domain/models/CloudConnection.js';
+import type {
+  CloudConnectionValidationResult,
+} from '../../../domain/interfaces/ICloudIngestionProvider.js';
 
 export interface RegisterCloudConnectionInput {
   readonly tenantId: string;
@@ -27,7 +33,7 @@ export interface QueueIngestionInput {
 
 export interface QueueTechnicalBackfillInput {
   readonly tenantId: string;
-  readonly userId: string;
+  readonly userId?: string;
   readonly cloudConnectionId: string;
   readonly lookbackDays?: number;
   readonly windowHours?: number;
@@ -36,6 +42,7 @@ export interface QueueTechnicalBackfillInput {
 export interface TechnicalBackfillWindow {
   readonly targetStart: Date;
   readonly targetEnd: Date;
+  readonly interval: '1m' | '5m' | '30m' | '1h';
 }
 
 export interface TechnicalBackfillResult {
@@ -47,6 +54,7 @@ export interface TechnicalBackfillResult {
   readonly rangeEnd: Date;
   readonly createdJobs: readonly IngestionJobSummary[];
   readonly skippedWindows: readonly TechnicalBackfillWindow[];
+  readonly estimatedApiCalls: number;
 }
 
 export interface ConfigureFocusSourceInput {
@@ -94,6 +102,20 @@ export interface StoreOperationalCredentialInput {
   readonly purpose: CloudCredentialPurpose;
   readonly label: string;
   readonly payload: Readonly<Record<string, unknown>>;
+}
+
+export type CloudCredentialNextAction = 'VALIDATE' | 'NONE';
+
+export interface ValidateCloudCredentialInput {
+  readonly tenantId: string;
+  readonly cloudConnectionId: string;
+  readonly credentialId: string;
+  readonly userId?: string;
+}
+
+export interface ValidateCloudCredentialResult {
+  readonly credential: CloudCredentialSummary;
+  readonly validation: CloudConnectionValidationResult;
 }
 
 export interface CloudConnectionOnboardingDetail {

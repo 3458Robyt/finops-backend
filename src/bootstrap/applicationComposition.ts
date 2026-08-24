@@ -18,6 +18,8 @@ import { ExecutiveSummaryService } from '../application/services/ExecutiveSummar
 import { ExecutiveSummaryDeliveryService } from '../application/services/ExecutiveSummaryDeliveryService.js';
 import { FinOpsAiService } from '../application/services/FinOpsAiService.js';
 import { MasterAdminService } from '../application/services/MasterAdminService.js';
+import { MasterAdminIngestionJobService } from '../application/services/MasterAdminIngestionJobService.js';
+import { ClientInvitationService } from '../application/services/ClientInvitationService.js';
 import { MfaService } from '../application/services/MfaService.js';
 import { OutboundMessageService } from '../application/services/OutboundMessageService.js';
 import { PasswordRecoveryService } from '../application/services/PasswordRecoveryService.js';
@@ -57,6 +59,8 @@ import { PrismaCostAllocationRepository } from '../infrastructure/repositories/P
 import { PrismaCostAnalyticsRepository } from '../infrastructure/repositories/PrismaCostAnalyticsRepository.js';
 import { PrismaCostRepository } from '../infrastructure/repositories/PrismaCostRepository.js';
 import { PrismaMasterAdminRepository } from '../infrastructure/repositories/PrismaMasterAdminRepository.js';
+import { PrismaMasterAdminIngestionJobRepository } from '../infrastructure/repositories/PrismaMasterAdminIngestionJobRepository.js';
+import { PrismaClientInvitationRepository } from '../infrastructure/repositories/PrismaClientInvitationRepository.js';
 import { PrismaMfaRecoveryCodeRepository } from '../infrastructure/repositories/PrismaMfaRecoveryCodeRepository.js';
 import { PrismaMfaRepository } from '../infrastructure/repositories/PrismaMfaRepository.js';
 import { PrismaNotificationRepository } from '../infrastructure/repositories/PrismaNotificationRepository.js';
@@ -134,6 +138,8 @@ export function createApplicationComposition(
   const mfaRecoveryCodeRepository = new PrismaMfaRecoveryCodeRepository(prisma);
   const authSessionRepository = new PrismaAuthSessionRepository(prisma, authSecurityRepository);
   const masterAdminRepository = new PrismaMasterAdminRepository(prisma);
+  const masterAdminIngestionJobRepository = new PrismaMasterAdminIngestionJobRepository(prisma);
+  const clientInvitationRepository = new PrismaClientInvitationRepository(prisma);
   const passwordHasher = new Argon2PasswordHasher();
   const tokenService = new JwtTokenService({
     ...(config.security.jwtSecret === undefined ? {} : { secret: config.security.jwtSecret }),
@@ -154,6 +160,15 @@ export function createApplicationComposition(
     config.security.refreshTokenTtlSeconds,
   );
   const masterAdminService = new MasterAdminService(masterAdminRepository, passwordHasher);
+  const masterAdminIngestionJobService = new MasterAdminIngestionJobService(masterAdminIngestionJobRepository, masterAdminRepository);
+  const emailClient = new EmailClient(config.email);
+  const clientInvitationService = new ClientInvitationService(
+    clientInvitationRepository,
+    masterAdminRepository,
+    passwordHasher,
+    outboundMessageRepository,
+    emailClient,
+  );
   const ingestionProviders = [new AwsSdkIngestionProvider(), new OciSdkIngestionProvider()];
   const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository, ingestionProviders);
   const technicalMetricsService = new TechnicalMetricsService(resourceMetricRepository);
@@ -226,7 +241,6 @@ export function createApplicationComposition(
   const telegramEnabled = config.telegram.enabled;
   const telegramClient = new TelegramClient(config.telegram.botToken, telegramEnabled, config.telegram.timeoutMs);
   const telegramMessageFormatter = new TelegramMessageFormatter();
-  const emailClient = new EmailClient(config.email);
   const executiveSummaryDeliveryService = new ExecutiveSummaryDeliveryService(
     executiveSummaryService,
     outboundMessageRepository,
@@ -244,7 +258,7 @@ export function createApplicationComposition(
       resetTtlSeconds: config.security.passwordResetTtlSeconds,
     },
   );
-  const telegramLinkService = new TelegramLinkService(telegramRepository, telegramClient);
+  const telegramLinkService = new TelegramLinkService(telegramRepository, telegramClient, config.telegram.botUsername);
   const telegramBotService = new TelegramBotService(
     telegramRepository,
     telegramClient,
@@ -254,6 +268,7 @@ export function createApplicationComposition(
     recommendationRepository,
     costAnalyticsRepository,
     config.telegram.botUsername,
+    telegramLinkService,
   );
   const outboundMessageService = new OutboundMessageService(
     outboundMessageRepository,
@@ -294,6 +309,7 @@ export function createApplicationComposition(
           config.security.credentialKeyVersion,
         ),
         config.workers.ingestion.jobLeaseMs,
+        config.workers.ingestion.retryBackoffMs,
       ),
       ingestionProviders,
       // The legacy `worker` alias may keep the post-ingestion hook. Granular
@@ -307,6 +323,8 @@ export function createApplicationComposition(
         : undefined,
       metricsRegistry,
       config.workers.ingestion.jobHeartbeatMs,
+      config.workers.ingestion.progressUpdateMs,
+      config.workers.ingestion.concurrency,
     )
     : null;
 
@@ -331,6 +349,8 @@ export function createApplicationComposition(
     telegramBotService,
     telegramLinkService,
     masterAdminService,
+    masterAdminIngestionJobService,
+    clientInvitationService,
     ...(config.telegram.webhookSecret === undefined ? {} : { telegramWebhookSecret: config.telegram.webhookSecret }),
     telegramEnabled,
     learningService: learningService as IAgentLearningService,

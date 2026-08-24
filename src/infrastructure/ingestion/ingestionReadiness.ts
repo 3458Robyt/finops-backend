@@ -11,6 +11,7 @@ export interface IngestionReadinessConnectionInput {
   readonly providerCode: ProviderCode;
   readonly defaultRegion?: string | null;
   readonly lastValidatedAt?: Date | null;
+  readonly lastValidationAttemptAt?: Date | null;
   readonly metadata: unknown;
   readonly credentialPurposes: readonly string[];
   readonly recentJobs: readonly IngestionReadinessJobInput[];
@@ -90,6 +91,7 @@ export function buildIngestionReadinessSummary(
       });
     }
 
+    const authentication = readAuthenticationValidation(metadata);
     const summary: IngestionReadinessConnectionSummary = {
       id: connection.id,
       name: connection.name,
@@ -100,8 +102,12 @@ export function buildIngestionReadinessSummary(
       ...(connection.lastValidatedAt !== null && connection.lastValidatedAt !== undefined
         ? { lastValidatedAt: connection.lastValidatedAt }
         : {}),
+      ...(connection.lastValidationAttemptAt !== null && connection.lastValidationAttemptAt !== undefined
+        ? { lastValidationAttemptAt: connection.lastValidationAttemptAt }
+        : {}),
       onboardingStatus: resolveOnboardingStatus(connection, credentialPurposes, capabilities),
       credentialPurposes,
+      ...(authentication === undefined ? {} : { authentication }),
       capabilities,
       metadataCounts,
       recentJobs: connection.recentJobs.map((job) => ({
@@ -170,7 +176,7 @@ export function assessReadinessConnection(input: {
       (input.metadataCounts['ociFocusReportObjects'] ?? 0) === 0 &&
       (input.metadataCounts['ociFocusReportLocations'] ?? 0) === 0
     ) {
-      issues.push({ provider: 'oci', connectionId: input.connectionId, severity: 'WARNING', capability: 'STORAGE', message: 'FOCUS OCI no está configurado; AUTO puede usar la API directa.', affectedData: ['Costos FOCUS'], action: 'Configura un bucket/prefijo FOCUS o conserva AUTO para usar la API directa.', actionCode: 'CONFIGURE_FOCUS' });
+      issues.push({ provider: 'oci', connectionId: input.connectionId, severity: 'WARNING', capability: 'STORAGE', message: 'No hay una ubicación FOCUS explícita; AUTO probará el reporte administrado por OCI y usará la API directa si no está disponible.', affectedData: ['Costos FOCUS'], action: 'No es obligatorio configurar un bucket si conservas AUTO. Configura una ubicación solo si usas un reporte FOCUS personalizado.', actionCode: 'CONFIGURE_FOCUS' });
     }
   }
 
@@ -234,7 +240,7 @@ function readCapabilityValidation(
     if (
       typeof capability !== 'string'
       || typeof message !== 'string'
-      || !['AVAILABLE', 'NOT_CONFIGURED', 'DENIED', 'ERROR'].includes(String(status))
+      || !['AVAILABLE', 'NOT_CONFIGURED', 'DENIED', 'BLOCKED', 'ERROR'].includes(String(status))
     ) return [];
     const checkedAt = typeof item['checkedAt'] === 'string' ? new Date(item['checkedAt']) : undefined;
 
@@ -245,6 +251,22 @@ function readCapabilityValidation(
       ...(checkedAt !== undefined && !Number.isNaN(checkedAt.getTime()) ? { checkedAt } : {}),
     }];
   });
+}
+
+function readAuthenticationValidation(
+  metadata: Readonly<Record<string, unknown>>,
+): IngestionReadinessConnectionSummary['authentication'] | undefined {
+  const validation = metadata['capabilityValidation'];
+  if (!isPlainRecord(validation) || !isPlainRecord(validation['authentication'])) return undefined;
+  const authentication = validation['authentication'];
+  if (typeof authentication['status'] !== 'string' || typeof authentication['message'] !== 'string') return undefined;
+  if (!['VERIFIED', 'REJECTED', 'RETRYABLE_ERROR', 'NOT_CONFIGURED'].includes(authentication['status'])) return undefined;
+  const checkedAt = typeof authentication['checkedAt'] === 'string' ? new Date(authentication['checkedAt']) : undefined;
+  return {
+    status: authentication['status'] as NonNullable<IngestionReadinessConnectionSummary['authentication']>['status'],
+    message: authentication['message'],
+    ...(checkedAt !== undefined && !Number.isNaN(checkedAt.getTime()) ? { checkedAt } : {}),
+  };
 }
 
 function resolveOnboardingStatus(

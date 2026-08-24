@@ -29,6 +29,7 @@ export function createTelegramRoutes(
   const router = Router();
 
   router.post('/webhook', telegramController.webhook);
+  router.post('/self-link-code', requireAuth, telegramController.createSelfLinkCode);
   router.get('/links', requireAuth, telegramController.listLinks);
   router.post('/links', requireAuth, telegramController.createLink);
   router.patch('/links/:id/disable', requireAuth, telegramController.disableLink);

@@ -17,21 +17,27 @@ import type {
   RegisterCloudConnectionInput,
   StoreOperationalCredentialInput,
   UpdateCloudConnectionInput,
+  ValidateCloudCredentialInput,
+  ValidateCloudCredentialResult,
   ValidateCloudConnectionInput,
+  CloudCredentialNextAction,
 } from './CloudConnectionContracts.js';
 import {
   normalizeOperationalCredential,
   requireNonEmpty,
 } from './CloudConnectionInputPolicy.js';
+import { CloudCredentialValidationService } from './CloudCredentialValidationService.js';
 
 export class CloudConnectionOnboarding {
   private readonly providers: ReadonlyMap<string, CloudIngestionProvider>;
+  private readonly credentialValidation: CloudCredentialValidationService;
 
   constructor(
     private readonly repository: ICloudConnectionRepository,
     providers: readonly CloudIngestionProvider[] = [],
   ) {
     this.providers = new Map(providers.map((provider) => [provider.providerCode, provider]));
+    this.credentialValidation = new CloudCredentialValidationService(repository, providers);
   }
 
   public listProviders(): Promise<readonly ProviderCatalogEntry[]> {
@@ -88,7 +94,20 @@ export class CloudConnectionOnboarding {
     input: StoreOperationalCredentialInput,
   ): Promise<CloudCredentialSummary> {
     const connection = await this.requireConnection(input.tenantId, input.cloudConnectionId);
-    const normalized = normalizeOperationalCredential(connection, input.payload);
+    let normalized: ReturnType<typeof normalizeOperationalCredential>;
+    try {
+      normalized = normalizeOperationalCredential(connection, input.payload);
+    } catch (error: unknown) {
+      if (error instanceof FinOpsBaseError) {
+        throw new FinOpsBaseError(error.message, error.code, {
+          stage: 'credential_input',
+          field: inferCredentialField(error.message),
+          retryable: false,
+          actionCode: 'CHECK_CREDENTIAL_FIELDS',
+        });
+      }
+      throw error;
+    }
     const credential = await this.repository.storeCredential({
       tenantId: input.tenantId,
       cloudConnectionId: input.cloudConnectionId,
@@ -96,6 +115,8 @@ export class CloudConnectionOnboarding {
       label: requireNonEmpty(input.label, 'label').slice(0, 120),
       payload: normalized.payload,
       externalPrincipalId: normalized.externalPrincipalId,
+      ...(normalized.keyFingerprint === undefined ? {} : { keyFingerprint: normalized.keyFingerprint }),
+      initialStatus: 'PENDING',
     });
     if (credential === null) {
       throw new FinOpsBaseError('La conexión cloud no existe o no pertenece al tenant activo.', 'NOT_FOUND');
@@ -108,12 +129,43 @@ export class CloudConnectionOnboarding {
         metadata: {
           cloudConnectionId: input.cloudConnectionId,
           purpose: credential.purpose,
+          status: credential.status,
           ...(credential.externalPrincipalId !== undefined ? { externalPrincipalId: credential.externalPrincipalId } : {}),
+          ...(credential.reused === true ? { reused: true } : {}),
         },
       });
     }
 
-    return credential;
+    const nextAction: CloudCredentialNextAction = credential.status === 'PENDING' || credential.status === 'INVALID'
+      ? 'VALIDATE'
+      : 'NONE';
+    return { ...credential, nextAction };
+  }
+
+  public async validateCredential(
+    input: ValidateCloudCredentialInput,
+  ): Promise<ValidateCloudCredentialResult> {
+    const credential = (await this.repository.listCredentialSummaries(
+      input.tenantId,
+      input.cloudConnectionId,
+    ))?.find((item) => item.id === input.credentialId);
+    if (credential === undefined) {
+      throw new FinOpsBaseError('La credencial no existe o no pertenece a esta conexión.', 'NOT_FOUND');
+    }
+
+    if (credential.status === 'ACTIVE') {
+      const validation = await this.validateConnection({
+        tenantId: input.tenantId,
+        cloudConnectionId: input.cloudConnectionId,
+        ...(input.userId === undefined ? {} : { userId: input.userId }),
+      });
+      return { credential, validation };
+    }
+    return this.credentialValidation.validate({
+      tenantId: input.tenantId,
+      cloudConnectionId: input.cloudConnectionId,
+      credential,
+    });
   }
 
   public async revokeOperationalCredential(
@@ -244,6 +296,14 @@ export class CloudConnectionOnboarding {
     const validationRecord = {
       providerCode: validation.providerCode,
       checkedAt: checkedAt.toISOString(),
+      ...(validation.authentication === undefined ? {} : {
+        authentication: {
+          status: validation.authentication.status,
+          message: validation.authentication.message,
+          checkedAt: validation.authentication.checkedAt.toISOString(),
+          ...(validation.authentication.metadata === undefined ? {} : { metadata: validation.authentication.metadata }),
+        },
+      }),
       capabilities: validation.capabilities.map(serializeCapabilityValidation),
     };
     const saved = await this.repository.saveConnectionValidation(
@@ -310,4 +370,15 @@ export class CloudConnectionOnboarding {
     return connection;
   }
 
+}
+
+function inferCredentialField(message: string): 'tenancyId' | 'userId' | 'privateKey' | 'passphrase' | 'fingerprint' | 'region' | 'payload' {
+  const normalized = message.toLowerCase();
+  if (normalized.includes('passphrase')) return 'passphrase';
+  if (normalized.includes('fingerprint')) return 'fingerprint';
+  if (normalized.includes('clave') || normalized.includes('pem') || normalized.includes('rsa')) return 'privateKey';
+  if (normalized.includes('user ocid') || normalized.includes('userid')) return 'userId';
+  if (normalized.includes('tenancy')) return 'tenancyId';
+  if (normalized.includes('región') || normalized.includes('region')) return 'region';
+  return 'payload';
 }

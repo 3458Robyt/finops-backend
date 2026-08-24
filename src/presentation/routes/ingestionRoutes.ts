@@ -15,6 +15,9 @@ import type { ResourceLinkageController } from '../controllers/ResourceLinkageCo
  * | Método | Subruta        | Auth        | Handler                                        |
  * |--------|----------------|-------------|------------------------------------------------|
  * | GET    | /history       | requireAuth | cloudConnectionController.listIngestionHistory |
+ * | GET    | /jobs/:jobId   | requireAuth | cloudConnectionController.getIngestionJob       |
+ * | POST   | /jobs/:jobId/cancel | requireManager | cloudConnectionController.cancelIngestionJob |
+ * | POST   | /jobs/:jobId/archive | requireManager | cloudConnectionController.archiveIngestionJob |
  * | GET    | /data-quality  | requireAuth | cloudConnectionController.listDataQuality      |
  * | GET    | /readiness     | requireAuth | cloudConnectionController.getIngestionReadiness|
  * | GET    | /resource-linkage | requireAuth | resourceLinkageController.getReadiness         |
@@ -36,6 +39,15 @@ export function createIngestionRoutes(
   router.post('/backfill', requireAuth, requireManager, cloudConnectionController.queueTechnicalBackfill);
   router.post('/focus-sources', requireAuth, requireManager, cloudConnectionController.configureFocusSource);
   router.get('/history', requireAuth, cloudConnectionController.listIngestionHistory);
+  if (typeof cloudConnectionController.getIngestionJob === 'function') {
+    router.get('/jobs/:jobId', requireAuth, cloudConnectionController.getIngestionJob);
+  }
+  if (typeof cloudConnectionController.cancelIngestionJob === 'function') {
+    router.post('/jobs/:jobId/cancel', requireAuth, requireManager, cloudConnectionController.cancelIngestionJob);
+  }
+  if (typeof cloudConnectionController.archiveIngestionJob === 'function') {
+    router.post('/jobs/:jobId/archive', requireAuth, requireManager, cloudConnectionController.archiveIngestionJob);
+  }
   router.get('/data-quality', requireAuth, cloudConnectionController.listDataQuality);
   router.get('/readiness', requireAuth, cloudConnectionController.getIngestionReadiness);
   if (resourceLinkageController !== undefined) {

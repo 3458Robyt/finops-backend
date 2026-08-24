@@ -100,8 +100,18 @@ async function previewOci(
     authenticationDetailsProvider: createOciAuthProvider(connection),
   });
   const objects: PreviewObject[] = [];
+  const effectiveLocations = locations.length > 0
+    ? locations
+    : [{
+        provider: 'oci' as const,
+        namespaceName: 'bling',
+        bucketName: connection.rootExternalId,
+        prefix: 'FOCUS Reports',
+        focusVersion: '1.0',
+        maxObjects: 1000,
+      }];
 
-  for (const location of locations) {
+  for (const location of effectiveLocations) {
     let start: string | undefined;
 
     while (objects.length < location.maxObjects) {
@@ -187,6 +197,7 @@ function createOciAuthProvider(connection: LoadedConnection): common.Authenticat
 
 interface LoadedConnection {
   readonly id: string;
+  readonly rootExternalId: string;
   readonly providerCode: ProviderCode;
   readonly defaultRegion?: string;
   readonly metadata?: Readonly<Record<string, unknown>>;
@@ -195,7 +206,10 @@ interface LoadedConnection {
 
 async function loadConnection(connectionId: string): Promise<LoadedConnection> {
   const prisma = getPrismaClient();
-  const cipher = new CredentialCipher();
+  const cipher = new CredentialCipher(
+    process.env['CREDENTIAL_ENCRYPTION_KEY'],
+    process.env['CREDENTIAL_KEY_VERSION'] ?? 'v1',
+  );
   const connection = await prisma.cloudConnection.findUniqueOrThrow({
     where: { id: connectionId },
     include: {
@@ -210,6 +224,7 @@ async function loadConnection(connectionId: string): Promise<LoadedConnection> {
 
   return {
     id: connection.id,
+    rootExternalId: connection.rootExternalId,
     providerCode: connection.providerCode,
     ...(connection.defaultRegion !== null ? { defaultRegion: connection.defaultRegion } : {}),
     ...(isRecord(connection.metadata) ? { metadata: connection.metadata } : {}),

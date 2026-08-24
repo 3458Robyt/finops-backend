@@ -27,6 +27,8 @@ const tableNames = [
   'ingestion_jobs',
   'recommendation_analysis_runs',
   'recommendation_savings_measurements',
+  'client_invitations',
+  'telegram_link_codes',
   'auth_sessions',
   'auth_refresh_tokens',
   'password_reset_tokens',

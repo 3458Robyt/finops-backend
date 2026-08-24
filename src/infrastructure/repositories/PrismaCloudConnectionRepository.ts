@@ -6,6 +6,7 @@ import type {
   ConfigureMetricDefinitionsForConnectionInput,
   ConfigureMetricDefinitionsForConnectionResult,
   CloudCredentialSummary,
+  CloudMetricDefinitionSummary,
   CreateCloudAuditEventInput,
   CreateCloudConnectionInput,
   CreateIngestionJobInput,
@@ -40,16 +41,7 @@ import { CredentialCipher } from '../security/CredentialCipher.js';
 import { PrismaCloudIngestionReadRepository } from './PrismaCloudIngestionReadRepository.js';
 import { PrismaCloudIngestionCommandRepository } from './PrismaCloudIngestionCommandRepository.js';
 
-/**
- * Adaptador de infraestructura (Clean Architecture) que implementa el puerto de
- * dominio {@link ICloudConnectionRepository} sobre Prisma/PostgreSQL.
- *
- * Responsabilidad: gestionar el catálogo de proveedores cloud
- * (`provider_catalog`), las conexiones cloud de cada tenant
- * (`cloud_connections`), los trabajos de ingesta (`ingestion_jobs`) y la salud
- * de ingesta (watermarks y controles de calidad de datos). Las operaciones sobre
- * conexiones filtran por `tenantId` para garantizar el aislamiento multi-tenant.
- */
+/** Prisma adapter for cloud connections, credentials, ingestion and audit operations. */
 export class PrismaCloudConnectionRepository implements ICloudConnectionRepository {
   private readonly credentialRepository: PrismaCloudCredentialRepository;
   private readonly configurationRepository: PrismaCloudConnectionConfigurationRepository;
@@ -66,12 +58,7 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     this.ingestionCommandRepository = new PrismaCloudIngestionCommandRepository(prisma);
   }
 
-  /**
-   * Lista el catálogo de proveedores cloud habilitados, ordenados por código.
-   *
-   * @returns Lista de solo lectura de entradas del catálogo de proveedores;
-   *   arreglo vacío si no hay proveedores habilitados.
-   */
+  /** Lists enabled providers ordered by code. */
   public async listProviderCatalog(): Promise<readonly ProviderCatalogEntry[]> {
     const providers = await this.prisma.providerCatalog.findMany({
       where: { enabled: true },
@@ -81,12 +68,7 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     return providers.map((provider) => mapProvider(provider));
   }
 
-  /**
-   * Busca una entrada del catálogo de proveedores por su código único.
-   *
-   * @param providerCode Código del proveedor (clave única en `provider_catalog`).
-   * @returns La entrada del catálogo de dominio, o `null` si no existe.
-   */
+  /** Finds a provider catalog entry by code. */
   public async findProviderCatalog(providerCode: string): Promise<ProviderCatalogEntry | null> {
     const provider = await this.prisma.providerCatalog.findUnique({
       where: { code: providerCode },
@@ -95,16 +77,7 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     return provider === null ? null : mapProvider(provider);
   }
 
-  /**
-   * Crea una nueva conexión cloud para un tenant.
-   *
-   * La metadata operativa se configura después mediante operaciones tipadas;
-   * el alta no acepta un objeto arbitrario que pudiera contener secretos.
-   *
-   * @param input Datos de la conexión (tenant, proveedor, identificador raíz,
-   *   nombre y región opcional).
-   * @returns Resumen de la conexión creada en formato de dominio.
-   */
+  /** Creates a connection without arbitrary secret-bearing metadata. */
   public async createCloudConnection(
     input: CreateCloudConnectionInput,
   ): Promise<CloudConnectionSummary> {
@@ -143,17 +116,7 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     return mapCloudConnection(updated);
   }
 
-  /**
-   * Busca una conexión cloud por su id, restringida al tenant indicado.
-   *
-   * El filtro combinado `id` + `tenantId` garantiza el aislamiento multi-tenant
-   * (un tenant no puede acceder a conexiones de otro).
-   *
-   * @param tenantId Tenant propietario de la conexión.
-   * @param cloudConnectionId Identificador de la conexión.
-   * @returns Resumen de la conexión de dominio, o `null` si no existe o no
-   *   pertenece al tenant.
-   */
+  /** Finds a connection with an explicit tenant filter. */
   public async findCloudConnectionForTenant(
     tenantId: string,
     cloudConnectionId: string,
@@ -168,14 +131,7 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     return connection === null ? null : mapCloudConnection(connection);
   }
 
-  /**
-   * Lista todas las conexiones cloud de un tenant, de la más reciente a la más
-   * antigua.
-   *
-   * @param tenantId Tenant cuyas conexiones se listan (aislamiento multi-tenant).
-   * @returns Lista de solo lectura de resúmenes de conexión; arreglo vacío si no
-   *   hay conexiones.
-   */
+  /** Lists a tenant's connections from newest to oldest. */
   public async listCloudConnectionsForTenant(
     tenantId: string,
   ): Promise<readonly CloudConnectionSummary[]> {
@@ -227,6 +183,82 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     return this.credentialRepository.getIngestionConnectionForTenant(tenantId, cloudConnectionId);
   }
 
+  public async listEnabledMetricDefinitions(
+    tenantId: string,
+    cloudConnectionId: string,
+  ): Promise<readonly CloudMetricDefinitionSummary[]> {
+    const definitions = await this.prisma.cloudMetricDefinition.findMany({
+      where: {
+        tenantId,
+        cloudConnectionId,
+        enabled: true,
+      },
+      orderBy: [{ regionId: 'asc' }, { namespace: 'asc' }, { metricName: 'asc' }],
+      select: {
+        id: true,
+        compartmentId: true,
+        namespace: true,
+        metricName: true,
+        externalResourceId: true,
+        regionId: true,
+        dimensions: true,
+        metricUnit: true,
+        statistics: true,
+      },
+    });
+    return definitions.map((definition) => ({
+      id: definition.id,
+      compartmentId: definition.compartmentId,
+      namespace: definition.namespace,
+      metricName: definition.metricName,
+      externalResourceId: definition.externalResourceId,
+      ...(definition.regionId === null ? {} : { regionId: definition.regionId }),
+      ...(isJsonObject(definition.dimensions) ? { dimensions: definition.dimensions as Record<string, unknown> } : {}),
+      ...(definition.metricUnit === null ? {} : { metricUnit: definition.metricUnit }),
+      statistics: definition.statistics,
+    }));
+  }
+
+  public getIngestionConnectionForCredential(
+    tenantId: string,
+    cloudConnectionId: string,
+    credentialId: string,
+  ): Promise<CloudIngestionConnection | null> {
+    return this.credentialRepository.getIngestionConnectionForCredential(
+      tenantId,
+      cloudConnectionId,
+      credentialId,
+    );
+  }
+
+  public promoteCredential(
+    tenantId: string,
+    cloudConnectionId: string,
+    credentialId: string,
+  ): Promise<CloudCredentialSummary | null> {
+    return this.credentialRepository.promoteCredential(tenantId, cloudConnectionId, credentialId);
+  }
+
+  public updateCredentialValidation(
+    tenantId: string,
+    cloudConnectionId: string,
+    credentialId: string,
+    status: 'PENDING' | 'INVALID',
+    validationStatus: 'VERIFIED' | 'REJECTED' | 'RETRYABLE_ERROR' | 'NOT_CONFIGURED',
+    message: string,
+    attemptedAt: Date,
+  ): Promise<CloudCredentialSummary | null> {
+    return this.credentialRepository.updateCredentialValidation(
+      tenantId,
+      cloudConnectionId,
+      credentialId,
+      status,
+      validationStatus,
+      message,
+      attemptedAt,
+    );
+  }
+
   public async saveConnectionValidation(
     tenantId: string,
     cloudConnectionId: string,
@@ -247,7 +279,8 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
       where: { id: connection.id },
       data: {
         metadata: metadata as Prisma.InputJsonValue,
-        lastValidatedAt: validatedAt,
+        lastValidationAttemptAt: validatedAt,
+        ...(isValidationAuthenticated(validation) ? { lastValidatedAt: validatedAt } : {}),
       },
     });
 
@@ -293,8 +326,20 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     return this.ingestionReadRepository.getIngestionHealth(tenantId, cloudConnectionId);
   }
 
-  public listIngestionJobsForTenant(tenantId: string, limit: number): Promise<readonly IngestionJobHistoryItem[]> {
-    return this.ingestionReadRepository.listIngestionJobsForTenant(tenantId, limit);
+  public listIngestionJobsForTenant(tenantId: string, limit: number, includeArchived = false): Promise<readonly IngestionJobHistoryItem[]> {
+    return this.ingestionReadRepository.listIngestionJobsForTenant(tenantId, limit, includeArchived);
+  }
+
+  public getIngestionJobForTenant(tenantId: string, jobId: string): Promise<IngestionJobHistoryItem | null> {
+    return this.ingestionReadRepository.getIngestionJobForTenant(tenantId, jobId);
+  }
+
+  public requestIngestionJobCancellation(tenantId: string, jobId: string, userId: string): Promise<IngestionJobHistoryItem | null> {
+    return this.ingestionReadRepository.requestIngestionJobCancellation(tenantId, jobId, userId);
+  }
+
+  public archiveIngestionJob(tenantId: string, jobId: string, userId: string): Promise<IngestionJobHistoryItem | null> {
+    return this.ingestionReadRepository.archiveIngestionJob(tenantId, jobId, userId);
   }
 
   public listDataQualityChecksForTenant(tenantId: string, limit: number): Promise<readonly DataQualityCheckItem[]> {
@@ -334,4 +379,20 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
   ): Promise<ConfigureMetricDefinitionsForConnectionResult | null> {
     return this.configurationRepository.configureMetricDefinitionsForConnection(input);
   }
+}
+
+function isValidationAuthenticated(validation: Readonly<Record<string, unknown>>): boolean {
+  const authentication = validation['authentication'];
+  if (isPlainRecord(authentication) && authentication['status'] === 'VERIFIED') return true;
+
+  const capabilities = validation['capabilities'];
+  return Array.isArray(capabilities) && capabilities.some((item) => (
+    isPlainRecord(item)
+    && item['capability'] === 'IDENTITY'
+    && item['status'] === 'AVAILABLE'
+  ));
+}
+
+function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

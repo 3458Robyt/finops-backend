@@ -3,6 +3,12 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
 import { CredentialCipher } from '../src/infrastructure/security/CredentialCipher.js';
+import { PrismaCloudConnectionRepository } from '../src/infrastructure/repositories/PrismaCloudConnectionRepository.js';
+import { CloudConnectionService } from '../src/application/services/CloudConnectionService.js';
+import { OciSdkIngestionProvider } from '../src/infrastructure/ingestion/OciSdkIngestionProvider.js';
+import { inspectOciPrivateKey, normalizeOciFingerprint } from '../src/application/services/cloud-connections/ociPrivateKey.js';
+import { invalidatedValidationData } from '../src/infrastructure/repositories/cloudConnectionMetadata.js';
+import { OCI_CORE_METRIC_STATISTICS } from '../src/domain/interfaces/ICloudIngestionProvider.js';
 
 interface OciProfile {
   readonly userId: string;
@@ -25,67 +31,67 @@ async function main(): Promise<void> {
   const summarySeriesPath = args.get('summary-series');
   const profile = await readOciProfile(profileName, args.get('config'));
   const privateKey = await readFile(profile.keyFile, 'utf8');
-  const cipher = new CredentialCipher();
-  const encrypted = cipher.encrypt({
-    tenancyId: profile.tenancyId,
-    userId: profile.userId,
-    fingerprint: profile.fingerprint,
-    privateKey,
-    region: profile.region,
-  });
   const prisma = getPrismaClient();
-
-  await prisma.$transaction(async (tx) => {
-    await tx.cloudConnectionCredential.updateMany({
-      where: {
-        cloudConnectionId: connectionId,
-        purpose: 'OPERATIONAL',
-        status: 'ACTIVE',
-        label: `OCI profile ${profileName}`,
-      },
-      data: {
-        status: 'DISABLED',
-        disabledAt: new Date(),
-      },
-    });
-
-    await tx.cloudConnectionCredential.create({
-      data: {
-        cloudConnectionId: connectionId,
-        purpose: 'OPERATIONAL',
-        status: 'ACTIVE',
-        label: `OCI profile ${profileName}`,
-        encryptedPayload: encrypted.encryptedPayload,
-        encryptionIv: encrypted.encryptionIv,
-        encryptionAuthTag: encrypted.encryptionAuthTag,
-        encryptionAlgorithm: encrypted.encryptionAlgorithm,
-        encryptionKeyVersion: encrypted.encryptionKeyVersion,
-        externalPrincipalId: profile.userId,
-      },
-    });
-
-    if (summarySeriesPath !== undefined) {
-      const current = await tx.cloudConnection.findUniqueOrThrow({
-        where: { id: connectionId },
-        select: { metadata: true, rootExternalId: true },
-      });
-      const mergedMetadata = {
-        ...(isRecord(current.metadata) ? current.metadata : {}),
-        ociMetricDefinitions: await buildMetricDefinitions(summarySeriesPath, current.rootExternalId),
-      };
-
-      await tx.cloudConnection.update({
-        where: { id: connectionId },
-        data: { metadata: mergedMetadata },
-      });
-    }
+  const connection = await prisma.cloudConnection.findUnique({
+    where: { id: connectionId },
+    select: { tenantId: true },
   });
+  if (connection === null) throw new Error('La conexión OCI indicada no existe.');
+  const inspection = inspectOciPrivateKey(privateKey);
+  if (normalizeOciFingerprint(profile.fingerprint) !== inspection.fingerprint) {
+    throw new Error('El fingerprint del perfil OCI no coincide con la clave privada local.');
+  }
+  const service = new CloudConnectionService(
+    new PrismaCloudConnectionRepository(
+      prisma,
+      new CredentialCipher(process.env.CREDENTIAL_ENCRYPTION_KEY, process.env.CREDENTIAL_KEY_VERSION ?? 'v1'),
+    ),
+    [new OciSdkIngestionProvider()],
+  );
+  const credential = await service.storeOperationalCredential({
+    tenantId: connection.tenantId,
+    cloudConnectionId: connectionId,
+    purpose: 'OPERATIONAL',
+    label: `OCI profile ${profileName}`,
+    payload: {
+      tenancyId: profile.tenancyId,
+      userId: profile.userId,
+      fingerprint: profile.fingerprint,
+      privateKey,
+      region: profile.region,
+    },
+  });
+  const validation = credential.nextAction === 'VALIDATE'
+    ? await service.validateCredential({
+      tenantId: connection.tenantId,
+      cloudConnectionId: connectionId,
+      credentialId: credential.id,
+    })
+    : undefined;
+
+  if (summarySeriesPath !== undefined) {
+    const current = await prisma.cloudConnection.findUniqueOrThrow({
+      where: { id: connectionId },
+      select: { metadata: true, rootExternalId: true },
+    });
+    const mergedMetadata = {
+      ...(isRecord(current.metadata) ? current.metadata : {}),
+      ociMetricDefinitions: await buildMetricDefinitions(summarySeriesPath, current.rootExternalId),
+    };
+
+    await prisma.cloudConnection.update({
+      where: { id: connectionId },
+      data: invalidatedValidationData(mergedMetadata),
+    });
+  }
 
   console.log(JSON.stringify({
     success: true,
     connectionId,
     profile: profileName,
     operationalCredentialStored: true,
+    credentialStatus: credential.status,
+    credentialValidationStatus: validation?.credential.validationStatus ?? credential.validationStatus,
     metadataUpdated: summarySeriesPath !== undefined,
   }, null, 2));
 }
@@ -152,11 +158,11 @@ function parseIniProfile(text: string, profileName: string): ReadonlyMap<string,
 async function buildMetricDefinitions(
   summarySeriesPath: string,
   compartmentId: string,
-): Promise<readonly Record<string, string>[]> {
+): Promise<readonly Record<string, unknown>[]> {
   const text = await readFile(summarySeriesPath, 'utf8');
   const rows = JSON.parse(text) as MetricSummaryRow[];
   const seen = new Set<string>();
-  const definitions: Record<string, string>[] = [];
+  const definitions: Record<string, unknown>[] = [];
 
   for (const row of rows) {
     if (row.namespace === undefined || row.metric === undefined || row.resourceId === undefined) {
@@ -174,7 +180,7 @@ async function buildMetricDefinitions(
       namespace: row.namespace,
       metricName: row.metric,
       resourceId: row.resourceId,
-      query: `${row.metric}[30m]{resourceId = "${row.resourceId}"}.mean()`,
+      statistics: [...OCI_CORE_METRIC_STATISTICS],
     });
   }
 

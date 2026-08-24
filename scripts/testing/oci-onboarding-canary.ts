@@ -3,9 +3,11 @@ import { getPrismaClient } from '../../src/infrastructure/database/prisma.js';
 import { OciSdkIngestionProvider } from '../../src/infrastructure/ingestion/OciSdkIngestionProvider.js';
 import { PrismaCloudConnectionRepository } from '../../src/infrastructure/repositories/PrismaCloudConnectionRepository.js';
 import { CredentialCipher } from '../../src/infrastructure/security/CredentialCipher.js';
-import type { CloudIngestionJobContext } from '../../src/domain/interfaces/ICloudIngestionProvider.js';
+import { loadRuntimeConfig } from '../../src/infrastructure/config/runtimeConfigReader.js';
+import type { CloudIngestionJobContext, FocusSourcePreviewResult } from '../../src/domain/interfaces/ICloudIngestionProvider.js';
 
 const prisma = getPrismaClient();
+const runtimeConfig = loadRuntimeConfig();
 const startedAt = Date.now();
 
 try {
@@ -18,7 +20,10 @@ try {
     },
     select: { id: true, tenantId: true },
   });
-  const repository = new PrismaCloudConnectionRepository(prisma, new CredentialCipher());
+  const repository = new PrismaCloudConnectionRepository(
+    prisma,
+    new CredentialCipher(runtimeConfig.security.credentialEncryptionKey, runtimeConfig.security.credentialKeyVersion),
+  );
   const connection = await repository.getIngestionConnectionForTenant(row.tenantId, row.id);
   if (connection === null) throw new Error('La conexión OCI activa no está disponible.');
 
@@ -38,9 +43,17 @@ try {
   };
   const inventory = await provider.collect(inventoryJob);
   const inventoryMs = Date.now() - inventoryStartedAt;
-  const previewStartedAt = Date.now();
-  const focusPreview = await provider.previewFocus(connection, 5);
-  const focusPreviewMs = Date.now() - previewStartedAt;
+  const storageCapability = validation.capabilities.find((item) => item.capability === 'STORAGE');
+  let focusPreview: FocusSourcePreviewResult | null = null;
+  let focusPreviewMs: number | null = null;
+  let focusPreviewSkipReason: string | undefined;
+  if (storageCapability?.status === 'AVAILABLE') {
+    const previewStartedAt = Date.now();
+    focusPreview = await provider.previewFocus(connection, 5);
+    focusPreviewMs = Date.now() - previewStartedAt;
+  } else {
+    focusPreviewSkipReason = storageCapability?.message ?? 'La capacidad STORAGE no está disponible en esta conexión.';
+  }
   const readinessStartedAt = Date.now();
   const readinessAfter = await repository.listIngestionReadinessForTenant(row.tenantId);
   const readinessJson = JSON.stringify(readinessAfter);
@@ -65,12 +78,13 @@ try {
     },
     focusPreview: {
       durationMs: focusPreviewMs,
-      configuredLocations: focusPreview.configuredLocations,
-      discoveredObjects: focusPreview.discoveredObjects,
-      returnedObjects: focusPreview.objects.length,
-      approximateBytes: focusPreview.approximateBytes,
-      sizedObjects: focusPreview.sizedObjects,
-      errors: focusPreview.errors,
+      configuredLocations: focusPreview?.configuredLocations ?? 0,
+      discoveredObjects: focusPreview?.discoveredObjects ?? 0,
+      returnedObjects: focusPreview?.objects.length ?? 0,
+      approximateBytes: focusPreview?.approximateBytes ?? 0,
+      sizedObjects: focusPreview?.sizedObjects ?? 0,
+      errors: focusPreview?.errors ?? [],
+      ...(focusPreviewSkipReason === undefined ? {} : { skipped: true, skipReason: focusPreviewSkipReason }),
     },
     capabilities: validation.capabilities.map(({ capability, status, message }) => ({ capability, status, message })),
   }, null, 2));

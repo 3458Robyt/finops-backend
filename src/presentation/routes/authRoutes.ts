@@ -5,6 +5,7 @@ import type { PasswordRecoveryController } from '../controllers/PasswordRecovery
 import type { MfaController } from '../controllers/MfaController.js';
 import type { RequestHandler } from 'express';
 import { createTrustedOriginGuard } from '../middleware/trustedOrigin.js';
+import type { ClientInvitationController } from '../controllers/ClientInvitationController.js';
 
 /**
  * Construye el router de autenticación.
@@ -28,11 +29,15 @@ export function createAuthRoutes(
   passwordRecoveryController?: PasswordRecoveryController,
   mfaController?: MfaController,
   allowedOrigins: readonly string[] = ['http://localhost:5173'],
+  clientInvitationController?: ClientInvitationController,
 ): Router {
   const router = Router();
   const trustedOrigin = createTrustedOriginGuard(allowedOrigins);
 
   router.post('/login', authController.login);
+  if (clientInvitationController !== undefined) {
+    router.post('/client-invitations/accept', trustedOrigin, clientInvitationController.accept);
+  }
   router.post('/refresh', trustedOrigin, authSessionController.refresh);
   router.post('/mfa/complete', trustedOrigin, authController.completeMfa);
   router.post('/mfa/enrollment/complete', trustedOrigin, authController.completeMfaEnrollment);

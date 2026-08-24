@@ -29,13 +29,27 @@ export function readOciFocusObjects(
 export function readOciFocusLocations(
   job: CloudIngestionJobContext,
 ): readonly OciFocusReportLocation[] {
-  return readObjectArray(job.connection.metadata, 'ociFocusReportLocations').map((item) => ({
+  const configured = readObjectArray(job.connection.metadata, 'ociFocusReportLocations').map((item) => ({
     namespaceName: requireString(item['namespaceName'], 'ociFocusReportLocations.namespaceName'),
     bucketName: requireString(item['bucketName'], 'ociFocusReportLocations.bucketName'),
     prefix: requireString(item['prefix'], 'ociFocusReportLocations.prefix'),
     focusVersion: optionalString(item['focusVersion']) ?? '1.0',
     maxObjects: readBoundedPositiveInteger(item['maxObjects'], 100, 1, 1000),
   }));
+  if (configured.length > 0 || readObjectArray(job.connection.metadata, 'ociFocusReportObjects').length > 0) {
+    return configured;
+  }
+
+  // OCI-managed Cost Reports use a provider-managed Object Storage namespace,
+  // the tenancy OCID as bucket and the well-known report prefix. Keep this
+  // convention automatic; explicit metadata still overrides it completely.
+  return [{
+    namespaceName: 'bling',
+    bucketName: job.connection.rootExternalId,
+    prefix: 'FOCUS Reports',
+    focusVersion: '1.0',
+    maxObjects: 1000,
+  }];
 }
 
 export async function discoverOciFocusObjects(
@@ -43,12 +57,14 @@ export async function discoverOciFocusObjects(
   client: OciObjectStorageClient,
   withRetry: <T>(operation: () => Promise<T>) => Promise<T>,
   tolerateErrors = false,
+  withRateLimit?: <T>(operation: () => Promise<T>) => Promise<T>,
 ): Promise<{
   readonly objects: readonly OciFocusReportObject[];
   readonly apiCallCount: number;
   readonly errors: readonly string[];
 }> {
   const discovered: OciFocusReportObject[] = [];
+  const seen = new Set<string>();
   let apiCallCount = 0;
   const errors: string[] = [];
 
@@ -58,16 +74,22 @@ export async function discoverOciFocusObjects(
     try {
       while (discovered.length - locationStartCount < location.maxObjects) {
         apiCallCount += 1;
-        const response = await withRetry(() => client.listObjects({
+        const operation = () => withRetry(() => client.listObjects({
           namespaceName: location.namespaceName,
           bucketName: location.bucketName,
           prefix: location.prefix,
           limit: Math.min(1000, location.maxObjects - (discovered.length - locationStartCount)),
           ...(start !== undefined ? { start } : {}),
         }));
+        const response = withRateLimit === undefined
+          ? await operation()
+          : await withRateLimit(operation);
 
         for (const object of response.listObjects?.objects ?? []) {
           if (object.name === undefined || !isFocusObjectName(object.name)) continue;
+          const identity = `${location.namespaceName}/${location.bucketName}/${object.name}`;
+          if (seen.has(identity)) continue;
+          seen.add(identity);
           discovered.push({
             namespaceName: location.namespaceName,
             bucketName: location.bucketName,

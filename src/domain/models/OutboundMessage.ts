@@ -2,6 +2,7 @@ export type OutboundMessageChannel = 'TELEGRAM' | 'EMAIL';
 
 export type OutboundMessageType =
   | 'TEST'
+  | 'CLIENT_INVITATION'
   | 'SAVINGS_REMINDER'
   | 'AI_CHAT_RESPONSE'
   | 'RECOMMENDATION_SUMMARY'

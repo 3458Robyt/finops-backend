@@ -6,9 +6,9 @@ import type {
 import type { PrismaCloudIngestionJobRepository } from '../../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
 import { CloudIngestionWorkerService } from './CloudIngestionWorkerService.js';
 
-function createJob(providerCode = 'oci'): CloudIngestionJobContext {
+function createJob(providerCode = 'oci', id = 'job-1'): CloudIngestionJobContext {
   return {
-    id: 'job-1',
+    id,
     tenantId: 'tenant-1',
     cloudConnectionId: 'connection-1',
     sourceType: 'TECHNICAL_METRIC',
@@ -102,5 +102,56 @@ describe('CloudIngestionWorkerService', () => {
       providerCode: 'oci',
       summary,
     });
+  });
+
+  it('drains multiple claimed jobs concurrently when batch slots are available', async () => {
+    const jobs = [createJob('oci', 'job-1'), createJob('oci', 'job-2')];
+    let active = 0;
+    let peak = 0;
+    const result = {
+      apiCallCount: 1,
+      objectsProcessed: 0,
+      focusRows: [],
+      resources: [],
+      metricSamples: [],
+      warnings: [],
+      coverage: {},
+    };
+    const provider: CloudIngestionProvider = {
+      providerCode: 'oci',
+      validate: vi.fn(async () => ({ providerCode: 'oci', capabilities: [] })),
+      collect: vi.fn(async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        active -= 1;
+        return result;
+      }),
+    };
+    const summary = {
+      durationMs: 10,
+      providerCode: 'oci',
+      sourceType: 'TECHNICAL_METRIC' as const,
+      apiCallCount: 1,
+      objectsProcessed: 0,
+      focusRows: 0,
+      focusRowsInserted: 0,
+      costMetrics: 0,
+      costMetricsInserted: 0,
+      resources: 0,
+      metricSamples: 0,
+      warnings: [],
+      coverage: {},
+    };
+    const repository = {
+      claimNextPendingJob: vi.fn(async () => jobs.shift() ?? null),
+      completeJob: vi.fn(async () => summary),
+    } as unknown as PrismaCloudIngestionJobRepository;
+    const service = new CloudIngestionWorkerService(repository, [provider]);
+
+    const outcomes = await service.runBatch('worker-1', 2);
+
+    expect(outcomes.filter((outcome) => outcome.processed)).toHaveLength(2);
+    expect(peak).toBe(2);
   });
 });

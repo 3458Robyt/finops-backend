@@ -3,6 +3,7 @@ import type { CloudIngestionConnection } from '../../../domain/interfaces/ICloud
 import {
   buildOciValidationJob,
   safeOciProviderError,
+  validateOciCapabilities,
   validateOciCall,
   withOciClient,
 } from './OciCapabilityValidator.js';
@@ -39,6 +40,28 @@ describe('OCI capability validation helpers', () => {
     await expect(withOciClient({ close: () => { closed = true; } }, async () => 'ok')).resolves.toBe('ok');
     expect(closed).toBe(true);
   });
+
+  test('stops dependent OCI calls after a rejected HTTP signature', async () => {
+    let computeCalls = 0;
+    let monitoringCalls = 0;
+    const result = await validateOciCapabilities(buildConnectionWithCredential(), {
+      providerCode: 'oci',
+      createAuthProvider: () => ({}) as never,
+      createIdentityClient: () => ({
+        getUser: async () => { throw Object.assign(new Error('Failed to verify the HTTP(S) Signature'), { statusCode: 401 }); },
+      }),
+      createComputeClient: () => { computeCalls += 1; return { listInstances: async () => ({}) }; },
+      createMonitoringClient: () => { monitoringCalls += 1; return { listMetrics: async () => ({}) }; },
+      validateStorage: async () => ({
+        capability: 'STORAGE', status: 'AVAILABLE', message: 'should not run', checkedAt: new Date(),
+      }),
+    });
+
+    expect(result.authentication).toMatchObject({ status: 'REJECTED' });
+    expect(result.capabilities.find((item) => item.capability === 'INVENTORY')).toMatchObject({ status: 'BLOCKED' });
+    expect(computeCalls).toBe(0);
+    expect(monitoringCalls).toBe(0);
+  });
 });
 
 function buildConnection(): CloudIngestionConnection {
@@ -48,5 +71,20 @@ function buildConnection(): CloudIngestionConnection {
     providerCode: 'oci',
     rootExternalId: 'ocid1.tenancy.oc1.test',
     credentials: [],
+  };
+}
+
+function buildConnectionWithCredential(): CloudIngestionConnection {
+  return {
+    ...buildConnection(),
+    credentials: [{
+      purpose: 'OPERATIONAL',
+      payload: {
+        userId: 'ocid1.user.oc1.test',
+        tenancyId: 'ocid1.tenancy.oc1.test',
+        fingerprint: '00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff',
+        privateKey: 'not-used-by-this-test',
+      },
+    }],
   };
 }

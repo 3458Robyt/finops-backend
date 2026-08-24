@@ -12,6 +12,7 @@ export class CloudConnectionController {
   public readonly setConnectionStatus: CloudConnectionManagementController["setConnectionStatus"];
   public readonly storeCredential: CloudConnectionManagementController["storeCredential"];
   public readonly revokeCredential: CloudConnectionManagementController["revokeCredential"];
+  public readonly validateCredential: CloudConnectionManagementController["validateCredential"];
   public readonly validateConnection: CloudConnectionManagementController["validateConnection"];
   public readonly previewFocusSource: CloudConnectionManagementController["previewFocusSource"];
   public readonly activateConnection: CloudConnectionManagementController["activateConnection"];
@@ -27,6 +28,9 @@ export class CloudConnectionController {
   public readonly configureFocusSource: CloudIngestionController["configureFocusSource"];
   public readonly retryFailedIngestionJobs: CloudIngestionController["retryFailedIngestionJobs"];
   public readonly cancelPendingIngestionJobs: CloudIngestionController["cancelPendingIngestionJobs"];
+  public readonly getIngestionJob: CloudIngestionController["getIngestionJob"];
+  public readonly cancelIngestionJob: CloudIngestionController["cancelIngestionJob"];
+  public readonly archiveIngestionJob: CloudIngestionController["archiveIngestionJob"];
 
   constructor(cloudConnectionService: CloudConnectionService) {
     const management = new CloudConnectionManagementController(
@@ -41,6 +45,7 @@ export class CloudConnectionController {
     this.setConnectionStatus = management.setConnectionStatus;
     this.storeCredential = management.storeCredential;
     this.revokeCredential = management.revokeCredential;
+    this.validateCredential = management.validateCredential;
     this.validateConnection = management.validateConnection;
     this.previewFocusSource = management.previewFocusSource;
     this.activateConnection = management.activateConnection;
@@ -56,5 +61,8 @@ export class CloudConnectionController {
     this.configureFocusSource = ingestion.configureFocusSource;
     this.retryFailedIngestionJobs = ingestion.retryFailedIngestionJobs;
     this.cancelPendingIngestionJobs = ingestion.cancelPendingIngestionJobs;
+    this.getIngestionJob = ingestion.getIngestionJob;
+    this.cancelIngestionJob = ingestion.cancelIngestionJob;
+    this.archiveIngestionJob = ingestion.archiveIngestionJob;
   }
 }

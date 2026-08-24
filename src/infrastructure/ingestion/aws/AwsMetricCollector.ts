@@ -5,6 +5,7 @@ import type {
   CloudIngestionResult,
   NormalizedResourceMetricSample,
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
+import type { MetricStatistic } from '../../../domain/interfaces/ICloudIngestionProvider.js';
 import { getCredential } from '../providerConfig.js';
 import type { AwsCommandClient, AwsMetricDataResponse } from './awsContracts.js';
 import {
@@ -69,6 +70,7 @@ export async function collectAwsTechnicalMetrics(
       for (const result of response.MetricDataResults ?? []) {
         const definition = batch[Number(result.Id?.slice(1) ?? -1)];
         if (definition === undefined) continue;
+        const statistic = normalizeAwsStatistic(definition.stat);
         const timestamps = result.Timestamps ?? [];
         const values = result.Values ?? [];
         for (let index = 0; index < timestamps.length; index += 1) {
@@ -81,11 +83,12 @@ export async function collectAwsTechnicalMetrics(
             provider: 'AWS',
             externalResourceId: definition.externalResourceId,
             metricName: definition.metricName,
+            statistic,
             value,
             sampledAt: timestamp,
             granularitySeconds: 1800,
             ...(definition.unit !== undefined ? { metricUnit: definition.unit } : {}),
-            rawMetric: { namespace: definition.namespace, stat: definition.stat, region },
+            rawMetric: { namespace: definition.namespace, stat: definition.stat, statistic, region },
           });
         }
       }
@@ -107,6 +110,17 @@ export async function collectAwsTechnicalMetrics(
       memoryRequiresCloudWatchAgent: true,
     },
   };
+}
+
+function normalizeAwsStatistic(value: string): MetricStatistic {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'minimum' || normalized === 'min') return 'MIN';
+  if (normalized === 'maximum' || normalized === 'max') return 'MAX';
+  if (normalized === 'sum') return 'SUM';
+  if (normalized === 'samplecount' || normalized === 'count') return 'COUNT';
+  const percentile = /^p(50|90|95|99)(?:\.\d+)?$/.exec(normalized);
+  if (percentile !== null) return `P${percentile[1]}` as MetricStatistic;
+  return 'MEAN';
 }
 
 function emptyMetricResult(

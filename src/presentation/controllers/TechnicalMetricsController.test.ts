@@ -45,6 +45,29 @@ describe('TechnicalMetricsController', () => {
     });
     expect(service.getSeries).not.toHaveBeenCalled();
   });
+
+  it('passes inventory filters to the server-side query', async () => {
+    const service = {
+      listResources: vi.fn(async () => []),
+    } as unknown as TechnicalMetricsService;
+    const controller = new TechnicalMetricsController(service);
+    const response = createResponse();
+
+    await controller.listResources(createRequest({
+      costFilter: 'WITH_COST',
+      status: 'ACTIVE,STOPPED',
+      provider: 'OCI',
+      query: 'prod',
+    }), response);
+
+    expect(response.statusCode).toBe(200);
+    expect(service.listResources).toHaveBeenCalledWith('tenant-1', undefined, {
+      costFilter: 'WITH_COST',
+      statuses: ['ACTIVE', 'STOPPED'],
+      provider: 'OCI',
+      query: 'prod',
+    });
+  });
 });
 
 function createRequest(query: Record<string, string>): Request {

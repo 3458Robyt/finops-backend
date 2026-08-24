@@ -168,7 +168,13 @@ export class CloudConnectionManagementController extends CloudConnectionControll
           label: this.requireString(body["label"], "label"),
           payload,
         });
-      res.status(201).json({ success: true, credential });
+      const { reused = false, nextAction = credential.status === 'PENDING' || credential.status === 'INVALID' ? 'VALIDATE' : 'NONE', ...credentialSummary } = credential;
+      res.status(201).json({
+        success: true,
+        credential: credentialSummary,
+        reused,
+        nextAction,
+      });
     } catch (error: unknown) {
       this.respondWithError(res, error);
     }
@@ -192,6 +198,29 @@ export class CloudConnectionManagementController extends CloudConnectionControll
           req.auth.userId,
         );
       res.status(200).json({ success: true, credential });
+    } catch (error: unknown) {
+      this.respondWithError(res, error);
+    }
+  };
+
+  public validateCredential = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      if (req.auth === undefined) {
+        throw new FinOpsBaseError(
+          "Debes iniciar sesión para continuar.",
+          "AUTHENTICATION_REQUIRED",
+        );
+      }
+      const result = await this.cloudConnectionService.validateCredential({
+        tenantId: this.requireTenant(req),
+        cloudConnectionId: this.requireParam(req, "id"),
+        credentialId: this.requireParam(req, "credentialId"),
+        userId: req.auth.userId,
+      });
+      res.status(200).json({ success: true, credential: result.credential, validation: result.validation });
     } catch (error: unknown) {
       this.respondWithError(res, error);
     }

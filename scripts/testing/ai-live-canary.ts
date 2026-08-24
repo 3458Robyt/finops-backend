@@ -7,6 +7,17 @@ import { resolve } from 'node:path';
 import { Pool } from 'pg';
 
 const execFileAsync = promisify(execFile);
+const liveEnabled = process.env['AI_LIVE_TESTS'] === 'true';
+const canaryScope = process.env['AI_CANARY_SCOPE'] ?? 'all';
+if (!liveEnabled) {
+  console.log(JSON.stringify({
+    success: true,
+    skipped: true,
+    reason: 'Set AI_LIVE_TESTS=true to run isolated live AI canaries.',
+  }, null, 2));
+  process.exit(0);
+}
+
 const sourceUrl = process.env['DATABASE_URL'];
 if (sourceUrl === undefined || sourceUrl.trim() === '') {
   throw new Error('DATABASE_URL is required for the isolated AI canary.');
@@ -62,14 +73,29 @@ try {
   server.stderr?.on('data', (chunk: Buffer) => appendOutput(serverOutput, chunk));
   await waitForHealth(`http://127.0.0.1:${port}/health`, serverOutput);
 
-  const audit = await runCommand(nodeCommand, [tsxCli, 'scripts/testing/ai-live-audit.ts'], {
-    AI_LIVE_TESTS: 'true',
-    E2E_API_BASE_URL: apiBaseUrl,
-    E2E_FIXTURE_FILE: fixtureFile,
-  });
-  console.log(audit.stdout.trim());
-  if (audit.stderr.trim() !== '') {
-    console.error(audit.stderr.trim());
+  if (canaryScope !== 'learning') {
+    const audit = await runCommand(nodeCommand, [tsxCli, 'scripts/testing/ai-live-audit.ts'], {
+      AI_LIVE_TESTS: 'true',
+      E2E_API_BASE_URL: apiBaseUrl,
+      E2E_FIXTURE_FILE: fixtureFile,
+    });
+    console.log(audit.stdout.trim());
+    if (audit.stderr.trim() !== '') {
+      console.error(audit.stderr.trim());
+    }
+  }
+  if (canaryScope === 'learning' || canaryScope === 'all') {
+    const learningAudit = await runCommand(nodeCommand, [tsxCli, 'scripts/testing/learning-live-audit.ts'], {
+      AI_LIVE_TESTS: 'true',
+      E2E_API_BASE_URL: apiBaseUrl,
+      E2E_FIXTURE_FILE: fixtureFile,
+      TEST_DATABASE_URL: isolatedUrl,
+      ALLOW_DESTRUCTIVE_TEST_DATABASE: 'true',
+    });
+    console.log(learningAudit.stdout.trim());
+    if (learningAudit.stderr.trim() !== '') {
+      console.error(learningAudit.stderr.trim());
+    }
   }
 } catch (error: unknown) {
   console.error(`AI live canary backend output:\n${serverOutput.join('')}`);

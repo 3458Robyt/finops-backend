@@ -130,6 +130,7 @@ export class CloudIngestionController extends CloudConnectionControllerSupport {
       const jobs = await this.cloudConnectionService.listIngestionHistory(
         tenantId,
         this.parseLimit(req.query["limit"]),
+        req.query['includeArchived'] === 'true',
       );
 
       res.status(200).json({ success: true, jobs });
@@ -244,6 +245,46 @@ export class CloudIngestionController extends CloudConnectionControllerSupport {
           sourceType,
         });
       res.status(200).json({ success: true, sourceType, cancelled });
+    } catch (error: unknown) {
+      this.respondWithError(res, error);
+    }
+  };
+
+  public getIngestionJob = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const job = await this.cloudConnectionService.getIngestionJob(
+        this.requireTenant(req),
+        this.requireParam(req, 'jobId'),
+      );
+      res.status(200).json({ success: true, job });
+    } catch (error: unknown) {
+      this.respondWithError(res, error);
+    }
+  };
+
+  public cancelIngestionJob = async (req: Request, res: Response): Promise<void> => {
+    try {
+      if (req.auth === undefined) throw new FinOpsBaseError('Debes iniciar sesión para continuar.', 'AUTHENTICATION_REQUIRED');
+      const job = await this.cloudConnectionService.cancelIngestionJob(
+        req.auth.tenantId,
+        this.requireParam(req, 'jobId'),
+        req.auth.userId,
+      );
+      res.status(200).json({ success: true, job });
+    } catch (error: unknown) {
+      this.respondWithError(res, error);
+    }
+  };
+
+  public archiveIngestionJob = async (req: Request, res: Response): Promise<void> => {
+    try {
+      if (req.auth === undefined) throw new FinOpsBaseError('Debes iniciar sesión para continuar.', 'AUTHENTICATION_REQUIRED');
+      const job = await this.cloudConnectionService.archiveIngestionJob(
+        req.auth.tenantId,
+        this.requireParam(req, 'jobId'),
+        req.auth.userId,
+      );
+      res.status(200).json({ success: true, job });
     } catch (error: unknown) {
       this.respondWithError(res, error);
     }

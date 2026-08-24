@@ -14,6 +14,7 @@ import type {
 import type {
   AgentLearningEvent,
   AgentMemory,
+  GlobalLearningCanaryEvidence,
 } from "../../domain/models/AgentLearning.js";
 import type { PrismaClient } from "../../generated/prisma/client.js";
 import { PrismaAgentLearningEventRepository } from "./PrismaAgentLearningEventRepository.js";
@@ -75,10 +76,12 @@ export class PrismaAgentLearningRepository implements IAgentLearningRepository {
   }): Promise<AgentMemory | null> {
     return this.memoryRepository.deactivateMemory(input);
   }
-  public promoteGlobalMemory(input: {
+  public promoteGlobalMemoryWithEvidence(input: {
     readonly sourceLearningEventId: string;
+    readonly actorUserId: string;
+    readonly evidence: GlobalLearningCanaryEvidence;
   }): Promise<AgentMemory | null> {
-    return this.memoryRepository.promoteGlobalMemory(input);
+    return this.memoryRepository.promoteGlobalMemoryWithEvidence(input);
   }
   public recordApprovedLearning(
     input: RecordApprovedLearningInput,

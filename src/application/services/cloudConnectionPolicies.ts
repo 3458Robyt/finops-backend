@@ -5,6 +5,7 @@ import { FinOpsBaseError } from '../../domain/errors/errors.js';
 export interface TechnicalBackfillWindow {
   readonly targetStart: Date;
   readonly targetEnd: Date;
+  readonly interval?: '1m' | '5m' | '30m' | '1h';
 }
 
 export function buildBackfillWindows(
@@ -30,6 +31,15 @@ export function currentMinute(): Date {
   return new Date(Math.floor(Date.now() / 60_000) * 60_000);
 }
 
+/**
+ * Uses the provider's 30-minute sample boundary so repeated backfills reuse
+ * the same windows instead of drifting by the minute and creating duplicates.
+ */
+export function currentMetricBoundary(): Date {
+  const boundaryMs = 30 * 60 * 1000;
+  return new Date(Math.floor(Date.now() / boundaryMs) * boundaryMs);
+}
+
 export function serializeCapabilityValidation(
   validation: CloudCapabilityValidation,
 ): Readonly<Record<string, unknown>> {
@@ -49,7 +59,11 @@ export function hasUsableValidation(connection: CloudConnectionSummary): boolean
   const available = validation['capabilities'].filter((item): item is Readonly<Record<string, unknown>> =>
     isRecord(item) && item['status'] === 'AVAILABLE',
   );
-  return available.some((item) => item['capability'] === 'IDENTITY')
+  const authentication = validation['authentication'];
+  const authenticated = isRecord(authentication)
+    ? authentication['status'] === 'VERIFIED'
+    : available.some((item) => item['capability'] === 'IDENTITY');
+  return authenticated
     && available.some((item) => ['INVENTORY', 'COSTS', 'METRICS', 'STORAGE'].includes(String(item['capability'])));
 }
 

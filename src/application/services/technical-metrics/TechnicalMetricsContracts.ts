@@ -4,6 +4,7 @@ import type {
   TechnicalMetricSeriesBucket,
   TechnicalMetricSummaryItem,
 } from '../../../domain/interfaces/IResourceMetricRepository.js';
+import type { MetricStatistic } from '../../../domain/interfaces/ICloudIngestionProvider.js';
 import type { TechnicalEvidenceStrength } from '../ai/TechnicalOptimizationRuleEngine.js';
 import type { RecommendationReadiness } from '../ai/RecommendationReadinessGate.js';
 
@@ -18,6 +19,7 @@ export interface TechnicalMetricOverviewInput {
   readonly externalResourceId?: string;
   readonly cloudResourceId?: string;
   readonly metricNames?: readonly string[];
+  readonly statistic?: MetricStatistic;
 }
 
 export interface TechnicalMetricSeriesInput extends TechnicalMetricOverviewInput {
@@ -67,6 +69,7 @@ export interface TechnicalMetricCatalogItem {
   readonly sampleCount: number;
   readonly minSampledAt: Date;
   readonly maxSampledAt: Date;
+  readonly availableStatistics?: readonly MetricStatistic[];
 }
 
 export interface TechnicalMetricKpi {
@@ -135,8 +138,15 @@ export interface TechnicalMetricsOverview {
 export interface TechnicalMetricSeriesPoint {
   readonly bucketStart: Date;
   readonly externalResourceId: string;
+  readonly providerNamespace?: string;
+  readonly regionId?: string;
+  readonly dimensionsHash?: string;
   readonly metricName: string;
   readonly metricUnit?: string;
+  readonly statistic: MetricStatistic;
+  readonly value: number;
+  readonly aggregationSemantics: string;
+  readonly sourceGranularitiesSeconds: readonly number[];
   readonly avg: number;
   readonly min: number;
   readonly max: number;
@@ -155,6 +165,7 @@ export interface TechnicalMetricSeriesMeta {
   readonly queryMs: number;
   readonly bucket: TechnicalMetricSeriesBucket;
   readonly pageSize: number;
+  readonly statistic: MetricStatistic;
 }
 
 export interface TechnicalMetricSeriesResult {

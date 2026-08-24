@@ -177,6 +177,14 @@ export interface AiContextTrace {
   readonly responseTokenEstimate?: number | undefined;
   /** Latencia de la operación en milisegundos, si se midió. */
   readonly latencyMs?: number | undefined;
+  /** Identificadores de los artefactos que entraron en el contexto, si se registraron. */
+  readonly artifactIds?: readonly string[] | undefined;
+  /** Identificadores de las memorias que entraron en el contexto, si se registraron. */
+  readonly memoryIds?: readonly string[] | undefined;
+  /** Identificadores de las reglas tenant que entraron en el contexto, si se registraron. */
+  readonly tenantRuleIds?: readonly string[] | undefined;
+  /** Conflictos detectados al ensamblar el contexto, si se registraron. */
+  readonly conflicts?: readonly string[] | undefined;
   /** Fecha de creación de la traza. */
   readonly createdAt: Date;
   /** Fecha de expiración de la traza (para retención/limpieza). */

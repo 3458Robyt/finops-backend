@@ -35,13 +35,22 @@ export type IngestionSourceType =
  * - `SUCCESS`: Finalizado correctamente.
  * - `FAILED`: Finalizado con error.
  * - `CANCELLED`: Cancelado antes de completarse.
+ * - `SKIPPED`: Omitido por una condición operativa no bloqueante.
  */
 export type IngestionJobStatus =
   | 'PENDING'
   | 'RUNNING'
   | 'SUCCESS'
   | 'FAILED'
-  | 'CANCELLED';
+  | 'CANCELLED'
+  | 'SKIPPED';
+
+export type IngestionDataOutcome =
+  | 'DATA_WRITTEN'
+  | 'NO_DATA'
+  | 'PARTIAL'
+  | 'INVALID_CONFIGURATION'
+  | 'PROVIDER_ERROR';
 
 /**
  * Resultado de un control de calidad de datos.
@@ -97,6 +106,8 @@ export interface CloudConnectionSummary {
   readonly metadata?: Readonly<Record<string, unknown>>;
   /** Fecha de la última validación correcta de las credenciales/conexión. */
   readonly lastValidatedAt?: Date;
+  /** Fecha del último intento, incluso cuando la validación fue rechazada. */
+  readonly lastValidationAttemptAt?: Date;
   /** Fecha de creación del registro. */
   readonly createdAt: Date;
   /** Fecha de la última actualización del registro. */

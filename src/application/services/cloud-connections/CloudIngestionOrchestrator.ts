@@ -207,8 +207,36 @@ export class CloudIngestionOrchestrator {
   public listIngestionHistory(
     tenantId: string,
     limit?: number,
+    includeArchived = false,
   ): Promise<readonly IngestionJobHistoryItem[]> {
-    return this.repository.listIngestionJobsForTenant(tenantId, this.clampLimit(limit));
+    return this.repository.listIngestionJobsForTenant(tenantId, this.clampLimit(limit), includeArchived);
+  }
+
+  public getIngestionJob(tenantId: string, jobId: string): Promise<IngestionJobHistoryItem> {
+    return this.repository.getIngestionJobForTenant(tenantId, jobId).then((job) => {
+      if (job === null) throw new FinOpsBaseError('El trabajo de ingesta no existe o no pertenece al tenant activo.', 'NOT_FOUND');
+      return job;
+    });
+  }
+
+  public async cancelIngestionJob(tenantId: string, jobId: string, userId: string): Promise<IngestionJobHistoryItem> {
+    const job = await this.repository.requestIngestionJobCancellation(tenantId, jobId, userId);
+    if (job === null) throw new FinOpsBaseError('El trabajo de ingesta no existe o no pertenece al tenant activo.', 'NOT_FOUND');
+    await this.repository.createCloudAuditEvent({
+      tenantId, actorUserId: userId, action: 'CLOUD_INGESTION_JOB_CANCEL_REQUESTED', entityType: 'CLOUD_CONNECTION', entityId: job.cloudConnectionId,
+      metadata: { jobId, status: job.status },
+    });
+    return job;
+  }
+
+  public async archiveIngestionJob(tenantId: string, jobId: string, userId: string): Promise<IngestionJobHistoryItem> {
+    const job = await this.repository.archiveIngestionJob(tenantId, jobId, userId);
+    if (job === null) throw new FinOpsBaseError('Solo se pueden archivar trabajos terminados.', 'VALIDATION_ERROR');
+    await this.repository.createCloudAuditEvent({
+      tenantId, actorUserId: userId, action: 'CLOUD_INGESTION_JOB_ARCHIVED', entityType: 'CLOUD_CONNECTION', entityId: job.cloudConnectionId,
+      metadata: { jobId, status: job.status },
+    });
+    return job;
   }
 
   /**

@@ -41,6 +41,7 @@ export function createCloudConnectionRoutes(
   router.patch('/:id/status', requireAuth, requireManager, cloudConnectionController.setConnectionStatus);
   router.post('/:id/credentials', requireAuth, requireManager, cloudConnectionController.storeCredential);
   router.delete('/:id/credentials/:credentialId', requireAuth, requireManager, cloudConnectionController.revokeCredential);
+  router.post('/:id/credentials/:credentialId/validate', requireAuth, requireManager, cloudConnectionController.validateCredential);
   router.post('/:id/validate', requireAuth, requireManager, cloudConnectionController.validateConnection);
   router.post('/:id/focus-preview', requireAuth, requireManager, cloudConnectionController.previewFocusSource);
   router.post('/:id/activate', requireAuth, requireManager, cloudConnectionController.activateConnection);

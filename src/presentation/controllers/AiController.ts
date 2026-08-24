@@ -118,7 +118,8 @@ export class AiController {
    * Usa `req.auth.tenantId` y `req.auth.userId` como contexto.
    *
    * Respuestas:
-   * - 200: `{ success: true, persisted, recommendations, context }`.
+   * - 200: `{ success: true, persisted, recommendations, analysis, context }`; `analysis` solo contiene
+   *   metadatos sanitizados de evidencia, auditoría, modelo y estimación de tokens.
    * - 400 VALIDATION_ERROR: el cuerpo no cumple el esquema.
    * - 401 AUTHENTICATION_REQUIRED: sin sesión autenticada.
    * - 400 / 502: errores de dominio (VALIDATION_ERROR -> 400; resto -> 502).
@@ -158,6 +159,22 @@ export class AiController {
         success: true,
         persisted: result.persisted,
         recommendations: result.recommendations,
+        analysis: {
+          evidenceHash: result.analysis.evidenceHash,
+          generatedCount: result.analysis.generatedCount,
+          promptTokenEstimate: result.analysis.promptTokenEstimate,
+          responseTokenEstimate: result.analysis.responseTokenEstimate,
+          model: result.analysis.model,
+          auditorModel: result.analysis.auditorModel,
+          ...(result.analysis.auditReport === undefined ? {} : {
+            audit: {
+              verdict: result.analysis.auditReport.verdict,
+              score: result.analysis.auditReport.score,
+              checkCount: result.analysis.auditReport.checks.length,
+              blockingIssueCount: result.analysis.auditReport.blockingIssues.length,
+            },
+          }),
+        },
         context: {
           periodStart: result.snapshot.periodStart,
           periodEnd: result.snapshot.periodEnd,

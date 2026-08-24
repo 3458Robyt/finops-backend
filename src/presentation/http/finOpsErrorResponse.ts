@@ -8,6 +8,7 @@ export function resolveFinOpsError(error: unknown, fallback: string): {
   readonly code?: string;
   readonly diagnosticId?: string;
   readonly audit?: unknown;
+  readonly details?: Readonly<Record<string, unknown>>;
 } {
   if (error instanceof AiAuditRejectedError) {
     return {
@@ -30,7 +31,12 @@ export function resolveFinOpsError(error: unknown, fallback: string): {
           : error.code === 'CONFLICT' ? 409
             : ['AI_RESPONSE_ERROR', 'PROVIDER_ERROR', 'PROVIDER_TIMEOUT'].includes(error.code) ? 502
             : 500;
-  return { status, error: safeErrorMessage(error.message), code: error.code };
+  return {
+    status,
+    error: safeErrorMessage(error.message),
+    code: error.code,
+    ...(error.details === undefined ? {} : { details: error.details }),
+  };
 }
 
 export function respondWithFinOpsError(

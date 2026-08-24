@@ -49,6 +49,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
       metricsToken: readOptionalString(env['METRICS_TOKEN']),
       passwordResetUrl: readString(env['PASSWORD_RESET_URL'], 'http://localhost:5173/reset-password'),
       passwordResetTtlSeconds: readPositiveInteger(env['PASSWORD_RESET_TTL_SECONDS'], 900),
+      clientPortalUrl: readString(env['CLIENT_PORTAL_URL'], 'http://localhost:5173'),
     },
     ai: {
       apiKey: readOptionalString(env['AI_API_KEY']),
@@ -85,9 +86,12 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
       ingestion: {
         enabled: readBoolean(env['INGESTION_WORKER_ENABLED'], false),
         id: readOptionalString(env['INGESTION_WORKER_ID']),
-        intervalMs: readPositiveInteger(env['INGESTION_WORKER_INTERVAL_MS'], 30_000),
+        intervalMs: readPositiveInteger(env['INGESTION_WORKER_INTERVAL_MS'], 1_000),
         jobLeaseMs: readPositiveInteger(env['INGESTION_JOB_LEASE_MS'], 300_000),
         jobHeartbeatMs: readPositiveInteger(env['INGESTION_JOB_HEARTBEAT_MS'], 60_000),
+        concurrency: Math.min(16, readPositiveInteger(env['INGESTION_WORKER_CONCURRENCY'], 4)),
+        retryBackoffMs: readPositiveInteger(env['INGESTION_JOB_RETRY_BACKOFF_MS'], 5_000),
+        progressUpdateMs: readPositiveInteger(env['INGESTION_JOB_PROGRESS_UPDATE_MS'], 2_000),
       },
       learning: {
         enabled: readBoolean(env['AGENT_LEARNING_WORKER_ENABLED'], false),

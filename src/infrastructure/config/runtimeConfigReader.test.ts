@@ -37,6 +37,9 @@ describe('loadRuntimeConfig', () => {
       intervalMs: 1500,
       jobLeaseMs: 300000,
       jobHeartbeatMs: 60000,
+      concurrency: 4,
+      retryBackoffMs: 5000,
+      progressUpdateMs: 2000,
     });
     expect(config.ai.maxRetries).toBe(2);
     expect(config.email.timeoutMs).toBe(15_000);

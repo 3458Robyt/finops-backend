@@ -1,5 +1,5 @@
 import type { CreateAgentMemoryInput } from "../../domain/interfaces/IAgentLearningRepository.js";
-import type { AgentMemory } from "../../domain/models/AgentLearning.js";
+import type { AgentMemory, GlobalLearningCanaryEvidence } from "../../domain/models/AgentLearning.js";
 import { Prisma, type PrismaClient } from "../../generated/prisma/client.js";
 import { toMemory } from "./mappers/agentLearningMappers.js";
 
@@ -45,7 +45,7 @@ export class PrismaAgentLearningMemoryRepository {
             lifecycle: 'DEACTIVATED',
             deactivatedAt: new Date().toISOString(),
             deactivatedByUserId: input.actorUserId,
-          } as Prisma.InputJsonValue,
+          } as unknown as Prisma.InputJsonValue,
         },
       });
       await tx.agentInstructionAuditEvent.create({
@@ -66,9 +66,11 @@ export class PrismaAgentLearningMemoryRepository {
     return row === null ? null : toMemory(row);
   }
 
-  /** Promueve únicamente el candidato GLOBAL que quedó en shadow para un evento. */
-  public async promoteGlobalMemory(input: {
+  /** Promueve un candidato GLOBAL solo con evidencia live y auditoría persistida. */
+  public async promoteGlobalMemoryWithEvidence(input: {
     readonly sourceLearningEventId: string;
+    readonly actorUserId: string;
+    readonly evidence: GlobalLearningCanaryEvidence;
   }): Promise<AgentMemory | null> {
     const row = await this.prisma.$transaction(async (tx) => {
       const current = await tx.agentMemory.findFirst({
@@ -79,9 +81,10 @@ export class PrismaAgentLearningMemoryRepository {
         },
       });
       if (current === null) return null;
+      if (input.evidence.candidateMemoryId !== current.id) return null;
       const metadata = isRecord(current.metadata) ? current.metadata : {};
       if (metadata['learningLifecycle'] !== 'SHADOW') return null;
-      return tx.agentMemory.update({
+      const promoted = await tx.agentMemory.update({
         where: { id: current.id },
         data: {
           active: true,
@@ -89,9 +92,25 @@ export class PrismaAgentLearningMemoryRepository {
             ...metadata,
             learningLifecycle: 'PROMOTED',
             promotedAt: new Date().toISOString(),
+            promotionEvidence: input.evidence,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+      await tx.agentInstructionAuditEvent.create({
+        data: {
+          actorUserId: input.actorUserId,
+          action: 'AGENT_GLOBAL_MEMORY_PROMOTED',
+          entityType: 'AGENT_MEMORY',
+          entityId: current.id,
+          metadata: {
+            sourceLearningEventId: input.sourceLearningEventId,
+            canaryRunId: input.evidence.runId,
+            candidateMemoryId: input.evidence.candidateMemoryId,
+            mode: input.evidence.mode,
           } as Prisma.InputJsonValue,
         },
       });
+      return promoted;
     });
     return row === null ? null : toMemory(row);
   }

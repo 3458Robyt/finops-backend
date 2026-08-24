@@ -29,10 +29,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check:architecture
+      - run: npm run check:release-hygiene
       - run: npm run typecheck
       - run: npm test
       - run: npm run test:ai:offline
       - run: npm run build
+      - name: Build backend container
+        run: docker build --tag finops-backend:ci .
       - run: npm audit --omit=dev --audit-level=high
 
   integration:
@@ -90,6 +93,14 @@ jobs:
           VITE_API_BASE_URL: http://127.0.0.1:3000/api/v1
           E2E_FIXTURE_FILE: ../.test-artifacts/e2e-fixtures.json
         run: npx playwright test e2e/finops-app.spec.ts
+      - name: Build frontend container
+        run: docker build --tag finops-app:ci --build-arg VITE_API_BASE_URL=/api/v1 finops-app
+      - name: Cleanup API smoke fixtures
+        if: always()
+        env:
+          TEST_DATABASE_URL: postgresql://finops:finops@localhost:55432/finops_test
+          ALLOW_DESTRUCTIVE_TEST_DATABASE: 'true'
+        run: npm run test:fixtures:cleanup
       - name: Print API log on failure
         if: failure()
         run: test -f backend-smoke.log && cat backend-smoke.log || true

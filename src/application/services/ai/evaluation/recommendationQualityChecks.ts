@@ -66,9 +66,11 @@ export function evaluateRecommendationDrafts(
   checks.push(buildAllPass(
     'focusHonesty',
     drafts,
-    (draft) => readEvidenceLevel(draft) !== 'COST_ONLY' || readRequiresTechnicalValidation(draft),
-    'Las recomendaciones con solo FOCUS exigen validación técnica.',
-    'Hay recomendaciones COST_ONLY que no marcan requiresTechnicalValidation.',
+    (draft) => readEvidenceLevel(draft) !== 'COST_ONLY'
+      || readRequiresTechnicalValidation(draft)
+      || readFinancialReviewOnly(draft),
+    'Las recomendaciones COST_ONLY exigen validación técnica o se identifican explícitamente como revisión financiera.',
+    'Hay recomendaciones COST_ONLY sin validación técnica ni alcance financiero explícito.',
   ));
 
   checks.push(buildAllPass(
@@ -170,6 +172,15 @@ function readEvidenceLevel(draft: AiRecommendationDraft): string | undefined {
 /** Lee `evidence.requiresTechnicalValidation === true` de forma segura. */
 function readRequiresTechnicalValidation(draft: AiRecommendationDraft): boolean {
   return isRecord(draft.evidence) && draft.evidence['requiresTechnicalValidation'] === true;
+}
+
+/** Permite revisiones FOCUS sin inventar una necesidad técnica. */
+function readFinancialReviewOnly(draft: AiRecommendationDraft): boolean {
+  return isRecord(draft.evidence)
+    && draft.evidence['financialReviewOnly'] === true
+    && draft.evidence['reviewScope'] === 'FINANCIAL'
+    && draft.evidence['requiresManualValidation'] === true
+    && draft.evidence['operationalAuthorization'] === 'NONE';
 }
 
 function readExternalResourceId(draft: AiRecommendationDraft): string | undefined {

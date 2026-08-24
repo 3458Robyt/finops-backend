@@ -21,6 +21,11 @@ expect(JSON.stringify(result)).not.toMatch(/privateKey|passphrase|fingerprint/i)
 it('collects compute inventory resources through the OCI SDK', async () => {
 const provider = new OciSdkIngestionProvider();
 Object.assign(provider as unknown as { createComputeClient: () => unknown }, {
+createAuthProvider: () => ({}),
+createIdentityClient: () => ({
+listRegionSubscriptions: async () => ({ items: [{ regionName: 'sa-bogota-1', status: 'READY' }] }),
+close: () => undefined,
+}),
 createComputeClient: () => ({
 listInstances: async () => ({
 items: [
@@ -66,6 +71,7 @@ const listedInstances: string[] = [];
 Object.assign(provider as unknown as Record<string, unknown>, {
 createAuthProvider: () => ({}),
 createIdentityClient: () => ({
+listRegionSubscriptions: async () => ({ items: [{ regionName: 'sa-bogota-1', status: 'READY' }] }),
 listCompartments: async (request: { readonly page?: string }) => {
 listedCompartments.push(request.page ?? 'root');
 return request.page === undefined
@@ -255,6 +261,34 @@ it('normalizes metric samples from OCI TypeScript SDK items response', async () 
     expect(focusRows[0]?.provider).toBe('OCI');
   });
 
+  it('does not persist FOCUS rows outside the requested billing window', async () => {
+    const provider = new OciSdkIngestionProvider();
+
+    Object.assign(provider as unknown as { createObjectStorageClient: () => unknown }, {
+      createObjectStorageClient: () => ({
+        listObjects: async () => ({
+          listObjects: { objects: [{ name: 'reports/focus/2026/06/04/report.csv' }] },
+        }),
+        getObject: async () => ({ getObjectBody: Buffer.from(buildFocusCsv(), 'utf8') }),
+      }),
+      createUsageClient: () => ({
+        requestSummarizedUsages: async () => ({ usageAggregation: { items: [] } }),
+        close: () => undefined,
+      }),
+    });
+
+    const result = await provider.collect({
+      ...buildOciFocusJob(),
+      targetStart: new Date('2026-06-05T00:00:00Z'),
+      targetEnd: new Date('2026-06-06T00:00:00Z'),
+    });
+    const focusRows = await collectFocusRows(result.focusBatches);
+
+    expect(focusRows).toHaveLength(0);
+    expect(result.objectsProcessed).toBe(0);
+    expect(result.warnings[0]).toContain('No se encontraron objetos de reporte FOCUS OCI');
+  });
+
   it('normalizes OCI Usage API costs through the billing collector', async () => {
     const provider = new OciSdkIngestionProvider();
     const requests: unknown[] = [];
@@ -290,6 +324,13 @@ it('normalizes metric samples from OCI TypeScript SDK items response', async () 
     });
 
     expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      requestSummarizedUsagesDetails: {
+        timeUsageStarted: new Date('2026-06-03T00:00:00.000Z'),
+        timeUsageEnded: new Date('2026-06-04T00:00:00.000Z'),
+        granularity: 'DAILY',
+      },
+    });
     expect(result.providerCostRows).toEqual([
       expect.objectContaining({
         provider: 'OCI',
@@ -298,14 +339,46 @@ it('normalizes metric samples from OCI TypeScript SDK items response', async () 
         consumedQuantity: 4,
         billingCurrency: 'USD',
         resourceId: 'ocid1.instance.oc1.test',
+        chargePeriodStart: new Date('2026-06-03T00:00:00.000Z'),
+        chargePeriodEnd: new Date('2026-06-04T00:00:00.000Z'),
       }),
     ]);
-    expect(result.coverage).toEqual({
+    expect(result.coverage).toMatchObject({
       billingSource: 'PROVIDER_API',
       costSource: 'OCI Usage API',
       rows: 1,
     });
     expect(closed).toBe(true);
+  });
+
+  it('falls back to OCI Usage API when AUTO cannot find a managed FOCUS object', async () => {
+    const provider = new OciSdkIngestionProvider();
+    Object.assign(provider as unknown as Record<string, unknown>, {
+      createObjectStorageClient: () => ({
+        listObjects: async () => ({ listObjects: { objects: [] } }),
+        close: () => undefined,
+      }),
+      createUsageClient: () => ({
+        requestSummarizedUsages: async () => ({
+          usageAggregation: {
+            items: [{ service: 'Compute', computedAmount: 3.5, currency: 'USD', resourceId: 'instance-1' }],
+          },
+        }),
+        close: () => undefined,
+      }),
+    });
+
+    const result = await provider.collect({
+      ...buildOciFocusJob(),
+      connection: { ...buildOciFocusJob().connection, metadata: {} },
+    });
+
+    expect(result.providerCostRows).toHaveLength(1);
+    expect(result.coverage).toMatchObject({
+      billingSource: 'PROVIDER_API',
+      billingSourceFallback: 'FOCUS_TO_PROVIDER_API',
+    });
+    expect(result.warnings[0]).toContain('No se encontraron objetos de reporte FOCUS OCI');
   });
 });
 
@@ -405,8 +478,8 @@ function buildFocusCsv(): string {
       'USD',
       'tenancy-1',
       'Usage',
-      '2026-06-01 00:00:00',
-      '2026-06-01 01:00:00',
+      '2026-06-04 01:30:00',
+      '2026-06-04 02:00:00',
       '2',
       'Hours',
       '8',

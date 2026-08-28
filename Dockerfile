@@ -4,6 +4,8 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 FROM dependencies AS build
+ARG DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build
+ENV DATABASE_URL=${DATABASE_URL}
 COPY prisma ./prisma
 COPY prisma.config.ts tsconfig.json ./
 COPY src ./src

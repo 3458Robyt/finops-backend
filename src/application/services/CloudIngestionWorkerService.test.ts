@@ -94,8 +94,8 @@ describe('CloudIngestionWorkerService', () => {
 
     const result = await service.runOnce('worker-1');
 
-    expect(provider.collect).toHaveBeenCalledWith(job);
-    expect(completeJob).toHaveBeenCalledWith(job, expect.any(Object), expect.any(Date), 'worker-1', expect.any(Function));
+    expect(provider.collect).toHaveBeenCalledWith(job, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(completeJob).toHaveBeenCalledWith(job, expect.any(Object), expect.any(Date), 'worker-1', expect.any(Function), expect.any(Function));
     expect(result).toEqual({
       processed: true,
       jobId: 'job-1',
@@ -153,5 +153,33 @@ describe('CloudIngestionWorkerService', () => {
 
     expect(outcomes.filter((outcome) => outcome.processed)).toHaveLength(2);
     expect(peak).toBe(2);
+  });
+
+  it('aborts a provider collection when a running job is cancelled', async () => {
+    const job = createJob('oci');
+    let cancellationChecks = 0;
+    const isCancellationRequested = vi.fn(async () => {
+      cancellationChecks += 1;
+      return cancellationChecks > 1;
+    });
+    const markCancelled = vi.fn(async () => true);
+    const provider: CloudIngestionProvider = {
+      providerCode: 'oci',
+      validate: vi.fn(async () => ({ providerCode: 'oci', capabilities: [] })),
+      collect: vi.fn(async (_job, options) => new Promise((_, reject) => {
+        options?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      })),
+    };
+    const repository = {
+      claimNextPendingJob: vi.fn(async () => job),
+      isCancellationRequested,
+      markCancelled,
+    } as unknown as PrismaCloudIngestionJobRepository;
+    const service = new CloudIngestionWorkerService(repository, [provider], undefined, undefined, 60_000, 5, 1);
+
+    const result = await service.runOnce('worker-1');
+
+    expect(markCancelled).toHaveBeenCalledWith(job, 'worker-1');
+    expect(result).toMatchObject({ processed: true, jobId: job.id, errorMessage: 'aborted' });
   });
 });

@@ -22,6 +22,8 @@ export interface IngestionJobExecutionSummary {
   readonly resources: number;
   readonly metricDerivedResources: number;
   readonly metricSamples: number;
+  readonly metricSamplesInserted: number;
+  readonly projectionStatus: 'NOT_REQUIRED' | 'PENDING';
   readonly metricSamplesLinkedToResource: number;
   readonly resourceLinkage: {
     readonly costs: ResourceLinkageRunStats;
@@ -94,7 +96,7 @@ export class PrismaIngestionJobCompletionSupport {
         targetEnd: job.targetEnd,
         ...(job.configurationHash !== undefined ? { configurationHash: job.configurationHash } : {}),
         rowsWritten: summary.focusRowsInserted,
-        samplesWritten: summary.metricSamples,
+        samplesWritten: summary.metricSamplesInserted,
         objectsProcessed: summary.objectsProcessed,
         evidence: summary.coverage as Prisma.InputJsonValue,
       },
@@ -112,6 +114,7 @@ export class PrismaIngestionJobCompletionSupport {
     metricDerivedResources: number,
     metricSamplesLinkedToResource: number,
     metricSamplesProcessed: number,
+    metricSamplesInserted: number,
     metricLinkage: ResourceLinkageRunStats,
   ): Promise<void> {
     await tx.dataQualityCheck.create({
@@ -135,6 +138,7 @@ export class PrismaIngestionJobCompletionSupport {
           resources: resourcesPersisted,
           metricDerivedResources,
           metricSamples: metricSamplesProcessed,
+          metricSamplesInserted,
           metricSamplesLinkedToResource,
           resourceLinkage: { costs: costMetricProjection.linkage, metrics: metricLinkage },
           warnings: result.warnings,
@@ -155,6 +159,7 @@ export class PrismaIngestionJobCompletionSupport {
     metricDerivedResources: number,
     metricSamplesLinkedToResource: number,
     metricSamplesProcessed: number,
+    metricSamplesInserted: number,
     metricLinkage: ResourceLinkageRunStats,
   ): IngestionJobExecutionSummary {
     const dataOutcome = this.resolveDataOutcome(result, metricSamplesProcessed);
@@ -172,6 +177,10 @@ export class PrismaIngestionJobCompletionSupport {
       resources: resourcesPersisted,
       metricDerivedResources,
       metricSamples: metricSamplesProcessed,
+      metricSamplesInserted,
+      // Only enqueue projections when this execution actually inserted raw rows.
+      // A replay containing only duplicates must not rebuild the same projection.
+      projectionStatus: job.sourceType === 'TECHNICAL_METRIC' && metricSamplesInserted > 0 ? 'PENDING' : 'NOT_REQUIRED',
       metricSamplesLinkedToResource,
       resourceLinkage: { costs: costMetricProjection.linkage, metrics: metricLinkage },
       warnings: result.warnings,

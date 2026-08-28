@@ -22,19 +22,39 @@ export interface BackgroundProcessRuntimeInput {
 /** Arranca únicamente los procesos permitidos por el rol actual. */
 export function startBackgroundProcesses(input: BackgroundProcessRuntimeInput): void {
   const { config, composition } = input;
-  const { prisma, recommendationAnalysisRepository, recommendationAnalysisService, valueRealizationService, learningService, ingestionWorker } = composition;
+  const { prisma, recommendationAnalysisRepository, recommendationAnalysisService, valueRealizationService, learningService, ingestionWorker, metricProjectionWorker } = composition;
   const { outboundMessageService, budgetService } = composition.serverDependencies;
 
   startProcessHeartbeat(input, composition.processHeartbeatService);
   startMessageScheduler(input, outboundMessageService);
   startIngestionWorker(input, ingestionWorker);
+  startMetricProjectionWorker(input, metricProjectionWorker);
   startLearningWorker(input, learningService);
   startRecommendationAnalysisWorker(input, recommendationAnalysisService);
   startRecommendationAnalysisScheduler(input, prisma, recommendationAnalysisRepository);
   startSavingsReconciliationScheduler(input, valueRealizationService);
-  startIngestionScheduler(input, prisma);
+  startIngestionScheduler(input, prisma, composition.serverDependencies.cloudConnectionService);
   startAuthLifecycleCleanupScheduler(input, composition.authLifecycleCleanupService);
   startBudgetScheduler(input, budgetService);
+}
+
+function startMetricProjectionWorker(
+  input: BackgroundProcessRuntimeInput,
+  worker: ApplicationComposition['metricProjectionWorker'],
+): void {
+  const { config, capabilities } = input;
+  if (!capabilities.runsMetricProjectionWorker || worker === null || !config.workers.metricProjection.enabled) return;
+  const workerId = config.workers.metricProjection.id ?? `finops-metric-projection-${process.pid}`;
+  const intervalMs = config.workers.metricProjection.intervalMs;
+  console.log(`   Metric projection worker: enabled (${workerId}, ${intervalMs}ms)`);
+  input.startBackgroundLoop({
+    metricName: 'metric_projection_worker_iteration',
+    run: () => worker.processNext(workerId),
+    intervalMs,
+    fallbackIntervalMs: 5_000,
+    onError: (error) => console.error(JSON.stringify({ level: 'error', event: 'metric_projection_worker_iteration_failed', error: safeErrorMessage(error) })),
+    onSkip: () => console.warn('Metric projection iteration skipped because previous run is still active'),
+  });
 }
 
 function startMessageScheduler(input: BackgroundProcessRuntimeInput, service: ApplicationComposition['serverDependencies']['outboundMessageService']): void {
@@ -165,7 +185,11 @@ function startSavingsReconciliationScheduler(input: BackgroundProcessRuntimeInpu
   });
 }
 
-function startIngestionScheduler(input: BackgroundProcessRuntimeInput, prisma: ApplicationComposition['prisma']): void {
+function startIngestionScheduler(
+  input: BackgroundProcessRuntimeInput,
+  prisma: ApplicationComposition['prisma'],
+  cloudConnectionService: ApplicationComposition['serverDependencies']['cloudConnectionService'],
+): void {
   const { config, capabilities } = input;
   if (!capabilities.runsIngestionScheduler || !config.schedulers.ingestion.enabled) return;
   const options = config.schedulers.ingestion;
@@ -177,29 +201,74 @@ function startIngestionScheduler(input: BackgroundProcessRuntimeInput, prisma: A
     run: async () => {
       const result = await runWithDatabaseContext(
         { workerId: 'ingestion-scheduler', role: 'MASTER_ADMIN' },
-        () => runPrismaIngestionJobScheduler(prisma, {
-          apply: true,
-          schedule: {
-            now: new Date(),
-            inventoryWindowHours: options.inventoryWindowHours,
-            inventoryCooldownHours: options.inventoryCooldownHours,
-            metricWindowMinutes: options.metricWindowMinutes,
-            metricCooldownMinutes: options.metricCooldownMinutes,
-            billingWindowHours: options.billingWindowHours,
-            billingCooldownHours: options.billingCooldownHours,
-            maxAttempts: options.maxAttempts,
-            metricCatchupDays: options.metricCatchupDays,
-            validationMaxAgeMinutes: options.validationMaxAgeMinutes,
-          },
-          ...(options.provider !== undefined ? { providerCode: options.provider } : {}),
-          ...(options.connectionId !== undefined ? { connectionId: options.connectionId } : {}),
-        }),
+        async () => {
+          const validation = await refreshStaleConnections(prisma, cloudConnectionService, options.validationMaxAgeMinutes);
+          if (validation.attempted > 0) {
+            console.log(JSON.stringify({ level: 'info', event: 'ingestion_connection_revalidation_completed', ...validation }));
+          }
+          return runPrismaIngestionJobScheduler(prisma, {
+            apply: true,
+            schedule: {
+              now: new Date(),
+              inventoryWindowHours: options.inventoryWindowHours,
+              inventoryCooldownHours: options.inventoryCooldownHours,
+              metricWindowMinutes: options.metricWindowMinutes,
+              metricCooldownMinutes: options.metricCooldownMinutes,
+              billingWindowHours: options.billingWindowHours,
+              billingCooldownHours: options.billingCooldownHours,
+              maxAttempts: options.maxAttempts,
+              metricCatchupDays: options.metricCatchupDays,
+              metricCatchupWindowMinutes: options.metricCatchupWindowMinutes,
+              maxMetricBackfillJobsPerConnection: options.maxMetricBackfillJobsPerConnection,
+              validationMaxAgeMinutes: options.validationMaxAgeMinutes,
+            },
+            ...(options.provider !== undefined ? { providerCode: options.provider } : {}),
+            ...(options.connectionId !== undefined ? { connectionId: options.connectionId } : {}),
+          });
+        },
       );
       console.log(`Ingestion scheduler planned ${result.plannedJobs.length} job(s), created ${result.createdJobs.length}.`);
     },
     onError: (error) => console.error(JSON.stringify({ level: 'error', event: 'ingestion_scheduler_iteration_failed', error: safeErrorMessage(error) })),
     onSkip: () => console.warn('Ingestion scheduler iteration skipped because previous run is still active'),
   });
+}
+
+async function refreshStaleConnections(
+  prisma: ApplicationComposition['prisma'],
+  service: ApplicationComposition['serverDependencies']['cloudConnectionService'],
+  maxAgeMinutes: number,
+): Promise<{ readonly attempted: number; readonly succeeded: number; readonly failed: number }> {
+  const now = new Date();
+  const staleBefore = new Date(now.getTime() - maxAgeMinutes * 60 * 1000);
+  const retryAfter = new Date(now.getTime() - 15 * 60 * 1000);
+  const connections = await prisma.cloudConnection.findMany({
+    where: {
+      status: 'ACTIVE',
+      providerCode: { in: ['oci', 'aws'] },
+      OR: [
+        { lastValidatedAt: null },
+        { lastValidatedAt: { lt: staleBefore } },
+      ],
+      AND: [
+        { OR: [{ lastValidationAttemptAt: null }, { lastValidationAttemptAt: { lt: retryAfter } }] },
+      ],
+    },
+    orderBy: [{ lastValidatedAt: 'asc' }, { createdAt: 'asc' }],
+    take: 4,
+    select: { id: true, tenantId: true },
+  });
+  let succeeded = 0;
+  for (const connection of connections) {
+    await prisma.cloudConnection.update({ where: { id: connection.id }, data: { lastValidationAttemptAt: now } });
+    try {
+      await service.validateConnection({ tenantId: connection.tenantId, cloudConnectionId: connection.id });
+      succeeded += 1;
+    } catch (error: unknown) {
+      console.warn(JSON.stringify({ level: 'warn', event: 'ingestion_connection_revalidation_failed', cloudConnectionId: connection.id, error: safeErrorMessage(error) }));
+    }
+  }
+  return { attempted: connections.length, succeeded, failed: connections.length - succeeded };
 }
 
 function startAuthLifecycleCleanupScheduler(

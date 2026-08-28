@@ -135,6 +135,26 @@ describe('buildIngestionSchedulePlan', () => {
     }));
   });
 
+  it('keeps AUTO billing schedulable with FOCUS metadata when only COSTS is available', () => {
+    const plan = buildIngestionSchedulePlan([
+      buildOciConnection({
+        metadata: {
+          ociFocusReportLocations: [{ namespaceName: 'bling', bucketName: 'tenancy', prefix: 'FOCUS Reports' }],
+          capabilityValidation: capabilityValidation(['IDENTITY', 'COSTS']),
+        },
+        credentials: [{ purpose: 'OPERATIONAL', status: 'ACTIVE' }],
+      }),
+    ], defaultOptions);
+
+    expect(plan.jobs).toContainEqual(expect.objectContaining({
+      providerCode: 'oci',
+      sourceType: 'BILLING_EXPORT',
+    }));
+    expect(plan.skipped).not.toContainEqual(expect.objectContaining({
+      sourceType: 'BILLING_EXPORT',
+    }));
+  });
+
   it('skips every source when the connection has not been validated after configuration changes', () => {
     const plan = buildIngestionSchedulePlan([
       buildOciConnection({ lastValidatedAt: null }),
@@ -183,6 +203,91 @@ describe('buildIngestionSchedulePlan', () => {
     expect(plan.skipped).toContainEqual(expect.objectContaining({
       sourceType: 'TECHNICAL_METRIC',
       reason: 'No hay credencial activa con permisos esperados para esta fuente.',
+    }));
+  });
+
+  it('repairs internal technical gaps oldest-first instead of advancing from the latest sample', () => {
+    const plan = buildIngestionSchedulePlan([
+      buildOciConnection({
+        metricCoverageWindowStarts: [new Date('2026-06-05T00:00:00.000Z')],
+      }),
+    ], {
+      ...defaultOptions,
+      metricCatchupDays: 1,
+      metricCatchupWindowMinutes: 360,
+      maxMetricBackfillJobsPerConnection: 2,
+    });
+
+    expect(plan.jobs.filter((job) => job.sourceType === 'TECHNICAL_METRIC')).toEqual([
+      expect.objectContaining({
+        targetStart: new Date('2026-06-04T12:00:00.000Z'),
+        targetEnd: new Date('2026-06-04T18:00:00.000Z'),
+      }),
+      expect.objectContaining({
+        targetStart: new Date('2026-06-04T18:00:00.000Z'),
+        targetEnd: new Date('2026-06-05T00:00:00.000Z'),
+      }),
+    ]);
+  });
+
+  it('does not treat a successful job without sample evidence as covered', () => {
+    const plan = buildIngestionSchedulePlan([
+      buildOciConnection({
+        metricCoverageWindowStarts: [],
+        ingestionJobs: [{
+          sourceType: 'TECHNICAL_METRIC',
+          status: 'SUCCESS',
+          targetStart: new Date('2026-06-04T12:00:00.000Z'),
+          targetEnd: new Date('2026-06-04T18:00:00.000Z'),
+          resultSummary: { coverage: { samples: 0 } },
+        }],
+      }),
+    ], { ...defaultOptions, metricCatchupDays: 1, metricCatchupWindowMinutes: 360, maxMetricBackfillJobsPerConnection: 1 });
+
+    expect(plan.jobs).toContainEqual(expect.objectContaining({
+      sourceType: 'TECHNICAL_METRIC',
+      targetStart: new Date('2026-06-04T12:00:00.000Z'),
+    }));
+  });
+
+  it('does not recreate a successful window explicitly classified as no data', () => {
+    const plan = buildIngestionSchedulePlan([
+      buildOciConnection({
+        metricCoverageWindowStarts: [],
+        ingestionJobs: [{
+          sourceType: 'TECHNICAL_METRIC',
+          status: 'SUCCESS',
+          dataOutcome: 'NO_DATA',
+          targetStart: new Date('2026-06-04T12:00:00.000Z'),
+          targetEnd: new Date('2026-06-04T18:00:00.000Z'),
+          resultSummary: { coverage: { samples: 0 } },
+        }],
+      }),
+    ], { ...defaultOptions, metricCatchupDays: 1, metricCatchupWindowMinutes: 360, maxMetricBackfillJobsPerConnection: 1 });
+
+    expect(plan.jobs).not.toContainEqual(expect.objectContaining({
+      sourceType: 'TECHNICAL_METRIC',
+      targetStart: new Date('2026-06-04T12:00:00.000Z'),
+    }));
+  });
+
+  it('retries a failed technical window with a stale configuration even when partial samples exist', () => {
+    const plan = buildIngestionSchedulePlan([buildOciConnection({
+      metricCoverageWindowStarts: [new Date('2026-06-04T12:00:00.000Z')],
+      ingestionJobs: [{
+        sourceType: 'TECHNICAL_METRIC',
+        status: 'FAILED',
+        targetStart: new Date('2026-06-04T12:00:00.000Z'),
+        targetEnd: new Date('2026-06-04T18:00:00.000Z'),
+        configurationHash: 'legacy-configuration',
+      }],
+    })], { ...defaultOptions, metricCatchupDays: 1, metricCatchupWindowMinutes: 360, maxMetricBackfillJobsPerConnection: 1 });
+
+    expect(plan.jobs).toContainEqual(expect.objectContaining({
+      sourceType: 'TECHNICAL_METRIC',
+      targetStart: new Date('2026-06-04T12:00:00.000Z'),
+      targetEnd: new Date('2026-06-04T18:00:00.000Z'),
+      reason: expect.stringContaining('configuración anterior'),
     }));
   });
 });

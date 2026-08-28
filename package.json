@@ -7,7 +7,8 @@
   "scripts": {
     "build": "prisma generate && tsc && node -e \"const fs=require('node:fs'); fs.rmSync('dist/generated/prisma', { recursive: true, force: true }); fs.cpSync('src/generated/prisma', 'dist/generated/prisma', { recursive: true })\"",
     "predev": "prisma generate",
-    "dev": "tsx watch src/index.ts",
+    "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/local/run-local.ps1 -Mode dev",
+    "dev:api": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "typecheck": "prisma generate && tsc --noEmit",
     "check:architecture": "node scripts/check-architecture.mjs",
@@ -50,12 +51,15 @@
     "ingestion:local:worker": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/local/run-local.ps1 -Mode worker",
     "ingestion:local:scheduler": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/local/run-local.ps1 -Mode scheduler",
     "import:oci-focus": "tsx scripts/import-oci-focus.ts",
+    "fx:backfill": "tsx scripts/backfill-fx-rates.ts",
     "aws:register-role": "tsx scripts/register-aws-role-credential.ts",
     "ingestion:configure-focus": "tsx scripts/configure-focus-source.ts",
     "ingestion:doctor": "tsx scripts/check-ingestion-readiness.ts",
     "ingestion:create-job": "tsx scripts/create-ingestion-job.ts",
-    "ingestion:schedule": "tsx scripts/schedule-ingestion-jobs.ts",
-    "ingestion:worker:once": "tsx scripts/run-ingestion-worker-once.ts",
+  "ingestion:schedule": "tsx scripts/schedule-ingestion-jobs.ts",
+  "ingestion:audit": "tsx scripts/audit-ingestion-range.ts",
+  "ingestion:worker:once": "tsx scripts/run-ingestion-worker-once.ts",
+    "metrics:projection:once": "tsx scripts/run-metric-projection-once.ts",
     "ingestion:worker:preflight": "tsx scripts/run-ingestion-worker-once.ts --preflight",
     "ingestion:preview-focus": "tsx scripts/preview-focus-sources.ts",
     "db:reconcile:resource-links": "tsx scripts/reconcile-resource-links.ts",
@@ -66,6 +70,8 @@
     "oci:validate-credential": "tsx scripts/validate-oci-credential.ts",
     "oci:backfill-metrics": "tsx scripts/queue-oci-technical-backfill.ts",
     "metrics:rebuild-stream-summaries": "tsx scripts/rebuild-metric-stream-summaries.ts",
+    "metrics:rebuild-rollups": "tsx scripts/rebuild-resource-metric-rollups.ts",
+    "metrics:rebuild-coverage": "tsx scripts/rebuild-metric-coverage.ts",
     "oci:reconcile-credentials": "tsx scripts/reconcile-cloud-credential-validation.ts",
     "oci:reconcile-fingerprints": "tsx scripts/reconcile-cloud-credential-fingerprints.ts",
     "telegram:set-webhook": "tsx scripts/telegram-set-webhook.ts",
@@ -120,5 +126,8 @@
     "tsx": "^4.19.3",
     "typescript": "^5.7.3",
     "vitest": "^4.1.5"
+  },
+  "overrides": {
+    "deepmerge-ts": "8.0.2"
   }
 }

@@ -107,12 +107,12 @@ export function queryMonthlyCostRows(
            max(service_name) as service_name,
            nullif(max(resource_id), '') as resource_id,
            max(coalesce(tags->>'environment', 'unknown')) as environment,
-           max(billing_currency) as currency,
+            billing_currency as currency,
            count(*)::int as metric_count,
            coalesce(sum(billed_cost), 0)::float8 as total_cost
     from cost_metrics
     where ${Prisma.join(clauses, ' and ')}
-    group by date_trunc('month', charge_period_start), ${expression}
+     group by date_trunc('month', charge_period_start), ${expression}, billing_currency
     order by month asc, total_cost desc
   `;
 }
@@ -154,13 +154,13 @@ export function queryMonthlyUsageRows(
            nullif(max(resource_id), '') as resource_id,
            max(coalesce(tags->>'environment', 'unknown')) as environment,
            consumed_unit,
-           max(billing_currency) as currency,
+            billing_currency as currency,
            count(*)::int as metric_count,
            coalesce(sum(consumed_quantity), 0)::float8 as consumed_quantity,
            coalesce(sum(billed_cost), 0)::float8 as total_cost
     from cost_metrics
     where ${Prisma.join(clauses, ' and ')}
-    group by date_trunc('month', charge_period_start), ${expression}, consumed_unit
+     group by date_trunc('month', charge_period_start), ${expression}, consumed_unit, billing_currency
     order by month asc, total_cost desc, consumed_quantity desc
   `;
 }

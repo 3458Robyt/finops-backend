@@ -29,6 +29,39 @@ describe('OCI billing collector', () => {
       apiCallCount: 1,
     });
   });
+
+  test('stops before the first billing request when the job is cancelled', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let requestCount = 0;
+    let receivedSignal: AbortSignal | undefined;
+    let closed = false;
+    const collector = new OciBillingCollector({
+      createObjectStorageClient: () => ({
+        listObjects: async () => ({ listObjects: { objects: [] } }),
+        getObject: async () => ({ value: '' }),
+      }),
+      createUsageClient: (_job, signal) => {
+        receivedSignal = signal;
+        return {
+          requestSummarizedUsages: async () => {
+            requestCount += 1;
+            return { usageAggregation: { items: [] } };
+          },
+          close: () => { closed = true; },
+        };
+      },
+    });
+
+    await expect(collector.collect({
+      ...buildJob(),
+      connection: { ...buildJob().connection, metadata: { billingSourceMode: 'PROVIDER_API' } },
+    }, { signal: controller.signal })).rejects.toThrow('cancelled');
+
+    expect(receivedSignal).toBe(controller.signal);
+    expect(requestCount).toBe(0);
+    expect(closed).toBe(true);
+  });
 });
 
 function buildJob(): CloudIngestionJobContext {

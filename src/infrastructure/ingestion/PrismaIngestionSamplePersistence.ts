@@ -15,6 +15,12 @@ import { PrismaMetricStreamSummaryPersistence } from './PrismaMetricStreamSummar
 
 const METRIC_INSERT_BATCH_SIZE = 5_000;
 
+export interface MetricSamplePersistenceResult extends ResourceLinkageRunStats {
+  readonly received: number;
+  readonly inserted: number;
+  readonly duplicates: number;
+}
+
 /** Persists normalized FOCUS rows and technical samples with exact linkage. */
 export class PrismaIngestionSamplePersistence {
   private readonly streamSummaryPersistence = new PrismaMetricStreamSummaryPersistence();
@@ -40,8 +46,8 @@ export class PrismaIngestionSamplePersistence {
     samples: readonly NormalizedResourceMetricSample[],
     resourceIdsByExternalId: ReadonlyMap<string, string>,
     ingestionJobId?: string,
-  ): Promise<ResourceLinkageRunStats> {
-    if (samples.length === 0) return emptyResourceLinkageStats();
+  ): Promise<MetricSamplePersistenceResult> {
+    if (samples.length === 0) return { ...emptyResourceLinkageStats(), received: 0, inserted: 0, duplicates: 0 };
 
     const linkageRows: Array<{ readonly cloudResourceId?: string; readonly resourceLinkReason?: string }> = [];
     const data: PrismaNamespace.ResourceMetricSampleCreateManyInput[] = samples.map((sample) => {
@@ -83,11 +89,17 @@ export class PrismaIngestionSamplePersistence {
           ...(ingestionJobId !== undefined ? { ingestionJobId } : {}),
         };
       });
+    let inserted = 0;
     for (const batch of chunkArray(data, METRIC_INSERT_BATCH_SIZE)) {
       if (batch.length === 0) continue;
-      await insertMetricSampleBatch(tx, batch);
+      inserted += await insertMetricSampleBatch(tx, batch);
     }
-    return summarizeResourceLinkage(linkageRows);
+    return {
+      ...summarizeResourceLinkage(linkageRows),
+      received: samples.length,
+      inserted,
+      duplicates: Math.max(0, samples.length - inserted),
+    };
   }
 
   public async reconcileMetricSampleResourceLinks(
@@ -170,7 +182,7 @@ export class PrismaIngestionSamplePersistence {
 async function insertMetricSampleBatch(
   tx: PrismaIngestionPersistenceClient,
   batch: readonly PrismaNamespace.ResourceMetricSampleCreateManyInput[],
-): Promise<void> {
+): Promise<number> {
   const records = batch.map((row) => ({
     id: randomUUID(),
     tenant_id: row.tenantId,
@@ -194,7 +206,7 @@ async function insertMetricSampleBatch(
     ingestion_job_id: row.ingestionJobId ?? null,
   }));
 
-  await tx.$executeRaw(PrismaNamespace.sql`
+  return tx.$executeRaw(PrismaNamespace.sql`
     INSERT INTO "resource_metric_samples" (
       "id", "tenant_id", "cloud_connection_id", "cloud_resource_id",
       "resource_link_reason", "provider", "external_resource_id",

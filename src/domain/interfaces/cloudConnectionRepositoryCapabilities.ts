@@ -19,6 +19,8 @@ import type {
   CreateIngestionJobInput,
   DataQualityCheckItem,
   IngestionJobHistoryItem,
+  IngestionMetricCoverageQuery,
+  IngestionMetricCoverageResult,
   IngestionJobRangeQuery,
   IngestionJobSummary,
   IngestionJobWindowItem,
@@ -134,6 +136,7 @@ export interface ICloudIngestionRepository {
     limit: number,
   ): Promise<readonly DataQualityCheckItem[]>;
   listIngestionReadinessForTenant(tenantId: string): Promise<IngestionReadinessSummary>;
+  listMetricCoverageForTenant(input: IngestionMetricCoverageQuery): Promise<IngestionMetricCoverageResult>;
 }
 
 /** Configuración explícita de fuentes FOCUS, billing y métricas. */

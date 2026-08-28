@@ -23,12 +23,13 @@ export async function mapWithConcurrency<T, R>(
 export function getOrCreateRegionalClient(
   job: CloudIngestionJobContext,
   regionId: string,
-  createClient: (job: CloudIngestionJobContext) => OciMonitoringClient,
+  createClient: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciMonitoringClient,
   clientsByRegion: Map<string, OciMonitoringClient>,
+  signal?: AbortSignal,
 ): OciMonitoringClient {
   const existing = clientsByRegion.get(regionId);
   if (existing !== undefined) return existing;
-  const created = createClient(job);
+  const created = createClient(job, signal);
   clientsByRegion.set(regionId, created);
   return created;
 }

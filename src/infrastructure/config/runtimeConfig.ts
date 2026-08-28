@@ -27,6 +27,7 @@ const booleanConfigKeys = [
   'SMTP_SECURE',
   'TELEGRAM_ENABLED',
   'INGESTION_WORKER_ENABLED',
+  'METRIC_PROJECTION_WORKER_ENABLED',
   'AGENT_LEARNING_WORKER_ENABLED',
   'RECOMMENDATION_ANALYSIS_WORKER_ENABLED',
   'MESSAGE_SCHEDULER_ENABLED',
@@ -109,7 +110,13 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
       issues.push({ key: 'PASSWORD_RESET_URL', message: 'Debe ser una URL HTTP(S) válida cuando el correo está habilitado.' });
     }
     validatePositiveBound(env, 'INGESTION_SCHEDULER_VALIDATION_MAX_AGE_MINUTES', 5, 7 * 24 * 60, issues);
+    validatePositiveBound(env, 'METRIC_PROJECTION_WORKER_INTERVAL_MS', 100, 60 * 60 * 1000, issues);
+    validatePositiveBound(env, 'METRIC_PROJECTION_LEASE_MS', 30_000, 24 * 60 * 60 * 1000, issues);
+    validatePositiveBound(env, 'METRIC_PROJECTION_RETRY_BACKOFF_MS', 100, 24 * 60 * 60 * 1000, issues);
+    validatePositiveBound(env, 'METRIC_PROJECTION_TRANSACTION_TIMEOUT_MS', 5_000, 10 * 60 * 1000, issues);
     validatePositiveBound(env, 'INGESTION_SCHEDULER_METRIC_CATCHUP_DAYS', 1, 90, issues);
+    validatePositiveBound(env, 'INGESTION_SCHEDULER_METRIC_CATCHUP_WINDOW_MINUTES', 30, 24 * 60, issues);
+    validateIntegerBound(env, 'INGESTION_SCHEDULER_MAX_METRIC_BACKFILL_JOBS_PER_CONNECTION', 1, 500, issues);
   }
 
   validateEnabledIntegrations(env, issues);

@@ -22,7 +22,9 @@ export function toUtcDay(value: Date): string {
 }
 
 export function resolveRequestedBucket(requested: TechnicalMetricBucket): TechnicalMetricSeriesBucket {
-  return requested === 'auto' ? 'raw' : requested;
+  // Auto is a peak-aware PostgreSQL rollup. Exact samples remain available
+  // only through the explicit raw/drill-down path.
+  return requested === 'auto' ? 'hour' : requested;
 }
 
 export function classifyMetric(metricName: string): TechnicalMetricGroup {

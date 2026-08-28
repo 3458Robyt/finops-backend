@@ -96,6 +96,14 @@ export interface RuntimeConfig {
       readonly retryBackoffMs: number;
       readonly progressUpdateMs: number;
     };
+    readonly metricProjection: {
+      readonly enabled: boolean;
+      readonly id: string | undefined;
+      readonly intervalMs: number;
+      readonly leaseMs: number;
+      readonly retryBackoffMs: number;
+      readonly transactionTimeoutMs: number;
+    };
     readonly learning: { readonly enabled: boolean; readonly id: string | undefined; readonly intervalMs: number; readonly leaseMs: number };
     readonly recommendationAnalysis: {
       readonly enabled: boolean;
@@ -125,6 +133,8 @@ export interface RuntimeConfig {
       readonly billingCooldownHours: number;
       readonly maxAttempts: number;
       readonly metricCatchupDays: number;
+      readonly metricCatchupWindowMinutes: number;
+      readonly maxMetricBackfillJobsPerConnection: number;
       readonly validationMaxAgeMinutes: number;
       readonly provider: string | undefined;
       readonly connectionId: string | undefined;

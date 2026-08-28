@@ -15,13 +15,8 @@ import { PrismaIngestionSamplePersistence } from './PrismaIngestionSamplePersist
 import { PrismaIngestionJobLifecycleRepository, type IngestionJobProgress } from './PrismaIngestionJobLifecycleRepository.js';
 import { PrismaIngestionJobFailureHandler } from './PrismaIngestionJobFailureHandler.js';
 import { PrismaIngestionJobSupport } from './PrismaIngestionJobSupport.js';
-
-interface ClaimedJobRow {
-  readonly id: string;
-}
-
+import { PrismaIngestionJobClaimRepository } from './PrismaIngestionJobClaimRepository.js';
 export type { IngestionJobExecutionSummary } from './PrismaIngestionJobCompletionSupport.js';
-
 export type { IngestionJobProgress } from './PrismaIngestionJobLifecycleRepository.js';
 
 export class PrismaCloudIngestionJobRepository {
@@ -35,6 +30,7 @@ export class PrismaCloudIngestionJobRepository {
   private readonly lifecycle: PrismaIngestionJobLifecycleRepository;
   private readonly failureHandler: PrismaIngestionJobFailureHandler;
   private readonly support: PrismaIngestionJobSupport;
+  private readonly claimRepository: PrismaIngestionJobClaimRepository;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -45,75 +41,11 @@ export class PrismaCloudIngestionJobRepository {
     this.lifecycle = new PrismaIngestionJobLifecycleRepository(prisma);
     this.failureHandler = new PrismaIngestionJobFailureHandler(prisma, retryBackoffMs);
     this.support = new PrismaIngestionJobSupport(prisma, credentialCipher);
+    this.claimRepository = new PrismaIngestionJobClaimRepository(prisma, this.support, jobLeaseMs);
   }
-
   public async claimNextPendingJob(workerId: string): Promise<CloudIngestionJobContext | null> {
-    const now = new Date();
-    const leaseExpiredBefore = new Date(now.getTime() - this.jobLeaseMs);
-
-    return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`
-        UPDATE ingestion_jobs
-        SET status = 'FAILED',
-            completed_at = ${now},
-            error_message = 'Ingestion job lease expired after exhausting retry attempts',
-            locked_at = NULL,
-            locked_by = NULL
-        WHERE status = 'RUNNING'
-          AND locked_at < ${leaseExpiredBefore}
-          AND attempts >= max_attempts
-      `;
-      await tx.$executeRaw`
-        UPDATE ingestion_jobs
-        SET status = 'CANCELLED',
-            completed_at = ${now},
-            error_message = 'Cancelado mientras el trabajo estaba bloqueado.',
-            locked_at = NULL,
-            locked_by = NULL,
-            progress = jsonb_build_object('phase', 'CANCELLED', 'message', 'Cancelado tras expirar el bloqueo.', 'updatedAt', CAST(${now.toISOString()} AS text))
-        WHERE status = 'RUNNING'
-          AND cancel_requested_at IS NOT NULL
-          AND locked_at < ${leaseExpiredBefore}
-      `;
-      const rows = await tx.$queryRaw<ClaimedJobRow[]>`
-        SELECT id
-        FROM ingestion_jobs
-        WHERE attempts < max_attempts
-          AND available_at <= ${now}
-          AND cancel_requested_at IS NULL
-          AND archived_at IS NULL
-          AND (
-            status = 'PENDING'
-            OR (status = 'RUNNING' AND locked_at < ${leaseExpiredBefore})
-          )
-        ORDER BY priority ASC, created_at ASC
-        FOR UPDATE SKIP LOCKED
-        LIMIT 1
-      `;
-
-      const claimed = rows[0];
-      if (claimed === undefined) {
-        return null;
-      }
-
-      await tx.ingestionJob.update({
-        where: { id: claimed.id },
-        data: {
-          status: 'RUNNING',
-          attempts: { increment: 1 },
-          lockedAt: now,
-          lockedBy: workerId,
-          startedAt: now,
-          errorMessage: null,
-          progress: { phase: 'DISCOVERING', message: 'Trabajo tomado por el worker.', updatedAt: now.toISOString() },
-        },
-      });
-
-      const job = await this.support.findJobContext(claimed.id, tx);
-      return job === null ? null : this.support.toJobContext(job);
-    });
+    return this.claimRepository.claimNextPendingJob(workerId);
   }
-
   public async refreshJobLease(jobId: string, workerId: string, attempt: number): Promise<boolean> {
     const updated = await this.prisma.ingestionJob.updateMany({
       where: { id: jobId, status: 'RUNNING', lockedBy: workerId, attempts: attempt },
@@ -121,7 +53,6 @@ export class PrismaCloudIngestionJobRepository {
     });
     return updated.count === 1;
   }
-
   public async updateJobProgress(
     jobId: string,
     workerId: string,
@@ -130,21 +61,19 @@ export class PrismaCloudIngestionJobRepository {
   ): Promise<boolean> {
     return this.lifecycle.updateJobProgress(jobId, workerId, attempt, progress);
   }
-
   public async isCancellationRequested(jobId: string, workerId: string, attempt: number): Promise<boolean> {
     return this.lifecycle.isCancellationRequested(jobId, workerId, attempt);
   }
-
   public async markCancelled(job: CloudIngestionJobContext, workerId: string, message = 'Cancelado por el usuario.'): Promise<boolean> {
     return this.lifecycle.markCancelled(job, workerId, message);
   }
-
   public async completeJob(
     job: CloudIngestionJobContext,
     result: CloudIngestionResult,
     startedAt: Date,
     workerId: string,
     onProgress?: (progress: IngestionJobProgress) => Promise<void>,
+    shouldCancel?: () => Promise<boolean>,
   ): Promise<IngestionJobExecutionSummary> {
     if (!await this.refreshJobLease(job.id, workerId, job.attempt)) {
       throw new Error('Ingestion job lease was lost before persistence');
@@ -160,14 +89,21 @@ export class PrismaCloudIngestionJobRepository {
     const metricDerivedResourceKeys = new Set(initialMetricDerivedResources.map((resource) => `${resource.cloudConnectionId}:${resource.externalResourceId}`));
     let metricDerivedResources = initialMetricDerivedResources.length;
     let metricSamplesProcessed = 0;
+    let metricSamplesInserted = 0;
     let metricSamplesLinked = 0;
     let metricLinkage = mergeResourceLinkageStats(
       { linked: 0, unresolved: 0, reasons: {} },
       { linked: 0, unresolved: 0, reasons: {} },
     );
     let metricBatchSequence = 0;
+    const assertNotCancelled = async (): Promise<void> => {
+      if (shouldCancel !== undefined && await shouldCancel()) {
+        throw new Error('Ingestion job cancellation requested during persistence');
+      }
+    };
     const persistMetricBatch = async (batch: readonly CloudIngestionResult['metricSamples'][number][]): Promise<void> => {
       if (batch.length === 0) return;
+      await assertNotCancelled();
       const partKey = `TECHNICAL_METRIC:${metricBatchSequence}`;
       await this.support.updateJobPart(job, partKey, {
         status: 'RUNNING',
@@ -199,10 +135,11 @@ export class PrismaCloudIngestionJobRepository {
         );
         metricLinkage = mergeResourceLinkageStats(metricLinkage, linkage);
         metricSamplesProcessed += batch.length;
+        metricSamplesInserted += linkage.inserted;
         metricSamplesLinked += linkage.linked;
         if (onProgress !== undefined) {
           await onProgress({
-            phase: 'PERSISTING',
+            phase: 'PERSISTING_RAW',
             message: `Persistiendo lote técnico ${metricBatchSequence + 1}.`,
             providerCalls: result.apiCallCount,
             rowsRead: result.focusRows.length,
@@ -230,6 +167,7 @@ export class PrismaCloudIngestionJobRepository {
     };
 
     await persistMetricBatch(result.metricSamples);
+    await assertNotCancelled();
     let focusRowsProcessed = result.focusRows.length;
     let focusRowsInserted = await this.samplePersistence.insertFocusRows(this.prisma, result.focusRows, job.id);
     let costMetricProjection = await this.costProjector.projectFocusRowsToCostMetrics(this.prisma, job, result.focusRows, resourceIdsByExternalId);
@@ -245,6 +183,7 @@ export class PrismaCloudIngestionJobRepository {
     let focusBatchSequence = 0;
     if (result.focusBatches !== undefined) {
       for await (const batch of result.focusBatches) {
+        await assertNotCancelled();
         const partKey = `BILLING_EXPORT:${focusBatchSequence}`;
         await this.support.updateJobPart(job, partKey, {
           status: 'RUNNING',
@@ -264,7 +203,7 @@ export class PrismaCloudIngestionJobRepository {
           };
           if (onProgress !== undefined) {
             await onProgress({
-              phase: 'PERSISTING',
+              phase: 'PERSISTING_RAW',
               message: 'Persistiendo lote FOCUS.',
               providerCalls: result.apiCallCount,
               rowsRead: focusRowsProcessed,
@@ -294,10 +233,12 @@ export class PrismaCloudIngestionJobRepository {
     }
 
     if (result.metricBatches !== undefined) {
-      for await (const batch of result.metricBatches) await persistMetricBatch(batch);
+      for await (const batch of result.metricBatches) {
+        await persistMetricBatch(batch);
+      }
     }
+    await assertNotCancelled();
     await this.support.completeSourceObjects(job, result.sourceObjects, focusRowsProcessed);
-    await this.samplePersistence.refreshMetricStreamSummariesForJob(this.prisma, job.id);
 
     const completedAt = new Date();
     const summary = this.completionSupport.buildSummary(
@@ -311,6 +252,7 @@ export class PrismaCloudIngestionJobRepository {
       metricDerivedResources,
       metricSamplesLinked,
       metricSamplesProcessed,
+      metricSamplesInserted,
       metricLinkage,
     );
 
@@ -324,13 +266,25 @@ export class PrismaCloudIngestionJobRepository {
             completedAt,
             lockedAt: null,
             lockedBy: null,
+            projectionStatus: summary.projectionStatus,
+            projectionAttempts: 0,
+            projectionAvailableAt: summary.projectionStatus === 'PENDING' ? completedAt : null,
+            projectionLockedAt: null,
+            projectionLockedBy: null,
+            projectionStartedAt: null,
+            projectionCompletedAt: null,
+            projectionErrorMessage: null,
             errorMessage: summary.dataOutcome === 'INVALID_CONFIGURATION'
               ? (summary.warnings[0] ?? 'La fuente no está configurada.')
               : null,
             progress: {
-              phase: summary.dataOutcome === 'INVALID_CONFIGURATION' ? 'SKIPPED' : 'COMPLETED',
+              phase: summary.dataOutcome === 'INVALID_CONFIGURATION'
+                ? 'SKIPPED'
+                : summary.projectionStatus === 'PENDING' ? 'RAW_COMPLETE' : 'COMPLETED',
               message: summary.dataOutcome === 'INVALID_CONFIGURATION'
                 ? 'Trabajo omitido: la fuente no está configurada.'
+                : summary.projectionStatus === 'PENDING'
+                  ? 'Datos raw persistidos; proyección técnica en cola.'
                 : summary.dataOutcome === 'PARTIAL'
                   ? 'Ingesta completada parcialmente; revisa las advertencias.'
                   : summary.dataOutcome === 'NO_DATA'
@@ -363,6 +317,7 @@ export class PrismaCloudIngestionJobRepository {
           metricDerivedResources,
           metricSamplesLinked,
           metricSamplesProcessed,
+          metricSamplesInserted,
           metricLinkage,
         );
 
@@ -381,6 +336,4 @@ export class PrismaCloudIngestionJobRepository {
   ): Promise<void> {
     return this.failureHandler.failJob(job, error, startedAt, workerId);
   }
-
-
 }

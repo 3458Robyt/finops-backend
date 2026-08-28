@@ -78,7 +78,19 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       1,
     ));
 
-    const aggregations = await runSnapshotAggregations(this.prisma, tenantId, periodStart, periodEnd);
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { reportingCurrency: true } });
+    const periodCurrencies = await this.prisma.$queryRaw<readonly { readonly currency: string }[]>`
+      SELECT billing_currency AS currency
+      FROM cost_metrics
+      WHERE tenant_id = ${tenantId}
+        AND charge_period_start >= ${periodStart}
+        AND charge_period_start < ${periodEnd}
+      GROUP BY billing_currency
+      ORDER BY COUNT(*) DESC, billing_currency ASC
+    `;
+    const preferredCurrency = periodCurrencies.find((item) => item.currency === tenant?.reportingCurrency)?.currency
+      ?? periodCurrencies[0]?.currency;
+    const aggregations = await runSnapshotAggregations(this.prisma, tenantId, periodStart, periodEnd, preferredCurrency);
 
     const [anomalies, forecasts] = await Promise.all([
       this.findAnomalies(tenantId),
@@ -90,7 +102,7 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       periodStart: periodStart.toISOString(),
       periodEnd: periodEnd.toISOString(),
       totalCost: aggregations.summary.totalCost,
-      currency: aggregations.currencies[0]?.currency ?? 'USD',
+      currency: aggregations.currencies[0]?.currency ?? tenant?.reportingCurrency ?? 'USD',
       metricCount: aggregations.summary.metricCount,
       providers: aggregations.providers.map(toProviderItem),
       accounts: aggregations.accounts.map(toAccountItem),
@@ -129,7 +141,7 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
     return rows.map((row) => ({
       month: row.month.toISOString(),
       groupBy,
-      groupKey: row.group_key,
+      groupKey: `${row.group_key} [${row.currency}]`,
       ...(row.provider !== null ? { provider: row.provider } : {}),
       ...(row.cloud_account_id !== null ? { cloudAccountId: row.cloud_account_id } : {}),
       ...(row.service_name !== null ? { serviceName: row.service_name } : {}),
@@ -170,7 +182,7 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       return {
         month: row.month.toISOString(),
         groupBy,
-        groupKey: `${row.group_key} (${row.consumed_unit})`,
+        groupKey: `${row.group_key} (${row.consumed_unit}) [${row.currency}]`,
         ...(row.provider !== null ? { provider: row.provider } : {}),
         ...(row.cloud_account_id !== null ? { cloudAccountId: row.cloud_account_id } : {}),
         ...(row.service_name !== null ? { serviceName: row.service_name } : {}),

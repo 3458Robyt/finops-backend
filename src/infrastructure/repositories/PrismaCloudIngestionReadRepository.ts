@@ -1,8 +1,11 @@
 import type {
   DataQualityCheckItem,
   IngestionJobHistoryItem,
+  IngestionMetricCoverageQuery,
+  IngestionMetricCoverageResult,
   IngestionJobRangeQuery,
   IngestionJobWindowItem,
+  IngestionOperationalReadiness,
   IngestionReadinessSummary,
 } from '../../domain/interfaces/ICloudConnectionRepository.js';
 import type { DataQualityStatus, IngestionHealthSummary, IngestionSourceType } from '../../domain/models/CloudConnection.js';
@@ -15,10 +18,15 @@ import {
   toIngestionJobHistoryItem,
 } from './mappers/cloudConnectionMappers.js';
 import { buildIngestionReadinessSummary } from '../ingestion/ingestionReadiness.js';
+import { PrismaMetricCoverageReadRepository } from './PrismaMetricCoverageReadRepository.js';
 
 /** Encapsulates ingestion health, history, readiness, and job operations. */
 export class PrismaCloudIngestionReadRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly metricCoverageRepository: PrismaMetricCoverageReadRepository;
+
+  constructor(private readonly prisma: PrismaClient) {
+    this.metricCoverageRepository = new PrismaMetricCoverageReadRepository(prisma);
+  }
 
   public async getIngestionHealth(
     tenantId: string,
@@ -223,9 +231,23 @@ export class PrismaCloudIngestionReadRepository {
       },
     });
 
+    const operational = await this.readOperationalReadiness(tenantId);
+    const globalIssues = operational.queue.pending > 0 && !operational.worker.available
+      ? [{
+        provider: 'global' as const,
+        severity: 'BLOCKER' as const,
+        capability: 'JOBS' as const,
+        message: 'Hay trabajos en cola, pero no hay un worker de ingesta activo.',
+        affectedData: ['Trabajos de ingesta pendientes'],
+        action: 'Inicia el backend con el worker de ingesta habilitado.',
+        actionCode: 'RETRY_FAILED_JOBS' as const,
+      }]
+      : [];
     return buildIngestionReadinessSummary({
       generatedAt: new Date(),
       missingProviderMessageSuffix: ' for this tenant',
+      globalIssues,
+      operational,
       connections: connections.map((connection) => ({
         id: connection.id,
         name: connection.name,
@@ -247,6 +269,62 @@ export class PrismaCloudIngestionReadRepository {
         })),
       })),
     });
+  }
+
+  public async listMetricCoverageForTenant(
+    input: IngestionMetricCoverageQuery,
+  ): Promise<IngestionMetricCoverageResult> {
+    return this.metricCoverageRepository.listMetricCoverageForTenant(input);
+  }
+
+  private async readOperationalReadiness(tenantId: string): Promise<IngestionOperationalReadiness> {
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - 90_000);
+    const [counts, oldestPending, worker] = await Promise.all([
+      this.prisma.$queryRaw<readonly { status: string; count: bigint }[]>`
+        SELECT status::text AS status, COUNT(*)::bigint AS count
+        FROM ingestion_jobs
+        WHERE tenant_id = ${tenantId} AND archived_at IS NULL
+        GROUP BY status
+      `,
+      this.prisma.ingestionJob.findFirst({
+        where: { tenantId, status: 'PENDING', archivedAt: null },
+        orderBy: { createdAt: 'asc' },
+        select: { createdAt: true },
+      }),
+      this.prisma.runtimeProcessHeartbeat.findFirst({
+        where: { processRole: { in: ['all', 'ingestion-worker'] }, status: 'RUNNING', lastHeartbeatAt: { gte: staleBefore } },
+        orderBy: { lastHeartbeatAt: 'desc' },
+        select: { processId: true, processRole: true, lastHeartbeatAt: true },
+      }),
+    ]);
+    const countByStatus = new Map(counts.map((row) => [row.status, Number(row.count)]));
+    const pending = countByStatus.get('PENDING') ?? 0;
+    const running = countByStatus.get('RUNNING') ?? 0;
+    const cancelRequested = await this.prisma.ingestionJob.count({
+      where: { tenantId, archivedAt: null, cancelRequestedAt: { not: null }, status: { in: ['PENDING', 'RUNNING'] } },
+    });
+    const staleRunning = await this.prisma.ingestionJob.count({
+      where: { tenantId, archivedAt: null, status: 'RUNNING', lockedAt: { lt: staleBefore } },
+    });
+    const state = staleRunning > 0
+      ? 'STALE'
+      : cancelRequested > 0
+        ? 'CANCEL_REQUESTED'
+        : !worker && pending > 0
+          ? 'WAITING_FOR_WORKER'
+          : running > 0
+            ? 'RUNNING'
+            : pending > 0 ? 'QUEUED' : 'IDLE';
+    return {
+      state,
+      queue: { pending, running, cancelRequested, staleRunning },
+      ...(oldestPending === null ? {} : { oldestPendingAt: oldestPending.createdAt }),
+      worker: {
+        available: worker !== null,
+        ...(worker === null ? {} : { processId: worker.processId, processRole: worker.processRole, lastHeartbeatAt: worker.lastHeartbeatAt }),
+      },
+    };
   }
 
   private async countJobs(

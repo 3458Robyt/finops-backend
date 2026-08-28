@@ -13,6 +13,10 @@ export async function queueRecommendationAnalysisAfterIngestion(
     WHERE job."status" = 'SUCCESS'
       AND job."completed_at" IS NOT NULL
       AND job."completed_at" <= ${cooldownStart}
+      AND (
+        job."source_type" <> 'TECHNICAL_METRIC'::"IngestionSourceType"
+        OR job."projection_status" = 'SUCCESS'::"MetricProjectionStatus"
+      )
       AND NOT EXISTS (
         SELECT 1
         FROM "recommendation_analysis_runs" run

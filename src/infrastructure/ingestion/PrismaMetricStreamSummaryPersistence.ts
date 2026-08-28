@@ -106,7 +106,7 @@ export class PrismaMetricStreamSummaryPersistence {
     `);
   }
 
-  /** Updates summaries from rows written by one job without rescanning all history. */
+  /** Adds rows written by one raw job to the summary projection. */
   public async refreshMetricStreamSummariesForJob(
     tx: PrismaIngestionPersistenceClient,
     ingestionJobId: string,
@@ -132,7 +132,7 @@ export class PrismaMetricStreamSummaryPersistence {
           count(*) FILTER (WHERE rms.value <> 0)::int AS non_zero_sample_count,
           min(rms.sampled_at) AS first_sampled_at,
           max(rms.sampled_at) AS last_sampled_at,
-          (array_agg(rms.value ORDER BY rms.sampled_at DESC))[1] AS latest_value
+          (array_agg(rms.value ORDER BY rms.sampled_at DESC, rms.id DESC))[1] AS latest_value
         FROM resource_metric_samples rms
         WHERE rms.ingestion_job_id = ${ingestionJobId}
         GROUP BY rms.cloud_connection_id, rms.external_resource_id, rms.provider_namespace,

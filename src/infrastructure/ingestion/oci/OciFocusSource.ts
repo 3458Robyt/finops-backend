@@ -55,9 +55,10 @@ export function readOciFocusLocations(
 export async function discoverOciFocusObjects(
   job: CloudIngestionJobContext,
   client: OciObjectStorageClient,
-  withRetry: <T>(operation: () => Promise<T>) => Promise<T>,
+  withRetry: <T>(operation: () => Promise<T>, signal?: AbortSignal) => Promise<T>,
   tolerateErrors = false,
-  withRateLimit?: <T>(operation: () => Promise<T>) => Promise<T>,
+  withRateLimit?: <T>(operation: () => Promise<T>, signal?: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<{
   readonly objects: readonly OciFocusReportObject[];
   readonly apiCallCount: number;
@@ -69,6 +70,7 @@ export async function discoverOciFocusObjects(
   const errors: string[] = [];
 
   for (const location of readOciFocusLocations(job)) {
+    throwIfAborted(signal);
     let start: string | undefined;
     const locationStartCount = discovered.length;
     try {
@@ -80,10 +82,10 @@ export async function discoverOciFocusObjects(
           prefix: location.prefix,
           limit: Math.min(1000, location.maxObjects - (discovered.length - locationStartCount)),
           ...(start !== undefined ? { start } : {}),
-        }));
+        }), signal);
         const response = withRateLimit === undefined
           ? await operation()
-          : await withRateLimit(operation);
+          : await withRateLimit(operation, signal);
 
         for (const object of response.listObjects?.objects ?? []) {
           if (object.name === undefined || !isFocusObjectName(object.name)) continue;
@@ -104,12 +106,17 @@ export async function discoverOciFocusObjects(
         start = response.listObjects.nextStartWith;
       }
     } catch (error) {
+      if (signal?.aborted === true) throw error;
       if (!tolerateErrors) throw error;
       errors.push(`${location.namespaceName}/${location.bucketName}: ${safeOciProviderError(error)}`);
     }
   }
 
   return { objects: discovered, apiCallCount, errors };
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted === true) throw new Error('OCI provider request cancelled');
 }
 
 export function buildOciFocusPreviewResult(

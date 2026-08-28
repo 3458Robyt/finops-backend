@@ -107,6 +107,22 @@ enum IngestionJobStatus {
   SKIPPED
 }
 
+enum MetricProjectionStatus {
+  NOT_REQUIRED
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+enum MetricCoverageStatus {
+  UNKNOWN
+  COVERED
+  PARTIAL
+  NO_DATA
+  FAILED
+}
+
 enum IngestionDataOutcome {
   DATA_WRITTEN
   NO_DATA
@@ -393,65 +409,84 @@ enum ManualExecutionStatus {
 }
 
 model Tenant {
-  id                          String                             @id @default(cuid())
-  operatorOrganizationId      String?                            @map("operator_organization_id")
-  name                        String
-  slug                        String                             @unique
-  status                      TenantStatus                       @default(ACTIVE)
-  createdAt                   DateTime                           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                   DateTime                           @updatedAt @map("updated_at") @db.Timestamptz(6)
-  users                       User[]
-  cloudAccounts               CloudAccount[]
-  ingestionRuns               IngestionRun[]
-  costMetrics                 CostMetric[]
-  recommendations             Recommendation[]
-  auditEvents                 AuditEvent[]
-  operatorOrganization        OperatorOrganization?              @relation(fields: [operatorOrganizationId], references: [id], onDelete: SetNull)
-  accessAssignments           TenantAccessAssignment[]
-  cloudConnections            CloudConnection[]
-  cloudConnectionRegions      CloudConnectionRegion[]
-  cloudMetricDefinitions      CloudMetricDefinition[]
-  operatorStorageLocations    OperatorStorageLocation[]
-  ingestionJobs               IngestionJob[]
-  ingestionJobParts           IngestionJobPart[]
-  ingestionCoverageSegments   IngestionCoverageSegment[]
-  ingestionObjects            IngestionObject[]
-  ingestionWatermarks         IngestionWatermark[]
-  focusCostLineItems          FocusCostLineItem[]
-  cloudResources              CloudResource[]
-  resourceMetricSamples       ResourceMetricSample[]
+  id                            String                             @id @default(cuid())
+  operatorOrganizationId        String?                            @map("operator_organization_id")
+  name                          String
+  slug                          String                             @unique
+  reportingCurrency             String                             @default("USD") @map("reporting_currency") @db.VarChar(3)
+  status                        TenantStatus                       @default(ACTIVE)
+  createdAt                     DateTime                           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                     DateTime                           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  users                         User[]
+  cloudAccounts                 CloudAccount[]
+  ingestionRuns                 IngestionRun[]
+  costMetrics                   CostMetric[]
+  recommendations               Recommendation[]
+  auditEvents                   AuditEvent[]
+  operatorOrganization          OperatorOrganization?              @relation(fields: [operatorOrganizationId], references: [id], onDelete: SetNull)
+  accessAssignments             TenantAccessAssignment[]
+  cloudConnections              CloudConnection[]
+  cloudConnectionRegions        CloudConnectionRegion[]
+  cloudMetricDefinitions        CloudMetricDefinition[]
+  operatorStorageLocations      OperatorStorageLocation[]
+  ingestionJobs                 IngestionJob[]
+  ingestionJobParts             IngestionJobPart[]
+  ingestionCoverageSegments     IngestionCoverageSegment[]
+  metricCoverageWindows         ResourceMetricCoverageWindow[]
+  ingestionObjects              IngestionObject[]
+  ingestionWatermarks           IngestionWatermark[]
+  focusCostLineItems            FocusCostLineItem[]
+  cloudResources                CloudResource[]
+  resourceMetricSamples         ResourceMetricSample[]
   resourceMetricStreamSummaries ResourceMetricStreamSummary[]
-  agentInstallations          AgentInstallation[]
-  dataQualityChecks           DataQualityCheck[]
-  agentLearningEvents         AgentLearningEvent[]
-  agentMemories               AgentMemory[]
-  tenantAgentRules            TenantAgentRule[]
-  agentInstructionAuditEvents AgentInstructionAuditEvent[]
-  contextSummaryCaches        ContextSummaryCache[]
-  aiContextTraces             AiContextTrace[]
-  contextBuildRuns            ContextBuildRun[]
-  telegramChatLinks           TelegramChatLink[]
-  telegramLinkCodes           TelegramLinkCode[]
-  telegramInteractionLogs     TelegramInteractionLog[]
-  costAnomalies               CostAnomaly[]
-  costForecasts               CostForecast[]
-  manualExecutions            RecommendationManualExecution[]
-  savingsMeasurements         RecommendationSavingsMeasurement[]
-  inAppNotifications          InAppNotification[]
-  outboundMessageDeliveries   OutboundMessageDelivery[]
-  budgets                     Budget[]
-  budgetAlerts                BudgetAlert[]
-  costAllocationRules         CostAllocationRule[]
-  costAllocationRuleTargets   CostAllocationRuleTarget[]
-  costAllocationClosures      CostAllocationClosure[]
-  costAllocationClosureLines  CostAllocationClosureLine[]
-  recommendationAnalysisRuns  RecommendationAnalysisRun[]
-  authSessions                AuthSession[]
-  authRefreshTokens           AuthRefreshToken[]
-  clientInvitations            ClientInvitation[]
+  agentInstallations            AgentInstallation[]
+  dataQualityChecks             DataQualityCheck[]
+  agentLearningEvents           AgentLearningEvent[]
+  agentMemories                 AgentMemory[]
+  tenantAgentRules              TenantAgentRule[]
+  agentInstructionAuditEvents   AgentInstructionAuditEvent[]
+  contextSummaryCaches          ContextSummaryCache[]
+  aiContextTraces               AiContextTrace[]
+  contextBuildRuns              ContextBuildRun[]
+  telegramChatLinks             TelegramChatLink[]
+  telegramLinkCodes             TelegramLinkCode[]
+  telegramInteractionLogs       TelegramInteractionLog[]
+  costAnomalies                 CostAnomaly[]
+  costForecasts                 CostForecast[]
+  manualExecutions              RecommendationManualExecution[]
+  savingsMeasurements           RecommendationSavingsMeasurement[]
+  inAppNotifications            InAppNotification[]
+  outboundMessageDeliveries     OutboundMessageDelivery[]
+  budgets                       Budget[]
+  budgetAlerts                  BudgetAlert[]
+  costAllocationRules           CostAllocationRule[]
+  costAllocationRuleTargets     CostAllocationRuleTarget[]
+  costAllocationClosures        CostAllocationClosure[]
+  costAllocationClosureLines    CostAllocationClosureLine[]
+  recommendationAnalysisRuns    RecommendationAnalysisRun[]
+  authSessions                  AuthSession[]
+  authRefreshTokens             AuthRefreshToken[]
+  clientInvitations             ClientInvitation[]
 
   @@index([operatorOrganizationId, status])
   @@map("tenants")
+}
+
+model FxRate {
+  id            String    @id @default(cuid())
+  baseCurrency  String    @map("base_currency") @db.VarChar(3)
+  quoteCurrency String    @map("quote_currency") @db.VarChar(3)
+  rate          Decimal   @db.Decimal(24, 12)
+  validFrom     DateTime  @map("valid_from") @db.Date
+  validTo       DateTime? @map("valid_to") @db.Date
+  source        String
+  sourceUrl     String?   @map("source_url")
+  retrievedAt   DateTime  @default(now()) @map("retrieved_at") @db.Timestamptz(6)
+  metadata      Json?
+
+  @@unique([baseCurrency, quoteCurrency, validFrom, source], map: "fx_rates_pair_date_source_key")
+  @@index([baseCurrency, quoteCurrency, validFrom, validTo], map: "fx_rates_lookup_idx")
+  @@map("fx_rates")
 }
 
 model User {
@@ -471,8 +506,8 @@ model User {
   refreshTokens                       AuthRefreshToken[]
   passwordResetTokens                 PasswordResetToken[]
   mfaChallenges                       MfaChallenge[]
-  mfa                                UserMfa?
-  mfaRecoveryCodes                   MfaRecoveryCode[]
+  mfa                                 UserMfa?
+  mfaRecoveryCodes                    MfaRecoveryCode[]
   decisions                           RecommendationDecision[]
   executionPlans                      RecommendationExecutionPlan[]
   manualExecutions                    RecommendationManualExecution[]
@@ -539,20 +574,20 @@ model TenantAccessAssignment {
 }
 
 model ClientInvitation {
-  id              String   @id @default(cuid())
-  tenantId        String   @map("tenant_id")
-  createdByUserId  String   @map("created_by_user_id")
+  id              String    @id @default(cuid())
+  tenantId        String    @map("tenant_id")
+  createdByUserId String    @map("created_by_user_id")
   email           String
-  invitedName     String?  @map("invited_name")
-  role            UserRole @default(CLIENT_VIEWER)
-  tokenHash       String   @unique @map("token_hash") @db.VarChar(64)
-  expiresAt       DateTime @map("expires_at") @db.Timestamptz(6)
+  invitedName     String?   @map("invited_name")
+  role            UserRole  @default(CLIENT_VIEWER)
+  tokenHash       String    @unique @map("token_hash") @db.VarChar(64)
+  expiresAt       DateTime  @map("expires_at") @db.Timestamptz(6)
   consumedAt      DateTime? @map("consumed_at") @db.Timestamptz(6)
   revokedAt       DateTime? @map("revoked_at") @db.Timestamptz(6)
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdBy       User     @relation("ClientInvitationCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User   @relation("ClientInvitationCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
 
   @@index([tenantId, expiresAt, consumedAt])
   @@index([email, consumedAt])
@@ -576,37 +611,38 @@ model ProviderCatalog {
 }
 
 model CloudConnection {
-  id                    String                      @id @default(cuid())
-  tenantId              String                      @map("tenant_id")
-  providerCode          String                      @map("provider_code")
-  rootExternalId        String                      @map("root_external_id")
-  name                  String
-  status                CloudAccountStatus          @default(ACTIVE)
-  defaultRegion         String?                     @map("default_region")
-  metadata              Json?
-  lastValidatedAt       DateTime?                   @map("last_validated_at") @db.Timestamptz(6)
-  lastValidationAttemptAt DateTime?                 @map("last_validation_attempt_at") @db.Timestamptz(6)
-  createdAt             DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt             DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
-  tenant                Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  providerCatalog       ProviderCatalog             @relation(fields: [providerCode], references: [code], onDelete: Restrict)
-  credentials           CloudConnectionCredential[]
-  exportConfigs         CloudExportConfig[]
-  ingestionJobs         IngestionJob[]
-  ingestionJobParts     IngestionJobPart[]
-  ingestionCoverageSegments IngestionCoverageSegment[]
-  ingestionRuns         IngestionRun[]
-  ingestionObjects      IngestionObject[]
-  ingestionWatermarks   IngestionWatermark[]
-  ingestionRegions      CloudConnectionRegion[]
-  metricDefinitions     CloudMetricDefinition[]
-  focusCostLineItems    FocusCostLineItem[]
-  cloudResources        CloudResource[]
-  resourceMetricSamples ResourceMetricSample[]
+  id                            String                         @id @default(cuid())
+  tenantId                      String                         @map("tenant_id")
+  providerCode                  String                         @map("provider_code")
+  rootExternalId                String                         @map("root_external_id")
+  name                          String
+  status                        CloudAccountStatus             @default(ACTIVE)
+  defaultRegion                 String?                        @map("default_region")
+  metadata                      Json?
+  lastValidatedAt               DateTime?                      @map("last_validated_at") @db.Timestamptz(6)
+  lastValidationAttemptAt       DateTime?                      @map("last_validation_attempt_at") @db.Timestamptz(6)
+  createdAt                     DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                     DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant                        Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  providerCatalog               ProviderCatalog                @relation(fields: [providerCode], references: [code], onDelete: Restrict)
+  credentials                   CloudConnectionCredential[]
+  exportConfigs                 CloudExportConfig[]
+  ingestionJobs                 IngestionJob[]
+  ingestionJobParts             IngestionJobPart[]
+  ingestionCoverageSegments     IngestionCoverageSegment[]
+  ingestionRuns                 IngestionRun[]
+  ingestionObjects              IngestionObject[]
+  ingestionWatermarks           IngestionWatermark[]
+  ingestionRegions              CloudConnectionRegion[]
+  metricDefinitions             CloudMetricDefinition[]
+  metricCoverageWindows         ResourceMetricCoverageWindow[]
+  focusCostLineItems            FocusCostLineItem[]
+  cloudResources                CloudResource[]
+  resourceMetricSamples         ResourceMetricSample[]
   resourceMetricStreamSummaries ResourceMetricStreamSummary[]
-  costMetrics           CostMetric[]
-  agentInstallations    AgentInstallation[]
-  dataQualityChecks     DataQualityCheck[]
+  costMetrics                   CostMetric[]
+  agentInstallations            AgentInstallation[]
+  dataQualityChecks             DataQualityCheck[]
 
   @@unique([tenantId, providerCode, rootExternalId])
   @@index([tenantId, status])
@@ -615,26 +651,26 @@ model CloudConnection {
 }
 
 model CloudConnectionCredential {
-  id                   String            @id @default(cuid())
-  cloudConnectionId    String            @map("cloud_connection_id")
-  purpose              CredentialPurpose
-  status               CredentialStatus  @default(ACTIVE)
-  label                String
-  encryptedPayload     String            @map("encrypted_payload") @db.Text
-  encryptionIv         String            @map("encryption_iv")
-  encryptionAuthTag    String            @map("encryption_auth_tag")
-  encryptionAlgorithm  String            @default("aes-256-gcm") @map("encryption_algorithm")
-  encryptionKeyVersion String            @default("v1") @map("encryption_key_version")
-  externalPrincipalId  String?           @map("external_principal_id")
-  keyFingerprint       String?           @map("key_fingerprint")
-  expiresAt            DateTime?         @map("expires_at") @db.Timestamptz(6)
-  createdAt            DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
-  disabledAt           DateTime?         @map("disabled_at") @db.Timestamptz(6)
-  revokedAt            DateTime?         @map("revoked_at") @db.Timestamptz(6)
+  id                    String            @id @default(cuid())
+  cloudConnectionId     String            @map("cloud_connection_id")
+  purpose               CredentialPurpose
+  status                CredentialStatus  @default(ACTIVE)
+  label                 String
+  encryptedPayload      String            @map("encrypted_payload") @db.Text
+  encryptionIv          String            @map("encryption_iv")
+  encryptionAuthTag     String            @map("encryption_auth_tag")
+  encryptionAlgorithm   String            @default("aes-256-gcm") @map("encryption_algorithm")
+  encryptionKeyVersion  String            @default("v1") @map("encryption_key_version")
+  externalPrincipalId   String?           @map("external_principal_id")
+  keyFingerprint        String?           @map("key_fingerprint")
+  expiresAt             DateTime?         @map("expires_at") @db.Timestamptz(6)
+  createdAt             DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  disabledAt            DateTime?         @map("disabled_at") @db.Timestamptz(6)
+  revokedAt             DateTime?         @map("revoked_at") @db.Timestamptz(6)
   validationStatus      String?           @map("validation_status")
   validationMessage     String?           @map("validation_message") @db.Text
   validationAttemptedAt DateTime?         @map("validation_attempted_at") @db.Timestamptz(6)
-  cloudConnection      CloudConnection   @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
+  cloudConnection       CloudConnection   @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
 
   @@index([cloudConnectionId, purpose, status])
   @@index([cloudConnectionId, purpose, keyFingerprint])
@@ -682,17 +718,17 @@ model CloudExportConfig {
 }
 
 model AuthSession {
-  id        String    @id @default(cuid())
-  userId    String    @map("user_id")
-  tenantId  String    @map("tenant_id")
-  jwtId     String    @unique @map("jwt_id")
-  issuedAt  DateTime  @default(now()) @map("issued_at") @db.Timestamptz(6)
-  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
-  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
-  ipAddress String?   @map("ip_address")
-  userAgent String?   @map("user_agent")
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id            String             @id @default(cuid())
+  userId        String             @map("user_id")
+  tenantId      String             @map("tenant_id")
+  jwtId         String             @unique @map("jwt_id")
+  issuedAt      DateTime           @default(now()) @map("issued_at") @db.Timestamptz(6)
+  expiresAt     DateTime           @map("expires_at") @db.Timestamptz(6)
+  revokedAt     DateTime?          @map("revoked_at") @db.Timestamptz(6)
+  ipAddress     String?            @map("ip_address")
+  userAgent     String?            @map("user_agent")
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   refreshTokens AuthRefreshToken[]
 
   @@index([userId, expiresAt])
@@ -702,21 +738,21 @@ model AuthSession {
 }
 
 model AuthRefreshToken {
-  id          String      @id @default(cuid())
-  sessionId   String      @map("session_id")
-  userId      String      @map("user_id")
-  tenantId    String      @map("tenant_id")
-  familyId    String      @map("family_id")
-  tokenHash   String      @unique @map("token_hash")
-  issuedAt    DateTime    @default(now()) @map("issued_at") @db.Timestamptz(6)
-  expiresAt   DateTime    @map("expires_at") @db.Timestamptz(6)
-  usedAt      DateTime?   @map("used_at") @db.Timestamptz(6)
-  revokedAt   DateTime?   @map("revoked_at") @db.Timestamptz(6)
-  ipAddress   String?     @map("ip_address")
-  userAgent   String?     @map("user_agent")
-  session     AuthSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id        String      @id @default(cuid())
+  sessionId String      @map("session_id")
+  userId    String      @map("user_id")
+  tenantId  String      @map("tenant_id")
+  familyId  String      @map("family_id")
+  tokenHash String      @unique @map("token_hash")
+  issuedAt  DateTime    @default(now()) @map("issued_at") @db.Timestamptz(6)
+  expiresAt DateTime    @map("expires_at") @db.Timestamptz(6)
+  usedAt    DateTime?   @map("used_at") @db.Timestamptz(6)
+  revokedAt DateTime?   @map("revoked_at") @db.Timestamptz(6)
+  ipAddress String?     @map("ip_address")
+  userAgent String?     @map("user_agent")
+  session   AuthSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant    Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([sessionId, revokedAt])
   @@index([userId, revokedAt, expiresAt])
@@ -759,16 +795,16 @@ model UserMfa {
 }
 
 model MfaChallenge {
-  id          String              @id @default(cuid())
-  userId      String              @map("user_id")
-  tokenHash   String              @unique @map("token_hash")
-  purpose     MfaChallengePurpose
-  expiresAt   DateTime            @map("expires_at") @db.Timestamptz(6)
-  consumedAt  DateTime?           @map("consumed_at") @db.Timestamptz(6)
-  createdAt   DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  ipAddress   String?             @map("ip_address")
-  userAgent   String?             @map("user_agent")
-  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id         String              @id @default(cuid())
+  userId     String              @map("user_id")
+  tokenHash  String              @unique @map("token_hash")
+  purpose    MfaChallengePurpose
+  expiresAt  DateTime            @map("expires_at") @db.Timestamptz(6)
+  consumedAt DateTime?           @map("consumed_at") @db.Timestamptz(6)
+  createdAt  DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  ipAddress  String?             @map("ip_address")
+  userAgent  String?             @map("user_agent")
+  user       User                @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, purpose, expiresAt])
   @@index([expiresAt], map: "mfa_challenges_expires_at_idx")
@@ -838,81 +874,92 @@ model IngestionRun {
 }
 
 model IngestionJob {
-  id                String              @id @default(cuid())
-  tenantId          String              @map("tenant_id")
-  cloudConnectionId String              @map("cloud_connection_id")
-  sourceType        IngestionSourceType @map("source_type")
-  status            IngestionJobStatus  @default(PENDING)
-  dataOutcome       IngestionDataOutcome? @map("data_outcome")
-  requestedByUserId String?             @map("requested_by_user_id")
-  targetStart       DateTime            @map("target_start") @db.Timestamptz(6)
-  targetEnd         DateTime            @map("target_end") @db.Timestamptz(6)
-  attempts          Int                 @default(0)
-    maxAttempts       Int                 @default(3) @map("max_attempts")
-  priority          Int                 @default(100)
-  availableAt       DateTime            @default(now()) @map("available_at") @db.Timestamptz(6)
-  configurationHash String?             @map("configuration_hash") @db.VarChar(64)
-  requestContext    Json?               @map("request_context")
-  progress          Json?               @map("progress")
-  startedAt         DateTime?           @map("started_at") @db.Timestamptz(6)
-  completedAt       DateTime?           @map("completed_at") @db.Timestamptz(6)
-  lockedAt          DateTime?           @map("locked_at") @db.Timestamptz(6)
-  lockedBy          String?             @map("locked_by")
-  cancelRequestedAt DateTime?           @map("cancel_requested_at") @db.Timestamptz(6)
-  cancelRequestedByUserId String?       @map("cancel_requested_by_user_id")
-  archivedAt        DateTime?           @map("archived_at") @db.Timestamptz(6)
-  archivedByUserId  String?             @map("archived_by_user_id")
-  errorMessage      String?             @map("error_message") @db.Text
-  resultSummary     Json?               @map("result_summary")
-  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  cloudConnection   CloudConnection     @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
-  requestedBy       User?               @relation("IngestionJobRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
-  cancelRequestedBy User?               @relation("IngestionJobCancelRequestedBy", fields: [cancelRequestedByUserId], references: [id], onDelete: SetNull)
-  archivedBy        User?               @relation("IngestionJobArchivedBy", fields: [archivedByUserId], references: [id], onDelete: SetNull)
-  parts             IngestionJobPart[]
-  coverageSegments  IngestionCoverageSegment[]
-  objects           IngestionObject[]
-  focusCostLineItems FocusCostLineItem[]
-  metricSamples     ResourceMetricSample[]
+  id                      String                         @id @default(cuid())
+  tenantId                String                         @map("tenant_id")
+  cloudConnectionId       String                         @map("cloud_connection_id")
+  sourceType              IngestionSourceType            @map("source_type")
+  status                  IngestionJobStatus             @default(PENDING)
+  dataOutcome             IngestionDataOutcome?          @map("data_outcome")
+  requestedByUserId       String?                        @map("requested_by_user_id")
+  targetStart             DateTime                       @map("target_start") @db.Timestamptz(6)
+  targetEnd               DateTime                       @map("target_end") @db.Timestamptz(6)
+  attempts                Int                            @default(0)
+  maxAttempts             Int                            @default(3) @map("max_attempts")
+  priority                Int                            @default(100)
+  availableAt             DateTime                       @default(now()) @map("available_at") @db.Timestamptz(6)
+  configurationHash       String?                        @map("configuration_hash") @db.VarChar(64)
+  requestContext          Json?                          @map("request_context")
+  progress                Json?                          @map("progress")
+  startedAt               DateTime?                      @map("started_at") @db.Timestamptz(6)
+  completedAt             DateTime?                      @map("completed_at") @db.Timestamptz(6)
+  lockedAt                DateTime?                      @map("locked_at") @db.Timestamptz(6)
+  lockedBy                String?                        @map("locked_by")
+  cancelRequestedAt       DateTime?                      @map("cancel_requested_at") @db.Timestamptz(6)
+  cancelRequestedByUserId String?                        @map("cancel_requested_by_user_id")
+  archivedAt              DateTime?                      @map("archived_at") @db.Timestamptz(6)
+  archivedByUserId        String?                        @map("archived_by_user_id")
+  errorMessage            String?                        @map("error_message") @db.Text
+  resultSummary           Json?                          @map("result_summary")
+  projectionStatus        MetricProjectionStatus         @default(NOT_REQUIRED) @map("projection_status")
+  projectionAttempts      Int                            @default(0) @map("projection_attempts")
+  projectionMaxAttempts   Int                            @default(3) @map("projection_max_attempts")
+  projectionAvailableAt   DateTime?                      @map("projection_available_at") @db.Timestamptz(6)
+  projectionLockedAt      DateTime?                      @map("projection_locked_at") @db.Timestamptz(6)
+  projectionLockedBy      String?                        @map("projection_locked_by")
+  projectionStartedAt     DateTime?                      @map("projection_started_at") @db.Timestamptz(6)
+  projectionCompletedAt   DateTime?                      @map("projection_completed_at") @db.Timestamptz(6)
+  projectionErrorMessage  String?                        @map("projection_error_message") @db.Text
+  createdAt               DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant                  Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cloudConnection         CloudConnection                @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
+  requestedBy             User?                          @relation("IngestionJobRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
+  cancelRequestedBy       User?                          @relation("IngestionJobCancelRequestedBy", fields: [cancelRequestedByUserId], references: [id], onDelete: SetNull)
+  archivedBy              User?                          @relation("IngestionJobArchivedBy", fields: [archivedByUserId], references: [id], onDelete: SetNull)
+  parts                   IngestionJobPart[]
+  coverageSegments        IngestionCoverageSegment[]
+  objects                 IngestionObject[]
+  focusCostLineItems      FocusCostLineItem[]
+  metricSamples           ResourceMetricSample[]
+  metricCoverageWindows   ResourceMetricCoverageWindow[]
 
   @@index([status, availableAt, priority, createdAt], map: "ingestion_jobs_queue_idx")
   @@index([status, sourceType, createdAt])
   @@index([tenantId, cloudConnectionId, sourceType])
   @@index([tenantId, archivedAt, createdAt], map: "ingestion_jobs_tenant_archive_idx")
-    @@index([cloudConnectionId], map: "ingestion_jobs_cloud_connection_id_idx")
-    @@index([cloudConnectionId, sourceType, configurationHash, targetStart, targetEnd], map: "ingestion_jobs_configuration_window_idx")
+  @@index([cloudConnectionId], map: "ingestion_jobs_cloud_connection_id_idx")
+  @@index([cloudConnectionId, sourceType, configurationHash, targetStart, targetEnd], map: "ingestion_jobs_configuration_window_idx")
   @@index([requestedByUserId], map: "ingestion_jobs_requested_by_user_id_idx")
+  @@index([projectionStatus, projectionAvailableAt, projectionAttempts], map: "ingestion_jobs_projection_queue_idx")
   @@map("ingestion_jobs")
 }
 
 model IngestionJobPart {
-  id                String             @id @default(cuid())
-  tenantId          String             @map("tenant_id")
-  cloudConnectionId String             @map("cloud_connection_id")
-  ingestionJobId    String             @map("ingestion_job_id")
-  partKey           String             @map("part_key")
+  id                String              @id @default(cuid())
+  tenantId          String              @map("tenant_id")
+  cloudConnectionId String              @map("cloud_connection_id")
+  ingestionJobId    String              @map("ingestion_job_id")
+  partKey           String              @map("part_key")
   sourceType        IngestionSourceType @map("source_type")
-  status            IngestionJobStatus @default(PENDING)
-  targetStart       DateTime           @map("target_start") @db.Timestamptz(6)
-  targetEnd         DateTime           @map("target_end") @db.Timestamptz(6)
-  sequence          Int                @default(0)
-  apiCalls          Int                @default(0) @map("api_calls")
-  rowsRead          Int                @default(0) @map("rows_read")
-  rowsWritten       Int                @default(0) @map("rows_written")
-  samplesRead       Int                @default(0) @map("samples_read")
-  samplesWritten    Int                @default(0) @map("samples_written")
+  status            IngestionJobStatus  @default(PENDING)
+  targetStart       DateTime            @map("target_start") @db.Timestamptz(6)
+  targetEnd         DateTime            @map("target_end") @db.Timestamptz(6)
+  sequence          Int                 @default(0)
+  apiCalls          Int                 @default(0) @map("api_calls")
+  rowsRead          Int                 @default(0) @map("rows_read")
+  rowsWritten       Int                 @default(0) @map("rows_written")
+  samplesRead       Int                 @default(0) @map("samples_read")
+  samplesWritten    Int                 @default(0) @map("samples_written")
   cursor            String?
   metadata          Json?
-  startedAt         DateTime?          @map("started_at") @db.Timestamptz(6)
-  completedAt       DateTime?          @map("completed_at") @db.Timestamptz(6)
-  errorMessage      String?            @map("error_message") @db.Text
-  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
-  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  cloudConnection   CloudConnection    @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
-  ingestionJob      IngestionJob       @relation(fields: [ingestionJobId], references: [id], onDelete: Cascade)
+  startedAt         DateTime?           @map("started_at") @db.Timestamptz(6)
+  completedAt       DateTime?           @map("completed_at") @db.Timestamptz(6)
+  errorMessage      String?             @map("error_message") @db.Text
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cloudConnection   CloudConnection     @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
+  ingestionJob      IngestionJob        @relation(fields: [ingestionJobId], references: [id], onDelete: Cascade)
 
   @@unique([ingestionJobId, partKey], map: "ingestion_job_parts_job_part_key")
   @@index([tenantId, status, updatedAt], map: "ingestion_job_parts_tenant_status_idx")
@@ -921,29 +968,68 @@ model IngestionJobPart {
 }
 
 model IngestionCoverageSegment {
-  id                String             @id @default(cuid())
-  tenantId          String             @map("tenant_id")
-  cloudConnectionId String             @map("cloud_connection_id")
-  ingestionJobId    String?            @map("ingestion_job_id")
+  id                String              @id @default(cuid())
+  tenantId          String              @map("tenant_id")
+  cloudConnectionId String              @map("cloud_connection_id")
+  ingestionJobId    String?             @map("ingestion_job_id")
   sourceType        IngestionSourceType @map("source_type")
-  scopeKey          String             @default("global") @map("scope_key")
-  status            String             @default("COVERED")
-  targetStart       DateTime           @map("target_start") @db.Timestamptz(6)
-  targetEnd         DateTime           @map("target_end") @db.Timestamptz(6)
-  configurationHash String?            @map("configuration_hash") @db.VarChar(64)
-  rowsWritten       Int                @default(0) @map("rows_written")
-  samplesWritten    Int                @default(0) @map("samples_written")
-  objectsProcessed  Int                @default(0) @map("objects_processed")
+  scopeKey          String              @default("global") @map("scope_key")
+  status            String              @default("COVERED")
+  targetStart       DateTime            @map("target_start") @db.Timestamptz(6)
+  targetEnd         DateTime            @map("target_end") @db.Timestamptz(6)
+  configurationHash String?             @map("configuration_hash") @db.VarChar(64)
+  rowsWritten       Int                 @default(0) @map("rows_written")
+  samplesWritten    Int                 @default(0) @map("samples_written")
+  objectsProcessed  Int                 @default(0) @map("objects_processed")
   evidence          Json?
-  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
-  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  cloudConnection   CloudConnection    @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
-  ingestionJob      IngestionJob?      @relation(fields: [ingestionJobId], references: [id], onDelete: SetNull)
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cloudConnection   CloudConnection     @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
+  ingestionJob      IngestionJob?       @relation(fields: [ingestionJobId], references: [id], onDelete: SetNull)
 
   @@index([cloudConnectionId, sourceType, scopeKey, targetStart, targetEnd], map: "ingestion_coverage_segments_window_idx")
+  @@index([ingestionJobId], map: "ingestion_coverage_segments_ingestion_job_id_idx")
   @@index([tenantId, status, updatedAt], map: "ingestion_coverage_segments_tenant_status_idx")
   @@map("ingestion_coverage_segments")
+}
+
+model ResourceMetricCoverageWindow {
+  id                      String                 @id @default(cuid())
+  tenantId                String                 @map("tenant_id")
+  cloudConnectionId       String                 @map("cloud_connection_id")
+  cloudMetricDefinitionId String?                @map("cloud_metric_definition_id")
+  ingestionJobId          String?                @map("ingestion_job_id")
+  streamKey               String                 @map("stream_key") @db.VarChar(128)
+  providerNamespace       String                 @default("") @map("provider_namespace")
+  regionId                String                 @default("") @map("region_id")
+  externalResourceId      String                 @map("external_resource_id")
+  metricName              String                 @map("metric_name")
+  statistic               MetricStatistic
+  granularitySeconds      Int                    @map("granularity_seconds")
+  windowStart             DateTime               @map("window_start") @db.Timestamptz(6)
+  windowEnd               DateTime               @map("window_end") @db.Timestamptz(6)
+  status                  MetricCoverageStatus   @default(UNKNOWN)
+  expectedSamples         Int                    @default(0) @map("expected_samples")
+  observedSamples         Int                    @default(0) @map("observed_samples")
+  missingSamples          Int                    @default(0) @map("missing_samples")
+  configurationHash       String                 @default("") @map("configuration_hash") @db.VarChar(64)
+  retryCount              Int                    @default(0) @map("retry_count")
+  evidence                Json?
+  checkedAt               DateTime?              @map("checked_at") @db.Timestamptz(6)
+  createdAt               DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant                  Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cloudConnection         CloudConnection        @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
+  cloudMetricDefinition   CloudMetricDefinition? @relation(fields: [cloudMetricDefinitionId], references: [id], onDelete: SetNull)
+  ingestionJob            IngestionJob?          @relation(fields: [ingestionJobId], references: [id], onDelete: SetNull)
+
+  @@unique([cloudConnectionId, streamKey, granularitySeconds, windowStart, windowEnd, configurationHash], map: "resource_metric_coverage_windows_identity_key")
+  @@index([tenantId, status, windowStart], map: "resource_metric_coverage_windows_tenant_status_idx")
+  @@index([tenantId, cloudConnectionId, configurationHash, granularitySeconds, windowStart, status], map: "resource_metric_coverage_windows_connection_config_idx")
+  @@index([cloudConnectionId, metricName, statistic, windowStart], map: "resource_metric_coverage_windows_stream_idx")
+  @@index([ingestionJobId], map: "resource_metric_coverage_windows_job_idx")
+  @@map("resource_metric_coverage_windows")
 }
 
 model IngestionObject {
@@ -965,7 +1051,7 @@ model IngestionObject {
   tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   cloudConnection   CloudConnection     @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
   exportConfig      CloudExportConfig?  @relation(fields: [exportConfigId], references: [id], onDelete: SetNull)
-  ingestionJob      IngestionJob?      @relation(fields: [ingestionJobId], references: [id], onDelete: SetNull)
+  ingestionJob      IngestionJob?       @relation(fields: [ingestionJobId], references: [id], onDelete: SetNull)
 
   @@unique([cloudConnectionId, objectUri, objectEtag])
   @@index([tenantId, sourceType, status])
@@ -997,20 +1083,20 @@ model IngestionWatermark {
 }
 
 model CloudConnectionRegion {
-  id                    String           @id @default(cuid())
-  tenantId              String           @map("tenant_id")
-  cloudConnectionId     String           @map("cloud_connection_id")
-  regionId              String           @map("region_id")
-  subscribed            Boolean          @default(true)
-  status                String           @default("DISCOVERED")
-  capabilities         Json?
-  lastError             String?          @map("last_error") @db.Text
-  firstSeenAt           DateTime         @default(now()) @map("first_seen_at") @db.Timestamptz(6)
-  lastSeenAt            DateTime         @default(now()) @map("last_seen_at") @db.Timestamptz(6)
-  lastValidatedAt       DateTime?        @map("last_validated_at") @db.Timestamptz(6)
-  tenant                Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  cloudConnection       CloudConnection  @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
-  metricDefinitions     CloudMetricDefinition[]
+  id                String                  @id @default(cuid())
+  tenantId          String                  @map("tenant_id")
+  cloudConnectionId String                  @map("cloud_connection_id")
+  regionId          String                  @map("region_id")
+  subscribed        Boolean                 @default(true)
+  status            String                  @default("DISCOVERED")
+  capabilities      Json?
+  lastError         String?                 @map("last_error") @db.Text
+  firstSeenAt       DateTime                @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt        DateTime                @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  lastValidatedAt   DateTime?               @map("last_validated_at") @db.Timestamptz(6)
+  tenant            Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cloudConnection   CloudConnection         @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
+  metricDefinitions CloudMetricDefinition[]
 
   @@unique([cloudConnectionId, regionId], map: "cloud_connection_regions_connection_region_key")
   @@index([tenantId, status], map: "cloud_connection_regions_tenant_status_idx")
@@ -1019,28 +1105,29 @@ model CloudConnectionRegion {
 }
 
 model CloudMetricDefinition {
-  id                       String                 @id @default(cuid())
-  tenantId                 String                 @map("tenant_id")
-  cloudConnectionId        String                 @map("cloud_connection_id")
-  cloudConnectionRegionId  String?                @map("cloud_connection_region_id")
-  regionId                 String?                @map("region_id")
-  compartmentId            String                 @map("compartment_id")
-  namespace                String
-  metricName               String                 @map("metric_name")
-  externalResourceId       String                 @default("") @map("external_resource_id")
-  dimensions               Json?
-  dimensionsHash           String                 @default("") @map("dimensions_hash") @db.VarChar(64)
-  metricUnit               String?                @map("metric_unit")
-  statistics               Json
-  status                   String                 @default("DISCOVERED")
-  enabled                  Boolean                @default(false)
-  discoverySource          String                 @default("OCI_LIST_METRICS") @map("discovery_source")
-  firstSeenAt              DateTime               @default(now()) @map("first_seen_at") @db.Timestamptz(6)
-  lastSeenAt               DateTime               @default(now()) @map("last_seen_at") @db.Timestamptz(6)
-  confirmedAt              DateTime?              @map("confirmed_at") @db.Timestamptz(6)
-  tenant                   Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  cloudConnection          CloudConnection        @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
-  cloudConnectionRegion    CloudConnectionRegion? @relation(fields: [cloudConnectionRegionId], references: [id], onDelete: SetNull)
+  id                      String                         @id @default(cuid())
+  tenantId                String                         @map("tenant_id")
+  cloudConnectionId       String                         @map("cloud_connection_id")
+  cloudConnectionRegionId String?                        @map("cloud_connection_region_id")
+  regionId                String?                        @map("region_id")
+  compartmentId           String                         @map("compartment_id")
+  namespace               String
+  metricName              String                         @map("metric_name")
+  externalResourceId      String                         @default("") @map("external_resource_id")
+  dimensions              Json?
+  dimensionsHash          String                         @default("") @map("dimensions_hash") @db.VarChar(64)
+  metricUnit              String?                        @map("metric_unit")
+  statistics              Json
+  status                  String                         @default("DISCOVERED")
+  enabled                 Boolean                        @default(false)
+  discoverySource         String                         @default("OCI_LIST_METRICS") @map("discovery_source")
+  firstSeenAt             DateTime                       @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt              DateTime                       @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  confirmedAt             DateTime?                      @map("confirmed_at") @db.Timestamptz(6)
+  tenant                  Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cloudConnection         CloudConnection                @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
+  cloudConnectionRegion   CloudConnectionRegion?         @relation(fields: [cloudConnectionRegionId], references: [id], onDelete: SetNull)
+  metricCoverageWindows   ResourceMetricCoverageWindow[]
 
   @@unique([cloudConnectionId, namespace, metricName, compartmentId, externalResourceId, dimensionsHash], map: "cloud_metric_definitions_identity_key")
   @@index([tenantId, cloudConnectionId, status, enabled], map: "cloud_metric_definitions_tenant_status_enabled_idx")
@@ -1081,7 +1168,7 @@ model FocusCostLineItem {
   createdAt          DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
   tenant             Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   cloudConnection    CloudConnection @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
-  ingestionJob        IngestionJob?   @relation(fields: [ingestionJobId], references: [id], onDelete: SetNull)
+  ingestionJob       IngestionJob?   @relation(fields: [ingestionJobId], references: [id], onDelete: SetNull)
 
   @@unique([cloudConnectionId, chargePeriodStart, lineItemHash])
   @@index([tenantId, provider, chargePeriodStart])
@@ -1092,29 +1179,29 @@ model FocusCostLineItem {
 }
 
 model CloudResource {
-  id                 String                 @id @default(cuid())
-  tenantId           String                 @map("tenant_id")
-  cloudConnectionId  String                 @map("cloud_connection_id")
-  provider           CloudProvider
-  externalResourceId String                 @map("external_resource_id")
-  name               String?
-  resourceType       String                 @map("resource_type")
-  serviceName        String                 @map("service_name")
-  regionId           String?                @map("region_id")
-  status             CloudResourceStatus    @default(UNKNOWN)
-  tags               Json?
-  rawResource        Json?                  @map("raw_resource")
-  identitySource     String                 @default("UNKNOWN") @map("identity_source")
-  identityPriority   Int                    @default(0) @map("identity_priority")
-  firstSeenAt        DateTime               @default(now()) @map("first_seen_at") @db.Timestamptz(6)
-  lastSeenAt         DateTime               @default(now()) @map("last_seen_at") @db.Timestamptz(6)
-  tenant             Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  cloudConnection    CloudConnection        @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
-  metricSamples      ResourceMetricSample[]
+  id                    String                        @id @default(cuid())
+  tenantId              String                        @map("tenant_id")
+  cloudConnectionId     String                        @map("cloud_connection_id")
+  provider              CloudProvider
+  externalResourceId    String                        @map("external_resource_id")
+  name                  String?
+  resourceType          String                        @map("resource_type")
+  serviceName           String                        @map("service_name")
+  regionId              String?                       @map("region_id")
+  status                CloudResourceStatus           @default(UNKNOWN)
+  tags                  Json?
+  rawResource           Json?                         @map("raw_resource")
+  identitySource        String                        @default("UNKNOWN") @map("identity_source")
+  identityPriority      Int                           @default(0) @map("identity_priority")
+  firstSeenAt           DateTime                      @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt            DateTime                      @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  tenant                Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cloudConnection       CloudConnection               @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
+  metricSamples         ResourceMetricSample[]
   metricStreamSummaries ResourceMetricStreamSummary[]
-  costMetrics        CostMetric[]
-  recommendations    Recommendation[]
-  agentInstallations AgentInstallation[]
+  costMetrics           CostMetric[]
+  recommendations       Recommendation[]
+  agentInstallations    AgentInstallation[]
 
   @@unique([cloudConnectionId, externalResourceId])
   @@index([tenantId, provider, resourceType])
@@ -1148,7 +1235,7 @@ model ResourceMetricSample {
   tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   cloudConnection    CloudConnection     @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
   cloudResource      CloudResource?      @relation(fields: [cloudResourceId], references: [id], onDelete: SetNull)
-  ingestionJob        IngestionJob?      @relation(fields: [ingestionJobId], references: [id], onDelete: SetNull)
+  ingestionJob       IngestionJob?       @relation(fields: [ingestionJobId], references: [id], onDelete: SetNull)
 
   @@unique([cloudConnectionId, providerNamespace, regionId, externalResourceId, metricName, statistic, granularitySeconds, sampledAt, dimensionsHash], map: "resource_metric_samples_identity_key")
   @@index([tenantId, sampledAt])
@@ -1162,31 +1249,31 @@ model ResourceMetricSample {
 }
 
 model ResourceMetricStreamSummary {
-  id                    String              @id @default(cuid())
-  tenantId              String              @map("tenant_id")
-  cloudConnectionId     String              @map("cloud_connection_id")
-  cloudResourceId       String?             @map("cloud_resource_id")
-  provider              CloudProvider
-  externalResourceId    String              @map("external_resource_id")
-  providerNamespace     String              @default("") @map("provider_namespace")
-  regionId              String              @default("") @map("region_id")
-  compartmentId         String              @default("") @map("compartment_id")
-  dimensionsHash        String              @default("") @map("dimensions_hash") @db.VarChar(64)
-  metricName            String              @map("metric_name")
-  metricUnit            String?             @map("metric_unit")
-  statistic             MetricStatistic
-  granularitySeconds    Int                 @map("granularity_seconds")
-  sampleCount           Int                 @default(0) @map("sample_count")
-  nonZeroSampleCount    Int                 @default(0) @map("non_zero_sample_count")
-  firstSampledAt        DateTime?           @map("first_sampled_at") @db.Timestamptz(6)
-  lastSampledAt         DateTime?           @map("last_sampled_at") @db.Timestamptz(6)
-  latestValue           Decimal?            @map("latest_value") @db.Decimal(24, 9)
-  state                 String              @default("NO_SAMPLES")
-  lastIngestedAt        DateTime?           @map("last_ingested_at") @db.Timestamptz(6)
-  updatedAt             DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  tenant                Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  cloudConnection       CloudConnection     @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
-  cloudResource         CloudResource?      @relation(fields: [cloudResourceId], references: [id], onDelete: SetNull)
+  id                 String          @id @default(cuid())
+  tenantId           String          @map("tenant_id")
+  cloudConnectionId  String          @map("cloud_connection_id")
+  cloudResourceId    String?         @map("cloud_resource_id")
+  provider           CloudProvider
+  externalResourceId String          @map("external_resource_id")
+  providerNamespace  String          @default("") @map("provider_namespace")
+  regionId           String          @default("") @map("region_id")
+  compartmentId      String          @default("") @map("compartment_id")
+  dimensionsHash     String          @default("") @map("dimensions_hash") @db.VarChar(64)
+  metricName         String          @map("metric_name")
+  metricUnit         String?         @map("metric_unit")
+  statistic          MetricStatistic
+  granularitySeconds Int             @map("granularity_seconds")
+  sampleCount        Int             @default(0) @map("sample_count")
+  nonZeroSampleCount Int             @default(0) @map("non_zero_sample_count")
+  firstSampledAt     DateTime?       @map("first_sampled_at") @db.Timestamptz(6)
+  lastSampledAt      DateTime?       @map("last_sampled_at") @db.Timestamptz(6)
+  latestValue        Decimal?        @map("latest_value") @db.Decimal(24, 9)
+  state              String          @default("NO_SAMPLES")
+  lastIngestedAt     DateTime?       @map("last_ingested_at") @db.Timestamptz(6)
+  updatedAt          DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant             Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cloudConnection    CloudConnection @relation(fields: [cloudConnectionId], references: [id], onDelete: Cascade)
+  cloudResource      CloudResource?  @relation(fields: [cloudResourceId], references: [id], onDelete: SetNull)
 
   @@unique([cloudConnectionId, providerNamespace, regionId, externalResourceId, metricName, statistic, granularitySeconds, dimensionsHash], map: "resource_metric_stream_summaries_identity_key")
   @@index([tenantId, state, lastSampledAt], map: "resource_metric_stream_summaries_tenant_state_idx")
@@ -2049,16 +2136,16 @@ model TelegramChatLink {
 }
 
 model TelegramLinkCode {
-  id          String    @id @default(cuid())
-  tenantId    String    @map("tenant_id")
-  userId      String    @map("user_id")
-  tokenHash   String    @unique @map("token_hash") @db.VarChar(64)
-  expiresAt   DateTime  @map("expires_at") @db.Timestamptz(6)
-  consumedAt  DateTime? @map("consumed_at") @db.Timestamptz(6)
-  revokedAt   DateTime? @map("revoked_at") @db.Timestamptz(6)
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id         String    @id @default(cuid())
+  tenantId   String    @map("tenant_id")
+  userId     String    @map("user_id")
+  tokenHash  String    @unique @map("token_hash") @db.VarChar(64)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, userId, expiresAt, consumedAt])
   @@map("telegram_link_codes")
@@ -2141,15 +2228,15 @@ model AuditEvent {
 }
 
 model RuntimeProcessHeartbeat {
-  processId        String    @id @map("process_id")
-  processRole      String    @map("process_role")
-  status           String    @default("RUNNING")
-  pid              Int?
-  startedAt        DateTime  @map("started_at") @db.Timestamptz(6)
-  lastHeartbeatAt  DateTime  @map("last_heartbeat_at") @db.Timestamptz(6)
-  stoppedAt        DateTime? @map("stopped_at") @db.Timestamptz(6)
-  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  processId       String    @id @map("process_id")
+  processRole     String    @map("process_role")
+  status          String    @default("RUNNING")
+  pid             Int?
+  startedAt       DateTime  @map("started_at") @db.Timestamptz(6)
+  lastHeartbeatAt DateTime  @map("last_heartbeat_at") @db.Timestamptz(6)
+  stoppedAt       DateTime? @map("stopped_at") @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([processRole, status, lastHeartbeatAt])
   @@map("runtime_process_heartbeats")

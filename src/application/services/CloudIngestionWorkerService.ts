@@ -108,9 +108,24 @@ export class CloudIngestionWorkerService {
     const progressTimer = setInterval(() => {
       void this.writeProgress(job.id, workerId, job.attempt, progress).catch(() => undefined);
     }, this.progressUpdateMs);
+    const abortController = new AbortController();
+    let cancellationPollInFlight = false;
+    const cancellationTimer = setInterval(() => {
+      if (cancellationPollInFlight || abortController.signal.aborted) return;
+      cancellationPollInFlight = true;
+      void this.cancellationRequested(job.id, workerId, job.attempt)
+        .then((requested) => {
+          if (requested) abortController.abort(new Error('Ingestion job cancellation requested'));
+        })
+        .catch(() => undefined)
+        .finally(() => { cancellationPollInFlight = false; });
+    }, Math.min(this.progressUpdateMs, 1_000));
 
     try {
-      const result = await provider.collect(job);
+      const result = await provider.collect(job, {
+        signal: abortController.signal,
+        isCancellationRequested: () => this.cancellationRequested(job.id, workerId, job.attempt),
+      });
       if (await this.cancellationRequested(job.id, workerId, job.attempt)) {
         await this.cancel(job, workerId);
         return { processed: true, jobId: job.id, providerCode: job.connection.providerCode, errorMessage: 'Cancelado por el usuario.' };
@@ -124,7 +139,7 @@ export class CloudIngestionWorkerService {
         };
       }
       progress = {
-        phase: 'PERSISTING',
+          phase: 'PERSISTING_RAW',
         message: 'Persistiendo datos normalizados y controles de calidad.',
         providerCalls: result.apiCallCount,
         rowsRead: result.focusRows.length,
@@ -142,6 +157,7 @@ export class CloudIngestionWorkerService {
           progress = nextProgress;
           return this.writeProgress(job.id, workerId, job.attempt, nextProgress).then(() => undefined);
         },
+        async () => abortController.signal.aborted || await this.cancellationRequested(job.id, workerId, job.attempt),
       );
       if (this.onSuccessfulIngestion !== undefined) {
         void this.onSuccessfulIngestion({
@@ -180,6 +196,7 @@ export class CloudIngestionWorkerService {
     } finally {
       clearInterval(heartbeat);
       clearInterval(progressTimer);
+      clearInterval(cancellationTimer);
     }
   }
 

@@ -15,6 +15,17 @@ describe('OCI retry policy', () => {
     expect(sleep.mock.calls[0]?.[0]).toBeLessThanOrEqual(30);
   });
 
+  test('retries OCI transient server-busy responses', async () => {
+    const operation = vi.fn()
+      .mockRejectedValueOnce(new Error('Server is busy at this moment.'))
+      .mockResolvedValue('ok');
+    const sleep = vi.fn(async () => undefined);
+
+    await expect(withOciProviderRetry(operation, [25], sleep)).resolves.toBe('ok');
+    expect(operation).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledOnce();
+  });
+
   test('does not retry non-rate-limit failures', async () => {
     const operation = vi.fn().mockRejectedValue(new Error('Bad request'));
     const sleep = vi.fn(async () => undefined);

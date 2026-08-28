@@ -1,5 +1,7 @@
 import type { IngestionJobStatus, IngestionSourceType } from '../../domain/models/CloudConnection.js';
 import { buildIngestionConfigurationHash } from './ingestionConfigurationHash.js';
+import { buildMissingTechnicalMetricJobs } from './ingestionMetricGapPlanner.js';
+import { getCooldownMs, getWindowMs } from './ingestionScheduleWindows.js';
 
 type CredentialPurpose =
   | 'TEMPORARY_ADMIN'
@@ -20,6 +22,8 @@ export interface ScheduleableIngestionConnection {
   readonly ingestionJobs: readonly ScheduleableIngestionJob[];
   readonly ingestionCoverageSegments?: readonly ScheduleableCoverageSegment[];
   readonly metricDefinitions?: readonly ScheduleableMetricDefinition[];
+  /** Días que tienen cobertura completa para todos los streams técnicos esperados. */
+  readonly metricCoverageWindowStarts?: readonly Date[];
 }
 
 export interface ScheduleableCredential {
@@ -30,8 +34,11 @@ export interface ScheduleableCredential {
 export interface ScheduleableIngestionJob {
   readonly sourceType: IngestionSourceType | string;
   readonly status: IngestionJobStatus | string;
+  readonly dataOutcome?: string | null;
+  readonly targetStart?: Date;
   readonly targetEnd: Date;
   readonly configurationHash?: string | null;
+  readonly resultSummary?: unknown;
 }
 
 export interface IngestionScheduleOptions {
@@ -47,6 +54,10 @@ export interface IngestionScheduleOptions {
   readonly maxAttempts: number;
   /** Días máximos de histórico técnico que el scheduler puede recuperar automáticamente. */
   readonly metricCatchupDays?: number;
+  /** Ventana de backfill para reparar huecos sin crear un job por muestra. */
+  readonly metricCatchupWindowMinutes?: number;
+  /** Límite por conexión y ciclo para que el backfill sea progresivo. */
+  readonly maxMetricBackfillJobsPerConnection?: number;
   /** Edad máxima de una validación de capacidades antes de exigir otra. */
   readonly validationMaxAgeMinutes?: number;
 }
@@ -93,9 +104,11 @@ export function buildIngestionSchedulePlan(
     }
 
     for (const sourceType of ['INVENTORY', 'TECHNICAL_METRIC', 'BILLING_EXPORT'] as const) {
-      const decision = evaluateSource(connection, providerCode, sourceType, options);
+    const decision = evaluateSource(connection, providerCode, sourceType, options);
       if (decision.kind === 'job') {
         jobs.push(decision.job);
+      } else if (decision.kind === 'jobs') {
+        jobs.push(...decision.jobs);
       } else {
         skipped.push({
           cloudConnectionId: connection.id,
@@ -115,7 +128,9 @@ function evaluateSource(
   providerCode: 'aws' | 'oci',
   sourceType: IngestionSourceType,
   options: IngestionScheduleOptions,
-): { readonly kind: 'job'; readonly job: PlannedIngestionJob } | { readonly kind: 'skip'; readonly reason: string } {
+): { readonly kind: 'job'; readonly job: PlannedIngestionJob }
+  | { readonly kind: 'jobs'; readonly jobs: readonly PlannedIngestionJob[] }
+  | { readonly kind: 'skip'; readonly reason: string } {
   if (connection.lastValidatedAt === null || connection.lastValidatedAt === undefined) {
     return { kind: 'skip', reason: 'La conexión debe validarse después de su última modificación.' };
   }
@@ -139,7 +154,7 @@ function evaluateSource(
     return { kind: 'skip', reason: 'No hay metadata configurada para programar esta fuente sin inventar datos.' };
   }
 
-  const requiredCapability = requiredCapabilityForSource(providerCode, sourceType, connection.metadata);
+  const requiredCapability = requiredCapabilityForSource(sourceType, connection.metadata);
   if (!hasRequiredCapability(capabilities, requiredCapability)) {
     return {
       kind: 'skip',
@@ -158,6 +173,12 @@ function evaluateSource(
     metadata: connection.metadata,
     ...(requestContext !== undefined ? { requestContext } : {}),
   });
+
+  if (sourceType === 'TECHNICAL_METRIC' && connection.metricCoverageWindowStarts !== undefined) {
+    const metricJobs = buildMissingTechnicalMetricJobs(connection, providerCode, options, configurationHash, requestContext);
+    if (metricJobs.length > 0) return { kind: 'jobs', jobs: metricJobs };
+    return { kind: 'skip', reason: 'La ventana técnica de recuperación ya tiene datos o un job activo.' };
+  }
 
   const runningJob = connection.ingestionJobs.find((job) => {
     return job.sourceType === sourceType && activeJobStatuses.has(job.status);
@@ -302,7 +323,6 @@ function hasMetadataForSource(
 }
 
 function requiredCapabilityForSource(
-  providerCode: 'aws' | 'oci',
   sourceType: IngestionSourceType,
   metadata: unknown,
 ): 'INVENTORY' | 'METRICS' | 'STORAGE' | 'COSTS' | 'STORAGE_OR_COSTS' {
@@ -314,10 +334,11 @@ function requiredCapabilityForSource(
   if (mode === 'FOCUS') return 'STORAGE';
   if (mode === 'PROVIDER_API') return 'COSTS';
 
-  const focusKeys = providerCode === 'aws'
-    ? ['awsFocusExportObjects', 'awsFocusExportLocations']
-    : ['ociFocusReportObjects', 'ociFocusReportLocations'];
-  return focusKeys.some((key) => hasArrayItems(metadata[key])) ? 'STORAGE' : 'STORAGE_OR_COSTS';
+  // AUTO is deliberately source-agnostic: it may use a FOCUS export when
+  // available and fall back to the provider billing API otherwise. Requiring
+  // STORAGE merely because FOCUS metadata exists would make a valid COSTS-
+  // only connection impossible to schedule and would create a retry loop.
+  return 'STORAGE_OR_COSTS';
 }
 
 export interface ScheduleableCoverageSegment {
@@ -362,30 +383,6 @@ function normalizeProviderCode(providerCode: string): 'aws' | 'oci' | null {
   }
 
   return null;
-}
-
-function getWindowMs(sourceType: IngestionSourceType, options: IngestionScheduleOptions): number {
-  if (sourceType === 'INVENTORY') {
-    return (options.inventoryWindowHours ?? 24) * 60 * 60 * 1000;
-  }
-
-  if (sourceType === 'TECHNICAL_METRIC') {
-    return options.metricWindowMinutes * 60 * 1000;
-  }
-
-  return options.billingWindowHours * 60 * 60 * 1000;
-}
-
-function getCooldownMs(sourceType: IngestionSourceType, options: IngestionScheduleOptions): number {
-  if (sourceType === 'INVENTORY') {
-    return (options.inventoryCooldownHours ?? 24) * 60 * 60 * 1000;
-  }
-
-  if (sourceType === 'TECHNICAL_METRIC') {
-    return options.metricCooldownMinutes * 60 * 1000;
-  }
-
-  return options.billingCooldownHours * 60 * 60 * 1000;
 }
 
 function hasArrayItems(value: unknown): boolean {

@@ -44,6 +44,7 @@ import { createProcessIdentity } from './processIdentity.js';
 import { AwsSdkIngestionProvider } from '../infrastructure/ingestion/AwsSdkIngestionProvider.js';
 import { OciSdkIngestionProvider } from '../infrastructure/ingestion/OciSdkIngestionProvider.js';
 import { PrismaCloudIngestionJobRepository } from '../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
+import { PrismaMetricProjectionWorker } from '../infrastructure/ingestion/PrismaMetricProjectionWorker.js';
 import { PrismaAgentContextRepository } from '../infrastructure/repositories/PrismaAgentContextRepository.js';
 import { PrismaAgentLearningRepository } from '../infrastructure/repositories/PrismaAgentLearningRepository.js';
 import { PrismaAgentQualityRepository } from '../infrastructure/repositories/PrismaAgentQualityRepository.js';
@@ -72,6 +73,8 @@ import { PrismaResourceMetricRepository } from '../infrastructure/repositories/P
 import { PrismaTelegramRepository } from '../infrastructure/repositories/PrismaTelegramRepository.js';
 import { PrismaUserRepository } from '../infrastructure/repositories/PrismaUserRepository.js';
 import { PrismaValueRealizationRepository } from '../infrastructure/repositories/PrismaValueRealizationRepository.js';
+import { PrismaFxRateRepository } from '../infrastructure/repositories/PrismaFxRateRepository.js';
+import { ColombiaTrmProvider } from '../infrastructure/fx/ColombiaTrmProvider.js';
 import { CredentialCipher } from '../infrastructure/security/CredentialCipher.js';
 import { Argon2PasswordHasher } from '../infrastructure/security/Argon2PasswordHasher.js';
 import { JwtTokenService } from '../infrastructure/security/JwtTokenService.js';
@@ -89,6 +92,7 @@ export interface ApplicationComposition {
   readonly authLifecycleCleanupService: AuthLifecycleCleanupService;
   readonly processHeartbeatService: ProcessHeartbeatService;
   readonly ingestionWorker: CloudIngestionWorkerService | null;
+  readonly metricProjectionWorker: PrismaMetricProjectionWorker | null;
 }
 
 export function createApplicationComposition(
@@ -102,7 +106,8 @@ export function createApplicationComposition(
     : undefined;
   const cloudConnectionRepository = new PrismaCloudConnectionRepository(prisma, credentialCipher);
   const costAnalyticsRepository = new PrismaCostAnalyticsRepository(prisma);
-  const costRepository = new PrismaCostRepository(prisma);
+  const fxRateRepository = new PrismaFxRateRepository(prisma);
+  const costRepository = new PrismaCostRepository(prisma, fxRateRepository, new ColombiaTrmProvider());
   const budgetRepository = new PrismaBudgetRepository(prisma);
   const recommendationRepository = new PrismaRecommendationRepository(prisma);
   const valueRealizationRepository = new PrismaValueRealizationRepository(prisma);
@@ -327,6 +332,17 @@ export function createApplicationComposition(
       config.workers.ingestion.concurrency,
     )
     : null;
+  const metricProjectionWorker = runsIngestionWorker && config.workers.metricProjection.enabled
+    ? new PrismaMetricProjectionWorker(
+      prisma,
+      metricsRegistry,
+      {
+        leaseMs: config.workers.metricProjection.leaseMs,
+        retryBackoffMs: config.workers.metricProjection.retryBackoffMs,
+        transactionTimeoutMs: config.workers.metricProjection.transactionTimeoutMs,
+      },
+    )
+    : null;
 
   const serverDependencies: ServerDependencies = {
     authService,
@@ -375,5 +391,6 @@ export function createApplicationComposition(
     authLifecycleCleanupService,
     processHeartbeatService,
     ingestionWorker,
+    metricProjectionWorker,
   };
 }

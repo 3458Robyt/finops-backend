@@ -1,5 +1,6 @@
 import type { Request } from 'express';
 import type { IngestionSourceType } from '../../domain/models/CloudConnection.js';
+import type { IngestionMetricCoverageStatus } from '../../domain/interfaces/ICloudConnectionRepository.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
 
 export type CredentialPurpose =
@@ -61,6 +62,21 @@ export class CloudConnectionRequestParser {
     }
 
     return parsed;
+  }
+
+  public parseOptionalDate(value: unknown, fieldName: string): Date | undefined {
+    if (value === undefined || value === null || value === '') return undefined;
+    return this.parseDate(value, fieldName);
+  }
+
+  public parseMetricCoverageStatus(value: unknown): IngestionMetricCoverageStatus | undefined {
+    if (value === undefined || value === null || value === '') return undefined;
+    const status = this.requireString(value, 'status') as IngestionMetricCoverageStatus;
+    const allowed: readonly IngestionMetricCoverageStatus[] = ['UNKNOWN', 'COVERED', 'PARTIAL', 'NO_DATA', 'FAILED'];
+    if (!allowed.includes(status)) {
+      throw new FinOpsBaseError('El estado de cobertura no es compatible.', 'VALIDATION_ERROR');
+    }
+    return status;
   }
 
   public parseSourceType(value: unknown): IngestionSourceType {

@@ -24,8 +24,9 @@ export class IngestionRateCoordinator {
     key: string,
     limit: IngestionRateLimit,
     operation: () => Promise<T>,
+    signal?: AbortSignal,
   ): Promise<T> {
-    const release = await this.acquire(key, limit);
+    const release = await this.acquire(key, limit, signal);
     try {
       const result = await operation();
       this.recordSuccess(key);
@@ -38,7 +39,8 @@ export class IngestionRateCoordinator {
     }
   }
 
-  private async acquire(key: string, limit: IngestionRateLimit): Promise<() => void> {
+  private async acquire(key: string, limit: IngestionRateLimit, signal?: AbortSignal): Promise<() => void> {
+    throwIfAborted(signal);
     const requestsPerSecond = Math.max(0.1, limit.requestsPerSecond);
     const maxConcurrent = Math.max(1, Math.floor(limit.maxConcurrent));
     const capacity = Math.max(1, Math.ceil(requestsPerSecond));
@@ -69,7 +71,7 @@ export class IngestionRateCoordinator {
       }
 
       const tokenWaitMs = state.tokens < 1 ? Math.ceil((1 - state.tokens) / effectiveRefillPerMs) : 10;
-      await delay(Math.max(10, Math.min(1_000, tokenWaitMs)));
+      await delayWithAbort(Math.max(10, Math.min(1_000, tokenWaitMs)), signal);
     }
   }
 
@@ -92,11 +94,30 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal === undefined) {
+    await delay(ms);
+    return;
+  }
+
+  if (signal.aborted) throw new Error('Ingestion operation cancelled');
+  await Promise.race([
+    delay(ms),
+    new Promise<void>((_, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('Ingestion operation cancelled')), { once: true });
+    }),
+  ]);
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted === true) throw new Error('Ingestion operation cancelled');
+}
+
 function isThrottleError(error: unknown): boolean {
   if (error !== null && typeof error === 'object') {
     const status = (error as { status?: unknown; statusCode?: unknown }).statusCode
       ?? (error as { status?: unknown }).status;
     if (status === 429) return true;
   }
-  return /rate exceeded|too many requests|throttl|429/i.test(error instanceof Error ? error.message : String(error));
+  return /rate exceeded|too many requests|throttl|429|server is busy|service unavailable|temporar/i.test(error instanceof Error ? error.message : String(error));
 }

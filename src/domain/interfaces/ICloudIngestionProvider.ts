@@ -236,9 +236,16 @@ export interface CloudIngestionResult {
   readonly dataOutcome?: IngestionDataOutcome;
 }
 
+export interface CloudIngestionCollectOptions {
+  /** Aborts provider HTTP calls when the operator cancels the job. */
+  readonly signal?: AbortSignal;
+  /** Allows streaming collectors to stop before scheduling the next request. */
+  readonly isCancellationRequested?: () => Promise<boolean>;
+}
+
 export interface CloudIngestionProvider {
   readonly providerCode: ProviderCode;
   validate(connection: CloudIngestionConnection): Promise<CloudConnectionValidationResult>;
   previewFocus?(connection: CloudIngestionConnection, limit: number): Promise<FocusSourcePreviewResult>;
-  collect(job: CloudIngestionJobContext): Promise<CloudIngestionResult>;
+  collect(job: CloudIngestionJobContext, options?: CloudIngestionCollectOptions): Promise<CloudIngestionResult>;
 }

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 
+import type { Pool } from 'pg';
 import { createTenantAwarePool, runWithDatabaseContext } from '../../src/infrastructure/database/tenantContext.js';
 
 const connectionString = process.env['DATABASE_URL'];
@@ -48,7 +49,12 @@ try {
                 current_setting('app.worker_id', true) as worker_id`,
       );
       const tenants = await pool.query<{ id: string }>('select id from tenants order by id limit 2');
-      return { session: session.rows[0], tenantIds: tenants.rows.map((row) => row.id) };
+      const helperSecurity = await verifyFunctionHardening(pool);
+      return {
+        session: session.rows[0],
+        tenantIds: tenants.rows.map((row) => row.id),
+        helperSecurity,
+      };
     },
   );
 
@@ -95,6 +101,15 @@ try {
 
   const failures = [
     master.session?.current_user !== 'finops_runtime' ? 'master session did not use finops_runtime' : undefined,
+    master.helperSecurity.exposedHelperCount !== 0
+      ? `${master.helperSecurity.exposedHelperCount} FinOps helpers remain exposed to API roles`
+      : undefined,
+    master.helperSecurity.runtimeHelperCount !== master.helperSecurity.helperCount
+      ? `only ${master.helperSecurity.runtimeHelperCount}/${master.helperSecurity.helperCount} FinOps helpers are executable by finops_runtime`
+      : undefined,
+    master.helperSecurity.unsafeSearchPathCount !== 0
+      ? `${master.helperSecurity.unsafeSearchPathCount} FinOps helpers have an unsafe search_path`
+      : undefined,
     ...tenantChecks.flatMap((check) => [
       check.session?.current_user !== 'finops_runtime' ? `${check.tenantId}: wrong database role` : undefined,
       check.session?.tenant_id !== check.tenantId ? `${check.tenantId}: tenant context was not applied` : undefined,
@@ -122,4 +137,50 @@ try {
   }
 } finally {
   await pool.end();
+}
+
+async function verifyFunctionHardening(pool: Pool): Promise<{
+  readonly helperCount: number;
+  readonly runtimeHelperCount: number;
+  readonly exposedHelperCount: number;
+  readonly unsafeSearchPathCount: number;
+}> {
+  const [helpers, runtime, exposed, paths] = await Promise.all([
+    pool.query<{ readonly count: number }>(`
+      SELECT count(*)::int AS count
+      FROM pg_catalog.pg_proc p
+      JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' AND p.proname LIKE 'finops_%'
+    `),
+    pool.query<{ readonly count: number }>(`
+      SELECT count(*)::int AS count
+      FROM information_schema.routine_privileges
+      WHERE specific_schema = 'public'
+        AND routine_name LIKE 'finops_%'
+        AND grantee = 'finops_runtime'
+        AND privilege_type = 'EXECUTE'
+    `),
+    pool.query<{ readonly count: number }>(`
+      SELECT count(*)::int AS count
+      FROM information_schema.routine_privileges
+      WHERE specific_schema = 'public'
+        AND routine_name LIKE 'finops_%'
+        AND grantee IN ('PUBLIC', 'anon', 'authenticated', 'service_role')
+    `),
+    pool.query<{ readonly count: number }>(`
+      SELECT count(*)::int AS count
+      FROM pg_catalog.pg_proc p
+      JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public'
+        AND p.proname LIKE 'finops_%'
+        AND NOT (coalesce(p.proconfig, ARRAY[]::text[]) @> ARRAY['search_path=pg_catalog'])
+    `),
+  ]);
+
+  return {
+    helperCount: helpers.rows[0]?.count ?? 0,
+    runtimeHelperCount: runtime.rows[0]?.count ?? 0,
+    exposedHelperCount: exposed.rows[0]?.count ?? 0,
+    unsafeSearchPathCount: paths.rows[0]?.count ?? 0,
+  };
 }

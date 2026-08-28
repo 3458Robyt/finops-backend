@@ -3,6 +3,7 @@ import type {
   DataQualityCheckItem,
   ICloudConnectionRepository,
   IngestionJobHistoryItem,
+  IngestionMetricCoverageResult,
   IngestionJobSummary,
   IngestionReadinessSummary,
 } from '../../../domain/interfaces/ICloudConnectionRepository.js';
@@ -252,6 +253,14 @@ export class CloudIngestionOrchestrator {
 
   public getIngestionReadiness(tenantId: string): Promise<IngestionReadinessSummary> {
     return this.repository.listIngestionReadinessForTenant(tenantId);
+  }
+
+  public listMetricCoverage(
+    tenantId: string,
+    cloudConnectionId: string,
+    input: Omit<Parameters<ICloudConnectionRepository['listMetricCoverageForTenant']>[0], 'tenantId' | 'cloudConnectionId'>,
+  ): Promise<IngestionMetricCoverageResult> {
+    return this.repository.listMetricCoverageForTenant({ tenantId, cloudConnectionId, ...input });
   }
 
   private async requireConnection(

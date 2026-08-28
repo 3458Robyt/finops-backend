@@ -3,6 +3,7 @@ import type { ProcessRole } from '../infrastructure/config/runtimeConfigTypes.js
 export interface ProcessRoleCapabilities {
   readonly runsApi: boolean;
   readonly runsIngestionWorker: boolean;
+  readonly runsMetricProjectionWorker: boolean;
   readonly runsLearningWorker: boolean;
   readonly runsRecommendationAnalysisWorker: boolean;
   readonly runsSavingsReconciliationWorker: boolean;
@@ -16,6 +17,7 @@ export interface ProcessRoleCapabilities {
 const apiOnly: ProcessRoleCapabilities = {
   runsApi: true,
   runsIngestionWorker: false,
+  runsMetricProjectionWorker: false,
   runsLearningWorker: false,
   runsRecommendationAnalysisWorker: false,
   runsSavingsReconciliationWorker: false,
@@ -30,6 +32,7 @@ const workerOnly: ProcessRoleCapabilities = {
   ...apiOnly,
   runsApi: false,
   runsIngestionWorker: true,
+  runsMetricProjectionWorker: true,
   runsLearningWorker: true,
   runsRecommendationAnalysisWorker: true,
   runsSavingsReconciliationWorker: true,
@@ -49,6 +52,7 @@ const schedulerOnly: ProcessRoleCapabilities = {
 const allCapabilities: ProcessRoleCapabilities = {
   ...apiOnly,
   runsIngestionWorker: true,
+  runsMetricProjectionWorker: true,
   runsLearningWorker: true,
   runsRecommendationAnalysisWorker: true,
   runsSavingsReconciliationWorker: true,
@@ -60,7 +64,7 @@ const allCapabilities: ProcessRoleCapabilities = {
 };
 
 const granularCapabilities: Readonly<Record<Exclude<ProcessRole, 'api' | 'worker' | 'scheduler' | 'all'>, ProcessRoleCapabilities>> = {
-  'ingestion-worker': { ...apiOnly, runsApi: false, runsIngestionWorker: true },
+  'ingestion-worker': { ...apiOnly, runsApi: false, runsIngestionWorker: true, runsMetricProjectionWorker: true },
   'learning-worker': { ...apiOnly, runsApi: false, runsLearningWorker: true },
   'recommendation-analysis-worker': { ...apiOnly, runsApi: false, runsRecommendationAnalysisWorker: true },
   'savings-reconciliation-worker': { ...apiOnly, runsApi: false, runsSavingsReconciliationWorker: true },

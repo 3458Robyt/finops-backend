@@ -12,15 +12,18 @@ import { buildOciCollectionTasks, type OciCollectionTask } from './OciMonitoring
 import { getOrCreateRegionalClient, mapWithConcurrency, regionKey } from './OciMonitoringCollectionSupport.js';
 export { buildOciGroupedMetricQuery, buildOciResourceMetricQuery } from './OciMonitoringQueryBuilder.js';
 
+const MAX_PERSIST_BATCH_SIZE = 5_000;
+
 export interface OciMonitoringDependencies {
-  readonly createClient: (job: CloudIngestionJobContext) => OciMonitoringClient;
-  readonly withRetry: <T>(operation: () => Promise<T>) => Promise<T>;
+  readonly createClient: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciMonitoringClient;
+  readonly withRetry: <T>(operation: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
   readonly withRateLimit?: <T>(job: CloudIngestionJobContext, operation: () => Promise<T>) => Promise<T>;
 }
 
 export async function collectOciTechnicalMetrics(
   job: CloudIngestionJobContext,
   dependencies: OciMonitoringDependencies,
+  options: { readonly signal?: AbortSignal; readonly isCancellationRequested?: () => Promise<boolean> } = {},
 ): Promise<CloudIngestionResult> {
   const definitions = readOciMetricDefinitions(job);
   if (definitions.length === 0) {
@@ -51,7 +54,7 @@ export async function collectOciTechnicalMetrics(
     agentlessCpuNamespace: 'oci_vmi_resource_utilization',
   };
   const warnings: string[] = [];
-  const metricBatches = streamOciMetricBatches(job, dependencies, tasks, collection, requestRange, stats, coverage, warnings);
+  const metricBatches = streamOciMetricBatches(job, dependencies, tasks, collection, requestRange, stats, coverage, warnings, options);
 
   return {
     get apiCallCount() { return stats.apiCallCount; },
@@ -74,6 +77,7 @@ async function* streamOciMetricBatches(
   stats: { apiCallCount: number; sampleCount: number; statistics: Record<string, number> },
   coverage: Record<string, unknown>,
   warnings: string[],
+  options: { readonly signal?: AbortSignal; readonly isCancellationRequested?: () => Promise<boolean> },
 ): AsyncGenerator<readonly NormalizedResourceMetricSample[]> {
   const clientsByRegion = new Map<string, OciMonitoringClient>();
   const queue: NormalizedResourceMetricSample[][] = [];
@@ -83,19 +87,33 @@ async function* streamOciMetricBatches(
   let wakeConsumer: (() => void) | undefined;
   const producerWaiters: (() => void)[] = [];
   const wait = (setter: (resolve: () => void) => void): Promise<void> => new Promise((resolve) => setter(resolve));
-  const enqueue = async (batch: NormalizedResourceMetricSample[]): Promise<void> => {
+  const enqueueQueue = async (batch: NormalizedResourceMetricSample[]): Promise<void> => {
     while (!cancelled && queue.length >= 8) await wait((resolve) => { producerWaiters.push(resolve); });
     if (cancelled || batch.length === 0) return;
     queue.push(batch);
     wakeConsumer?.();
     wakeConsumer = undefined;
   };
+  let pendingBatch: NormalizedResourceMetricSample[] = [];
+  const enqueue = async (batch: NormalizedResourceMetricSample[]): Promise<void> => {
+    for (const sample of batch) {
+      pendingBatch.push(sample);
+      if (pendingBatch.length >= MAX_PERSIST_BATCH_SIZE) {
+        const fullBatch = pendingBatch;
+        pendingBatch = [];
+        await enqueueQueue(fullBatch);
+      }
+    }
+  };
   const producer = mapWithConcurrency(tasks, 4, async (task) => {
-    await collectOciTask(task, job, dependencies, collection, requestRange, clientsByRegion, stats, enqueue);
+    await collectOciTask(task, job, dependencies, collection, requestRange, clientsByRegion, stats, enqueue, options);
   }).then(() => {
-    done = true;
-    wakeConsumer?.();
-    wakeConsumer = undefined;
+    return enqueueQueue(pendingBatch).then(() => {
+      pendingBatch = [];
+      done = true;
+      wakeConsumer?.();
+      wakeConsumer = undefined;
+    });
   }).catch((error: unknown) => {
     producerError = error;
     done = true;
@@ -105,8 +123,10 @@ async function* streamOciMetricBatches(
 
   try {
     while (!done || queue.length > 0) {
+      await assertCollectorActive(options);
       if (queue.length === 0) await wait((resolve) => { wakeConsumer = resolve; });
       while (queue.length > 0) {
+        await assertCollectorActive(options);
         const batch = queue.shift();
         if (batch === undefined) continue;
         yield batch;
@@ -136,14 +156,16 @@ async function collectOciTask(
   clientsByRegion: Map<string, OciMonitoringClient>,
   stats: { apiCallCount: number; sampleCount: number; statistics: Record<string, number> },
   enqueue: (batch: NormalizedResourceMetricSample[]) => Promise<void>,
+  options: { readonly signal?: AbortSignal; readonly isCancellationRequested?: () => Promise<boolean> },
 ): Promise<void> {
+  await assertCollectorActive(options);
   const definition = task.definition;
   const statistic = task.statistic;
   const taskRegion = definition.regionId ?? regionKey(job);
   const taskJob = taskRegion === regionKey(job)
     ? job
     : { ...job, requestContext: { ...(job.requestContext ?? {}), regionId: taskRegion } };
-  const taskClient = getOrCreateRegionalClient(taskJob, taskRegion, dependencies.createClient, clientsByRegion);
+  const taskClient = getOrCreateRegionalClient(taskJob, taskRegion, dependencies.createClient, clientsByRegion, options.signal);
   const query = task.query;
   const request = (compartmentId: string, compartmentIdInSubtree = false) => dependencies.withRetry(() => taskClient.summarizeMetricsData({
     compartmentId,
@@ -155,7 +177,7 @@ async function collectOciTask(
       endTime: requestRange.endTime,
       resolution: collection.interval,
     },
-  }));
+  }), options.signal);
   const execute = async (compartmentId: string, compartmentIdInSubtree = false) => {
     stats.apiCallCount += 1;
     const operation = () => request(compartmentId, compartmentIdInSubtree);
@@ -174,6 +196,7 @@ async function collectOciTask(
   }
   let batch: NormalizedResourceMetricSample[] = [];
   for (const metric of response.items ?? response.summarizedMetricsData ?? []) {
+    await assertCollectorActive(options);
     const dimensions = normalizeDimensions(metric.dimensions ?? definition.dimensions);
     const externalResourceId = dimensions?.['resourceId'] ?? dimensions?.['resource_id'] ?? definition.resourceId;
     if (task.allowedResourceIds !== undefined && (externalResourceId === undefined || !task.allowedResourceIds.has(externalResourceId))) continue;
@@ -208,13 +231,20 @@ async function collectOciTask(
       });
       stats.sampleCount += 1;
       stats.statistics[statistic] = (stats.statistics[statistic] ?? 0) + 1;
-      if (batch.length >= 1000) {
+      if (batch.length >= MAX_PERSIST_BATCH_SIZE) {
         await enqueue(batch);
         batch = [];
       }
     }
   }
   if (batch.length > 0) await enqueue(batch);
+}
+
+async function assertCollectorActive(options: { readonly signal?: AbortSignal; readonly isCancellationRequested?: () => Promise<boolean> }): Promise<void> {
+  if (options.signal?.aborted === true) throw new Error('OCI metric collection cancelled');
+  if (options.isCancellationRequested !== undefined && await options.isCancellationRequested()) {
+    throw new Error('OCI metric collection cancelled');
+  }
 }
 
 function shouldFallbackFromSubtree(task: OciCollectionTask, error: unknown): boolean {

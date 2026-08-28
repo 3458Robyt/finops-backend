@@ -1,4 +1,4 @@
-import type { PrismaClient } from '../../../generated/prisma/client.js';
+import { Prisma, type PrismaClient } from '../../../generated/prisma/client.js';
 import type {
   AccountRow,
   CurrencyRow,
@@ -61,16 +61,17 @@ export async function runSnapshotAggregations(
   tenantId: string,
   periodStart: Date,
   periodEnd: Date,
+  billingCurrency?: string,
 ): Promise<SnapshotAggregations> {
+  const currencyFilter = billingCurrency === undefined ? Prisma.sql`` : Prisma.sql`and billing_currency = ${billingCurrency}`;
+  const scopedWhere = {
+    tenantId,
+    chargePeriodStart: { gte: periodStart, lt: periodEnd },
+    ...(billingCurrency === undefined ? {} : { billingCurrency }),
+  };
   const [summary, currencies, providers, accounts, services, environments, topResources, topUsage] = await Promise.all([
     prisma.costMetric.aggregate({
-      where: {
-        tenantId,
-        chargePeriodStart: {
-          gte: periodStart,
-          lt: periodEnd,
-        },
-      },
+      where: scopedWhere,
       _count: true,
       _sum: {
         billedCost: true,
@@ -85,6 +86,7 @@ export async function runSnapshotAggregations(
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
+        ${currencyFilter}
       group by billing_currency
       order by count(*) desc
       limit 1
@@ -100,6 +102,7 @@ export async function runSnapshotAggregations(
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
+        ${currencyFilter}
       group by provider
       order by total_cost desc
     `,
@@ -116,6 +119,7 @@ export async function runSnapshotAggregations(
       where cm.tenant_id = ${tenantId}
         and cm.charge_period_start >= ${periodStart}
         and cm.charge_period_start < ${periodEnd}
+        ${currencyFilter}
       group by cm.cloud_account_id, cm.provider
       order by total_cost desc
     `,
@@ -129,6 +133,7 @@ export async function runSnapshotAggregations(
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
+        ${currencyFilter}
       group by service_name, provider
       order by total_cost desc
       limit 10
@@ -143,6 +148,7 @@ export async function runSnapshotAggregations(
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
+        ${currencyFilter}
       group by coalesce(tags->>'environment', 'unknown')
       order by total_cost desc
     `,
@@ -160,6 +166,7 @@ export async function runSnapshotAggregations(
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
         and resource_id <> ''
+        ${currencyFilter}
       group by resource_id
       order by total_cost desc
       limit 10
@@ -179,6 +186,7 @@ export async function runSnapshotAggregations(
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
+        ${currencyFilter}
         and consumed_quantity is not null
         and consumed_unit is not null
         and consumed_unit <> ''

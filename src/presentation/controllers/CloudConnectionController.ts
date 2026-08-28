@@ -25,6 +25,7 @@ export class CloudConnectionController {
   public readonly listIngestionHistory: CloudIngestionController["listIngestionHistory"];
   public readonly listDataQuality: CloudIngestionController["listDataQuality"];
   public readonly getIngestionReadiness: CloudIngestionController["getIngestionReadiness"];
+  public readonly listMetricCoverage: CloudIngestionController["listMetricCoverage"];
   public readonly configureFocusSource: CloudIngestionController["configureFocusSource"];
   public readonly retryFailedIngestionJobs: CloudIngestionController["retryFailedIngestionJobs"];
   public readonly cancelPendingIngestionJobs: CloudIngestionController["cancelPendingIngestionJobs"];
@@ -58,6 +59,7 @@ export class CloudConnectionController {
     this.listIngestionHistory = ingestion.listIngestionHistory;
     this.listDataQuality = ingestion.listDataQuality;
     this.getIngestionReadiness = ingestion.getIngestionReadiness;
+    this.listMetricCoverage = ingestion.listMetricCoverage;
     this.configureFocusSource = ingestion.configureFocusSource;
     this.retryFailedIngestionJobs = ingestion.retryFailedIngestionJobs;
     this.cancelPendingIngestionJobs = ingestion.cancelPendingIngestionJobs;

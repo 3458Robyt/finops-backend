@@ -28,7 +28,9 @@ try {
   await createSchema(baseUrl, schema);
   await runCommand(process.execPath, [prismaCli, 'migrate', 'deploy'], { DATABASE_URL: isolatedUrl });
 
-  admin = new PrismaClient({ adapter: new PrismaPg({ connectionString: isolatedUrl }, { schema }) });
+  admin = new PrismaClient({
+    adapter: new PrismaPg(createIntegrationPool(isolatedUrl, schema), { schema, disposeExternalPool: true }),
+  });
   runtimePool = createTenantAwarePool(isolatedUrl, schema, {
     runtimeEnforce: true,
     runtimeRole: 'finops_runtime',
@@ -66,7 +68,7 @@ try {
       database: {
         runtimeEnforce: true,
         runtimeRole: 'finops_runtime',
-        expectedMigration: '202608120008_revoke_login_tenant_api_grants',
+        expectedMigration: '202608280007_restore_auth_cleanup_refresh_visibility',
       },
       operations: { processHeartbeat: { enabled: true, intervalMs: 30_000, staleAfterMs: 30_000 } },
       ai: { apiKey: undefined },

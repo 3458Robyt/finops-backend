@@ -3,16 +3,18 @@ import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
 import { CredentialCipher } from '../src/infrastructure/security/CredentialCipher.js';
 import { PrismaCloudConnectionRepository } from '../src/infrastructure/repositories/PrismaCloudConnectionRepository.js';
 import { CloudConnectionService } from '../src/application/services/CloudConnectionService.js';
+import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
 
 async function main(): Promise<void> {
   const connectionId = readRequiredArgument('--connection-id');
   const lookbackDays = readNumberArgument('--lookback-days', 90);
   const windowHours = readNumberArgument('--window-hours', 24);
   const prisma = getPrismaClient();
-  const connection = await prisma.cloudConnection.findUnique({
+  const workerContext = { workerId: 'ingestion-backfill-cli', role: 'MASTER_ADMIN' as const };
+  const connection = await runWithDatabaseContext(workerContext, () => prisma.cloudConnection.findUnique({
     where: { id: connectionId },
     select: { tenantId: true, providerCode: true, status: true },
-  });
+  }));
   if (connection === null) throw new Error('La conexión indicada no existe.');
   if (connection.providerCode !== 'oci') throw new Error('La conexión indicada no es OCI.');
   if (connection.status !== 'ACTIVE') throw new Error('La conexión OCI debe estar ACTIVE.');
@@ -23,12 +25,15 @@ async function main(): Promise<void> {
       new CredentialCipher(process.env.CREDENTIAL_ENCRYPTION_KEY, process.env.CREDENTIAL_KEY_VERSION ?? 'v1'),
     ),
   );
-  const result = await service.queueTechnicalMetricBackfill({
-    tenantId: connection.tenantId,
-    cloudConnectionId: connectionId,
-    lookbackDays,
-    windowHours,
-  });
+  const result = await runWithDatabaseContext(
+    { ...workerContext, tenantId: connection.tenantId },
+    () => service.queueTechnicalMetricBackfill({
+      tenantId: connection.tenantId,
+      cloudConnectionId: connectionId,
+      lookbackDays,
+      windowHours,
+    }),
+  );
   console.log(JSON.stringify({
     success: true,
     connectionId,

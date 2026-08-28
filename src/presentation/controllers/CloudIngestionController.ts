@@ -171,6 +171,31 @@ export class CloudIngestionController extends CloudConnectionControllerSupport {
     }
   };
 
+  public listMetricCoverage = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const tenantId = this.requireTenant(req);
+      const startDate = this.parseOptionalDate(req.query['startDate'], 'startDate');
+      const endDate = this.parseOptionalDate(req.query['endDate'], 'endDate');
+      if (startDate !== undefined && endDate !== undefined && endDate <= startDate) {
+        throw new FinOpsBaseError('La fecha final debe ser posterior a la fecha inicial.', 'VALIDATION_ERROR');
+      }
+      const status = this.parseMetricCoverageStatus(req.query['status']);
+      const coverage = await this.cloudConnectionService.listMetricCoverage(
+        tenantId,
+        this.requireString(req.query['connectionId'], 'connectionId'),
+        {
+          ...(startDate === undefined ? {} : { startDate }),
+          ...(endDate === undefined ? {} : { endDate }),
+          ...(status === undefined ? {} : { status }),
+          limit: Math.min(500, Math.max(1, this.parseLimit(req.query['limit']) ?? 100)),
+        },
+      );
+      res.status(200).json({ success: true, coverage });
+    } catch (error: unknown) {
+      this.respondWithError(res, error);
+    }
+  };
+
   public configureFocusSource = async (
     req: Request,
     res: Response,

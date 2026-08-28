@@ -40,6 +40,7 @@ export class PrismaCloudResourceInventoryReader {
     limit: number,
     filters: CloudResourceFilters = {},
   ): Promise<readonly CloudResourceItem[]> {
+    const useDailyRollups = await this.hasDailyRollups(tenantId);
     const statusFilter = filters.statuses !== undefined && filters.statuses.length > 0
       ? Prisma.sql`AND status::text IN (${Prisma.join(filters.statuses)})`
       : Prisma.empty;
@@ -93,6 +94,18 @@ export class PrismaCloudResourceInventoryReader {
          WHERE cm.tenant_id = ${tenantId}
          GROUP BY cm.cloud_resource_id
       ), metrics AS (
+        ${useDailyRollups
+          ? Prisma.sql`
+        SELECT rms.cloud_resource_id,
+               sum(rms.sample_count)::bigint AS metric_count,
+               max(rms.latest_sampled_at) AS latest_metric_at
+          FROM resource_metric_rollups rms
+          INNER JOIN base_resources br ON br.id = rms.cloud_resource_id
+         WHERE rms.tenant_id = ${tenantId}
+           AND rms.bucket_seconds = 86400
+         GROUP BY rms.cloud_resource_id
+          `
+          : Prisma.sql`
         SELECT rms.cloud_resource_id,
                count(*)::bigint AS metric_count,
                max(rms.sampled_at) AS latest_metric_at
@@ -100,6 +113,7 @@ export class PrismaCloudResourceInventoryReader {
           INNER JOIN base_resources br ON br.id = rms.cloud_resource_id
          WHERE rms.tenant_id = ${tenantId}
          GROUP BY rms.cloud_resource_id
+          `}
       ), recommendation_counts AS (
         SELECT rec.cloud_resource_id, count(*)::bigint AS recommendation_count
           FROM recommendations rec
@@ -131,6 +145,19 @@ export class PrismaCloudResourceInventoryReader {
     `);
 
     return rows.map((row) => this.toItem(row));
+  }
+
+  private async hasDailyRollups(tenantId: string): Promise<boolean> {
+    const rows = await this.prisma.$queryRaw<readonly [{ readonly exists: boolean }]>(Prisma.sql`
+      SELECT EXISTS (
+        SELECT 1
+        FROM resource_metric_rollups
+        WHERE tenant_id = ${tenantId}
+          AND bucket_seconds = 86400
+        LIMIT 1
+      ) AS exists
+    `);
+    return rows[0]?.exists === true;
   }
 
   private toItem(row: CloudResourceLineageRow): CloudResourceItem {

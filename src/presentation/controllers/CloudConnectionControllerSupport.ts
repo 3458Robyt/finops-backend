@@ -34,6 +34,9 @@ export abstract class CloudConnectionControllerSupport {
   protected parseDate(value: unknown, fieldName: string): Date {
     return this.requestParser.parseDate(value, fieldName);
   }
+  protected parseOptionalDate(value: unknown, fieldName: string): Date | undefined {
+    return this.requestParser.parseOptionalDate(value, fieldName);
+  }
   protected parseSourceType(value: unknown): IngestionSourceType {
     return this.requestParser.parseSourceType(value);
   }
@@ -60,6 +63,9 @@ export abstract class CloudConnectionControllerSupport {
     fieldName: string,
   ): number | undefined {
     return this.requestParser.parseOptionalNumber(value, fieldName);
+  }
+  protected parseMetricCoverageStatus(value: unknown) {
+    return this.requestParser.parseMetricCoverageStatus(value);
   }
   protected isRecord(value: unknown): value is Record<string, unknown> {
     return this.requestParser.isRecord(value);

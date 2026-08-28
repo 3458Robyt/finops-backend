@@ -10,9 +10,13 @@ export interface IntegrationCommandResult {
   readonly stderr: string;
 }
 
-export function createIntegrationPool(connectionString: string): Pool {
+export function createIntegrationPool(connectionString: string, schema?: string): Pool {
   return new Pool({
     connectionString,
+    options: [
+      schema === undefined ? undefined : `-c search_path=${schema}`,
+      '-c timezone=UTC',
+    ].filter((option): option is string => option !== undefined).join(' '),
     connectionTimeoutMillis: 10_000,
     statement_timeout: integrationTimeoutMs(),
   });

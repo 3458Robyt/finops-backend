@@ -132,19 +132,22 @@ export class TechnicalMetricsService {
       ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
       ...(input.metricNames !== undefined ? { metricNames: input.metricNames } : {}),
     } as const;
-    const catalogSummaryFilters = {
-      ...summaryFilters,
-      statistic: 'MEAN' as const,
-    };
-    const [summaries, resources, availableStatistics] = await Promise.all([
-      this.repository.listMetricSummariesForTenant(tenantId, summaryFilters),
+    const summariesPromise = this.repository.listMetricSummariesForTenantFast !== undefined
+      && !isPercentileStatistic(input.statistic)
+      ? this.repository.listMetricSummariesForTenantFast(tenantId, summaryFilters)
+      : this.repository.listMetricSummariesForTenant(tenantId, summaryFilters);
+    const catalogSummaryPromise = input.statistic === undefined || input.statistic === 'MEAN'
+      ? summariesPromise
+      : this.repository.listMetricSummariesForTenantFast !== undefined
+        ? this.repository.listMetricSummariesForTenantFast(tenantId, { ...summaryFilters, statistic: 'MEAN' })
+        : this.repository.listMetricSummariesForTenant(tenantId, { ...summaryFilters, statistic: 'MEAN' });
+    const [summaries, resources, availableStatistics, catalogSummaries] = await Promise.all([
+      summariesPromise,
       this.repository.listResourcesForTenant(tenantId, 200),
       this.repository.listMetricStatisticsForTenant?.(tenantId, availableStatisticFilters)
         ?? Promise.resolve([]),
+      catalogSummaryPromise,
     ]);
-    const catalogSummaries = input.statistic === undefined || input.statistic === 'MEAN'
-      ? summaries
-      : await this.repository.listMetricSummariesForTenant(tenantId, catalogSummaryFilters);
     const resourceIds = unique(summaries.map((sample) => sample.externalResourceId));
     const cloudResourceIds = unique(summaries.map((sample) => sample.cloudResourceId).filter((value): value is string => value !== undefined));
     const costContext = await this.repository.listCostContextForResources(tenantId, resourceIds, cloudResourceIds);
@@ -250,4 +253,8 @@ export class TechnicalMetricsService {
 
     return Math.min(maxSeriesPageSize, Math.max(1, Math.floor(pageSize)));
   }
+}
+
+function isPercentileStatistic(statistic: TechnicalMetricOverviewInput['statistic']): boolean {
+  return statistic === 'P50' || statistic === 'P90' || statistic === 'P95' || statistic === 'P99';
 }

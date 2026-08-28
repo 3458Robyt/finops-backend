@@ -35,6 +35,46 @@ export interface CostDataOptions {
   readonly currencies: readonly string[];
 }
 
+export type CostHistoryGranularity = 'day' | 'month';
+export type CostHistoryRangeMode = 'CALENDAR' | 'LATEST_AVAILABLE';
+
+export interface CostHistoryQuery {
+  readonly tenantId: string;
+  readonly startDate: Date;
+  readonly endDate: Date;
+  readonly reportingCurrency: string;
+  readonly granularity: CostHistoryGranularity;
+}
+
+export interface CostHistoryNativeTotal {
+  readonly currency: string;
+  readonly amount: number;
+}
+
+export interface CostHistoryPoint {
+  readonly periodStart: Date;
+  readonly amount: number | null;
+  readonly nativeTotals: readonly CostHistoryNativeTotal[];
+  readonly metricCount: number;
+  readonly conversionStatus: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
+  readonly conversionRate?: number;
+  readonly rateSource?: string;
+}
+
+export interface CostHistoryResult {
+  readonly reportingCurrency: string;
+  readonly points: readonly CostHistoryPoint[];
+  readonly totalsByCurrency: readonly CostHistoryNativeTotal[];
+  readonly coverage: {
+    readonly firstPeriod: Date | null;
+    readonly lastPeriod: Date | null;
+    readonly periodsWithData: number;
+    readonly expectedPeriods: number;
+    readonly missingPeriods: number;
+    readonly conversionIssuePeriods: number;
+  };
+}
+
 /**
  * Contrato de repositorio para persistencia de métricas de costo.
  *
@@ -51,4 +91,11 @@ export interface ICostRepository {
   findByDateRange(query: CostMetricQuery): Promise<InternalCostMetric[]>;
 
   getDataOptions(tenantId: string, period?: string): Promise<CostDataOptions>;
+
+  getReportingCurrency(tenantId: string): Promise<string>;
+
+  /** Returns the latest cost period available for a tenant, if any. */
+  getLatestCostPeriod(tenantId: string): Promise<Date | null>;
+
+  getCostHistory(query: CostHistoryQuery): Promise<CostHistoryResult>;
 }

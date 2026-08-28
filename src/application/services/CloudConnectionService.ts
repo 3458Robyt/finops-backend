@@ -6,6 +6,7 @@ import type {
   DataQualityCheckItem,
   ICloudConnectionRepository,
   IngestionJobHistoryItem,
+  IngestionMetricCoverageResult,
   IngestionJobSummary,
   IngestionReadinessSummary,
 } from '../../domain/interfaces/ICloudConnectionRepository.js';
@@ -153,6 +154,14 @@ export class CloudConnectionService {
 
   public getIngestionReadiness(tenantId: string): Promise<IngestionReadinessSummary> {
     return this.ingestion.getIngestionReadiness(tenantId);
+  }
+
+  public listMetricCoverage(
+    tenantId: string,
+    cloudConnectionId: string,
+    input: Parameters<CloudIngestionOrchestrator['listMetricCoverage']>[2],
+  ): Promise<IngestionMetricCoverageResult> {
+    return this.ingestion.listMetricCoverage(tenantId, cloudConnectionId, input);
   }
 
   public configureFocusSource(input: ConfigureFocusSourceInput): Promise<ConfigureFocusSourceForConnectionResult> {

@@ -97,6 +97,51 @@ export class CostController {
     } catch (error: unknown) { this.respondWithError(res, error, 'No fue posible cargar las opciones de costos.'); }
   };
 
+  public getCostHistory = async (req: Request, res: Response): Promise<void> => {
+    try {
+      if (req.auth === undefined) {
+        res.status(401).json({ success: false, error: 'Autenticación requerida.', code: 'AUTHENTICATION_REQUIRED' });
+        return;
+      }
+      const rangeMode = this.parseRangeMode(req.query['rangeMode']);
+      const lookbackDays = this.parseLookbackDays(req.query['lookbackDays']);
+      const requestedRange = this.resolveDateRange(req);
+      const { startDate, endDate, usedLatestAvailableFallback } = rangeMode === 'LATEST_AVAILABLE'
+        ? await this.resolveLatestAvailableRange(req.auth.tenantId, requestedRange, lookbackDays)
+        : { ...requestedRange, usedLatestAvailableFallback: false };
+      if (endDate <= startDate) throw new FinOpsBaseError('El rango de costos no es válido.', 'VALIDATION_ERROR');
+      const requestedCurrency = typeof req.query['reportingCurrency'] === 'string' ? req.query['reportingCurrency'] : undefined;
+      const reportingCurrency = this.normalizeCurrency(requestedCurrency ?? await this.costRepository.getReportingCurrency(req.auth.tenantId));
+      const granularity = req.query['granularity'] === 'month' ? 'month' : 'day';
+      const history = await this.costRepository.getCostHistory({
+        tenantId: req.auth.tenantId,
+        startDate,
+        endDate,
+        reportingCurrency,
+        granularity,
+      });
+      const dataAsOf = history.coverage.lastPeriod?.toISOString() ?? null;
+      const staleDays = dataAsOf === null
+        ? null
+        : Math.max(0, Math.floor((Date.now() - new Date(dataAsOf).getTime()) / (24 * 60 * 60 * 1000)));
+      res.status(200).json({
+        success: true,
+        ...history,
+        meta: {
+          tenantId: req.auth.tenantId,
+          startDate: startDate.toISOString(),
+          endDate: endDate.toISOString(),
+          granularity,
+          rangeMode,
+          lookbackDays,
+          dataAsOf,
+          staleDays,
+          usedLatestAvailableFallback,
+        },
+      });
+    } catch (error: unknown) { this.respondWithError(res, error, 'No fue posible consultar el histórico de costos.'); }
+  };
+
   private parsePeriod(value: unknown): string | undefined {
     if (typeof value !== 'string' || value.trim() === '') return undefined;
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) throw new FinOpsBaseError('El período debe tener formato YYYY-MM.', 'VALIDATION_ERROR');
@@ -148,25 +193,62 @@ export class CostController {
     return parsed;
   }
 
+  private normalizeCurrency(value: string): string {
+    const currency = value.trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency)) throw new FinOpsBaseError('La moneda debe usar un código ISO 4217 de tres letras.', 'VALIDATION_ERROR');
+    return currency;
+  }
+
+  private parseRangeMode(value: unknown): 'CALENDAR' | 'LATEST_AVAILABLE' {
+    if (value === undefined || value === 'CALENDAR') return 'CALENDAR';
+    if (value === 'LATEST_AVAILABLE') return value;
+    throw new FinOpsBaseError('El modo de rango de costos no es válido.', 'VALIDATION_ERROR');
+  }
+
+  private parseLookbackDays(value: unknown): number {
+    if (value === undefined || value === '') return 90;
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 3650) {
+      throw new FinOpsBaseError('lookbackDays debe ser un entero entre 1 y 3650.', 'VALIDATION_ERROR');
+    }
+    return parsed;
+  }
+
+  private async resolveLatestAvailableRange(
+    tenantId: string,
+    requestedRange: { readonly startDate: Date; readonly endDate: Date },
+    lookbackDays: number,
+  ): Promise<{ readonly startDate: Date; readonly endDate: Date; readonly usedLatestAvailableFallback: boolean }> {
+    const latestPeriod = await this.costRepository.getLatestCostPeriod(tenantId);
+    if (latestPeriod === null) return { ...requestedRange, usedLatestAvailableFallback: false };
+    const latestDay = new Date(Date.UTC(latestPeriod.getUTCFullYear(), latestPeriod.getUTCMonth(), latestPeriod.getUTCDate()));
+    const endDate = new Date(latestDay.getTime() + 24 * 60 * 60 * 1000);
+    const startDate = new Date(endDate);
+    startDate.setUTCDate(startDate.getUTCDate() - lookbackDays);
+    return {
+      startDate,
+      endDate,
+      usedLatestAvailableFallback: endDate.getTime() !== requestedRange.endDate.getTime(),
+    };
+  }
+
   /**
-   * Construye el resumen agregado de las métricas: coste total, divisa
-   * principal y desglose por servicio (coste, uso y unidad de uso acumulados).
-   * La divisa principal toma la de la última métrica procesada.
+   * Construye el resumen sin sumar nominalmente monedas distintas.
    */
   private buildSummary(metrics: readonly InternalCostMetric[]): {
     totalCost: number;
-    currency: string;
+    currency: string | null;
+    totalsByCurrency: Record<string, number>;
     serviceBreakdown: Record<string, ServiceBreakdownItem>;
   } {
-    let totalCost = 0;
-    let primaryCurrency = 'USD';
+    const totalsByCurrency: Record<string, number> = {};
     const serviceBreakdown: Record<string, ServiceBreakdownItem> = {};
 
     for (const metric of metrics) {
-      totalCost += metric.amount;
-      primaryCurrency = metric.currency;
+      totalsByCurrency[metric.currency] = (totalsByCurrency[metric.currency] ?? 0) + metric.amount;
 
-      const existingBreakdown = serviceBreakdown[metric.service];
+      const breakdownKey = `${metric.service}::${metric.currency}`;
+      const existingBreakdown = serviceBreakdown[breakdownKey];
       const breakdown = existingBreakdown ?? {
         cost: 0,
         currency: metric.currency,
@@ -177,7 +259,7 @@ export class CostController {
       }
 
       if (existingBreakdown === undefined) {
-        serviceBreakdown[metric.service] = breakdown;
+        serviceBreakdown[breakdownKey] = breakdown;
       }
 
       breakdown.cost += metric.amount;
@@ -187,9 +269,14 @@ export class CostController {
       }
     }
 
+    const currencyKeys = Object.keys(totalsByCurrency);
     return {
-      totalCost,
-      currency: primaryCurrency,
+      // A nominal total across currencies is not meaningful. Consumers that
+      // need a comparable total must use /costs/history with a reporting
+      // currency and its explicit conversion metadata.
+      totalCost: currencyKeys.length === 1 ? totalsByCurrency[currencyKeys[0]!] ?? 0 : 0,
+      currency: currencyKeys.length === 1 ? currencyKeys[0] ?? null : null,
+      totalsByCurrency,
       serviceBreakdown,
     };
   }

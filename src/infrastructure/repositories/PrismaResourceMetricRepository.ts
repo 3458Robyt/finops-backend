@@ -29,6 +29,7 @@ import { PrismaResourceMetricCoverageReader } from './PrismaResourceMetricCovera
 import { PrismaResourceMetricCostContextReader } from './PrismaResourceMetricCostContextReader.js';
 import { PrismaResourceMetricSeriesReader } from './PrismaResourceMetricSeriesReader.js';
 import { PrismaCloudResourceInventoryReader } from './PrismaCloudResourceInventoryReader.js';
+import { PrismaResourceMetricSummaryReader } from './PrismaResourceMetricSummaryReader.js';
 
 /**
  * Fachada de persistencia para las lecturas de métricas técnicas. Las consultas
@@ -40,12 +41,14 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
   private readonly coverageReader: PrismaResourceMetricCoverageReader;
   private readonly costContextReader: PrismaResourceMetricCostContextReader;
   private readonly inventoryReader: PrismaCloudResourceInventoryReader;
+  private readonly summaryReader: PrismaResourceMetricSummaryReader;
 
   constructor(private readonly prisma: PrismaClient) {
     this.seriesReader = new PrismaResourceMetricSeriesReader(prisma);
     this.coverageReader = new PrismaResourceMetricCoverageReader(prisma);
     this.costContextReader = new PrismaResourceMetricCostContextReader(prisma);
     this.inventoryReader = new PrismaCloudResourceInventoryReader(prisma);
+    this.summaryReader = new PrismaResourceMetricSummaryReader(prisma);
   }
 
   public async listResourcesForTenant(
@@ -120,6 +123,33 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
       readonly metricNames?: readonly string[];
     },
   ): Promise<readonly { readonly metricName: string; readonly statistic: MetricStatistic }[]> {
+    const rollupRows = await this.prisma.$queryRaw<Array<{
+      readonly metric_name: string;
+      readonly statistic: string;
+    }>>(Prisma.sql`
+      SELECT DISTINCT metric_name, statistic::text AS statistic
+      FROM resource_metric_rollups
+      WHERE tenant_id = ${tenantId}
+        AND bucket_seconds = 86400
+        AND (${filters.startDate === undefined ? Prisma.sql`TRUE` : Prisma.sql`latest_sampled_at >= ${filters.startDate}`})
+        AND (${filters.endDate === undefined ? Prisma.sql`TRUE` : Prisma.sql`min_sampled_at <= ${filters.endDate}`})
+        AND (${filters.externalResourceId === undefined ? Prisma.sql`TRUE` : Prisma.sql`external_resource_id = ${filters.externalResourceId}`})
+        AND (${filters.cloudResourceId === undefined ? Prisma.sql`TRUE` : Prisma.sql`cloud_resource_id = ${filters.cloudResourceId}`})
+        AND (${filters.metricNames === undefined || filters.metricNames.length === 0
+          ? Prisma.sql`TRUE`
+          : Prisma.sql`metric_name IN (${Prisma.join([...filters.metricNames])})`})
+      ORDER BY metric_name ASC, statistic ASC
+    `);
+    if (rollupRows.length > 0) {
+      return rollupRows.map((row) => ({
+        metricName: row.metric_name,
+        statistic: row.statistic as MetricStatistic,
+      }));
+    }
+
+    // Keep the raw path for a freshly migrated database until its rollup
+    // projection has been rebuilt, and for isolated fixtures that intentionally
+    // only seed resource_metric_samples.
     const rows = await this.prisma.resourceMetricSample.findMany({
       where: {
         tenantId,
@@ -295,5 +325,12 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
       firstSampledAt: row.first_sampled_at,
       latestSampledAt: row.latest_sampled_at,
     }));
+  }
+
+  public listMetricSummariesForTenantFast(
+    tenantId: string,
+    filters: TechnicalMetricSummaryFilters,
+  ): Promise<readonly TechnicalMetricSummaryItem[]> {
+    return this.summaryReader.listFast(tenantId, filters);
   }
 }

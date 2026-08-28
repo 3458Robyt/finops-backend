@@ -36,6 +36,8 @@ async function main(): Promise<void> {
         billingCooldownHours: options.billingCooldownHours,
         maxAttempts: options.maxAttempts,
         metricCatchupDays: options.metricCatchupDays,
+        metricCatchupWindowMinutes: options.metricCatchupWindowMinutes,
+        maxMetricBackfillJobsPerConnection: options.maxMetricBackfillJobsPerConnection,
       },
       connectionsEvaluated: result.connectionsEvaluated,
       plannedJobs: result.plannedJobs,
@@ -85,8 +87,10 @@ function buildOptions(values: ReadonlyMap<string, string>): IngestionScheduleOpt
     metricCooldownMinutes: parsePositiveInteger(values.get('metric-cooldown-minutes') ?? '25', 'metric-cooldown-minutes'),
     billingWindowHours: parsePositiveInteger(values.get('billing-window-hours') ?? '24', 'billing-window-hours'),
     billingCooldownHours: parsePositiveInteger(values.get('billing-cooldown-hours') ?? '6', 'billing-cooldown-hours'),
-    maxAttempts: parsePositiveInteger(values.get('max-attempts') ?? '1', 'max-attempts'),
+    maxAttempts: parsePositiveInteger(values.get('max-attempts') ?? '3', 'max-attempts'),
     metricCatchupDays: parsePositiveInteger(values.get('metric-catchup-days') ?? '90', 'metric-catchup-days'),
+    metricCatchupWindowMinutes: parsePositiveInteger(values.get('metric-catchup-window-minutes') ?? String(24 * 60), 'metric-catchup-window-minutes'),
+    maxMetricBackfillJobsPerConnection: parsePositiveInteger(values.get('max-metric-backfill-jobs-per-connection') ?? '48', 'max-metric-backfill-jobs-per-connection'),
   };
 }
 

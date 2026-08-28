@@ -12,6 +12,7 @@ describe('createIngestionRoutes', () => {
       listIngestionHistory: vi.fn(),
       listDataQuality: vi.fn(),
       getIngestionReadiness: vi.fn(),
+      listMetricCoverage: vi.fn(),
     } as unknown as CloudConnectionController;
     const resourceLinkageController = {
       getReadiness: vi.fn(),

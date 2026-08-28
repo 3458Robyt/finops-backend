@@ -3,7 +3,7 @@ import type { PrismaClient } from '../../generated/prisma/client.js';
 import { Prisma } from '../../generated/prisma/client.js';
 
 export interface IngestionJobProgress {
-  readonly phase: 'QUEUED' | 'DISCOVERING' | 'FETCHING' | 'NORMALIZING' | 'PERSISTING' | 'FINALIZING' | 'RETRY_WAIT' | 'COMPLETED' | 'CANCELLED' | 'CANCELLATION_REQUESTED' | 'FAILED';
+  readonly phase: 'QUEUED' | 'WAITING_PROVIDER_SLOT' | 'DISCOVERING' | 'FETCHING' | 'NORMALIZING' | 'PERSISTING' | 'PERSISTING_RAW' | 'FINALIZING' | 'RAW_COMPLETE' | 'PROJECTING' | 'RETRY_WAIT' | 'COMPLETED' | 'CANCELLED' | 'CANCELLATION_REQUESTED' | 'FAILED';
   readonly message?: string;
   readonly completed?: number;
   readonly total?: number;

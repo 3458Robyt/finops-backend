@@ -21,6 +21,7 @@ export interface RawMetricSeriesRow {
   readonly aggregation_semantics?: string;
   readonly source_granularities?: number[];
   readonly avg_value: number;
+  readonly sum_value?: number;
   readonly min_value: number;
   readonly max_value: number;
   readonly latest_value: number;
@@ -199,6 +200,23 @@ export function buildMetricWhereClause(
     clauses.push(Prisma.sql`sampled_at > ${filters.cursor}`);
   }
 
+  return Prisma.join(clauses, ' AND ');
+}
+
+export function buildMetricRollupWhereClause(
+  tenantId: string,
+  filters: MetricWhereFilters,
+  bucketSeconds: number,
+): Prisma.Sql {
+  const clauses: Prisma.Sql[] = [Prisma.sql`tenant_id = ${tenantId}`, Prisma.sql`bucket_seconds = ${bucketSeconds}`];
+  if (filters.startDate !== undefined) clauses.push(Prisma.sql`bucket_start >= ${filters.startDate}`);
+  if (filters.endDate !== undefined) clauses.push(Prisma.sql`bucket_start <= ${filters.endDate}`);
+  if (filters.externalResourceId !== undefined) clauses.push(Prisma.sql`external_resource_id = ${filters.externalResourceId}`);
+  if (filters.cloudResourceId !== undefined) clauses.push(Prisma.sql`cloud_resource_id = ${filters.cloudResourceId}`);
+  if (filters.metricNames !== undefined && filters.metricNames.length > 0) {
+    clauses.push(Prisma.sql`metric_name IN (${Prisma.join([...filters.metricNames])})`);
+  }
+  clauses.push(Prisma.sql`statistic = ${(filters.statistic ?? 'MEAN')}::"MetricStatistic"`);
   return Prisma.join(clauses, ' AND ');
 }
 

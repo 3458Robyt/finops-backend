@@ -12,9 +12,13 @@ import { CostController } from '../controllers/CostController.js';
  * | Método | Subruta | Auth        | Handler                     |
  * |--------|---------|-------------|-----------------------------|
  * | GET    | /       | requireAuth | costController.getDailyCosts|
+ * | GET    | /history| requireAuth | costController.getCostHistory|
+ * | GET    | /options| requireAuth | costController.getDataOptions|
  *
- * Los filtros se reciben por query string (p. ej. `provider`, `accountId`,
- * `date`), tal como se ilustra en el comentario de la ruta.
+ * Los filtros se reciben por query string. `/history` devuelve agregados
+ * diarios/mensuales en una moneda de reporte explícita, conserva los períodos
+ * sin datos como gaps y expone por separado los periodos que no pudieron
+ * convertirse por falta de una tasa compatible.
  *
  * @param costController Controlador con el handler de costos.
  * @param requireAuth Middleware que valida el Bearer token y rellena `req.auth`.
@@ -28,6 +32,7 @@ export function createCostRoutes(
 
   // Endpoint: /api/v1/costs?provider=oci&accountId=xyz&date=2026-03-14
   router.get('/options', requireAuth, costController.getDataOptions);
+  router.get('/history', requireAuth, costController.getCostHistory);
   router.get('/', requireAuth, costController.getDailyCosts);
 
   return router;

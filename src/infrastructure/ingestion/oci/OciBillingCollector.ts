@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import * as usageapi from 'oci-usageapi';
 import type {
   CloudIngestionJobContext,
+  CloudIngestionCollectOptions,
   CloudIngestionResult,
   IngestionObjectDescriptor,
   NormalizedFocusCostLineItem,
@@ -24,23 +25,31 @@ import { withOciProviderRetry } from './OciRetryPolicy.js';
 import { normalizeOciDailyUsageRange } from './OciUsageDateRange.js';
 
 export interface OciBillingCollectorDependencies {
-  createObjectStorageClient(job: CloudIngestionJobContext): OciObjectStorageClient;
-  createUsageClient(job: CloudIngestionJobContext): OciUsageClient;
-  withRateLimit?<T>(job: CloudIngestionJobContext, api: 'objectstorage' | 'usage', operation: () => Promise<T>): Promise<T>;
+  createObjectStorageClient(job: CloudIngestionJobContext, signal?: AbortSignal): OciObjectStorageClient;
+  createUsageClient(job: CloudIngestionJobContext, signal?: AbortSignal): OciUsageClient;
+  withRateLimit?<T>(
+    job: CloudIngestionJobContext,
+    api: 'objectstorage' | 'usage',
+    operation: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T>;
 }
 
 /** Handles OCI billing sources without coupling FOCUS parsing to the provider facade. */
 export class OciBillingCollector {
   constructor(private readonly dependencies: OciBillingCollectorDependencies) {}
 
-  public async collect(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {
+  public async collect(
+    job: CloudIngestionJobContext,
+    options: CloudIngestionCollectOptions = {},
+  ): Promise<CloudIngestionResult> {
     const configuredMode = readBillingSourceMode(job.connection.metadata);
     if (resolveBillingSource(job) === 'PROVIDER_API') {
-      return this.collectProviderApiCosts(job);
+      return this.collectProviderApiCosts(job, options);
     }
 
     try {
-      const focus = await this.collectFocusExport(job);
+      const focus = await this.collectFocusExport(job, options);
       const objectsConfigured = readCoverageNumber(focus.coverage, 'objectsConfigured')
         ?? readCoverageNumber(focus.coverage, 'objectsProcessed')
         ?? 0;
@@ -49,25 +58,31 @@ export class OciBillingCollector {
           job,
           focus.warnings[0] ?? 'No se encontraron objetos de reporte FOCUS OCI para el periodo solicitado.',
           focus.coverage,
+          options,
         );
       }
       return focus;
     } catch (error) {
+      if (options.signal?.aborted === true) throw error;
       if (configuredMode === 'FOCUS') throw error;
-      return this.collectProviderApiWithFallback(job, 'FOCUS no estuvo disponible; se usó OCI Usage API como fallback.');
+      return this.collectProviderApiWithFallback(job, 'FOCUS no estuvo disponible; se usó OCI Usage API como fallback.', undefined, options);
     }
   }
 
-  private async collectFocusExport(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {
-    const client = this.dependencies.createObjectStorageClient(job);
+  private async collectFocusExport(
+    job: CloudIngestionJobContext,
+    options: CloudIngestionCollectOptions,
+  ): Promise<CloudIngestionResult> {
+    const client = this.dependencies.createObjectStorageClient(job, options.signal);
     let discovery: Awaited<ReturnType<typeof discoverOciFocusObjects>>;
     try {
       discovery = await discoverOciFocusObjects(
         job,
         client,
-        withOciProviderRetry,
+        (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
         false,
-        (operation) => this.call(job, 'objectstorage', operation),
+        (operation, signal) => this.call(job, 'objectstorage', operation, signal),
+        options.signal,
       );
     } catch (error) {
       client.close?.();
@@ -98,7 +113,7 @@ export class OciBillingCollector {
       objectsProcessed: objects.length,
       sourceObjects: objects.map(toIngestionObjectDescriptor),
       focusRows: [],
-      focusBatches: this.streamFocusObjects(job, client, objects),
+      focusBatches: this.streamFocusObjects(job, client, objects, options),
       resources: [],
       metricSamples: [],
       warnings: [],
@@ -113,8 +128,11 @@ export class OciBillingCollector {
     };
   }
 
-  private async collectProviderApiCosts(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {
-    const client = this.dependencies.createUsageClient(job);
+  private async collectProviderApiCosts(
+    job: CloudIngestionJobContext,
+    options: CloudIngestionCollectOptions,
+  ): Promise<CloudIngestionResult> {
+    const client = this.dependencies.createUsageClient(job, options.signal);
     try {
       const range = normalizeOciDailyUsageRange(job.targetStart, job.targetEnd);
       const rows: NormalizedProviderCostLineItem[] = [];
@@ -122,6 +140,7 @@ export class OciBillingCollector {
       let nextPage: string | undefined;
       let apiCallCount = 0;
       do {
+        await ensureNotCancelled(options);
         const response = await this.call(job, 'usage', () => withOciProviderRetry(() => client.requestSummarizedUsages({
           ...(nextPage !== undefined ? { page: nextPage } : {}),
           requestSummarizedUsagesDetails: {
@@ -132,7 +151,7 @@ export class OciBillingCollector {
             queryType: usageapi.models.RequestSummarizedUsagesDetails.QueryType.Cost,
              groupBy: ['service', 'resourceId', 'region', 'skuName'],
           },
-        })));
+        }), undefined, undefined, undefined, options.signal), options.signal);
         apiCallCount += 1;
         for (const item of response.usageAggregation?.items ?? []) {
         const amount = item.computedAmount;
@@ -192,9 +211,10 @@ export class OciBillingCollector {
     job: CloudIngestionJobContext,
     warning: string,
     focusCoverage?: Readonly<Record<string, unknown>>,
+    options: CloudIngestionCollectOptions = {},
   ): Promise<CloudIngestionResult> {
     try {
-      const result = await this.collectProviderApiCosts(job);
+      const result = await this.collectProviderApiCosts(job, options);
       return {
         ...result,
         warnings: [warning, ...result.warnings],
@@ -205,6 +225,7 @@ export class OciBillingCollector {
         },
       };
     } catch (error) {
+      if (options.signal?.aborted === true) throw error;
       // AUTO is deliberately best-effort: a missing current FOCUS object plus
       // a tenant without Usage API permission must not turn the scheduler
       // into a permanently failing retry loop. Preserve the gap as a partial
@@ -228,15 +249,17 @@ export class OciBillingCollector {
     job: CloudIngestionJobContext,
     client: OciObjectStorageClient,
     objects: readonly OciFocusReportObject[],
+    options: CloudIngestionCollectOptions,
   ): AsyncGenerator<readonly NormalizedFocusCostLineItem[]> {
     const batch: NormalizedFocusCostLineItem[] = [];
     try {
       for (const object of objects) {
+        await ensureNotCancelled(options);
         const response = await this.call(job, 'objectstorage', () => withOciProviderRetry(() => client.getObject({
           namespaceName: object.namespaceName,
           bucketName: object.bucketName,
           objectName: object.objectName,
-        })));
+        }), undefined, undefined, undefined, options.signal), options.signal);
         for await (const line of parseFocusCsvStream(
           toAsyncByteChunks(response.getObjectBody ?? response.value),
           {
@@ -249,10 +272,16 @@ export class OciBillingCollector {
         )) {
           if (!isFocusRowInWindow(line, job)) continue;
           batch.push(line);
-          if (batch.length >= 1000) yield batch.splice(0, batch.length);
+          if (batch.length >= 1000) {
+            await ensureNotCancelled(options);
+            yield batch.splice(0, batch.length);
+          }
         }
       }
-      if (batch.length > 0) yield batch;
+      if (batch.length > 0) {
+        await ensureNotCancelled(options);
+        yield batch;
+      }
     } finally {
       client.close?.();
     }
@@ -262,10 +291,11 @@ export class OciBillingCollector {
     job: CloudIngestionJobContext,
     api: 'objectstorage' | 'usage',
     operation: () => Promise<T>,
+    signal?: AbortSignal,
   ): Promise<T> {
     return this.dependencies.withRateLimit === undefined
       ? operation()
-      : this.dependencies.withRateLimit(job, api, operation);
+      : this.dependencies.withRateLimit(job, api, operation, signal);
   }
 
   private emptyResult(
@@ -338,4 +368,11 @@ function parseUsageTimestamp(value: Date | string | undefined, fallback: Date): 
     if (!Number.isNaN(parsed.getTime())) return parsed;
   }
   return fallback;
+}
+
+async function ensureNotCancelled(options: CloudIngestionCollectOptions): Promise<void> {
+  if (options.signal?.aborted === true) throw new Error('OCI provider request cancelled');
+  if (options.isCancellationRequested !== undefined && await options.isCancellationRequested()) {
+    throw new Error('OCI provider request cancelled');
+  }
 }

@@ -20,6 +20,7 @@ import type { ResourceLinkageController } from '../controllers/ResourceLinkageCo
  * | POST   | /jobs/:jobId/archive | requireManager | cloudConnectionController.archiveIngestionJob |
  * | GET    | /data-quality  | requireAuth | cloudConnectionController.listDataQuality      |
  * | GET    | /readiness     | requireAuth | cloudConnectionController.getIngestionReadiness|
+ * | GET    | /coverage      | requireAuth | cloudConnectionController.listMetricCoverage  |
  * | GET    | /resource-linkage | requireAuth | resourceLinkageController.getReadiness         |
  * | POST   | /focus-sources | requireAuth | cloudConnectionController.configureFocusSource |
  *
@@ -50,6 +51,7 @@ export function createIngestionRoutes(
   }
   router.get('/data-quality', requireAuth, cloudConnectionController.listDataQuality);
   router.get('/readiness', requireAuth, cloudConnectionController.getIngestionReadiness);
+  router.get('/coverage', requireAuth, cloudConnectionController.listMetricCoverage);
   if (resourceLinkageController !== undefined) {
     router.get('/resource-linkage', requireAuth, resourceLinkageController.getReadiness);
   }

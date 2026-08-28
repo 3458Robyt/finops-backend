@@ -16,6 +16,8 @@ import type {
   IngestionJobWindowItem,
   IngestionReadinessSummary,
   IngestionJobHistoryItem,
+  IngestionMetricCoverageQuery,
+  IngestionMetricCoverageResult,
   IngestionJobSummary,
   StoreCloudCredentialInput,
   UpdateCloudConnectionInput,
@@ -37,6 +39,7 @@ import {
 import { PrismaCloudCredentialRepository } from './PrismaCloudCredentialRepository.js';
 import { PrismaCloudConnectionConfigurationRepository } from './PrismaCloudConnectionConfigurationRepository.js';
 import { invalidatedValidationData } from './cloudConnectionMetadata.js';
+import { isValidationAuthenticated } from './cloudConnectionValidation.js';
 import { CredentialCipher } from '../security/CredentialCipher.js';
 import { PrismaCloudIngestionReadRepository } from './PrismaCloudIngestionReadRepository.js';
 import { PrismaCloudIngestionCommandRepository } from './PrismaCloudIngestionCommandRepository.js';
@@ -362,6 +365,12 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     return this.ingestionReadRepository.listIngestionReadinessForTenant(tenantId);
   }
 
+  public listMetricCoverageForTenant(
+    input: IngestionMetricCoverageQuery,
+  ): Promise<IngestionMetricCoverageResult> {
+    return this.ingestionReadRepository.listMetricCoverageForTenant(input);
+  }
+
   public async configureFocusSourceForConnection(
     input: ConfigureFocusSourceForConnectionInput,
   ): Promise<ConfigureFocusSourceForConnectionResult | null> {
@@ -379,20 +388,4 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
   ): Promise<ConfigureMetricDefinitionsForConnectionResult | null> {
     return this.configurationRepository.configureMetricDefinitionsForConnection(input);
   }
-}
-
-function isValidationAuthenticated(validation: Readonly<Record<string, unknown>>): boolean {
-  const authentication = validation['authentication'];
-  if (isPlainRecord(authentication) && authentication['status'] === 'VERIFIED') return true;
-
-  const capabilities = validation['capabilities'];
-  return Array.isArray(capabilities) && capabilities.some((item) => (
-    isPlainRecord(item)
-    && item['capability'] === 'IDENTITY'
-    && item['status'] === 'AVAILABLE'
-  ));
-}
-
-function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

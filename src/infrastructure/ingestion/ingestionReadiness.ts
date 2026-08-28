@@ -1,6 +1,7 @@
 import type {
   IngestionReadinessConnectionSummary,
   IngestionReadinessIssue,
+  IngestionOperationalReadiness,
   IngestionReadinessSummary,
 } from '../../domain/interfaces/ICloudConnectionRepository.js';
 import type { IngestionSourceType, ProviderCode } from '../../domain/models/CloudConnection.js';
@@ -33,6 +34,7 @@ export interface BuildIngestionReadinessInput {
   readonly connections: readonly IngestionReadinessConnectionInput[];
   readonly globalIssues?: readonly IngestionReadinessIssue[];
   readonly missingProviderMessageSuffix?: string;
+  readonly operational?: IngestionOperationalReadiness;
 }
 
 export function buildIngestionReadinessSummary(
@@ -142,6 +144,7 @@ export function buildIngestionReadinessSummary(
     generatedAt: input.generatedAt,
     connections,
     issues,
+    ...(input.operational === undefined ? {} : { operational: input.operational }),
   };
 }
 

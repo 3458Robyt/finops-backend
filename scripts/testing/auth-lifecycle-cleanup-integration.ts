@@ -25,14 +25,18 @@ try {
   await createSchema(baseUrl, schema);
   await runCommand(process.execPath, [prismaCli, 'migrate', 'deploy'], { DATABASE_URL: isolatedUrl });
 
-  admin = new PrismaClient({ adapter: new PrismaPg({ connectionString: isolatedUrl }, { schema }) });
+  admin = new PrismaClient({
+    adapter: new PrismaPg(createIntegrationPool(isolatedUrl, schema), { schema, disposeExternalPool: true }),
+  });
   const runtimeConfig = { runtimeEnforce: true, runtimeRole: 'finops_runtime' } as const;
   runtimePool = createTenantAwarePool(isolatedUrl, schema, runtimeConfig);
   runtime = new PrismaClient({ adapter: new PrismaPg(runtimePool, { schema }) });
 
-  const now = new Date('2026-08-12T12:00:00.000Z');
-  const expired = new Date('2026-08-12T11:00:00.000Z');
-  const future = new Date('2026-08-13T12:00:00.000Z');
+  // Keep the fixture relative to the database clock because the RLS cleanup
+  // policy deliberately compares expiration against CURRENT_TIMESTAMP.
+  const now = new Date();
+  const expired = new Date(now.getTime() - 60 * 60 * 1000);
+  const future = new Date(now.getTime() + 24 * 60 * 60 * 1000);
   const tenant = await admin.tenant.create({ data: { name: 'Auth cleanup integration', slug: schema } });
   const user = await admin.user.create({
     data: { tenantId: tenant.id, email: `${schema}@example.test`, name: 'Cleanup Fixture', passwordHash: 'fixture' },

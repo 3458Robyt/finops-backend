@@ -6,6 +6,7 @@ import * as objectstorage from 'oci-objectstorage';
 import * as usageapi from 'oci-usageapi';
 import type {
   CloudIngestionJobContext,
+  CloudIngestionCollectOptions,
   CloudIngestionConnection,
   CloudConnectionValidationResult,
   CloudCapabilityValidation,
@@ -57,14 +58,15 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
 
   constructor(private readonly rateCoordinator = new IngestionRateCoordinator()) {
     this.billing = new OciBillingCollector({
-      createObjectStorageClient: (job) => this.createObjectStorageClient(job),
-      createUsageClient: (job) => this.createUsageClient(job),
-      withRateLimit: (job, api, operation) => this.rateCoordinator.run(
+      createObjectStorageClient: (job, signal) => this.createObjectStorageClient(job, signal),
+      createUsageClient: (job, signal) => this.createUsageClient(job, signal),
+      withRateLimit: (job, api, operation, signal) => this.rateCoordinator.run(
         `oci:${job.connection.rootExternalId}:${this.regionKey(job)}:${api}`,
         api === 'usage'
           ? { requestsPerSecond: 2, maxConcurrent: 1 }
           : { requestsPerSecond: 5, maxConcurrent: 2 },
         operation,
+        signal,
       ),
     });
   }
@@ -88,7 +90,7 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
       const discovery = await discoverOciFocusObjects(
         job,
         client,
-        withOciProviderRetry,
+        (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
         true,
         (operation) => this.rateCoordinator.run(
           `oci:${connection.rootExternalId}:objectstorage`,
@@ -118,11 +120,12 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     }
   }
 
-  public async collect(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {
+  public async collect(job: CloudIngestionJobContext, options: CloudIngestionCollectOptions = {}): Promise<CloudIngestionResult> {
     return this.rateCoordinator.run(
       `oci:${job.connection.rootExternalId}:${this.regionKey(job)}:job`,
       { requestsPerSecond: 100, maxConcurrent: 2 },
-      () => this.collectInternal(job),
+      () => this.collectInternal(job, options),
+      options.signal,
     );
   }
 
@@ -150,9 +153,9 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     });
   }
 
-  private async collectInternal(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {
+  private async collectInternal(job: CloudIngestionJobContext, options: CloudIngestionCollectOptions): Promise<CloudIngestionResult> {
     if (job.sourceType === 'BILLING_EXPORT') {
-      return this.billing.collect(job);
+      return this.billing.collect(job, options);
     }
 
     if (job.sourceType === 'INVENTORY') {
@@ -197,14 +200,14 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     }
 
     return collectOciTechnicalMetrics(job, {
-      createClient: (context) => this.createMonitoringClient(context),
-      withRetry: withOciProviderRetry,
+      createClient: (context, signal) => this.createMonitoringClient(context, signal),
+      withRetry: (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
       withRateLimit: (context, operation) => this.rateCoordinator.run(
         this.monitoringRateKey(context.connection),
         { requestsPerSecond: 8, maxConcurrent: 4 },
         operation,
       ),
-    });
+    }, options);
   }
 
   private createMonitoringClient(job: CloudIngestionJobContext, signal?: AbortSignal): OciMonitoringClient {
@@ -280,11 +283,12 @@ message: 'Lectura del almacenamiento FOCUS en OCI Object Storage disponible.',
 ));
 }
 
-private createUsageClient(job: CloudIngestionJobContext): OciUsageClient {
-const provider = this.createAuthProvider(job);
-  return new usageapi.UsageapiClient({
-    authenticationDetailsProvider: provider,
-  }, {
+private createUsageClient(job: CloudIngestionJobContext, signal?: AbortSignal): OciUsageClient {
+ const provider = this.createAuthProvider(job);
+   return new usageapi.UsageapiClient({
+     authenticationDetailsProvider: provider,
+     ...(signal === undefined ? {} : { httpOptions: { signal } }),
+   }, {
     circuitBreaker: new common.CircuitBreaker({ disableClientCircuitBreaker: true }),
   }) as unknown as OciUsageClient;
 }

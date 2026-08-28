@@ -299,4 +299,14 @@ export interface IResourceMetricRepository {
     tenantId: string,
     filters: TechnicalMetricSummaryFilters,
   ): Promise<readonly TechnicalMetricSummaryItem[]>;
+
+  /**
+   * Fast overview projection backed by daily rollups. It is intentionally
+   * optional so evidence/audit adapters can continue to provide exact raw
+   * summaries while the UI uses the bounded read model.
+   */
+  listMetricSummariesForTenantFast?(
+    tenantId: string,
+    filters: TechnicalMetricSummaryFilters,
+  ): Promise<readonly TechnicalMetricSummaryItem[]>;
 }

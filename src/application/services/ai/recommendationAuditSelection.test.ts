@@ -65,4 +65,32 @@ describe('selectAuditedRecommendationDrafts', () => {
     expect(result.accepted).toHaveLength(0);
     expect(result.rejected).toHaveLength(1);
   });
+
+  it('keeps legacy global-audit compatibility but requires IDs for candidate audits', () => {
+    const legacyDraft = {
+      ...draft('service-1', 80),
+      evidence: { evidenceLevel: 'COST_AND_USAGE' as const },
+    };
+    const globalResult = selectAuditedRecommendationDrafts({
+      drafts: [legacyDraft],
+      snapshot,
+      auditReport: { verdict: 'APPROVED', score: 95, checks: [], blockingIssues: [], requiredChanges: [] },
+    });
+    expect(globalResult.accepted).toHaveLength(1);
+
+    const candidateResult = selectAuditedRecommendationDrafts({
+      drafts: [legacyDraft],
+      snapshot,
+      auditReport: {
+        verdict: 'APPROVED',
+        score: 95,
+        checks: [],
+        blockingIssues: [],
+        requiredChanges: [],
+        candidateAudits: [{ index: 0, candidateId: 'draft-0', verdict: 'APPROVED', score: 95, checks: [], blockingIssues: [], requiredChanges: [] }],
+      },
+    });
+    expect(candidateResult.accepted).toHaveLength(0);
+    expect(candidateResult.candidateAudits[0]?.blockingIssues.join(' ')).toContain('candidato autorizado');
+  });
 });

@@ -55,7 +55,10 @@ export function selectAuditedRecommendationDrafts(input: {
     const aiBlockingIssues = supplied?.blockingIssues ?? [];
     const aiRequiredChanges = supplied?.requiredChanges ?? [];
     const globalIssues = globalIssuesForItem(input.auditReport, index, hasItemAudits);
-    const missingCandidateId = readCandidateId(draft.evidence) === undefined;
+    // Los auditores actuales deben devolver auditorías por candidato con IDs
+    // explícitos. Conservamos compatibilidad con el formato legado de auditoría
+    // global, que no podía identificar candidatos individualmente.
+    const missingCandidateId = hasItemAudits && readCandidateId(draft.evidence) === undefined;
     const blockingIssues = [
       ...aiBlockingIssues,
       ...globalIssues,

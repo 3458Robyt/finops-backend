@@ -49,6 +49,7 @@ export class TechnicalMetricsController {
         this.parseResourceFilters(req),
       );
 
+      setTechnicalReadCacheHeaders(res);
       res.status(200).json({ success: true, resources });
     } catch (error: unknown) {
       this.respondWithError(res, error);
@@ -66,6 +67,7 @@ export class TechnicalMetricsController {
         res.status(404).json({ success: false, error: 'Recurso no encontrado.', code: 'NOT_FOUND' });
         return;
       }
+      setTechnicalReadCacheHeaders(res);
       res.status(200).json({ success: true, resource });
     } catch (error: unknown) {
       this.respondWithError(res, error);
@@ -83,6 +85,7 @@ export class TechnicalMetricsController {
         res.status(404).json({ success: false, error: 'Recurso no encontrado.', code: 'NOT_FOUND' });
         return;
       }
+      setTechnicalReadCacheHeaders(res);
       res.status(200).json({ success: true, summary });
     } catch (error: unknown) {
       this.respondWithError(res, error);
@@ -111,6 +114,7 @@ export class TechnicalMetricsController {
         this.parseLimit(req.query['limit']),
       );
 
+      setTechnicalReadCacheHeaders(res);
       res.status(200).json({ success: true, samples });
     } catch (error: unknown) {
       this.respondWithError(res, error);
@@ -125,6 +129,7 @@ export class TechnicalMetricsController {
         this.parseMetricQuery(req),
       );
 
+      setTechnicalReadCacheHeaders(res);
       res.status(200).json({ success: true, overview });
     } catch (error: unknown) {
       this.respondWithError(res, error);
@@ -147,6 +152,7 @@ export class TechnicalMetricsController {
 
       const result = await this.technicalMetricsService.getSeries(tenantId, query);
 
+      setTechnicalReadCacheHeaders(res);
       res.status(200).json({ success: true, series: result.series, meta: result.meta });
     } catch (error: unknown) {
       this.respondWithError(res, error);
@@ -161,6 +167,7 @@ export class TechnicalMetricsController {
         this.parseMetricQuery(req),
       );
 
+      setTechnicalReadCacheHeaders(res);
       res.status(200).json({ success: true, coverage });
     } catch (error: unknown) {
       this.respondWithError(res, error);
@@ -328,4 +335,15 @@ export class TechnicalMetricsController {
       'technical_metrics_operation_failed',
     );
   }
+}
+
+/**
+ * Short, private HTTP caching is safe for read-only technical projections and
+ * prevents repeated filter changes from re-running an identical query while
+ * keeping tenant data out of shared proxies.
+ */
+function setTechnicalReadCacheHeaders(res: Response): void {
+  if (typeof res.setHeader !== 'function') return;
+  res.setHeader('Cache-Control', 'private, max-age=5, stale-while-revalidate=15');
+  res.setHeader('Vary', 'Authorization, Cookie');
 }

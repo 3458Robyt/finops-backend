@@ -146,9 +146,9 @@ export class RecommendationAnalysisRunProcessor {
       };
     });
     const rejectedCandidateAudits = new Map(
-      (result.analysis.auditReport?.candidateAudits ?? [])
-        .filter((audit) => audit.verdict !== 'APPROVED')
-        .map((audit) => [audit.candidateId ?? `draft-${audit.index}`, [
+      (result.analysis.candidateAudits ?? [])
+        .filter(({ audit }) => audit.verdict !== 'APPROVED')
+        .map(({ audit }) => [audit.candidateId ?? `draft-${audit.index}`, [
           ...audit.blockingIssues,
           ...audit.requiredChanges,
           'El auditor IA rechazó este candidato; no se publicó la recomendación.',

@@ -89,6 +89,12 @@ export class FinOpsAiRecommendationRunner {
           model: this.mainModel,
           auditorModel: this.auditorModel,
           readinessSummary: readinessReport.summary,
+          evidenceHash: prepared.evidenceHash,
+          candidateAudits: candidateAudits.map(({ audit, draft, deterministicEvidence }) => ({
+            ...audit,
+            draft,
+            ...(deterministicEvidence === undefined ? {} : { deterministicEvidence }),
+          })),
           candidates: readinessReport.candidates.map((candidate) => ({
             id: candidate.id,
             readiness: candidate.readiness,

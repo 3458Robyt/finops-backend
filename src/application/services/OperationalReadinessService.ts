@@ -1,6 +1,7 @@
 import type { ProcessHeartbeatService } from './ProcessHeartbeatService.js';
 import type { RuntimeConfig } from '../../infrastructure/config/runtimeConfigTypes.js';
 import type { IOperationalReadinessRepository } from '../../domain/interfaces/IOperationalReadinessRepository.js';
+import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 
 export type ReadinessCheckStatus = 'ok' | 'failed' | 'not_configured' | 'not_required';
 
@@ -54,7 +55,11 @@ export class OperationalReadinessService {
 
   private async heartbeatStatus(): Promise<ReadinessCheckStatus> {
     if (!this.config.operations.processHeartbeat.enabled) return 'not_required';
-    return await this.processHeartbeatService.isFresh(this.processId)
+    const isFresh = await runWithDatabaseContext(
+      { workerId: this.processId, role: 'MASTER_ADMIN' },
+      () => this.processHeartbeatService.isFresh(this.processId),
+    );
+    return isFresh
       ? 'ok'
       : 'failed';
   }

@@ -1,9 +1,26 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { IMasterAdminRepository, MasterAdminActor } from '../../domain/interfaces/IMasterAdminRepository.js';
-import type { DeletedPendingIngestionJobs, IMasterAdminIngestionJobRepository } from '../../domain/interfaces/IMasterAdminIngestionJobRepository.js';
+import type { DeletedPendingIngestionJobs, IMasterAdminIngestionJobRepository, MasterAdminIngestionJobPage } from '../../domain/interfaces/IMasterAdminIngestionJobRepository.js';
 import { MasterAdminIngestionJobService } from './MasterAdminIngestionJobService.js';
 
 describe('MasterAdminIngestionJobService', () => {
+  test('keeps listing read-only and does not reconcile leases as a side effect', async () => {
+    const actor: MasterAdminActor = { id: 'master-1', tenantId: 'tenant-master', operatorOrganizationId: 'org-1', role: 'MASTER_ADMIN' };
+    const page: MasterAdminIngestionJobPage = {
+      jobs: [],
+      hasMore: false,
+      summary: { total: 0, pending: 0, running: 0, success: 0, failed: 0, cancelled: 0, skipped: 0 },
+    };
+    const reconcile = vi.fn().mockResolvedValue({ requeued: 0, failed: 0, cancelled: 0 });
+    const repository = { list: vi.fn().mockResolvedValue(page), reconcileStaleJobs: reconcile } as unknown as IMasterAdminIngestionJobRepository;
+    const adminRepository = { findActor: vi.fn().mockResolvedValue(actor) } as unknown as IMasterAdminRepository;
+
+    await expect(new MasterAdminIngestionJobService(repository, adminRepository).list({ actorUserId: actor.id })).resolves.toEqual(page);
+
+    expect(repository.list).toHaveBeenCalledOnce();
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+
   test('deletes pending jobs globally and audits each affected tenant', async () => {
     const audit = vi.fn().mockResolvedValue(undefined);
     const actor: MasterAdminActor = { id: 'master-1', tenantId: 'tenant-master', operatorOrganizationId: 'org-1', role: 'MASTER_ADMIN' };

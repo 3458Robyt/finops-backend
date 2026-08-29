@@ -8,6 +8,7 @@ import type {
 } from '../../domain/interfaces/IOperationalReadinessRepository.js';
 import type { IProcessHeartbeatRepository } from '../../domain/interfaces/IProcessHeartbeatRepository.js';
 import type { RuntimeConfig } from '../../infrastructure/config/runtimeConfigTypes.js';
+import { getDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 
 const processId = 'finops:api:test:42';
 const expectedMigration = '202608120005_runtime_process_heartbeats';
@@ -31,6 +32,7 @@ class FakeReadinessRepository implements IOperationalReadinessRepository {
 
 class FakeHeartbeatRepository implements IProcessHeartbeatRepository {
   public lastHeartbeat = new Date();
+  public observedWorkerId: string | undefined;
 
   public async upsert(input: Parameters<IProcessHeartbeatRepository['upsert']>[0]): Promise<void> {
     this.lastHeartbeat = input.heartbeatAt;
@@ -39,6 +41,7 @@ class FakeHeartbeatRepository implements IProcessHeartbeatRepository {
   public async markStopped(): Promise<boolean> { return true; }
 
   public async findById(id: string) {
+    this.observedWorkerId = getDatabaseContext()?.workerId;
     if (id !== processId) return null;
     return {
       processId,
@@ -95,6 +98,7 @@ describe('OperationalReadinessService', () => {
       },
     });
     expect(metrics.toPrometheus()).toContain('finops_process_heartbeat_writes_total');
+    expect(heartbeatRepository.observedWorkerId).toBe(processId);
   });
 
   it('fails closed when the migration or heartbeat is stale', async () => {

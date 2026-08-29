@@ -27,7 +27,6 @@ export class MasterAdminIngestionJobService {
 
   public async list(command: MasterAdminIngestionJobListCommand): Promise<MasterAdminIngestionJobPage> {
     await this.requireMasterAdmin(command.actorUserId);
-    await this.repository.reconcileStaleJobs?.();
     const limit = this.normalizeLimit(command.limit);
     return this.repository.list({
       ...(command.tenantId !== undefined ? { tenantId: command.tenantId } : {}),

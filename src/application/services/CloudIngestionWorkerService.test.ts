@@ -182,4 +182,26 @@ describe('CloudIngestionWorkerService', () => {
     expect(markCancelled).toHaveBeenCalledWith(job, 'worker-1');
     expect(result).toMatchObject({ processed: true, jobId: job.id, errorMessage: 'aborted' });
   });
+
+  it('does not collect when the lease is already lost during initial progress update', async () => {
+    const job = createJob('oci');
+    const collect = vi.fn();
+    const provider: CloudIngestionProvider = {
+      providerCode: 'oci',
+      validate: vi.fn(async () => ({ providerCode: 'oci', capabilities: [] })),
+      collect,
+    };
+    const repository = {
+      claimNextPendingJob: vi.fn(async () => job),
+      updateJobProgress: vi.fn(async () => false),
+    } as unknown as PrismaCloudIngestionJobRepository;
+    const service = new CloudIngestionWorkerService(repository, [provider]);
+
+    await expect(service.runOnce('worker-1')).resolves.toMatchObject({
+      processed: true,
+      jobId: job.id,
+      errorMessage: 'Ingestion job lease was lost before collection',
+    });
+    expect(collect).not.toHaveBeenCalled();
+  });
 });

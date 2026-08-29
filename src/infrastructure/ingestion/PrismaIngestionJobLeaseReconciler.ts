@@ -29,6 +29,13 @@ export class PrismaIngestionJobLeaseReconciler {
           error_message = 'Cancelado mientras el trabajo estaba bloqueado.',
           locked_at = NULL,
           locked_by = NULL,
+          result_summary = COALESCE(result_summary, '{}'::jsonb) || jsonb_build_object(
+            'leaseRecovery', jsonb_build_object(
+              'action', 'CANCELLED',
+              'at', CAST(${now.toISOString()} AS text),
+              'reason', 'cancel_requested_while_lease_expired'
+            )
+          ),
           progress = jsonb_build_object(
             'phase', 'CANCELLED',
             'message', 'Cancelado tras expirar el bloqueo.',
@@ -46,6 +53,13 @@ export class PrismaIngestionJobLeaseReconciler {
           error_message = 'Ingestion job lease expired after exhausting retry attempts',
           locked_at = NULL,
           locked_by = NULL,
+          result_summary = COALESCE(result_summary, '{}'::jsonb) || jsonb_build_object(
+            'leaseRecovery', jsonb_build_object(
+              'action', 'FAILED',
+              'at', CAST(${now.toISOString()} AS text),
+              'reason', 'retry_attempts_exhausted'
+            )
+          ),
           progress = jsonb_build_object(
             'phase', 'FAILED',
             'message', 'Trabajo agotó sus intentos después de expirar el bloqueo.',
@@ -65,6 +79,13 @@ export class PrismaIngestionJobLeaseReconciler {
           error_message = 'Trabajo recuperado después de expirar el bloqueo; se reintentará.',
           locked_at = NULL,
           locked_by = NULL,
+          result_summary = COALESCE(result_summary, '{}'::jsonb) || jsonb_build_object(
+            'leaseRecovery', jsonb_build_object(
+              'action', 'REQUEUED',
+              'at', CAST(${now.toISOString()} AS text),
+              'reason', 'lease_expired_with_attempts_available'
+            )
+          ),
           progress = jsonb_build_object(
             'phase', 'RETRY_WAIT',
             'message', 'Trabajo recuperado y listo para reintento.',

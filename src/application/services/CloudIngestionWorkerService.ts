@@ -89,26 +89,49 @@ export class CloudIngestionWorkerService {
     }
 
     let leaseLost = false;
+    const abortController = new AbortController();
+    const markLeaseLost = (): void => {
+      if (leaseLost) return;
+      leaseLost = true;
+      this.metrics?.increment('ingestion_job_lease_lost_total', { provider: job.connection.providerCode });
+      console.warn(JSON.stringify({
+        level: 'warn',
+        event: 'ingestion_job_lease_lost',
+        jobId: job.id,
+        workerId,
+        attempt: job.attempt,
+      }));
+      abortController.abort(new Error('Ingestion job lease was lost'));
+    };
     let progress: IngestionJobProgress = {
       phase: 'FETCHING',
       message: 'Consultando datos del proveedor cloud.',
       updatedAt: new Date().toISOString(),
     };
-    await this.writeProgress(job.id, workerId, job.attempt, progress);
+    if (!await this.writeProgress(job.id, workerId, job.attempt, progress)) {
+      markLeaseLost();
+      return {
+        processed: true,
+        jobId: job.id,
+        providerCode: job.connection.providerCode,
+        errorMessage: 'Ingestion job lease was lost before collection',
+      };
+    }
     if (await this.cancellationRequested(job.id, workerId, job.attempt)) {
       await this.cancel(job, workerId);
       return { processed: true, jobId: job.id, providerCode: job.connection.providerCode, errorMessage: 'Cancelado por el usuario.' };
     }
     const heartbeat = setInterval(() => {
       void this.jobs.refreshJobLease(job.id, workerId, job.attempt)
-        .then((renewed) => { leaseLost ||= !renewed; })
-        .catch(() => { leaseLost = true; });
+        .then((renewed) => { if (!renewed) markLeaseLost(); })
+        .catch(() => { markLeaseLost(); });
     }, this.heartbeatMs);
 
     const progressTimer = setInterval(() => {
-      void this.writeProgress(job.id, workerId, job.attempt, progress).catch(() => undefined);
+      void this.writeProgress(job.id, workerId, job.attempt, progress)
+        .then((updated) => { if (!updated) markLeaseLost(); })
+        .catch(() => { markLeaseLost(); });
     }, this.progressUpdateMs);
-    const abortController = new AbortController();
     let cancellationPollInFlight = false;
     const cancellationTimer = setInterval(() => {
       if (cancellationPollInFlight || abortController.signal.aborted) return;
@@ -147,7 +170,15 @@ export class CloudIngestionWorkerService {
         samples: result.metricSamples.length,
         updatedAt: new Date().toISOString(),
       };
-      await this.writeProgress(job.id, workerId, job.attempt, progress);
+      if (!await this.writeProgress(job.id, workerId, job.attempt, progress)) {
+        markLeaseLost();
+        return {
+          processed: true,
+          jobId: job.id,
+          providerCode: job.connection.providerCode,
+          errorMessage: 'Ingestion job lease was lost before persistence',
+        };
+      }
       const summary = await this.jobs.completeJob(
         job,
         result,
@@ -155,7 +186,12 @@ export class CloudIngestionWorkerService {
         workerId,
         (nextProgress) => {
           progress = nextProgress;
-          return this.writeProgress(job.id, workerId, job.attempt, nextProgress).then(() => undefined);
+          return this.writeProgress(job.id, workerId, job.attempt, nextProgress).then((updated) => {
+            if (!updated) {
+              markLeaseLost();
+              throw new Error('Ingestion job lease was lost while persisting progress');
+            }
+          });
         },
         async () => abortController.signal.aborted || await this.cancellationRequested(job.id, workerId, job.attempt),
       );
@@ -182,6 +218,14 @@ export class CloudIngestionWorkerService {
         summary,
       };
     } catch (error) {
+      if (leaseLost) {
+        return {
+          processed: true,
+          jobId: job.id,
+          providerCode: job.connection.providerCode,
+          errorMessage: safeErrorMessage(error),
+        };
+      }
       if (await this.cancellationRequested(job.id, workerId, job.attempt)) {
         await this.cancel(job, workerId);
       } else {
@@ -205,10 +249,11 @@ export class CloudIngestionWorkerService {
     workerId: string,
     attempt: number,
     progress: IngestionJobProgress,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (typeof this.jobs.updateJobProgress === 'function') {
-      await this.jobs.updateJobProgress(jobId, workerId, attempt, progress);
+      return this.jobs.updateJobProgress(jobId, workerId, attempt, progress);
     }
+    return true;
   }
 
   private async cancellationRequested(jobId: string, workerId: string, attempt: number): Promise<boolean> {

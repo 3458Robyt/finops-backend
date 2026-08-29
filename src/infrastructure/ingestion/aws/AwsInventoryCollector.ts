@@ -1,11 +1,16 @@
-import { DescribeInstancesCommand } from '@aws-sdk/client-ec2';
+import { DescribeInstancesCommand, DescribeRegionsCommand, DescribeVolumesCommand } from '@aws-sdk/client-ec2';
 import type { AwsCredentialIdentity } from '@smithy/types';
 import type {
   CloudIngestionJobContext,
   NormalizedCloudResource,
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
-import { getCredential, optionalString, readObjectArray, requireString } from '../providerConfig.js';
-import type { AwsCommandClient, AwsDescribeInstancesResponse } from './awsContracts.js';
+import { getCredential, optionalString, readObjectArray, readStringArray, requireString } from '../providerConfig.js';
+import type {
+  AwsCommandClient,
+  AwsDescribeInstancesResponse,
+  AwsDescribeRegionsResponse,
+  AwsDescribeVolumesResponse,
+} from './awsContracts.js';
 import {
   awsTagsToRecord,
   inferAwsResourceType,
@@ -32,7 +37,11 @@ interface AwsInventoryCollectorDependencies {
   readonly createEc2Client: (
     region: string,
     credentials: AwsCredentialIdentity,
-  ) => AwsCommandClient<AwsDescribeInstancesResponse>;
+  ) => AwsCommandClient<AwsDescribeInstancesResponse & AwsDescribeRegionsResponse & AwsDescribeVolumesResponse>;
+  readonly discoverRegions?: (
+    region: string,
+    credentials: AwsCredentialIdentity,
+  ) => Promise<readonly string[]>;
 }
 
 export async function collectAwsInventory(
@@ -68,9 +77,10 @@ export async function collectAwsInventory(
       warnings.push('AWS inventory SDK skipped: missing INVENTORY_READ or OPERATIONAL credential.');
     } else {
       const assumed = await dependencies.assumeRole(credential, defaultRegion);
-      const inventory = await collectEc2Resources(job, assumed, defaultRegion, dependencies.createEc2Client);
+      const inventory = await collectEc2Resources(job, assumed, defaultRegion, dependencies);
       sdkResources = inventory.resources;
       apiCallCount = inventory.apiCallCount + 1;
+      warnings.push(...inventory.warnings);
     }
   } catch (error) {
     warnings.push(`AWS inventory SDK skipped: ${safeAwsProviderError(error)}`);
@@ -111,44 +121,123 @@ async function collectEc2Resources(
   job: CloudIngestionJobContext,
   credentials: AwsCredentialIdentity,
   defaultRegion: string,
-  createClient: AwsInventoryCollectorDependencies['createEc2Client'],
-): Promise<{ readonly apiCallCount: number; readonly resources: readonly NormalizedCloudResource[] }> {
+  dependencies: AwsInventoryCollectorDependencies,
+): Promise<{
+  readonly apiCallCount: number;
+  readonly resources: readonly NormalizedCloudResource[];
+  readonly warnings: readonly string[];
+}> {
   const resources: NormalizedCloudResource[] = [];
+  const warnings: string[] = [];
   let apiCallCount = 0;
-  for (const region of readAwsInventoryRegions(job, defaultRegion)) {
-    const client = createClient(region, credentials);
-    let nextToken: string | undefined;
-    do {
-      apiCallCount += 1;
-      const response = await client.send(new DescribeInstancesCommand({
-        ...(nextToken !== undefined ? { NextToken: nextToken } : {}),
-      }));
-      for (const reservation of response.Reservations ?? []) {
-        for (const instance of reservation.Instances ?? []) {
-          if (instance.InstanceId === undefined) continue;
-          const tags = awsTagsToRecord(instance.Tags);
+  const resolvedRegions = await resolveInventoryRegions(job, credentials, defaultRegion, dependencies);
+  apiCallCount += resolvedRegions.apiCallCount;
+  const regions = resolvedRegions.regions;
+  for (const region of regions) {
+    const client = dependencies.createEc2Client(region, credentials);
+    try {
+      let nextToken: string | undefined;
+      do {
+        apiCallCount += 1;
+        const response = await client.send(new DescribeInstancesCommand({
+          ...(nextToken !== undefined ? { NextToken: nextToken } : {}),
+        }));
+        for (const reservation of response.Reservations ?? []) {
+          for (const instance of reservation.Instances ?? []) {
+            if (instance.InstanceId === undefined) continue;
+            const tags = awsTagsToRecord(instance.Tags);
+            resources.push({
+              tenantId: job.tenantId,
+              cloudConnectionId: job.cloudConnectionId,
+              provider: 'AWS',
+              externalResourceId: instance.InstanceId,
+              name: typeof tags['Name'] === 'string' && tags['Name'].trim() !== '' ? tags['Name'] : instance.InstanceId,
+              resourceType: 'COMPUTE_INSTANCE',
+              serviceName: 'Amazon EC2',
+              regionId: region,
+              status: normalizeAwsResourceStatus(instance.State?.Name),
+              tags,
+              rawResource: {
+                source: 'AWS_EC2_SDK',
+                instanceType: instance.InstanceType,
+                state: instance.State?.Name,
+                availabilityZone: instance.Placement?.AvailabilityZone,
+              },
+            });
+          }
+        }
+        nextToken = response.NextToken;
+      } while (nextToken !== undefined);
+    } catch (error) {
+      warnings.push(`AWS EC2 no pudo listar instancias en ${region}: ${safeAwsProviderError(error)}`);
+    }
+
+    try {
+      let volumeNextToken: string | undefined;
+      do {
+        apiCallCount += 1;
+        const response = await client.send(new DescribeVolumesCommand({
+          ...(volumeNextToken !== undefined ? { NextToken: volumeNextToken } : {}),
+        }));
+        for (const volume of response.Volumes ?? []) {
+          if (volume.VolumeId === undefined) continue;
+          const tags = awsTagsToRecord(volume.Tags);
           resources.push({
             tenantId: job.tenantId,
             cloudConnectionId: job.cloudConnectionId,
             provider: 'AWS',
-            externalResourceId: instance.InstanceId,
-            name: typeof tags['Name'] === 'string' && tags['Name'].trim() !== '' ? tags['Name'] : instance.InstanceId,
-            resourceType: 'COMPUTE_INSTANCE',
-            serviceName: 'Amazon EC2',
+            externalResourceId: volume.VolumeId,
+            name: typeof tags['Name'] === 'string' && tags['Name'].trim() !== '' ? tags['Name'] : volume.VolumeId,
+            resourceType: 'BLOCK_VOLUME',
+            serviceName: 'Amazon EBS',
             regionId: region,
-            status: normalizeAwsResourceStatus(instance.State?.Name),
+            status: normalizeAwsResourceStatus(volume.State),
             tags,
             rawResource: {
-              source: 'AWS_EC2_SDK',
-              instanceType: instance.InstanceType,
-              state: instance.State?.Name,
-              availabilityZone: instance.Placement?.AvailabilityZone,
+              source: 'AWS_EBS_SDK',
+              volumeType: volume.VolumeType,
+              sizeGiB: volume.Size,
+              iops: volume.Iops,
+              throughputMiBps: volume.Throughput,
+              availabilityZone: volume.AvailabilityZone,
+              encrypted: volume.Encrypted,
+              attachments: volume.Attachments,
             },
           });
         }
-      }
-      nextToken = response.NextToken;
-    } while (nextToken !== undefined);
+        volumeNextToken = response.NextToken;
+      } while (volumeNextToken !== undefined);
+    } catch (error) {
+      warnings.push(`AWS EBS no pudo listar volúmenes en ${region}: ${safeAwsProviderError(error)}`);
+    } finally {
+      client.destroy?.();
+    }
   }
-  return { apiCallCount, resources };
+  return { apiCallCount, resources, warnings: [...resolvedRegions.warnings, ...warnings] };
+}
+
+async function resolveInventoryRegions(
+  job: CloudIngestionJobContext,
+  credentials: AwsCredentialIdentity,
+  defaultRegion: string,
+  dependencies: AwsInventoryCollectorDependencies,
+): Promise<{ readonly regions: readonly string[]; readonly apiCallCount: number; readonly warnings: readonly string[] }> {
+  const configured = readStringArray(job.connection.metadata?.['awsInventoryRegions']);
+  if (configured.length > 0 || dependencies.discoverRegions === undefined) {
+    return { regions: readAwsInventoryRegions(job, defaultRegion), apiCallCount: 0, warnings: [] };
+  }
+
+  try {
+    const discovered = await dependencies.discoverRegions(defaultRegion, credentials);
+    const metricRegions = readAwsMetricDefinitions(job)
+      .map((definition) => definition.region)
+      .filter((region): region is string => region !== undefined);
+    return { regions: [...new Set([...discovered, ...metricRegions, defaultRegion])], apiCallCount: 1, warnings: [] };
+  } catch (error) {
+    return {
+      regions: readAwsInventoryRegions(job, defaultRegion),
+      apiCallCount: 1,
+      warnings: [`AWS no pudo descubrir regiones; se usará la configuración disponible: ${safeAwsProviderError(error)}`],
+    };
+  }
 }

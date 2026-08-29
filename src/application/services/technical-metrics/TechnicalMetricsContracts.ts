@@ -138,6 +138,7 @@ export interface TechnicalMetricsOverview {
 export interface TechnicalMetricSeriesPoint {
   readonly bucketStart: Date;
   readonly externalResourceId: string;
+  readonly cloudResourceId?: string;
   readonly providerNamespace?: string;
   readonly regionId?: string;
   readonly dimensionsHash?: string;

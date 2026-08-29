@@ -1,6 +1,8 @@
 import type { CloudIngestionJobContext } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { PrismaIngestionJobSupport } from './PrismaIngestionJobSupport.js';
+import { PrismaIngestionJobLeaseReconciler } from './PrismaIngestionJobLeaseReconciler.js';
+import type { IngestionJobReconciliationResult } from './PrismaIngestionJobLeaseReconciler.js';
 
 interface ClaimedJobRow {
   readonly id: string;
@@ -12,36 +14,18 @@ export class PrismaIngestionJobClaimRepository {
     private readonly prisma: PrismaClient,
     private readonly support: PrismaIngestionJobSupport,
     private readonly jobLeaseMs: number,
+    private readonly leaseReconciler = new PrismaIngestionJobLeaseReconciler(),
   ) {}
+
+  /** Requeues recoverable stale jobs and closes exhausted/cancelled leases. */
+  public reconcileStaleJobs(now = new Date()): Promise<IngestionJobReconciliationResult> {
+    return this.leaseReconciler.reconcile(this.prisma, this.jobLeaseMs, now);
+  }
 
   public async claimNextPendingJob(workerId: string): Promise<CloudIngestionJobContext | null> {
     const now = new Date();
-    const leaseExpiredBefore = new Date(now.getTime() - this.jobLeaseMs);
-
     return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`
-        UPDATE ingestion_jobs
-        SET status = 'FAILED',
-            completed_at = ${now},
-            error_message = 'Ingestion job lease expired after exhausting retry attempts',
-            locked_at = NULL,
-            locked_by = NULL
-        WHERE status = 'RUNNING'
-          AND locked_at < ${leaseExpiredBefore}
-          AND attempts >= max_attempts
-      `;
-      await tx.$executeRaw`
-        UPDATE ingestion_jobs
-        SET status = 'CANCELLED',
-            completed_at = ${now},
-            error_message = 'Cancelado mientras el trabajo estaba bloqueado.',
-            locked_at = NULL,
-            locked_by = NULL,
-            progress = jsonb_build_object('phase', 'CANCELLED', 'message', 'Cancelado tras expirar el bloqueo.', 'updatedAt', CAST(${now.toISOString()} AS text))
-        WHERE status = 'RUNNING'
-          AND cancel_requested_at IS NOT NULL
-          AND locked_at < ${leaseExpiredBefore}
-      `;
+      await this.leaseReconciler.reconcileInTransaction(tx, this.jobLeaseMs, now);
       const rows = await tx.$queryRaw<ClaimedJobRow[]>`
         SELECT id
         FROM ingestion_jobs
@@ -49,10 +33,7 @@ export class PrismaIngestionJobClaimRepository {
           AND available_at <= ${now}
           AND cancel_requested_at IS NULL
           AND archived_at IS NULL
-          AND (
-            status = 'PENDING'
-            OR (status = 'RUNNING' AND locked_at < ${leaseExpiredBefore})
-          )
+          AND status = 'PENDING'
         -- Technical backfills are consumed oldest-first so a newly requeued
         -- historical gap cannot wait behind newer jobs created earlier.
         ORDER BY priority ASC,

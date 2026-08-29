@@ -6,6 +6,7 @@ import { AiTraceRecorder } from './aiTraceRecorder.js';
 import type { FinOpsArtifactGenerator } from './finOpsArtifactGenerator.js';
 import type { FinOpsContextAssembler } from './finOpsContextAssembler.js';
 import type { GenerateExecutionPlanInput } from './finOpsAiTypes.js';
+import { isAuditApproved } from './auditApprovalPolicy.js';
 
 const approvedAuditVerdict = 'APPROVED';
 
@@ -56,7 +57,7 @@ export class FinOpsAiExecutionPlanRunner {
       responseText: firstRawResponse,
     });
 
-    if (auditReport.verdict !== approvedAuditVerdict) {
+    if (auditReport.verdict !== approvedAuditVerdict || !isAuditApproved(auditReport)) {
       throw new AiAuditRejectedError('AI audit rejected execution plan output', {
         diagnosticId: `audit-${input.tenantId}-${Date.now().toString(36)}`,
         audit: auditReport,

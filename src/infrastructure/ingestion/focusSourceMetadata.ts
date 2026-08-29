@@ -1,5 +1,6 @@
 import type { ProviderCode } from '../../domain/models/CloudConnection.js';
 import { readBoundedPositiveInteger } from './providerConfig.js';
+import { OCI_FOCUS_DEFAULT_MAX_OBJECTS, OCI_FOCUS_MAX_OBJECTS } from './oci/OciFocusSource.js';
 
 export type FocusSourceMode = 'location' | 'object';
 
@@ -102,7 +103,12 @@ function appendMetadataItem(input: {
 }
 
 function readMaxObjects(values: ReadonlyMap<string, string>): number {
-  return readBoundedPositiveInteger(numberOrUndefined(values.get('max-objects')), 100, 1, 1000);
+  return readBoundedPositiveInteger(
+    numberOrUndefined(values.get('max-objects')),
+    OCI_FOCUS_DEFAULT_MAX_OBJECTS,
+    1,
+    OCI_FOCUS_MAX_OBJECTS,
+  );
 }
 
 function numberOrUndefined(value: string | undefined): number | undefined {

@@ -54,7 +54,25 @@ describe('readFocusSourcePreviewConfig', () => {
     });
 
     expect(config.configuredObjects).toHaveLength(1);
-    expect(config.locations[0]).toMatchObject({ maxObjects: 1000 });
+    expect(config.locations[0]).toMatchObject({ maxObjects: 2000 });
+  });
+
+  it('reads OCI metadata aliases used by CLI exports', () => {
+    const config = readFocusSourcePreviewConfig('oci', {
+      ociFocusReportLocations: [{
+        'namespace-name': 'namespace',
+        'bucket-name': 'billing',
+        prefix: 'reports/',
+        'focus-version': '1.0',
+        'max-objects': 25,
+      }],
+    });
+
+    expect(config.locations[0]).toMatchObject({
+      namespaceName: 'namespace',
+      bucketName: 'billing',
+      maxObjects: 25,
+    });
   });
 
   it('recognizes supported FOCUS object names only', () => {

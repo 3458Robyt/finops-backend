@@ -8,6 +8,7 @@ import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
 import type { CloudIngestionCredential } from '../src/domain/interfaces/ICloudIngestionProvider.js';
 import type { ProviderCode } from '../src/domain/models/CloudConnection.js';
 import { readFocusSourcePreviewConfig, isFocusObjectName, type PreviewObject } from '../src/infrastructure/ingestion/focusSourcePreview.js';
+import { OCI_FOCUS_DEFAULT_MAX_OBJECTS } from '../src/infrastructure/ingestion/oci/OciFocusSource.js';
 import { getCredential, optionalString, requireString } from '../src/infrastructure/ingestion/providerConfig.js';
 import { CredentialCipher, type EncryptedCredentialPayload } from '../src/infrastructure/security/CredentialCipher.js';
 
@@ -108,7 +109,7 @@ async function previewOci(
         bucketName: connection.rootExternalId,
         prefix: 'FOCUS Reports',
         focusVersion: '1.0',
-        maxObjects: 1000,
+        maxObjects: OCI_FOCUS_DEFAULT_MAX_OBJECTS,
       }];
 
   for (const location of effectiveLocations) {

@@ -18,6 +18,7 @@ import {
   normalizeRecommendationDrafts,
 } from './recommendationDraftNormalizer.js';
 import { FinOpsArtifactAiRunner } from './finOpsArtifactAiRunner.js';
+import { isAuditApproved, MIN_APPROVED_AUDIT_SCORE } from './auditApprovalPolicy.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -222,15 +223,34 @@ export class FinOpsArtifactGenerator {
       })),
     ];
     const failed = quality.checks.filter((check) => !check.passed).map((check) => check.detail);
+    const score = Math.min(audit.score, quality.score);
+    const scoreIssue = audit.verdict === 'APPROVED' && audit.score < MIN_APPROVED_AUDIT_SCORE
+      ? `La puntuación del auditor (${audit.score}) está por debajo del mínimo requerido (${MIN_APPROVED_AUDIT_SCORE}).`
+      : undefined;
+    const blockingIssues = [
+      ...audit.blockingIssues,
+      ...failed,
+      ...(scoreIssue === undefined ? [] : [scoreIssue]),
+    ];
+    const requiredChanges = [
+      ...audit.requiredChanges,
+      ...failed,
+      ...(scoreIssue === undefined ? [] : [scoreIssue]),
+    ];
 
-    return {
+    const combined = {
       ...audit,
-      verdict: audit.verdict === 'APPROVED' && quality.passed ? 'APPROVED' : 'REJECTED',
-      score: Math.min(audit.score, quality.score),
+      verdict: 'REJECTED',
+      score,
       checks,
-      blockingIssues: [...audit.blockingIssues, ...failed],
-      requiredChanges: [...audit.requiredChanges, ...failed],
+      blockingIssues,
+      requiredChanges,
       deterministicReport: quality,
     } as AiAuditReport;
+    return audit.verdict === 'APPROVED'
+      && isAuditApproved({ ...combined, verdict: 'APPROVED' })
+      && quality.passed
+      ? { ...combined, verdict: 'APPROVED' }
+      : combined;
   }
 }

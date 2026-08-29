@@ -10,6 +10,7 @@ import type {
   GenerateAiRecommendationsInput,
   GenerateAiRecommendationsResponse,
 } from './finOpsAiTypes.js';
+import { isAuditApproved } from './auditApprovalPolicy.js';
 
 const approvedAuditVerdict = 'APPROVED';
 
@@ -79,7 +80,7 @@ export class FinOpsAiRecommendationRunner {
       () => input.onStage?.('AI_AUDIT'),
     );
 
-    if (auditReport.verdict !== approvedAuditVerdict) {
+    if (auditReport.verdict !== approvedAuditVerdict || !isAuditApproved(auditReport)) {
       throw new AiAuditRejectedError('AI audit rejected recommendation output', {
         diagnosticId: `audit-${input.tenantId}-${Date.now().toString(36)}`,
         audit: {

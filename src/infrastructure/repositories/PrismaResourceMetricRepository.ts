@@ -1,5 +1,6 @@
 import type {
   CloudResourceFilters,
+  CloudResourceIdentity,
   CloudResourceItem,
   IResourceMetricRepository,
   ResourceMetricSampleItem,
@@ -57,6 +58,13 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
     filters: CloudResourceFilters = {},
   ): Promise<readonly CloudResourceItem[]> {
     return this.inventoryReader.listForTenant(tenantId, limit, filters);
+  }
+
+  public async listResourcesForTenantByIdentities(
+    tenantId: string,
+    identities: readonly CloudResourceIdentity[],
+  ): Promise<readonly CloudResourceItem[]> {
+    return this.inventoryReader.listByIdentities(tenantId, identities);
   }
 
   public async getResourceForTenantById(

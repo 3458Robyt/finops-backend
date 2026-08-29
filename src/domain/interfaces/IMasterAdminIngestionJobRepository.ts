@@ -41,9 +41,16 @@ export interface DeletedPendingIngestionJobs {
   readonly byTenant: readonly { readonly tenantId: string; readonly count: number }[];
 }
 
+export interface ReconciledIngestionJobs {
+  readonly requeued: number;
+  readonly failed: number;
+  readonly cancelled: number;
+}
+
 export interface IMasterAdminIngestionJobRepository {
   list(input: MasterAdminIngestionJobFilters): Promise<MasterAdminIngestionJobPage>;
   deletePendingJobs(): Promise<DeletedPendingIngestionJobs>;
+  reconcileStaleJobs?: () => Promise<ReconciledIngestionJobs>;
   requestCancellation(jobId: string, userId: string): Promise<MasterAdminIngestionJob | null>;
   archive(jobId: string, userId: string): Promise<MasterAdminIngestionJob | null>;
 }

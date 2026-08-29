@@ -27,6 +27,15 @@ export class MasterAdminIngestionController {
     }
   };
 
+  public reconcile = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const result = await this.service.reconcileStale(this.requireActor(req));
+      res.status(200).json({ success: true, result });
+    } catch (error: unknown) {
+      this.respond(res, error);
+    }
+  };
+
   public deletePending = async (req: Request, res: Response): Promise<void> => {
     try {
       const result = await this.service.deletePending(this.requireActor(req));

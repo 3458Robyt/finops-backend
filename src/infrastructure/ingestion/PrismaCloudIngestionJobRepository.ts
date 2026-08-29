@@ -16,6 +16,7 @@ import { PrismaIngestionJobLifecycleRepository, type IngestionJobProgress } from
 import { PrismaIngestionJobFailureHandler } from './PrismaIngestionJobFailureHandler.js';
 import { PrismaIngestionJobSupport } from './PrismaIngestionJobSupport.js';
 import { PrismaIngestionJobClaimRepository } from './PrismaIngestionJobClaimRepository.js';
+import type { IngestionJobReconciliationResult } from './PrismaIngestionJobLeaseReconciler.js';
 export type { IngestionJobExecutionSummary } from './PrismaIngestionJobCompletionSupport.js';
 export type { IngestionJobProgress } from './PrismaIngestionJobLifecycleRepository.js';
 
@@ -45,6 +46,9 @@ export class PrismaCloudIngestionJobRepository {
   }
   public async claimNextPendingJob(workerId: string): Promise<CloudIngestionJobContext | null> {
     return this.claimRepository.claimNextPendingJob(workerId);
+  }
+  public async reconcileStaleJobs(now = new Date()): Promise<IngestionJobReconciliationResult> {
+    return this.claimRepository.reconcileStaleJobs(now);
   }
   public async refreshJobLease(jobId: string, workerId: string, attempt: number): Promise<boolean> {
     const updated = await this.prisma.ingestionJob.updateMany({

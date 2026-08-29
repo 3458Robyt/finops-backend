@@ -15,14 +15,23 @@ import type {
   OciObjectStorageClient,
 } from './OciSdkContracts.js';
 
+/**
+ * Cost Reports can contain several years of daily split objects. The old
+ * 1,000-object default stopped discovery at the oldest page and made recent
+ * reports invisible. Keep a bounded safety valve, but make it large enough
+ * for a normal historical backfill after applying the job window filter.
+ */
+export const OCI_FOCUS_DEFAULT_MAX_OBJECTS = 10_000;
+export const OCI_FOCUS_MAX_OBJECTS = 10_000;
+
 export function readOciFocusObjects(
   job: CloudIngestionJobContext,
 ): readonly OciFocusReportObject[] {
   return readObjectArray(job.connection.metadata, 'ociFocusReportObjects').map((item) => ({
-    namespaceName: requireString(item['namespaceName'], 'ociFocusReportObjects.namespaceName'),
-    bucketName: requireString(item['bucketName'], 'ociFocusReportObjects.bucketName'),
-    objectName: requireString(item['objectName'], 'ociFocusReportObjects.objectName'),
-    focusVersion: optionalString(item['focusVersion']) ?? '1.0',
+    namespaceName: requireString(readMetadataField(item, 'namespaceName', 'namespace-name'), 'ociFocusReportObjects.namespaceName'),
+    bucketName: requireString(readMetadataField(item, 'bucketName', 'bucket-name'), 'ociFocusReportObjects.bucketName'),
+    objectName: requireString(readMetadataField(item, 'objectName', 'object-name'), 'ociFocusReportObjects.objectName'),
+    focusVersion: optionalString(readMetadataField(item, 'focusVersion', 'focus-version')) ?? '1.0',
   }));
 }
 
@@ -30,11 +39,16 @@ export function readOciFocusLocations(
   job: CloudIngestionJobContext,
 ): readonly OciFocusReportLocation[] {
   const configured = readObjectArray(job.connection.metadata, 'ociFocusReportLocations').map((item) => ({
-    namespaceName: requireString(item['namespaceName'], 'ociFocusReportLocations.namespaceName'),
-    bucketName: requireString(item['bucketName'], 'ociFocusReportLocations.bucketName'),
-    prefix: requireString(item['prefix'], 'ociFocusReportLocations.prefix'),
-    focusVersion: optionalString(item['focusVersion']) ?? '1.0',
-    maxObjects: readBoundedPositiveInteger(item['maxObjects'], 100, 1, 1000),
+    namespaceName: requireString(readMetadataField(item, 'namespaceName', 'namespace-name'), 'ociFocusReportLocations.namespaceName'),
+    bucketName: requireString(readMetadataField(item, 'bucketName', 'bucket-name'), 'ociFocusReportLocations.bucketName'),
+    prefix: requireString(readMetadataField(item, 'prefix'), 'ociFocusReportLocations.prefix'),
+    focusVersion: optionalString(readMetadataField(item, 'focusVersion', 'focus-version')) ?? '1.0',
+    maxObjects: readBoundedPositiveInteger(
+      readMetadataField(item, 'maxObjects', 'max-objects'),
+      OCI_FOCUS_DEFAULT_MAX_OBJECTS,
+      1,
+      OCI_FOCUS_MAX_OBJECTS,
+    ),
   }));
   if (configured.length > 0 || readObjectArray(job.connection.metadata, 'ociFocusReportObjects').length > 0) {
     return configured;
@@ -48,7 +62,7 @@ export function readOciFocusLocations(
     bucketName: job.connection.rootExternalId,
     prefix: 'FOCUS Reports',
     focusVersion: '1.0',
-    maxObjects: 1000,
+    maxObjects: OCI_FOCUS_DEFAULT_MAX_OBJECTS,
   }];
 }
 
@@ -59,6 +73,7 @@ export async function discoverOciFocusObjects(
   tolerateErrors = false,
   withRateLimit?: <T>(operation: () => Promise<T>, signal?: AbortSignal) => Promise<T>,
   signal?: AbortSignal,
+  filterToJobWindow = false,
 ): Promise<{
   readonly objects: readonly OciFocusReportObject[];
   readonly apiCallCount: number;
@@ -89,6 +104,7 @@ export async function discoverOciFocusObjects(
 
         for (const object of response.listObjects?.objects ?? []) {
           if (object.name === undefined || !isFocusObjectName(object.name)) continue;
+          if (filterToJobWindow && !isOciFocusObjectInWindow(object.name, job)) continue;
           const identity = `${location.namespaceName}/${location.bucketName}/${object.name}`;
           if (seen.has(identity)) continue;
           seen.add(identity);
@@ -113,6 +129,22 @@ export async function discoverOciFocusObjects(
   }
 
   return { objects: discovered, apiCallCount, errors };
+}
+
+/**
+ * Returns whether an object can contain rows for a billing job. OCI-managed
+ * Cost Reports use `FOCUS Reports/YYYY/MM/DD/...`; objects with no recognized
+ * date remain eligible because custom exports do not have to follow that
+ * layout and the CSV row filter is still authoritative.
+ */
+export function isOciFocusObjectInWindow(
+  objectName: string,
+  job: Pick<CloudIngestionJobContext, 'targetStart' | 'targetEnd'>,
+): boolean {
+  const objectDate = parseOciFocusObjectDate(objectName);
+  if (objectDate === undefined) return true;
+  const objectEnd = new Date(objectDate.getTime() + 24 * 60 * 60 * 1000);
+  return objectEnd > job.targetStart && objectDate < job.targetEnd;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -147,4 +179,21 @@ export function buildOciFocusPreviewResult(
 function isFocusObjectName(name: string): boolean {
   const lower = name.toLowerCase();
   return lower.endsWith('.csv') || lower.endsWith('.csv.gz');
+}
+
+function parseOciFocusObjectDate(objectName: string): Date | undefined {
+  const match = /(?:^|\/)(\d{4})\/(\d{2})\/(\d{2})(?:\/|$)/.exec(objectName);
+  if (match === null) return undefined;
+  const date = new Date(`${match[1]}-${match[2]}-${match[3]}T00:00:00.000Z`);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function readMetadataField(
+  item: Readonly<Record<string, unknown>>,
+  ...keys: readonly string[]
+): unknown {
+  for (const key of keys) {
+    if (item[key] !== undefined) return item[key];
+  }
+  return undefined;
 }

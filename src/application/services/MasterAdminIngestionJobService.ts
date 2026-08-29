@@ -5,6 +5,7 @@ import type {
   IMasterAdminIngestionJobRepository,
   MasterAdminIngestionJob,
   MasterAdminIngestionJobPage,
+  ReconciledIngestionJobs,
 } from '../../domain/interfaces/IMasterAdminIngestionJobRepository.js';
 import type { IngestionJobStatus, IngestionSourceType } from '../../domain/models/CloudConnection.js';
 import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
@@ -26,6 +27,7 @@ export class MasterAdminIngestionJobService {
 
   public async list(command: MasterAdminIngestionJobListCommand): Promise<MasterAdminIngestionJobPage> {
     await this.requireMasterAdmin(command.actorUserId);
+    await this.repository.reconcileStaleJobs?.();
     const limit = this.normalizeLimit(command.limit);
     return this.repository.list({
       ...(command.tenantId !== undefined ? { tenantId: command.tenantId } : {}),
@@ -34,6 +36,21 @@ export class MasterAdminIngestionJobService {
       includeArchived: command.includeArchived === true,
       limit,
     });
+  }
+
+  public async reconcileStale(actorUserId: string): Promise<ReconciledIngestionJobs> {
+    const actor = await this.requireMasterAdmin(actorUserId);
+    const result = await this.repository.reconcileStaleJobs?.() ?? { requeued: 0, failed: 0, cancelled: 0 };
+    if (result.requeued > 0 || result.failed > 0 || result.cancelled > 0) {
+      await this.masterAdminRepository.createAuditEvent({
+        tenantId: actor.tenantId,
+        actorUserId: actor.id,
+        action: 'MASTER_ADMIN_INGESTION_LEASES_RECONCILED',
+        entityType: 'IngestionJob',
+        metadata: { ...result, scope: 'ALL_TENANTS' },
+      });
+    }
+    return result;
   }
 
   public async deletePending(actorUserId: string): Promise<DeletedPendingIngestionJobs> {

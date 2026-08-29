@@ -36,6 +36,33 @@ export function readAwsMetricDefinitions(job: CloudIngestionJobContext): readonl
   });
 }
 
+export interface AwsMetricDiscoveryConfig {
+  readonly namespaces: readonly string[];
+  readonly metricNames: readonly string[];
+  readonly statistics: readonly string[];
+}
+
+/**
+ * Reads the bounded CloudWatch discovery catalogue. We intentionally avoid
+ * asking ListMetrics for every namespace in an account: discovery is a
+ * bootstrap fallback and the persisted definitions remain the authoritative
+ * configuration for future, higher-volume runs.
+ */
+export function readAwsMetricDiscoveryConfig(job: CloudIngestionJobContext): AwsMetricDiscoveryConfig {
+  const metadata = job.connection.metadata;
+  const namespaces = readStringArray(metadata?.['awsMetricDiscoveryNamespaces'])
+    .filter((value) => value.includes('/'));
+  const metricNames = readStringArray(metadata?.['awsMetricDiscoveryNames']);
+  const statistics = readStringArray(metadata?.['awsMetricDiscoveryStatistics']);
+  return {
+    namespaces: namespaces.length > 0 ? namespaces : ['AWS/EC2', 'AWS/EBS'],
+    metricNames: metricNames.length > 0
+      ? metricNames
+      : ['CPUUtilization', 'NetworkIn', 'NetworkOut', 'DiskReadBytes', 'DiskWriteBytes', 'StatusCheckFailed', 'VolumeReadOps', 'VolumeWriteOps', 'VolumeIdleTime'],
+    statistics: statistics.length > 0 ? statistics : ['Average'],
+  };
+}
+
 export function readAwsFocusObjects(job: CloudIngestionJobContext): readonly AwsFocusExportObject[] {
   return readObjectArray(job.connection.metadata, 'awsFocusExportObjects').map((item) => {
     const region = optionalString(item['region']);
@@ -55,7 +82,7 @@ export function readAwsFocusLocations(job: CloudIngestionJobContext): readonly A
       bucket: requireString(item['bucket'], 'awsFocusExportLocations.bucket'),
       prefix: requireString(item['prefix'], 'awsFocusExportLocations.prefix'),
       focusVersion: optionalString(item['focusVersion']) ?? '1.0',
-      maxObjects: readBoundedPositiveInteger(item['maxObjects'], 100, 1, 1000),
+      maxObjects: readBoundedPositiveInteger(item['maxObjects'], 10_000, 1, 10_000),
       ...(region !== undefined ? { region } : {}),
     };
   });
@@ -96,7 +123,7 @@ export function inferAwsServiceName(definition: AwsMetricDefinition): string {
 
 export function normalizeAwsResourceStatus(status: string | undefined): NormalizedCloudResource['status'] {
   const normalized = status?.toUpperCase();
-  if (normalized === 'ACTIVE' || normalized === 'RUNNING' || normalized === 'AVAILABLE') return 'ACTIVE';
+  if (normalized === 'ACTIVE' || normalized === 'RUNNING' || normalized === 'AVAILABLE' || normalized === 'IN-USE' || normalized === 'IN_USE') return 'ACTIVE';
   if (normalized === 'STOPPED' || normalized === 'STOPPING') return 'STOPPED';
   if (normalized === 'TERMINATED' || normalized === 'DELETED') return 'TERMINATED';
   return 'UNKNOWN';
@@ -133,6 +160,11 @@ export function awsTagsToRecord(
 export function isAwsFocusObjectName(name: string): boolean {
   const lower = name.toLowerCase();
   return lower.endsWith('.csv') || lower.endsWith('.csv.gz');
+}
+
+export function isAwsFocusManifestName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower.endsWith('manifest.json') || lower.endsWith('-manifest.json');
 }
 
 export function safeAwsProviderError(error: unknown): string {

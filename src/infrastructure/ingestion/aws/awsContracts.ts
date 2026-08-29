@@ -43,7 +43,20 @@ export interface AwsMetricDataResponse {
     readonly Id?: string;
     readonly Timestamps?: readonly Date[];
     readonly Values?: readonly number[];
+    readonly StatusCode?: string;
+    readonly Messages?: readonly { readonly Code?: string; readonly Value?: string }[];
   }[];
+  readonly NextToken?: string;
+}
+
+export interface AwsListMetricsResponse {
+  readonly Metrics?: readonly {
+    readonly Namespace?: string;
+    readonly MetricName?: string;
+    readonly Unit?: string;
+    readonly Dimensions?: readonly { readonly Name?: string; readonly Value?: string }[];
+  }[];
+  readonly NextToken?: string;
 }
 
 export interface AwsGetObjectResponse { readonly Body?: unknown }
@@ -61,6 +74,31 @@ export interface AwsListObjectsResponse {
 export interface AwsDescribeInstancesResponse {
   readonly Reservations?: readonly { readonly Instances?: readonly AwsEc2Instance[] }[];
   readonly NextToken?: string;
+}
+
+export interface AwsDescribeRegionsResponse {
+  readonly Regions?: readonly {
+    readonly RegionName?: string;
+    readonly OptInStatus?: string;
+  }[];
+}
+
+export interface AwsDescribeVolumesResponse {
+  readonly Volumes?: readonly AwsEbsVolume[];
+  readonly NextToken?: string;
+}
+
+export interface AwsEbsVolume {
+  readonly VolumeId?: string;
+  readonly VolumeType?: string;
+  readonly Size?: number;
+  readonly State?: string;
+  readonly Iops?: number;
+  readonly Throughput?: number;
+  readonly AvailabilityZone?: string;
+  readonly Encrypted?: boolean;
+  readonly Tags?: readonly { readonly Key?: string; readonly Value?: string }[];
+  readonly Attachments?: readonly { readonly InstanceId?: string; readonly State?: string }[];
 }
 
 export interface AwsCallerIdentityResponse {

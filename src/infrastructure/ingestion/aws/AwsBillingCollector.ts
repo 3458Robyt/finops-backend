@@ -1,5 +1,5 @@
 import { GetCostAndUsageCommand } from '@aws-sdk/client-cost-explorer';
-import { GetObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { createHash } from 'node:crypto';
 import type { AwsCredentialIdentity } from '@smithy/types';
 import type {
@@ -20,12 +20,12 @@ import type {
   AwsGetObjectResponse,
   AwsListObjectsResponse,
 } from './awsContracts.js';
+import { readAwsFocusLocations, readAwsFocusObjects } from './awsConfiguration.js';
 import {
-  isAwsFocusObjectName,
-  readAwsFocusLocations,
-  readAwsFocusObjects,
-  safeAwsProviderError,
-} from './awsConfiguration.js';
+  buildAwsFocusPreviewResult,
+  discoverAwsFocusObjects,
+  uniqueAwsFocusObjects,
+} from './awsFocusObjectDiscovery.js';
 
 interface AwsBillingCollectorDependencies {
   readonly assumeRole: (
@@ -52,21 +52,24 @@ export async function previewAwsFocus(
   const credentials = await dependencies.assumeRole(credential, region);
   const job = buildAwsPreviewJob(connection);
   const configured = readAwsFocusObjects(job);
-  const discovery = await discoverFocusObjects(job, credentials, region, dependencies, true);
-  const objects = [
-    ...configured.map((object) => ({ object, source: 'configured' as const })),
-    ...discovery.objects.map((object) => ({ object, source: 'discovered' as const })),
-  ].slice(0, limit).map(({ object, source }) => ({
+  const discovery = await discoverAwsFocusObjects(job, credentials, region, dependencies, true);
+  const discovered = uniqueAwsFocusObjects(discovery.objects);
+  const previewObjects = uniqueAwsFocusObjects([
+    ...configured,
+    ...discovered,
+  ]);
+  const configuredKeys = new Set(configured.map((object) => `${object.bucket}/${object.key}`));
+  const objects = previewObjects.slice(0, limit).map((object) => ({
     name: object.key,
     location: `s3://${object.bucket}/${object.key}`,
-    source,
+    source: configuredKeys.has(`${object.bucket}/${object.key}`) ? 'configured' as const : 'discovered' as const,
     ...(object.sizeBytes !== undefined ? { sizeBytes: object.sizeBytes } : {}),
     ...(object.lastModified !== undefined ? { lastModified: object.lastModified } : {}),
   }));
-  return buildFocusPreviewResult(
+  return buildAwsFocusPreviewResult(
     readAwsFocusLocations(job).length,
     configured.length,
-    discovery.objects.length,
+    discovered.length,
     objects,
     discovery.errors,
   );
@@ -82,8 +85,8 @@ export async function collectAwsBilling(
 
   const baseRegion = job.connection.defaultRegion ?? 'us-east-1';
   const assumed = await dependencies.assumeRole(credential, baseRegion);
-  const discovery = await discoverFocusObjects(job, assumed, baseRegion, dependencies);
-  const objects = [...readAwsFocusObjects(job), ...discovery.objects];
+  const discovery = await discoverAwsFocusObjects(job, assumed, baseRegion, dependencies);
+  const objects = uniqueAwsFocusObjects([...readAwsFocusObjects(job), ...discovery.objects]);
   if (objects.length === 0) {
     return emptyAwsResult(['No AWS FOCUS export objects configured or discovered. Configure awsFocusExportObjects or awsFocusExportLocations.'], {
       costSource: 'AWS Data Exports FOCUS to S3',
@@ -104,6 +107,7 @@ export async function collectAwsBilling(
       costSource: 'AWS Data Exports FOCUS to S3',
       objectsConfigured: objects.length,
       objectsDiscovered: discovery.objects.length,
+      manifestsRead: discovery.manifestsRead,
       prefixesConfigured: readAwsFocusLocations(job).length,
       rowsParsed: 'streamed',
     },
@@ -120,20 +124,39 @@ async function collectProviderApiCosts(
   const credentials = await dependencies.assumeRole(credential, region);
   const client = dependencies.createCostExplorerClient(credentials);
   const rows: NormalizedProviderCostLineItem[] = [];
+  const warnings: string[] = [];
   let nextPageToken: string | undefined;
   let apiCallCount = 1;
-  do {
-    const response = await client.send(new GetCostAndUsageCommand({
-      TimePeriod: { Start: job.targetStart.toISOString().slice(0, 10), End: job.targetEnd.toISOString().slice(0, 10) },
-      Granularity: 'DAILY',
-      Metrics: ['UnblendedCost', 'UsageQuantity'],
-      GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }],
-      ...(nextPageToken === undefined ? {} : { NextPageToken: nextPageToken }),
-    }));
-    apiCallCount += 1;
-    addCostExplorerRows(rows, job, response);
-    nextPageToken = response.NextPageToken;
-  } while (nextPageToken !== undefined);
+  const seenPageTokens = new Set<string>();
+  const maxPages = 100;
+  let pageCount = 0;
+  try {
+    do {
+      if (pageCount >= maxPages) {
+        warnings.push(`AWS Cost Explorer superó el límite seguro de ${maxPages} páginas.`);
+        break;
+      }
+      if (nextPageToken !== undefined && seenPageTokens.has(nextPageToken)) {
+        warnings.push('AWS Cost Explorer devolvió un cursor repetido; se detuvo la paginación para evitar un ciclo.');
+        break;
+      }
+      if (nextPageToken !== undefined) seenPageTokens.add(nextPageToken);
+
+      const response = await client.send(new GetCostAndUsageCommand({
+        TimePeriod: { Start: job.targetStart.toISOString().slice(0, 10), End: job.targetEnd.toISOString().slice(0, 10) },
+        Granularity: 'DAILY',
+        Metrics: ['UnblendedCost', 'UsageQuantity'],
+        GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }],
+        ...(nextPageToken === undefined ? {} : { NextPageToken: nextPageToken }),
+      }));
+      apiCallCount += 1;
+      pageCount += 1;
+      addCostExplorerRows(rows, job, response);
+      nextPageToken = response.NextPageToken;
+    } while (nextPageToken !== undefined);
+  } finally {
+    client.destroy?.();
+  }
 
   return {
     apiCallCount,
@@ -142,7 +165,9 @@ async function collectProviderApiCosts(
     providerCostRows: rows,
     resources: [],
     metricSamples: [],
-    warnings: rows.length === 0 ? ['AWS Cost Explorer returned no costs for the requested range.'] : [],
+    warnings: rows.length === 0
+      ? [...warnings, 'AWS Cost Explorer no devolvió costos para el rango solicitado.']
+      : warnings,
     coverage: { billingSource: 'PROVIDER_API', costSource: 'AWS Cost Explorer', rows: rows.length },
   };
 }
@@ -192,65 +217,22 @@ async function* streamFocusObjects(
   const batch: NormalizedFocusCostLineItem[] = [];
   for (const object of objects) {
     const client = dependencies.createS3Client(object.region ?? baseRegion, credentials);
-    const response = await client.send(new GetObjectCommand({ Bucket: object.bucket, Key: object.key }));
-    for await (const line of parseFocusCsvStream(toAsyncByteChunks(response.Body), {
-      tenantId: job.tenantId,
-      cloudConnectionId: job.cloudConnectionId,
-      provider: 'AWS',
-      focusVersion: object.focusVersion,
-    }, object.key)) {
-      batch.push(line);
-      if (batch.length >= 1000) yield batch.splice(0, batch.length);
-    }
-  }
-  if (batch.length > 0) yield batch;
-}
-
-async function discoverFocusObjects(
-  job: CloudIngestionJobContext,
-  credentials: AwsCredentialIdentity,
-  defaultRegion: string,
-  dependencies: AwsBillingCollectorDependencies,
-  tolerateErrors = false,
-): Promise<{ readonly objects: readonly AwsFocusExportObject[]; readonly apiCallCount: number; readonly errors: readonly string[] }> {
-  const discovered: AwsFocusExportObject[] = [];
-  let apiCallCount = 0;
-  const errors: string[] = [];
-  for (const location of readAwsFocusLocations(job)) {
-    const client = dependencies.createS3Client(location.region ?? defaultRegion, credentials);
-    let continuationToken: string | undefined;
-    const locationStartCount = discovered.length;
     try {
-      while (discovered.length - locationStartCount < location.maxObjects) {
-        apiCallCount += 1;
-        const response = await client.send(new ListObjectsV2Command({
-          Bucket: location.bucket,
-          Prefix: location.prefix,
-          MaxKeys: Math.min(1000, location.maxObjects - (discovered.length - locationStartCount)),
-          ...(continuationToken !== undefined ? { ContinuationToken: continuationToken } : {}),
-        }));
-        for (const object of response.Contents ?? []) {
-          if (object.Key === undefined || !isAwsFocusObjectName(object.Key)) continue;
-          discovered.push({
-            bucket: location.bucket,
-            key: object.Key,
-            focusVersion: location.focusVersion,
-            ...(object.Size !== undefined ? { sizeBytes: object.Size } : {}),
-            ...(object.LastModified !== undefined ? { lastModified: object.LastModified } : {}),
-            ...(location.region !== undefined ? { region: location.region } : {}),
-          });
-        }
-        if (response.IsTruncated !== true || response.NextContinuationToken === undefined) break;
-        continuationToken = response.NextContinuationToken;
+      const response = await client.send(new GetObjectCommand({ Bucket: object.bucket, Key: object.key }));
+      for await (const line of parseFocusCsvStream(toAsyncByteChunks(response.Body), {
+        tenantId: job.tenantId,
+        cloudConnectionId: job.cloudConnectionId,
+        provider: 'AWS',
+        focusVersion: object.focusVersion,
+      }, object.key)) {
+        batch.push(line);
+        if (batch.length >= 1000) yield batch.splice(0, batch.length);
       }
-    } catch (error) {
-      if (!tolerateErrors) throw error;
-      errors.push(`${location.bucket}/${location.prefix}: ${safeAwsProviderError(error)}`);
     } finally {
       client.destroy?.();
     }
   }
-  return { objects: discovered, apiCallCount, errors };
+  if (batch.length > 0) yield batch;
 }
 
 function emptyAwsResult(
@@ -271,30 +253,5 @@ function buildAwsPreviewJob(connection: CloudIngestionConnection): CloudIngestio
     targetEnd,
     attempt: 0,
     connection,
-  };
-}
-
-function buildFocusPreviewResult(
-  configuredLocations: number,
-  configuredObjects: number,
-  discoveredObjects: number,
-  objects: FocusSourcePreviewResult['objects'],
-  errors: readonly string[],
-): FocusSourcePreviewResult {
-  const dates = objects.flatMap((object) => object.lastModified === undefined ? [] : [object.lastModified]);
-  return {
-    providerCode: 'aws',
-    configuredLocations,
-    configuredObjects,
-    discoveredObjects,
-    approximateBytes: objects.reduce((sum, object) => sum + (object.sizeBytes ?? 0), 0),
-    sizedObjects: objects.filter((object) => object.sizeBytes !== undefined).length,
-    supportedFormats: ['csv', 'csv.gz'],
-    errors,
-    ...(dates.length > 0 ? {
-      earliestObjectAt: new Date(Math.min(...dates.map((date) => date.getTime()))),
-      latestObjectAt: new Date(Math.max(...dates.map((date) => date.getTime()))),
-    } : {}),
-    objects,
   };
 }

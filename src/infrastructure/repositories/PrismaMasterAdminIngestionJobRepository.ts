@@ -6,11 +6,23 @@ import type {
   MasterAdminIngestionJobFilters,
   MasterAdminIngestionJobPage,
   MasterAdminIngestionJobSummary,
+  ReconciledIngestionJobs,
 } from '../../domain/interfaces/IMasterAdminIngestionJobRepository.js';
 import { toIngestionJobHistoryItem } from './mappers/cloudConnectionMappers.js';
+import { PrismaIngestionJobLeaseReconciler } from '../ingestion/PrismaIngestionJobLeaseReconciler.js';
+import { loadRuntimeConfig } from '../config/runtimeConfigReader.js';
 
 export class PrismaMasterAdminIngestionJobRepository implements IMasterAdminIngestionJobRepository {
-  public constructor(private readonly prisma: PrismaClient) {}
+  private readonly leaseReconciler = new PrismaIngestionJobLeaseReconciler();
+
+  public constructor(
+    private readonly prisma: PrismaClient,
+    private readonly jobLeaseMs = loadRuntimeConfig().workers.ingestion.jobLeaseMs,
+  ) {}
+
+  public reconcileStaleJobs(): Promise<ReconciledIngestionJobs> {
+    return this.leaseReconciler.reconcile(this.prisma, this.jobLeaseMs);
+  }
 
   public async list(input: MasterAdminIngestionJobFilters): Promise<MasterAdminIngestionJobPage> {
     const where = this.buildWhere(input);

@@ -200,6 +200,86 @@ it('normalizes metric samples from OCI TypeScript SDK items response', async () 
     expect(result.warnings).toEqual([]);
   });
 
+  it('continues past old FOCUS pages until it finds objects in the billing window', async () => {
+    const provider = new OciSdkIngestionProvider();
+    const listRequests: unknown[] = [];
+    let getObjectCalls = 0;
+
+    Object.assign(provider as unknown as { createObjectStorageClient: () => unknown }, {
+      createObjectStorageClient: () => ({
+        listObjects: async (request: unknown) => {
+          listRequests.push(request);
+          const start = request && typeof request === 'object' && 'start' in request
+            ? (request as { start?: string }).start
+            : undefined;
+          if (start === undefined) {
+            return {
+              listObjects: {
+                objects: [{ name: 'reports/focus/2024/06/04/old-report.csv.gz' }],
+                nextStartWith: 'page-2',
+              },
+            };
+          }
+
+          return {
+            listObjects: {
+              objects: [{ name: 'reports/focus/2026/06/04/current-report.csv' }],
+            },
+          };
+        },
+        getObject: async () => {
+          getObjectCalls += 1;
+          return { getObjectBody: Buffer.from(buildFocusCsv(), 'utf8') };
+        },
+      }),
+    });
+
+    const result = await provider.collect(buildOciFocusJob());
+    const focusRows = await collectFocusRows(result.focusBatches);
+
+    expect(listRequests).toHaveLength(2);
+    expect(getObjectCalls).toBe(1);
+    expect(result.objectsProcessed).toBe(1);
+    expect(focusRows).toHaveLength(1);
+    expect(focusRows[0]?.resourceId).toBe('ocid1.instance.oc1.test');
+  });
+
+  it('reads OCI FOCUS object metadata written with OCI CLI field names', async () => {
+    const provider = new OciSdkIngestionProvider();
+    let listObjectCalls = 0;
+
+    Object.assign(provider as unknown as { createObjectStorageClient: () => unknown }, {
+      createObjectStorageClient: () => ({
+        listObjects: async () => {
+          listObjectCalls += 1;
+          return { listObjects: { objects: [] } };
+        },
+        getObject: async () => ({ getObjectBody: Buffer.from(buildFocusCsv(), 'utf8') }),
+      }),
+    });
+
+    const job = buildOciFocusJob();
+    const result = await provider.collect({
+      ...job,
+      connection: {
+        ...job.connection,
+        metadata: {
+          ociFocusReportObjects: [{
+            'namespace-name': 'tenantnamespace',
+            'bucket-name': 'finops-billing',
+            'object-name': 'reports/focus/2026/06/04/current-report.csv',
+            'focus-version': '1.0',
+          }],
+        },
+      },
+    });
+    const focusRows = await collectFocusRows(result.focusBatches);
+
+    expect(listObjectCalls).toBe(0);
+    expect(focusRows).toHaveLength(1);
+    expect(result.coverage).toMatchObject({ objectsConfigured: 1 });
+  });
+
   it('parses OCI FOCUS reports when Object Storage returns an arrayBuffer body', async () => {
     const provider = new OciSdkIngestionProvider();
 

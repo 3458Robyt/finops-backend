@@ -19,6 +19,7 @@ export function createMasterAdminRoutes(
   router.put('/tenants/:tenantId/users/:userId', requireAuth, masterAdminController.assignTenant);
   router.delete('/tenants/:tenantId/users/:userId', requireAuth, masterAdminController.revokeTenant);
   router.get('/ingestion-jobs', requireAuth, ingestionController.list);
+  router.post('/ingestion-jobs/reconcile', requireAuth, ingestionController.reconcile);
   router.delete('/ingestion-jobs/pending', requireAuth, ingestionController.deletePending);
   router.post('/ingestion-jobs/:jobId/cancel', requireAuth, ingestionController.cancel);
   router.post('/ingestion-jobs/:jobId/archive', requireAuth, ingestionController.archive);

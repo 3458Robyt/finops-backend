@@ -17,6 +17,7 @@ import type {
 } from './OciSdkContracts.js';
 import {
   discoverOciFocusObjects,
+  isOciFocusObjectInWindow,
   readOciFocusLocations,
   readOciFocusObjects,
 } from './OciFocusSource.js';
@@ -83,6 +84,7 @@ export class OciBillingCollector {
         false,
         (operation, signal) => this.call(job, 'objectstorage', operation, signal),
         options.signal,
+        true,
       );
     } catch (error) {
       client.close?.();
@@ -90,7 +92,7 @@ export class OciBillingCollector {
     }
 
     const discoveredObjects = uniqueFocusObjects([...readOciFocusObjects(job), ...discovery.objects]);
-    const objects = discoveredObjects.filter((object) => isFocusObjectInWindow(object, job));
+    const objects = discoveredObjects.filter((object) => isOciFocusObjectInWindow(object.objectName, job));
     if (objects.length === 0) {
       client.close?.();
       return this.emptyResult(discovery.apiCallCount, [
@@ -323,28 +325,11 @@ function toIngestionObjectDescriptor(object: OciFocusReportObject): IngestionObj
   };
 }
 
-function isFocusObjectInWindow(
-  object: OciFocusReportObject,
-  job: CloudIngestionJobContext,
-): boolean {
-  const objectDate = parseFocusObjectDate(object.objectName);
-  if (objectDate === undefined) return true;
-  const objectEnd = new Date(objectDate.getTime() + 24 * 60 * 60 * 1000);
-  return objectEnd > job.targetStart && objectDate < job.targetEnd;
-}
-
 function isFocusRowInWindow(
   row: NormalizedFocusCostLineItem,
   job: CloudIngestionJobContext,
 ): boolean {
   return row.chargePeriodEnd > job.targetStart && row.chargePeriodStart < job.targetEnd;
-}
-
-function parseFocusObjectDate(objectName: string): Date | undefined {
-  const match = /(?:^|\/)(\d{4})\/(\d{2})\/(\d{2})(?:\/|$)/.exec(objectName);
-  if (match === null) return undefined;
-  const date = new Date(`${match[1]}-${match[2]}-${match[3]}T00:00:00.000Z`);
-  return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
 function uniqueFocusObjects(objects: readonly OciFocusReportObject[]): readonly OciFocusReportObject[] {

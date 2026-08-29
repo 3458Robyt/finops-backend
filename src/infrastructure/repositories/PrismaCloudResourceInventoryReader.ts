@@ -1,5 +1,6 @@
 import type {
   CloudResourceFilters,
+  CloudResourceIdentity,
   CloudResourceItem,
 } from '../../domain/interfaces/IResourceMetricRepository.js';
 import {
@@ -34,6 +35,30 @@ interface CloudResourceLineageRow {
  */
 export class PrismaCloudResourceInventoryReader {
   constructor(private readonly prisma: PrismaClient) {}
+
+  public async listByIdentities(
+    tenantId: string,
+    identities: readonly CloudResourceIdentity[],
+  ): Promise<readonly CloudResourceItem[]> {
+    const clauses: Prisma.CloudResourceWhereInput[] = [];
+    for (const identity of identities) {
+      const externalResourceId = identity.externalResourceId.trim();
+      if (externalResourceId === '') continue;
+      clauses.push({
+        externalResourceId,
+        ...(identity.cloudResourceId !== undefined ? { id: identity.cloudResourceId } : {}),
+        ...(identity.cloudConnectionId !== undefined ? { cloudConnectionId: identity.cloudConnectionId } : {}),
+      });
+    }
+
+    if (clauses.length === 0) return [];
+
+    const rows = await this.prisma.cloudResource.findMany({
+      where: { tenantId, OR: clauses },
+      orderBy: [{ name: 'asc' }, { externalResourceId: 'asc' }],
+    });
+    return rows.map((row) => this.toBasicItem(row));
+  }
 
   public async listForTenant(
     tenantId: string,
@@ -195,5 +220,33 @@ export class PrismaCloudResourceInventoryReader {
         freshness,
       },
     } satisfies CloudResourceItem;
+  }
+
+  private toBasicItem(row: {
+    readonly id: string;
+    readonly cloudConnectionId: string;
+    readonly provider: string;
+    readonly externalResourceId: string;
+    readonly name: string | null;
+    readonly resourceType: string;
+    readonly serviceName: string;
+    readonly regionId: string | null;
+    readonly status: string;
+    readonly firstSeenAt: Date;
+    readonly lastSeenAt: Date;
+  }): CloudResourceItem {
+    return {
+      id: row.id,
+      cloudConnectionId: row.cloudConnectionId,
+      provider: row.provider,
+      externalResourceId: row.externalResourceId,
+      ...(row.name !== null ? { name: row.name } : {}),
+      resourceType: row.resourceType,
+      serviceName: row.serviceName,
+      ...(row.regionId !== null ? { regionId: row.regionId } : {}),
+      status: row.status as CloudResourceItem['status'],
+      firstSeenAt: row.firstSeenAt,
+      lastSeenAt: row.lastSeenAt,
+    };
   }
 }

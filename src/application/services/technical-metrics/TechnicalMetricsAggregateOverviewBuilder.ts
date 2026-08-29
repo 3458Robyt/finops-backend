@@ -33,8 +33,9 @@ export function buildOverviewFromSummaries(
   }
 
   const resourceMap = new Map(resources.map((resource) => [resource.id, resource]));
+  const resourceByExternalId = buildUniqueExternalResourceMap(resources);
   const costMap = new Map(costs.map((cost) => [resourceIdentity(cost), cost]));
-  const resourcesSummary = buildResourceSummaries(summaries, resourceMap, costMap);
+  const resourcesSummary = buildResourceSummaries(summaries, resourceMap, resourceByExternalId, costMap);
   const metrics = buildMetricCatalog(catalogSummaries, availableStatisticsByMetric);
   const kpis = buildKpis(summaries);
   const latestSampledAt = maxDate(summaries.map((row) => row.latestSampledAt));
@@ -56,12 +57,15 @@ export function buildOverviewFromSummaries(
 function buildResourceSummaries(
   rows: readonly TechnicalMetricSummaryItem[],
   resources: ReadonlyMap<string, CloudResourceItem>,
+  resourcesByExternalId: ReadonlyMap<string, CloudResourceItem>,
   costs: ReadonlyMap<string, TechnicalCostContextItem>,
 ): readonly TechnicalMetricResourceSummary[] {
   const grouped = groupBy(rows, resourceIdentity);
   return [...grouped.values()].map((resourceRows) => {
     const first = resourceRows[0]!;
-    const resource = first.cloudResourceId === undefined ? undefined : resources.get(first.cloudResourceId);
+    const resource = first.cloudResourceId === undefined
+      ? resourcesByExternalId.get(first.externalResourceId)
+      : resources.get(first.cloudResourceId);
     const cost = costs.get(resourceIdentity(first));
     return {
       ...(first.cloudResourceId !== undefined ? { cloudResourceId: first.cloudResourceId } : {}),
@@ -87,6 +91,23 @@ function buildResourceSummaries(
       } : {}),
     };
   }).sort((left, right) => right.maxSampledAt.getTime() - left.maxSampledAt.getTime());
+}
+
+function buildUniqueExternalResourceMap(
+  resources: readonly CloudResourceItem[],
+): ReadonlyMap<string, CloudResourceItem> {
+  const uniqueResources = new Map<string, CloudResourceItem>();
+  const duplicateIds = new Set<string>();
+  for (const resource of resources) {
+    if (duplicateIds.has(resource.externalResourceId)) continue;
+    if (uniqueResources.has(resource.externalResourceId)) {
+      uniqueResources.delete(resource.externalResourceId);
+      duplicateIds.add(resource.externalResourceId);
+      continue;
+    }
+    uniqueResources.set(resource.externalResourceId, resource);
+  }
+  return uniqueResources;
 }
 
 function buildMetricCatalog(

@@ -143,7 +143,10 @@ export function createApplicationComposition(
   const mfaRecoveryCodeRepository = new PrismaMfaRecoveryCodeRepository(prisma);
   const authSessionRepository = new PrismaAuthSessionRepository(prisma, authSecurityRepository);
   const masterAdminRepository = new PrismaMasterAdminRepository(prisma);
-  const masterAdminIngestionJobRepository = new PrismaMasterAdminIngestionJobRepository(prisma);
+  const masterAdminIngestionJobRepository = new PrismaMasterAdminIngestionJobRepository(
+    prisma,
+    config.workers.ingestion.jobLeaseMs,
+  );
   const clientInvitationRepository = new PrismaClientInvitationRepository(prisma);
   const passwordHasher = new Argon2PasswordHasher();
   const tokenService = new JwtTokenService({

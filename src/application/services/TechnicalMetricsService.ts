@@ -1,6 +1,7 @@
 import type {
   CloudResourceItem,
   CloudResourceFilters,
+  CloudResourceIdentity,
   IResourceMetricRepository,
   ResourceMetricSampleItem,
 } from '../../domain/interfaces/IResourceMetricRepository.js';
@@ -53,6 +54,14 @@ export class TechnicalMetricsService {
     if (cloudResourceId !== undefined && this.repository.getResourceForTenantById !== undefined) {
       const resource = await this.repository.getResourceForTenantById(tenantId, cloudResourceId);
       return resource?.externalResourceId === externalResourceId ? resource : undefined;
+    }
+    if (this.repository.listResourcesForTenantByIdentities !== undefined) {
+      const resources = await this.repository.listResourcesForTenantByIdentities(tenantId, [{
+        externalResourceId,
+        ...(cloudResourceId !== undefined ? { cloudResourceId } : {}),
+      }]);
+      return resources.find((resource) => resource.externalResourceId === externalResourceId
+        && (cloudResourceId === undefined || resource.id === cloudResourceId));
     }
     const resources = await this.repository.listResourcesForTenant(tenantId, 200);
     return resources.find((resource) => resource.externalResourceId === externalResourceId
@@ -141,16 +150,24 @@ export class TechnicalMetricsService {
       : this.repository.listMetricSummariesForTenantFast !== undefined
         ? this.repository.listMetricSummariesForTenantFast(tenantId, { ...summaryFilters, statistic: 'MEAN' })
         : this.repository.listMetricSummariesForTenant(tenantId, { ...summaryFilters, statistic: 'MEAN' });
-    const [summaries, resources, availableStatistics, catalogSummaries] = await Promise.all([
+    const [summaries, availableStatistics, catalogSummaries] = await Promise.all([
       summariesPromise,
-      this.repository.listResourcesForTenant(tenantId, 200),
       this.repository.listMetricStatisticsForTenant?.(tenantId, availableStatisticFilters)
         ?? Promise.resolve([]),
       catalogSummaryPromise,
     ]);
-    const resourceIds = unique(summaries.map((sample) => sample.externalResourceId));
-    const cloudResourceIds = unique(summaries.map((sample) => sample.cloudResourceId).filter((value): value is string => value !== undefined));
-    const costContext = await this.repository.listCostContextForResources(tenantId, resourceIds, cloudResourceIds);
+    const resourceIdentities = uniqueResourceIdentities([...summaries, ...catalogSummaries]);
+    const resourceIds = unique(resourceIdentities.map((resource) => resource.externalResourceId));
+    const cloudResourceIds = unique(resourceIdentities
+      .map((resource) => resource.cloudResourceId)
+      .filter((value): value is string => value !== undefined));
+    const resourcesPromise = this.repository.listResourcesForTenantByIdentities === undefined
+      ? this.repository.listResourcesForTenant(tenantId, 200)
+      : this.repository.listResourcesForTenantByIdentities(tenantId, resourceIdentities);
+    const [resources, costContext] = await Promise.all([
+      resourcesPromise,
+      this.repository.listCostContextForResources(tenantId, resourceIds, cloudResourceIds),
+    ]);
 
     const statisticMap = new Map<string, Set<string>>();
     for (const item of availableStatistics) {
@@ -257,4 +274,26 @@ export class TechnicalMetricsService {
 
 function isPercentileStatistic(statistic: TechnicalMetricOverviewInput['statistic']): boolean {
   return statistic === 'P50' || statistic === 'P90' || statistic === 'P95' || statistic === 'P99';
+}
+
+function uniqueResourceIdentities(
+  summaries: readonly {
+    readonly externalResourceId: string;
+    readonly cloudResourceId?: string;
+    readonly cloudConnectionId?: string;
+  }[],
+): readonly CloudResourceIdentity[] {
+  const identities = new Map<string, CloudResourceIdentity>();
+  for (const summary of summaries) {
+    const externalResourceId = summary.externalResourceId.trim();
+    if (externalResourceId === '') continue;
+    const identity: CloudResourceIdentity = {
+      externalResourceId,
+      ...(summary.cloudResourceId !== undefined ? { cloudResourceId: summary.cloudResourceId } : {}),
+      ...(summary.cloudConnectionId !== undefined ? { cloudConnectionId: summary.cloudConnectionId } : {}),
+    };
+    const key = [identity.cloudResourceId ?? '', identity.cloudConnectionId ?? '', identity.externalResourceId].join('\u0000');
+    identities.set(key, identity);
+  }
+  return [...identities.values()];
 }

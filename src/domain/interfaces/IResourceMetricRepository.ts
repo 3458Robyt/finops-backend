@@ -20,6 +20,12 @@ export interface CloudResourceFilters {
   readonly query?: string;
 }
 
+export interface CloudResourceIdentity {
+  readonly cloudResourceId?: string;
+  readonly cloudConnectionId?: string;
+  readonly externalResourceId: string;
+}
+
 /**
  * Resumen de un recurso cloud inventariado de un tenant.
  *
@@ -247,6 +253,15 @@ export interface IResourceMetricRepository {
     tenantId: string,
     limit: number,
     filters?: CloudResourceFilters,
+  ): Promise<readonly CloudResourceItem[]>;
+
+  /**
+   * Resuelve únicamente los recursos que participan en una lectura técnica.
+   * Evita depender de un límite arbitrario del inventario más reciente.
+   */
+  listResourcesForTenantByIdentities?(
+    tenantId: string,
+    identities: readonly CloudResourceIdentity[],
   ): Promise<readonly CloudResourceItem[]>;
 
   getResourceForTenantById?(tenantId: string, cloudResourceId: string): Promise<CloudResourceItem | undefined>;

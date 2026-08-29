@@ -38,6 +38,8 @@ export interface CreateRecommendationInput {
   readonly deduplicationKey?: string;
   /** Tipo de recomendación (e.g., rightsizing, eliminación de recursos ociosos). */
   readonly type: string;
+  /** Origen de la recomendación; las generaciones del servicio usan AI_GENERATED. */
+  readonly origin?: 'AI_GENERATED' | 'DEMO_SEEDED' | 'MANUAL' | 'IMPORTED' | 'LEGACY_UNKNOWN';
   /** Severidad/prioridad de la recomendación. */
   readonly severity: FinOpsRecommendation['severity'];
   readonly title: string;

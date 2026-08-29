@@ -282,6 +282,7 @@ async function seedRecommendations(
       update: {
         tenantId,
         cloudAccountId,
+        origin: 'DEMO_SEEDED',
         type: template.type,
         status: RecommendationStatus.PENDING,
         severity: template.severity,
@@ -295,6 +296,7 @@ async function seedRecommendations(
         id: template.id,
         tenantId,
         cloudAccountId,
+        origin: 'DEMO_SEEDED',
         type: template.type,
         status: RecommendationStatus.PENDING,
         severity: template.severity,

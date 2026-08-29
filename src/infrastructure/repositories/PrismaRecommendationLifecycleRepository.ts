@@ -120,6 +120,7 @@ export class PrismaRecommendationLifecycleRepository {
             ? { resourceLinkReason: item.resourceLinkReason }
             : {}),
           type: item.type,
+          origin: item.origin ?? 'AI_GENERATED',
           severity: item.severity,
           status: "PENDING" as const,
           title: item.title,

@@ -14,6 +14,8 @@ export interface FinOpsRecommendation {
   readonly resourceLinkReason?: string;
   /** Tipo de recomendación (e.g., rightsizing, eliminación de recursos ociosos). */
   readonly type: string;
+  /** Origen verificable de la oportunidad, separado de su estado de gestión. */
+  readonly origin: 'AI_GENERATED' | 'DEMO_SEEDED' | 'MANUAL' | 'IMPORTED' | 'LEGACY_UNKNOWN';
   /**
    * Estado de gestión de la recomendación.
    *

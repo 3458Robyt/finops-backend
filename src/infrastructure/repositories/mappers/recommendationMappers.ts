@@ -33,6 +33,7 @@ export function toDomain(row: Awaited<ReturnType<PrismaClient['recommendation'][
     ...(row.cloudResourceId !== null ? { cloudResourceId: row.cloudResourceId } : {}),
     ...(row.resourceLinkReason !== null ? { resourceLinkReason: row.resourceLinkReason } : {}),
     type: row.type,
+    origin: row.origin,
     status: row.status,
     severity: row.severity,
     title: row.title,

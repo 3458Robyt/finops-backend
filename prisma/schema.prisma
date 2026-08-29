@@ -172,6 +172,14 @@ enum RecommendationSeverity {
   CRITICAL
 }
 
+enum RecommendationOrigin {
+  AI_GENERATED
+  DEMO_SEEDED
+  MANUAL
+  IMPORTED
+  LEGACY_UNKNOWN
+}
+
 enum RecommendationDecisionType {
   APPROVED
   REJECTED
@@ -1399,6 +1407,7 @@ model Recommendation {
   sourceMetricIdentityHash  String?                                   @map("source_metric_identity_hash")
   deduplicationKey          String?                                   @map("deduplication_key")
   type                      String
+  origin                    RecommendationOrigin                      @default(LEGACY_UNKNOWN)
   status                    RecommendationStatus                      @default(PENDING)
   severity                  RecommendationSeverity                    @default(MEDIUM)
   title                     String

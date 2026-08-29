@@ -218,6 +218,7 @@ export function toRecommendationDraft(
 
   return {
     cloudAccountId,
+    origin: 'AI_GENERATED',
     type,
     severity: severity as FinOpsRecommendation['severity'],
     title,
@@ -247,6 +248,7 @@ export function toEphemeralRecommendation(
   return {
     id: `ai-preview-${index + 1}`,
     cloudAccountId: input.cloudAccountId,
+    origin: input.origin ?? 'AI_GENERATED',
     ...(input.cloudResourceId !== undefined ? { cloudResourceId: input.cloudResourceId } : {}),
     ...(input.resourceLinkReason !== undefined ? { resourceLinkReason: input.resourceLinkReason } : {}),
     type: input.type,

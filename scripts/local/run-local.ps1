@@ -18,15 +18,17 @@ $env:DB_RUNTIME_ROLE = 'finops_runtime'
 $env:DB_EXPECTED_MIGRATION = '202608280007_restore_auth_cleanup_refresh_visibility'
 $env:ENABLE_OCI_PROVIDER = 'true'
 $env:INGESTION_SCHEDULER_PROVIDER = 'oci'
-$env:APP_PROCESS_ROLE = if ($Mode -eq 'dev') { 'all' } elseif ($Mode -eq 'worker') { 'ingestion-worker' } else { 'ingestion-scheduler' }
-$env:INGESTION_WORKER_ENABLED = if ($Mode -eq 'worker') { 'true' } else { 'false' }
+$isApi = $Mode -eq 'dev'
+$isWorker = $Mode -eq 'worker'
+$isScheduler = $Mode -eq 'scheduler'
+$env:APP_PROCESS_ROLE = if ($isApi) { 'api' } elseif ($isWorker) { 'worker' } else { 'scheduler' }
+$env:INGESTION_WORKER_ENABLED = if ($isWorker) { 'true' } else { 'false' }
 $env:INGESTION_SCHEDULER_ENABLED = if ($Mode -eq 'scheduler') { 'true' } else { 'false' }
-# The development API also runs the durable recommendation-analysis, learning,
-# and metric-projection loops. Ingestion itself remains opt-in through the
-# separate worker command so opening the UI never starts a cloud backfill.
-$env:METRIC_PROJECTION_WORKER_ENABLED = if ($Mode -eq 'worker' -or $Mode -eq 'dev') { 'true' } else { 'false' }
-$env:AGENT_LEARNING_WORKER_ENABLED = if ($Mode -eq 'dev') { 'true' } else { 'false' }
-$env:RECOMMENDATION_ANALYSIS_WORKER_ENABLED = if ($Mode -eq 'dev') { 'true' } else { 'false' }
+# Keep the HTTP API free of background work. Use the worker/scheduler commands
+# in separate terminals so a provider or LLM failure cannot take down login/API.
+$env:METRIC_PROJECTION_WORKER_ENABLED = if ($isWorker) { 'true' } else { 'false' }
+$env:AGENT_LEARNING_WORKER_ENABLED = if ($isWorker) { 'true' } else { 'false' }
+$env:RECOMMENDATION_ANALYSIS_WORKER_ENABLED = if ($isWorker) { 'true' } else { 'false' }
 $env:INGESTION_WORKER_CONCURRENCY = if ($env:INGESTION_WORKER_CONCURRENCY) { $env:INGESTION_WORKER_CONCURRENCY } else { '4' }
 $env:INGESTION_JOB_LEASE_MS = if ($env:INGESTION_JOB_LEASE_MS) { $env:INGESTION_JOB_LEASE_MS } else { '120000' }
 $env:INGESTION_SCHEDULER_MAX_ATTEMPTS = '3'

@@ -383,7 +383,6 @@ export function createApplicationComposition(
     metricsRegistry,
     runtimeConfig: config,
   };
-
   return {
     prisma,
     metricsRegistry,

@@ -202,8 +202,10 @@ export function buildAuditSystemPrompt(): string {
     'Rechaza cualquier texto que use "anomalia" o "anomalias"; debe hablar de oportunidades.',
     'Rechaza cualquier contenido que prometa ejecucion automatica real de cambios cloud.',
     'Devuelve solo JSON estricto con esta forma:',
-    '{"verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":["..."],"requiredChanges":["..."],"recommendationIndexes":[0],"repairInstructions":["..."]}',
-    'Usa APPROVED solo si no hay problemas bloqueantes y el score es mayor o igual a 80.',
+    '{"verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":[],"requiredChanges":[],"recommendationIndexes":[0],"repairInstructions":[],"candidateAudits":[{"index":0,"candidateId":"resource-1","verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":[],"requiredChanges":[]}]}' ,
+    'Audita cada recomendacion por separado y devuelve un candidateAudits por cada indice del artefacto. Usa candidateId solo si corresponde al candidato autorizado; nunca inventes uno.',
+    'Usa APPROVED individual solo si esa recomendacion no tiene problemas bloqueantes y su score es mayor o igual a 80. Si una recomendacion falla, marca solo esa como REJECTED o NEEDS_REVISION; no ocultes el fallo en el lote.',
+    'Usa APPROVED global solo si todas las candidateAudits aprobadas cumplen la política. Para un lote parcial, deja los problemas específicos en candidateAudits y recommendationIndexes.',
   ].join('\n');
 }
 

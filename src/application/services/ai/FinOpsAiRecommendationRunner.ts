@@ -10,9 +10,6 @@ import type {
   GenerateAiRecommendationsInput,
   GenerateAiRecommendationsResponse,
 } from './finOpsAiTypes.js';
-import { isAuditApproved } from './auditApprovalPolicy.js';
-
-const approvedAuditVerdict = 'APPROVED';
 
 /** Runs the evidence-bound recommendation use case behind the public AI facade. */
 export class FinOpsAiRecommendationRunner {
@@ -43,6 +40,7 @@ export class FinOpsAiRecommendationRunner {
           ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),
           evidenceHash: prepared.evidenceHash,
           generatedCount: 0,
+          rejectedCount: 0,
           promptTokenEstimate: 0,
           responseTokenEstimate: 0,
           model: this.mainModel,
@@ -67,7 +65,7 @@ export class FinOpsAiRecommendationRunner {
     const startedAt = Date.now();
 
     await input.onStage?.('AI_GENERATION');
-    const { drafts, auditReport, firstRawResponse } = await this.artifactGenerator.generateAuditedDrafts(
+    const { drafts, approvedDrafts, auditReport, candidateAudits, firstRawResponse } = await this.artifactGenerator.generateAuditedDrafts(
       input.tenantId,
       input.userId,
       snapshot,
@@ -80,7 +78,7 @@ export class FinOpsAiRecommendationRunner {
       () => input.onStage?.('AI_AUDIT'),
     );
 
-    if (auditReport.verdict !== approvedAuditVerdict || !isAuditApproved(auditReport)) {
+    if (drafts.length > 0 && approvedDrafts.length === 0) {
       throw new AiAuditRejectedError('AI audit rejected recommendation output', {
         diagnosticId: `audit-${input.tenantId}-${Date.now().toString(36)}`,
         audit: {
@@ -104,7 +102,7 @@ export class FinOpsAiRecommendationRunner {
       });
     }
 
-    const auditedDrafts = drafts.map((draft) => ({
+    const auditedDrafts = approvedDrafts.map((draft) => ({
       ...applyAuditEvidence(
         draft,
         auditReport,
@@ -140,6 +138,8 @@ export class FinOpsAiRecommendationRunner {
         evidenceHash: prepared.evidenceHash,
         auditReport,
         generatedCount: drafts.length,
+        rejectedCount: drafts.length - approvedDrafts.length,
+        candidateAudits,
         promptTokenEstimate: estimateTokens(governedSystemPrompt),
         responseTokenEstimate: estimateTokens(firstRawResponse),
         model: this.mainModel,

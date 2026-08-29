@@ -174,6 +174,25 @@ function serializeRun(run: RecommendationAnalysisRun, detail: boolean): Record<s
     recommendations: run.recommendations,
     ...(detail && run.readinessReport !== undefined ? { readinessReport: run.readinessReport } : {}),
     ...(detail && run.candidateResults !== undefined ? { candidateResults: run.candidateResults } : {}),
+    ...(detail && run.candidateAudits !== undefined
+      ? {
+          candidateAudits: run.candidateAudits.map((audit) => ({
+            candidateId: audit.candidateId,
+            draftIndex: audit.draftIndex,
+            ...(audit.recommendationId === undefined ? {} : { recommendationId: audit.recommendationId }),
+            auditVerdict: audit.auditVerdict,
+            auditScore: audit.auditScore,
+            auditChecks: audit.auditChecks,
+            blockingIssues: audit.blockingIssues,
+            requiredChanges: audit.requiredChanges,
+            finalDisposition: audit.finalDisposition,
+            ...(audit.draft === undefined ? {} : { draft: audit.draft }),
+            ...(audit.deterministicEvidence === undefined ? {} : { deterministicEvidence: audit.deterministicEvidence }),
+            ...(audit.model === undefined ? {} : { model: audit.model }),
+            ...(audit.auditorModel === undefined ? {} : { auditorModel: audit.auditorModel }),
+          })),
+        }
+      : {}),
   };
 }
 

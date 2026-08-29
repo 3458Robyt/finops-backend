@@ -37,6 +37,7 @@ export function toCandidateResult(
 export function mergePublishedCandidates(
   initial: readonly RecommendationAnalysisCandidateResult[],
   published: readonly { readonly id: string; readonly candidateId?: string }[],
+  rejected?: ReadonlyMap<string, readonly string[]>,
 ): RecommendationAnalysisCandidateResult[] {
   const byCandidate = new Map(
     published
@@ -46,6 +47,10 @@ export function mergePublishedCandidates(
   return initial.map((candidate) => {
     if (candidate.outcome === 'SKIPPED') return candidate;
     const recommendationId = byCandidate.get(candidate.candidateId);
+    const rejectionReasons = rejected?.get(candidate.candidateId);
+    if (recommendationId === undefined && rejectionReasons !== undefined) {
+      return { ...candidate, outcome: 'REJECTED', reasons: rejectionReasons };
+    }
     return recommendationId === undefined
       ? { ...candidate, outcome: 'SKIPPED', reasons: ['El generador no publicó una recomendación para este candidato.'] }
       : { ...candidate, outcome: 'PUBLISHED', recommendationId };

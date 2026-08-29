@@ -145,13 +145,51 @@ export class RecommendationAnalysisRunProcessor {
         disposition: recommendation.createdAt.getTime() >= (run.startedAt?.getTime() ?? startedAt) ? 'CREATED' as const : 'REUSED' as const,
       };
     });
+    const rejectedCandidateAudits = new Map(
+      (result.analysis.auditReport?.candidateAudits ?? [])
+        .filter((audit) => audit.verdict !== 'APPROVED')
+        .map((audit) => [audit.candidateId ?? `draft-${audit.index}`, [
+          ...audit.blockingIssues,
+          ...audit.requiredChanges,
+          'El auditor IA rechazó este candidato; no se publicó la recomendación.',
+        ]]),
+    );
     const candidateResults = mergePublishedCandidates(initialCandidateResults, result.recommendations.map((recommendation) => {
       const candidateId = readCandidateId(recommendation.evidence);
       return { id: recommendation.id, ...(candidateId !== undefined ? { candidateId } : {}) };
-    }));
+    }), rejectedCandidateAudits);
 
     const createdRecommendationIds = new Set(links.filter((link) => link.disposition === 'CREATED').map((link) => link.recommendationId));
     const createdRecommendations = result.recommendations.filter((item) => createdRecommendationIds.has(item.id));
+    const recommendationByCandidate = new Map(
+      links
+        .filter((link): link is typeof link & { candidateId: string } => link.candidateId !== undefined)
+        .map((link) => [link.candidateId, link.recommendationId]),
+    );
+    const candidateAuditRecords = (result.analysis.candidateAudits ?? []).map(({ audit, draft, deterministicEvidence }) => {
+      const candidateId = audit.candidateId ?? `draft-${audit.index}`;
+      const recommendationId = recommendationByCandidate.get(candidateId);
+      return {
+        tenantId: run.tenantId,
+        candidateId,
+        draftIndex: audit.index,
+        ...(recommendationId === undefined ? {} : { recommendationId }),
+        ...(deterministicEvidence === undefined ? {} : { deterministicEvidence }),
+        draft,
+        auditVerdict: audit.verdict,
+        auditScore: audit.score,
+        auditChecks: audit.checks,
+        blockingIssues: audit.blockingIssues,
+        requiredChanges: audit.requiredChanges,
+        repairAttempt: 0,
+        finalDisposition: audit.verdict === 'APPROVED' && recommendationId !== undefined
+          ? 'PUBLISHED' as const
+          : 'REJECTED' as const,
+        model: result.analysis.model,
+        auditorModel: result.analysis.auditorModel,
+        evidenceHash: prepared.evidenceHash,
+      };
+    });
     const notificationFailed = await notifyAnalysisCompletion({
       run,
       prepared,
@@ -163,17 +201,21 @@ export class RecommendationAnalysisRunProcessor {
       notifications: this.notificationRepository,
     });
 
+    const rejectedCount = result.analysis.rejectedCount ?? 0;
     return this.repository.complete(run.id, {
-      status: notificationFailed ? 'PARTIAL' : result.recommendations.length > 0 ? 'COMPLETED' : 'SKIPPED',
+      status: notificationFailed || rejectedCount > 0 ? 'PARTIAL' : result.recommendations.length > 0 ? 'COMPLETED' : 'SKIPPED',
       recommendationsGenerated: result.analysis.generatedCount,
-      recommendationsRejected: 0,
+      recommendationsRejected: rejectedCount,
       candidateResults,
       recommendationLinks: links,
+      candidateAudits: candidateAuditRecords,
       promptTokenEstimate: result.analysis.promptTokenEstimate,
       responseTokenEstimate: result.analysis.responseTokenEstimate,
       latencyMs: Date.now() - startedAt,
       ...(notificationFailed
         ? { errorCode: 'NOTIFICATION_FAILED', errorMessage: 'Las recomendaciones se publicaron, pero no pudo crearse la notificación.' }
+        : rejectedCount > 0
+          ? { errorCode: 'AI_PARTIAL_AUDIT', errorMessage: `${rejectedCount} recomendación(es) fueron retenidas por auditoría.` }
         : result.recommendations.length === 0
           ? { errorCode: 'NO_NEW_OPPORTUNITIES', errorMessage: 'El análisis no publicó oportunidades nuevas.' }
           : {}),

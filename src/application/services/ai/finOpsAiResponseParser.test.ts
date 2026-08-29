@@ -21,4 +21,21 @@ describe('finOpsAiResponseParser', () => {
       'Usa el candidato resource-1 y reduce el ahorro estimado.',
     ]);
   });
+
+  it('parses the audit result for each recommendation in a batch', () => {
+    const report = parseAuditReport(JSON.stringify({
+      verdict: 'REJECTED',
+      score: 84,
+      checks: [],
+      blockingIssues: [],
+      requiredChanges: [],
+      candidateAudits: [
+        { index: 0, candidateId: 'service-1', verdict: 'APPROVED', score: 91, checks: [], blockingIssues: [], requiredChanges: [] },
+        { index: 1, candidateId: 'service-2', verdict: 'REJECTED', score: 42, checks: [], blockingIssues: ['Ahorro no sustentado'], requiredChanges: [] },
+      ],
+    }));
+
+    expect(report.candidateAudits).toHaveLength(2);
+    expect(report.candidateAudits?.[1]?.blockingIssues).toEqual(['Ahorro no sustentado']);
+  });
 });

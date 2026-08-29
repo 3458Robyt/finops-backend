@@ -20,6 +20,26 @@ export interface AiAuditCheck {
   readonly notes: string;
 }
 
+/** Auditoría individual de una recomendación dentro de un lote generado. */
+export interface AiCandidateAudit {
+  /** Índice del borrador en el array enviado al auditor. */
+  readonly index: number;
+  /** Candidato determinista al que se refiere el borrador, cuando está presente. */
+  readonly candidateId?: string;
+  readonly verdict: AiAuditVerdict;
+  readonly score: number;
+  readonly checks: readonly AiAuditCheck[];
+  readonly blockingIssues: readonly string[];
+  readonly requiredChanges: readonly string[];
+}
+
+/** Auditoría y snapshot del draft conservados para trazabilidad de la corrida. */
+export interface AiCandidateAuditArtifact {
+  readonly audit: AiCandidateAudit;
+  readonly draft: unknown;
+  readonly deterministicEvidence?: unknown;
+}
+
 /**
  * Informe de auditoría de IA que evalúa la calidad y seguridad de un plan de
  * ejecución antes de su aprobación.
@@ -39,6 +59,8 @@ export interface AiAuditReport {
   readonly recommendationIndexes?: readonly number[];
   /** Instrucciones concretas para reparar el artefacto en una ronda de revisión. */
   readonly repairInstructions?: readonly string[];
+  /** Auditoría por recomendación; permite publicar solo elementos aprobados. */
+  readonly candidateAudits?: readonly AiCandidateAudit[];
 }
 
 /**

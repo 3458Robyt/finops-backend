@@ -6,6 +6,7 @@ import type {
   QueueRecommendationAnalysisRunInput,
 } from '../../domain/interfaces/IRecommendationAnalysisRunRepository.js';
 import type {
+  RecommendationAnalysisCandidateAudit,
   RecommendationAnalysisCandidateResult,
   RecommendationAnalysisRun,
 } from '../../domain/models/RecommendationAnalysisRun.js';
@@ -21,7 +22,15 @@ const runInclude = {
   },
 } as const;
 
+const runDetailInclude = {
+  ...runInclude,
+  candidateAudits: {
+    orderBy: { draftIndex: 'asc' as const },
+  },
+} as const;
+
 type RunRow = Prisma.RecommendationAnalysisRunGetPayload<{ include: typeof runInclude }>;
+type RunDetailRow = Prisma.RecommendationAnalysisRunGetPayload<{ include: typeof runDetailInclude }>;
 
 export class PrismaRecommendationAnalysisRunRepository implements IRecommendationAnalysisRunRepository {
   public constructor(private readonly prisma: PrismaClient) {}
@@ -69,7 +78,7 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
   public async findById(tenantId: string, runId: string): Promise<RecommendationAnalysisRun | null> {
     const row = await this.prisma.recommendationAnalysisRun.findFirst({
       where: { id: runId, tenantId },
-      include: runInclude,
+      include: runDetailInclude,
     });
     return row === null ? null : toDomain(row);
   }
@@ -251,6 +260,32 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
         });
       }
 
+      if ((input.candidateAudits?.length ?? 0) > 0) {
+        await tx.recommendationAnalysisCandidateAudit.createMany({
+          data: input.candidateAudits!.map((item) => ({
+            tenantId: item.tenantId,
+            runId,
+            candidateId: item.candidateId,
+            draftIndex: item.draftIndex,
+            ...(item.recommendationId === undefined ? {} : { recommendationId: item.recommendationId }),
+            ...(item.deterministicEvidence === undefined ? {} : { deterministicEvidence: item.deterministicEvidence as Prisma.InputJsonValue }),
+            ...(item.draft === undefined ? {} : { draft: item.draft as Prisma.InputJsonValue }),
+            auditVerdict: item.auditVerdict,
+            auditScore: item.auditScore,
+            auditChecks: item.auditChecks as unknown as Prisma.InputJsonValue,
+            blockingIssues: item.blockingIssues as unknown as Prisma.InputJsonValue,
+            requiredChanges: item.requiredChanges as unknown as Prisma.InputJsonValue,
+            repairAttempt: item.repairAttempt,
+            finalDisposition: item.finalDisposition,
+            ...(item.model === undefined ? {} : { model: item.model }),
+            ...(item.auditorModel === undefined ? {} : { auditorModel: item.auditorModel }),
+            ...(item.promptHash === undefined ? {} : { promptHash: item.promptHash }),
+            ...(item.evidenceHash === undefined ? {} : { evidenceHash: item.evidenceHash }),
+          })),
+          skipDuplicates: true,
+        });
+      }
+
       return tx.recommendationAnalysisRun.update({
         where: { id: runId },
         data: {
@@ -300,7 +335,7 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
   }
 }
 
-function toDomain(row: RunRow): RecommendationAnalysisRun {
+function toDomain(row: RunRow | RunDetailRow): RecommendationAnalysisRun {
   return {
     id: row.id,
     tenantId: row.tenantId,
@@ -348,5 +383,29 @@ function toDomain(row: RunRow): RecommendationAnalysisRun {
       disposition: link.disposition,
       title: link.recommendation.title,
     })),
+    ...('candidateAudits' in row ? { candidateAudits: row.candidateAudits.map(toCandidateAuditDomain) } : {}),
+  };
+}
+
+function toCandidateAuditDomain(row: RunDetailRow['candidateAudits'][number]): RecommendationAnalysisCandidateAudit {
+  return {
+    tenantId: row.tenantId,
+    runId: row.runId,
+    candidateId: row.candidateId,
+    draftIndex: row.draftIndex,
+    ...(row.recommendationId === null ? {} : { recommendationId: row.recommendationId }),
+    ...(row.deterministicEvidence === null ? {} : { deterministicEvidence: row.deterministicEvidence }),
+    ...(row.draft === null ? {} : { draft: row.draft }),
+    auditVerdict: row.auditVerdict,
+    auditScore: row.auditScore,
+    auditChecks: row.auditChecks as unknown as RecommendationAnalysisCandidateAudit['auditChecks'],
+    blockingIssues: row.blockingIssues as unknown as RecommendationAnalysisCandidateAudit['blockingIssues'],
+    requiredChanges: row.requiredChanges as unknown as RecommendationAnalysisCandidateAudit['requiredChanges'],
+    repairAttempt: row.repairAttempt,
+    finalDisposition: row.finalDisposition,
+    ...(row.model === null ? {} : { model: row.model }),
+    ...(row.auditorModel === null ? {} : { auditorModel: row.auditorModel }),
+    ...(row.promptHash === null ? {} : { promptHash: row.promptHash }),
+    ...(row.evidenceHash === null ? {} : { evidenceHash: row.evidenceHash }),
   };
 }

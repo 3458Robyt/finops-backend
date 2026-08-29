@@ -2,7 +2,7 @@ import { FinOpsBaseError } from '../../../domain/errors/errors.js';
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { CreateRecommendationInput } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
-import type { AiAuditReport } from '../../../domain/models/RecommendationExecutionPlan.js';
+import type { AiAuditReport, AiCandidateAudit, AiAuditCheck } from '../../../domain/models/RecommendationExecutionPlan.js';
 import type { AiRecommendationDraft } from './finOpsAiTypes.js';
 import {
   extractJson,
@@ -146,6 +146,7 @@ export function parseAuditReport(rawResponse: string): AiAuditReport {
   const requiredChanges = readStringList(parsed['requiredChanges']);
   const repairInstructions = readStringList(parsed['repairInstructions']);
   const recommendationIndexes = readNumberList(parsed['recommendationIndexes']);
+  const candidateAudits = parseCandidateAudits(parsed['candidateAudits']);
 
   if (
     (verdict !== 'APPROVED' && verdict !== 'REJECTED' && verdict !== 'NEEDS_REVISION') ||
@@ -170,7 +171,44 @@ export function parseAuditReport(rawResponse: string): AiAuditReport {
     requiredChanges,
     ...(recommendationIndexes.length > 0 ? { recommendationIndexes } : {}),
     ...(repairInstructions.length > 0 ? { repairInstructions } : {}),
+    ...(candidateAudits.length > 0 ? { candidateAudits } : {}),
   };
+}
+
+function parseCandidateAudits(value: unknown): AiCandidateAudit[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((item): AiCandidateAudit[] => {
+    if (!isRecord(item)) return [];
+    const index = readNumber(item, 'index');
+    const verdict = readString(item, 'verdict')?.toUpperCase();
+    const score = readNumber(item, 'score');
+    if (
+      index === undefined || !Number.isInteger(index) || index < 0
+      || (verdict !== 'APPROVED' && verdict !== 'REJECTED' && verdict !== 'NEEDS_REVISION')
+      || score === undefined || score < 0 || score > 100
+    ) return [];
+
+    const checks = Array.isArray(item['checks']) ? item['checks'] : [];
+    const normalizedChecks: AiAuditCheck[] = checks
+      .filter((check): check is Record<string, unknown> => isRecord(check))
+      .map((check) => ({
+        name: readString(check, 'name') ?? 'verificacion',
+        passed: check['passed'] === true,
+        notes: readString(check, 'notes') ?? '',
+      }));
+    const candidateId = readString(item, 'candidateId');
+
+    return [{
+      index,
+      ...(candidateId === undefined ? {} : { candidateId }),
+      verdict,
+      score,
+      checks: normalizedChecks,
+      blockingIssues: readStringList(item['blockingIssues']),
+      requiredChanges: readStringList(item['requiredChanges']),
+    }];
+  });
 }
 
 /**

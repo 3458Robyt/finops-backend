@@ -1,7 +1,7 @@
 import type { IAiGateway } from '../../../domain/interfaces/IAiGateway.js';
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
-import type { AiAuditReport } from '../../../domain/models/RecommendationExecutionPlan.js';
+import type { AiAuditReport, AiCandidateAuditArtifact } from '../../../domain/models/RecommendationExecutionPlan.js';
 import {
   evaluateExecutionPlan,
   evaluateRecommendationDrafts,
@@ -19,6 +19,7 @@ import {
 } from './recommendationDraftNormalizer.js';
 import { FinOpsArtifactAiRunner } from './finOpsArtifactAiRunner.js';
 import { isAuditApproved, MIN_APPROVED_AUDIT_SCORE } from './auditApprovalPolicy.js';
+import { selectAuditedRecommendationDrafts } from './recommendationAuditSelection.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -37,6 +38,9 @@ import { isAuditApproved, MIN_APPROVED_AUDIT_SCORE } from './auditApprovalPolicy
 /** Resultado de generar y auditar borradores de recomendación. */
 export interface AuditedDraftsResult {
   readonly drafts: readonly (AiRecommendationDraft & { tenantId: string })[];
+  readonly approvedDrafts: readonly (AiRecommendationDraft & { tenantId: string })[];
+  readonly rejectedDrafts: readonly (AiRecommendationDraft & { tenantId: string })[];
+  readonly candidateAudits: readonly AiCandidateAuditArtifact[];
   readonly auditReport: AiAuditReport;
   /** Texto crudo de la primera respuesta del modelo (para la traza de la operación). */
   readonly firstRawResponse: string;
@@ -144,12 +148,26 @@ export class FinOpsArtifactGenerator {
       });
     }
 
+    const quality = evaluateRecommendationDrafts(drafts, snapshot, undefined, externalResourceId, technicalEvidenceSnapshot);
+    const combinedAudit = this.combineWithDeterministicQuality(auditReport, quality);
+    const selection = selectAuditedRecommendationDrafts({
+      drafts,
+      auditReport,
+      snapshot,
+      ...(externalResourceId === undefined ? {} : { externalResourceId }),
+      ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),
+    });
+
     return {
       drafts,
-      auditReport: this.combineWithDeterministicQuality(
-        auditReport,
-        evaluateRecommendationDrafts(drafts, snapshot, undefined, externalResourceId, technicalEvidenceSnapshot),
-      ),
+      approvedDrafts: this.withTenant(selection.accepted, tenantId),
+      rejectedDrafts: this.withTenant(selection.rejected, tenantId),
+      candidateAudits: selection.candidateAudits.map((audit) => ({
+        audit,
+        draft: drafts[audit.index],
+        deterministicEvidence: drafts[audit.index]?.evidence,
+      })),
+      auditReport: { ...combinedAudit, candidateAudits: selection.candidateAudits },
       firstRawResponse,
     };
   }

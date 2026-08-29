@@ -1,4 +1,5 @@
 import type {
+  RecommendationAnalysisCandidateAudit,
   RecommendationAnalysisCandidateResult,
   RecommendationAnalysisRecommendationDisposition,
   RecommendationAnalysisRun,
@@ -48,6 +49,7 @@ export interface CompleteRecommendationAnalysisRunInput {
     readonly candidateId?: string;
     readonly disposition: RecommendationAnalysisRecommendationDisposition;
   }[];
+  readonly candidateAudits?: readonly Omit<RecommendationAnalysisCandidateAudit, 'runId'>[];
   readonly promptTokenEstimate: number;
   readonly responseTokenEstimate: number;
   readonly latencyMs: number;

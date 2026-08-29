@@ -68,7 +68,7 @@ try {
       database: {
         runtimeEnforce: true,
         runtimeRole: 'finops_runtime',
-        expectedMigration: '202608280007_restore_auth_cleanup_refresh_visibility',
+        expectedMigration: '202608290002_recommendation_candidate_audits',
       },
       operations: { processHeartbeat: { enabled: true, intervalMs: 30_000, staleAfterMs: 30_000 } },
       ai: { apiKey: undefined },

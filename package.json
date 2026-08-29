@@ -56,9 +56,9 @@
     "ingestion:configure-focus": "tsx scripts/configure-focus-source.ts",
     "ingestion:doctor": "tsx scripts/check-ingestion-readiness.ts",
     "ingestion:create-job": "tsx scripts/create-ingestion-job.ts",
-  "ingestion:schedule": "tsx scripts/schedule-ingestion-jobs.ts",
-  "ingestion:audit": "tsx scripts/audit-ingestion-range.ts",
-  "ingestion:worker:once": "tsx scripts/run-ingestion-worker-once.ts",
+    "ingestion:schedule": "tsx scripts/schedule-ingestion-jobs.ts",
+    "ingestion:audit": "tsx scripts/audit-ingestion-range.ts",
+    "ingestion:worker:once": "tsx scripts/run-ingestion-worker-once.ts",
     "metrics:projection:once": "tsx scripts/run-metric-projection-once.ts",
     "ingestion:worker:preflight": "tsx scripts/run-ingestion-worker-once.ts --preflight",
     "ingestion:preview-focus": "tsx scripts/preview-focus-sources.ts",
@@ -75,7 +75,8 @@
     "oci:reconcile-credentials": "tsx scripts/reconcile-cloud-credential-validation.ts",
     "oci:reconcile-fingerprints": "tsx scripts/reconcile-cloud-credential-fingerprints.ts",
     "telegram:set-webhook": "tsx scripts/telegram-set-webhook.ts",
-    "users:consolidate-admin-tenants": "tsx scripts/consolidate-admin-tenants.ts"
+    "users:consolidate-admin-tenants": "tsx scripts/consolidate-admin-tenants.ts",
+    "maintenance:cleanup-development-artifacts": "tsx scripts/maintenance/cleanup-development-artifacts.ts"
   },
   "keywords": [
     "finops",

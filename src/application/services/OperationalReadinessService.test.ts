@@ -139,4 +139,28 @@ describe('OperationalReadinessService', () => {
       checks: { runtimeRls: 'not_required', heartbeat: 'not_required' },
     });
   });
+
+  it('blocks production bootstrap when the database contract is not ready', async () => {
+    const repository = new FakeReadinessRepository();
+    const service = new OperationalReadinessService(
+      repository,
+      new ProcessHeartbeatService(new FakeHeartbeatRepository()),
+      {
+        ...runtimeConfig(),
+        environment: { nodeEnv: 'production', isProduction: true, processRole: 'api' },
+      },
+      processId,
+    );
+
+    await expect(service.assertStartupReady()).resolves.toBeUndefined();
+
+    repository.snapshot = {
+      ...repository.snapshot,
+      currentUser: 'postgres',
+      migrations: { ...repository.snapshot.migrations, expectedMigrationApplied: false },
+    };
+    await expect(service.assertStartupReady()).rejects.toThrow(
+      'Production startup blocked: runtime role, expected migration not ready',
+    );
+  });
 });

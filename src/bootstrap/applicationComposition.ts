@@ -93,6 +93,7 @@ export interface ApplicationComposition {
   readonly processHeartbeatService: ProcessHeartbeatService;
   readonly ingestionWorker: CloudIngestionWorkerService | null;
   readonly metricProjectionWorker: PrismaMetricProjectionWorker | null;
+  readonly startupReadinessCheck: () => Promise<void>;
 }
 
 export function createApplicationComposition(
@@ -395,5 +396,6 @@ export function createApplicationComposition(
     processHeartbeatService,
     ingestionWorker,
     metricProjectionWorker,
+    startupReadinessCheck: () => operationalReadinessService.assertStartupReady(),
   };
 }

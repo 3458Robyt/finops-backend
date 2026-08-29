@@ -53,6 +53,34 @@ export class OperationalReadinessService {
     };
   }
 
+  /**
+   * Blocks production bootstrap when the database isolation contract is not
+   * actually available. `/ready` remains useful at runtime, but accepting
+   * traffic before this check would expose a partially configured process.
+   */
+  public async assertStartupReady(): Promise<void> {
+    if (!this.config.environment.isProduction) return;
+
+    let snapshot;
+    try {
+      snapshot = await runWithDatabaseContext(
+        { workerId: this.processId, role: 'MASTER_ADMIN' },
+        () => this.repository.inspect(this.config.database.expectedMigration),
+      );
+    } catch {
+      throw new Error('Production startup blocked: database readiness could not be verified');
+    }
+
+    const failures: string[] = [];
+    if (snapshot.currentUser !== this.config.database.runtimeRole) failures.push('runtime role');
+    if (snapshot.migrations.failedMigrations > 0) failures.push('failed migrations');
+    if (snapshot.migrations.expectedMigrationApplied !== true) failures.push('expected migration');
+    if (!snapshot.leaseAcquirable) failures.push('database lease');
+    if (failures.length > 0) {
+      throw new Error(`Production startup blocked: ${failures.join(', ')} not ready`);
+    }
+  }
+
   private async heartbeatStatus(): Promise<ReadinessCheckStatus> {
     if (!this.config.operations.processHeartbeat.enabled) return 'not_required';
     const isFresh = await runWithDatabaseContext(

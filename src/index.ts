@@ -41,6 +41,9 @@ async function bootstrap(): Promise<void> {
 
   const composition = createApplicationComposition(capabilities.runsIngestionWorker, config);
   const { prisma, serverDependencies } = composition;
+  if (config.environment.isProduction) {
+    await composition.startupReadinessCheck();
+  }
   const app = capabilities.runsApi ? createExpressServer(serverDependencies) : undefined;
   const backgroundStops: Array<() => Promise<void>> = [];
   const startBackgroundLoop = (options: NonOverlappingLoopOptions): void => {

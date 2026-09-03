@@ -130,6 +130,13 @@ function wrapPoolClient(client: PoolClient, runtimeConfig: TenantDatabaseRuntime
       const result = await originalQuery(...(args as Parameters<PoolClient['query']>));
       transactionDepth += 1;
       if (transactionDepth === 1) {
+        // Supabase pooler sessions can arrive with read-only transactions by
+        // default even when the primary database is writable. Prisma starts
+        // write transactions with a plain BEGIN, so explicitly opt into a
+        // read-write transaction before applying the tenant context.
+        if (!/\bREAD\s+ONLY\b/i.test(sql)) {
+          await originalQuery('set transaction read write');
+        }
         contextApplied = true;
         try {
           await applyContext(originalQuery, getDatabaseContext(), runtimeConfig);

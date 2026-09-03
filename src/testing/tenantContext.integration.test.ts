@@ -69,4 +69,16 @@ describe.skipIf(!integrationEnabled)('runtime tenant context', () => {
     const unscopedRows = await runWithDatabaseContext({}, () => pool.query('select count(*)::int as visible_rows from recommendations'));
     expect(unscopedRows.rows[0]?.visible_rows).toBe(0);
   });
+
+  it('allows runtime transactions to write on read-only-by-default pooler sessions', async () => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('create temporary table runtime_write_probe(value integer)');
+      await client.query('insert into runtime_write_probe(value) values (1)');
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+  });
 });

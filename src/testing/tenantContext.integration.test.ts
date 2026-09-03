@@ -81,4 +81,16 @@ describe.skipIf(!integrationEnabled)('runtime tenant context', () => {
       client.release();
     }
   });
+
+  it('allows implicit Prisma-style statements to write on pooler sessions', async () => {
+    const client = await pool.connect();
+    try {
+      await client.query('create temporary table runtime_implicit_write_probe(value integer)');
+      await client.query('insert into runtime_implicit_write_probe(value) values (1)');
+      const result = await client.query('select count(*)::int as rows from runtime_implicit_write_probe');
+      expect(result.rows[0]?.rows).toBe(1);
+    } finally {
+      client.release();
+    }
+  });
 });

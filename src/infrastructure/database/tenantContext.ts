@@ -25,6 +25,28 @@ export interface DatabaseContext {
 
 const contextStorage = new AsyncLocalStorage<DatabaseContext>();
 const contextKeys = ['app.tenant_id', 'app.user_id', 'app.user_role', 'app.login_email', 'app.refresh_token_hash', 'app.password_reset_token_hash', 'app.mfa_challenge_token_hash', 'app.client_invitation_token_hash', 'app.telegram_link_token_hash', 'app.request_id', 'app.worker_id'] as const;
+const writeCommands = new Set([
+  'INSERT',
+  'UPDATE',
+  'DELETE',
+  'MERGE',
+  'TRUNCATE',
+  'CREATE',
+  'ALTER',
+  'DROP',
+  'GRANT',
+  'REVOKE',
+  'COMMENT',
+  'VACUUM',
+  'REINDEX',
+  'REFRESH',
+  'CALL',
+  'DO',
+  'COPY',
+  'LOCK',
+  'NOTIFY',
+  'WITH',
+]);
 
 export function runWithDatabaseContext<T>(context: DatabaseContext, callback: () => T): T {
   const store = { ...context };
@@ -168,6 +190,10 @@ function wrapPoolClient(client: PoolClient, runtimeConfig: TenantDatabaseRuntime
       return originalQuery(...(args as Parameters<PoolClient['query']>));
     }
 
+    if (runtimeConfig.runtimeEnforce && isWriteCommand(command)) {
+      return executeReadWriteStatement(originalQuery, args, context, runtimeConfig);
+    }
+
     contextApplied = true;
     try {
       await applyContext(originalQuery, context, runtimeConfig);
@@ -198,12 +224,49 @@ function wrapPoolClient(client: PoolClient, runtimeConfig: TenantDatabaseRuntime
   });
 }
 
+async function executeReadWriteStatement(
+  query: PoolClient['query'],
+  args: unknown[],
+  context: DatabaseContext | undefined,
+  runtimeConfig: TenantDatabaseRuntimeConfig,
+): Promise<unknown> {
+  let transactionStarted = false;
+  let contextApplied = false;
+
+  try {
+    await query('begin');
+    transactionStarted = true;
+    await query('set transaction read write');
+    contextApplied = true;
+    await applyContext(query, context, runtimeConfig);
+    const result = await query(...(args as Parameters<PoolClient['query']>));
+    await clearContext(query, runtimeConfig);
+    contextApplied = false;
+    await query('commit');
+    transactionStarted = false;
+    return result;
+  } catch (error) {
+    if (transactionStarted) {
+      await query('rollback').catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    if (contextApplied) {
+      await clearContext(query, runtimeConfig).catch(() => undefined);
+    }
+  }
+}
+
 function getQueryText(query: unknown): string | undefined {
   if (typeof query === 'string') return query;
   if (query !== null && typeof query === 'object' && 'text' in query && typeof query.text === 'string') {
     return query.text;
   }
   return undefined;
+}
+
+function isWriteCommand(command: string | undefined): boolean {
+  return command !== undefined && writeCommands.has(command);
 }
 
 async function applyContext(

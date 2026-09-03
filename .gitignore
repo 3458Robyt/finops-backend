@@ -33,5 +33,6 @@ playwright-report/
 # Local validation evidence may contain tenant-specific data.
 output/
 docs/resultados_a_la_fecha/
+docs/RESULTADOS_A_LA_FECHA.md
 graphify-out/
 .graphify-*/

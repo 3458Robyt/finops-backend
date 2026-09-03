@@ -10,6 +10,7 @@ import type {
 import type {
   CompleteMfaEnrollmentWithRecoveryCodesInput,
   ConsumeMfaRecoveryChallengeInput,
+  DisableMfaInput,
   IMfaRecoveryCodeRepository,
   VerifyTotpAndReplaceRecoveryCodesInput,
 } from '../../domain/interfaces/IMfaRecoveryCodeRepository.js';
@@ -48,6 +49,7 @@ class FakeRecoveryCodeRepository implements IMfaRecoveryCodeRepository {
   public enrollment: CompleteMfaEnrollmentWithRecoveryCodesInput | null = null;
   public replacement: VerifyTotpAndReplaceRecoveryCodesInput | null = null;
   public recoveryLogin: ConsumeMfaRecoveryChallengeInput | null = null;
+  public disabled: DisableMfaInput | null = null;
   public remaining = 7;
 
   public async countActive(): Promise<number> { return this.remaining; }
@@ -65,6 +67,10 @@ class FakeRecoveryCodeRepository implements IMfaRecoveryCodeRepository {
   }
   public async consumeLoginChallenge(input: ConsumeMfaRecoveryChallengeInput): Promise<boolean> {
     this.recoveryLogin = input;
+    return true;
+  }
+  public async disableMfa(input: DisableMfaInput): Promise<boolean> {
+    this.disabled = input;
     return true;
   }
 }
@@ -135,5 +141,25 @@ describe('MfaService recovery codes', () => {
     expect(recovery.replacement?.usedStep).toBe(1n);
     expect(recovery.replacement?.recoveryCodes.codeHashes).not.toContain(codes[0]);
     await expect(service.recoveryCodeStatus('user-1')).resolves.toEqual({ remaining: 7 });
+  });
+
+  test('removes MFA only after a fresh TOTP verification', async () => {
+    const mfa = new FakeMfaRepository();
+    const recovery = new FakeRecoveryCodeRepository();
+    const service = new MfaService(mfa, cipher, recovery);
+
+    await service.disableMfa('user-1', RFC_CODE);
+
+    expect(recovery.disabled).toEqual({ userId: 'user-1', usedStep: 1n });
+  });
+
+  test('rejects removing MFA with a replayed TOTP code', async () => {
+    const mfa = new FakeMfaRepository();
+    mfa.record = { ...mfa.record!, lastUsedStep: 1n };
+    const recovery = new FakeRecoveryCodeRepository();
+    const service = new MfaService(mfa, cipher, recovery);
+
+    await expect(service.disableMfa('user-1', RFC_CODE)).rejects.toThrow('no es válido o ya fue utilizado');
+    expect(recovery.disabled).toBeNull();
   });
 });

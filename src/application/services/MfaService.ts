@@ -131,6 +131,20 @@ export class MfaService implements IMfaAuthenticationService {
     return generated.plainCodes;
   }
 
+  public async disableMfa(userId: string, code: string): Promise<void> {
+    const record = await this.requireMfaRecord(userId);
+    if (record.enabledAt === undefined) throw new AuthenticationError('MFA no está activado para este usuario.');
+    const usedStep = verifyTotpCode(this.decryptSecret(record), code);
+    if (usedStep === null || record.lastUsedStep !== undefined && BigInt(usedStep) <= record.lastUsedStep) {
+      throw new AuthenticationError('El código MFA no es válido o ya fue utilizado.');
+    }
+    const removed = await this.requireRecoveryCodes().disableMfa({
+      userId,
+      usedStep: BigInt(usedStep),
+    });
+    if (!removed) throw new AuthenticationError('No fue posible quitar MFA. Intenta nuevamente.');
+  }
+
   private async requireChallenge(
     challengeToken: string,
     purpose: 'LOGIN' | 'ENROLLMENT',

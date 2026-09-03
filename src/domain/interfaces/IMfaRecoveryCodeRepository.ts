@@ -20,6 +20,11 @@ export interface ConsumeMfaRecoveryChallengeInput {
   readonly codeHash: string;
 }
 
+export interface DisableMfaInput {
+  readonly userId: string;
+  readonly usedStep: bigint;
+}
+
 /** Atomic persistence contract for one-time MFA recovery codes. */
 export interface IMfaRecoveryCodeRepository {
   countActive(userId: string): Promise<number>;
@@ -27,4 +32,5 @@ export interface IMfaRecoveryCodeRepository {
   completeEnrollmentWithCodes(input: CompleteMfaEnrollmentWithRecoveryCodesInput): Promise<boolean>;
   replaceCodesWithTotp(input: VerifyTotpAndReplaceRecoveryCodesInput): Promise<boolean>;
   consumeLoginChallenge(input: ConsumeMfaRecoveryChallengeInput): Promise<boolean>;
+  disableMfa(input: DisableMfaInput): Promise<boolean>;
 }

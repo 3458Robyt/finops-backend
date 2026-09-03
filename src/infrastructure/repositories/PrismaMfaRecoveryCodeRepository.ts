@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from '../../generated/prisma/client.js';
 import type {
   CompleteMfaEnrollmentWithRecoveryCodesInput,
   ConsumeMfaRecoveryChallengeInput,
+  DisableMfaInput,
   IMfaRecoveryCodeRepository,
   MfaRecoveryCodeSet,
   VerifyTotpAndReplaceRecoveryCodesInput,
@@ -116,6 +117,25 @@ export class PrismaMfaRecoveryCodeRepository implements IMfaRecoveryCodeReposito
         data: { consumedAt: now },
       });
       if (consumed.count !== 1) throw new ConcurrentMfaRecoveryUpdate();
+      return true;
+    });
+  }
+
+  public disableMfa(input: DisableMfaInput): Promise<boolean> {
+    return this.runAtomic(async (transaction) => {
+      const removed = await transaction.userMfa.deleteMany({
+        where: {
+          userId: input.userId,
+          enabledAt: { not: null },
+          OR: [{ lastUsedStep: null }, { lastUsedStep: { lt: input.usedStep } }],
+        },
+      });
+      if (removed.count !== 1) return false;
+
+      await transaction.mfaRecoveryCode.updateMany({
+        where: { userId: input.userId, usedAt: null, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
       return true;
     });
   }

@@ -77,6 +77,25 @@ export class MfaController {
     }
   };
 
+  public disable = async (req: Request, res: Response): Promise<void> => {
+    if (!this.requirePrivileged(req, res) || req.auth === undefined) return;
+    const parsed = codeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, error: 'Confirma un código MFA de seis dígitos.', code: 'VALIDATION_ERROR' });
+      return;
+    }
+    try {
+      await this.service.disableMfa(req.auth.userId, parsed.data.code);
+      res.status(200).json({
+        success: true,
+        enabled: false,
+        message: 'MFA fue desactivado y sus códigos de recuperación fueron revocados. Si tu rol lo exige, deberás configurarlo nuevamente al iniciar sesión.',
+      });
+    } catch (error: unknown) {
+      respondWithFinOpsError(res, error, 'No se pudo quitar MFA.', 'auth_mfa_disable', req.path);
+    }
+  };
+
   private requirePrivileged(req: Request, res: Response): boolean {
     if (req.auth === undefined) {
       res.status(401).json({ success: false, error: 'Se requiere autenticación.', code: 'AUTHENTICATION_REQUIRED' });

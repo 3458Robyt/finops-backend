@@ -175,6 +175,8 @@ function toUsageInsight(input: {
     currency: point.currency,
     evidence: {
       source: 'FOCUS',
+      currency: point.currency,
+      unitCostBasis: 'billed_cost / consumed_quantity',
       limitation: 'FOCUS aporta consumo facturado, no metricas tecnicas como CPU, memoria, IOPS o throughput.',
       month: point.month,
       metricCount: point.metricCount,

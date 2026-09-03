@@ -23,7 +23,7 @@ describe('OutboundChannelDeliveryService', () => {
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('persists a successful email with the provider message id', async () => {
+  it('persists an email as pending without calling the provider', async () => {
     const repository = deliveryRepository();
     const telegram = { sendMessage: vi.fn(async () => undefined) } satisfies ITelegramClient;
     const email = { enabled: true, send: vi.fn(async () => ({ messageId: 'provider-1' })) } satisfies IEmailClient;
@@ -38,11 +38,11 @@ describe('OutboundChannelDeliveryService', () => {
       messageType: 'TEST',
     });
 
-    expect(result).toMatchObject({ channel: 'EMAIL', status: 'SENT', providerMessageId: 'provider-1' });
-    expect(email.send).toHaveBeenCalledWith({ to: 'user@example.com', subject: 'Prueba', text: 'Mensaje' });
+    expect(result).toMatchObject({ channel: 'EMAIL', status: 'PENDING', metadata: { to: 'user@example.com' } });
+    expect(email.send).not.toHaveBeenCalled();
   });
 
-  it('persists a failed Telegram delivery without propagating provider errors', async () => {
+  it('persists a Telegram delivery as pending without calling the provider', async () => {
     const repository = deliveryRepository();
     const telegram = { sendMessage: vi.fn(async () => { throw new Error('provider unavailable'); }) } satisfies ITelegramClient;
     const email = { enabled: false, send: vi.fn() } satisfies IEmailClient;
@@ -55,7 +55,8 @@ describe('OutboundChannelDeliveryService', () => {
       messageType: 'TEST',
     });
 
-    expect(result).toMatchObject({ channel: 'TELEGRAM', status: 'FAILED', errorMessage: 'provider unavailable' });
+    expect(result).toMatchObject({ channel: 'TELEGRAM', status: 'PENDING', metadata: { chatId: 'chat-1' } });
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 });
 

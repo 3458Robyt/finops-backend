@@ -14,6 +14,7 @@ import type { RecommendationAnalysisService } from '../application/services/Reco
 import type { AgentInstructionService } from '../application/services/AgentInstructionService.js';
 import type { ContextSummaryBuilderService } from '../application/services/ContextSummaryBuilderService.js';
 import type { OutboundMessageService } from '../application/services/OutboundMessageService.js';
+import type { MessagingPreferenceService } from '../application/services/MessagingPreferenceService.js';
 import type { SavingsReminderService } from '../application/services/SavingsReminderService.js';
 import type { TechnicalMetricsService } from '../application/services/TechnicalMetricsService.js';
 import type { TelegramBotService } from '../application/services/TelegramBotService.js';
@@ -74,6 +75,7 @@ export interface ServerDependencies {
   readonly savingsReminderService: SavingsReminderService;
   /** Servicio de mensajeria externa por Telegram y correo. */
   readonly outboundMessageService: OutboundMessageService;
+  readonly messagingPreferenceService: MessagingPreferenceService;
   /** Servicio del bot de Telegram (procesa actualizaciones del webhook). */
   readonly telegramBotService: TelegramBotService;
   /** Servicio de vinculación de cuentas con Telegram (links). */

@@ -94,6 +94,7 @@ async function bootstrap(): Promise<void> {
     const forceExit = setTimeout(() => process.exit(1), 10_000);
     forceExit.unref();
     await stopBackgroundWork();
+    await composition.emailClient.close?.();
     const disconnect = (): void => {
       void prisma.$disconnect()
         .catch((error: unknown) => {

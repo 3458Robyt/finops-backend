@@ -58,6 +58,7 @@ export function toChatLink(row: {
   readonly tenantId: string;
   readonly userId: string;
   readonly chatId: string;
+  readonly activeTenantId: string | null;
   readonly telegramUserId: string | null;
   readonly telegramUsername: string | null;
   readonly status: string;
@@ -79,6 +80,7 @@ export function toChatLink(row: {
     tenantId: row.tenantId,
     userId: row.userId,
     chatId: row.chatId,
+    ...(row.activeTenantId !== null ? { activeTenantId: row.activeTenantId } : {}),
     ...(row.telegramUserId !== null ? { telegramUserId: row.telegramUserId } : {}),
     ...(row.telegramUsername !== null ? { telegramUsername: row.telegramUsername } : {}),
     status: row.status as TelegramChatLink['status'],

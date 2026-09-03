@@ -37,6 +37,7 @@ export interface TelegramUpdate {
 /** Mensaje de Telegram ya parseado y validado a la forma mínima que usa el servicio. */
 export interface ParsedTelegramMessage {
   readonly chatId: string;
+  readonly chatType?: string;
   readonly telegramUserId?: string;
   readonly telegramUsername?: string;
   readonly text: string;
@@ -72,6 +73,7 @@ export function parseMessage(update: TelegramUpdate): ParsedTelegramMessage | nu
 
   return {
     chatId: String(chatId),
+    ...(update.message?.chat?.type === undefined ? {} : { chatType: update.message.chat.type }),
     ...(from?.id !== undefined ? { telegramUserId: String(from.id) } : {}),
     ...(from?.username !== undefined ? { telegramUsername: from.username } : {}),
     text: text.trim(),

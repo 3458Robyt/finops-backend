@@ -7,6 +7,8 @@ import type { ICostAnalyticsRepository } from '../../domain/interfaces/ICostAnal
 import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
 import type { ITelegramRepository } from '../../domain/interfaces/ITelegramRepository.js';
 import type { TelegramChatLink } from '../../domain/models/Telegram.js';
+import type { TelegramInboundUpdate } from '../../domain/models/Telegram.js';
+import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import {
   parseCommand,
   parseMessage,
@@ -22,7 +24,8 @@ import {
   truncatePreview,
 } from './telegram/telegramMessageFormatters.js';
 import { safeErrorMessage } from '../observability/safeError.js';
-
+import { changeTenant, formatTenants } from './telegram/telegramTenantCommands.js';
+import { effectiveTelegramTenantId, retryTelegramUpdateDelay } from './telegram/telegramRuntime.js';
 // Reexporta el tipo público del update para preservar la API del módulo.
 export type { TelegramUpdate } from './telegram/telegramUpdateParser.js';
 
@@ -62,6 +65,17 @@ export class TelegramBotService {
     private readonly telegramLinkService?: TelegramLinkService,
   ) {}
 
+  /** Encola el update y permite al webhook responder sin esperar a IA ni a proveedores. */
+  public async enqueueUpdate(update: TelegramUpdate): Promise<'ENQUEUED' | 'DUPLICATE'> {
+    if (!Number.isInteger(update.update_id) || (update.update_id ?? 0) < 0) {
+      throw new FinOpsBaseError('Telegram update_id is required', 'VALIDATION_ERROR');
+    }
+    return this.repository.enqueueInboundUpdate({
+      updateId: String(update.update_id),
+      payload: update,
+    });
+  }
+
   /**
    * Punto de entrada que procesa un update entrante de Telegram de principio a fin.
    *
@@ -76,7 +90,7 @@ export class TelegramBotService {
    * @param update - Update crudo recibido del webhook/polling de Telegram.
    * @returns Promesa que se resuelve cuando el update ha sido atendido.
    */
-  public async handleUpdate(update: TelegramUpdate): Promise<void> {
+  public async handleUpdate(update: TelegramUpdate, options: { readonly rethrowFailures?: boolean; readonly sendFailureReply?: boolean } = {}): Promise<void> {
     const message = parseMessage(update);
 
     if (message === null) {
@@ -84,6 +98,18 @@ export class TelegramBotService {
         chatId: 'unknown',
         status: 'IGNORED',
         metadata: { reason: 'unsupported_update', updateId: update.update_id },
+      });
+      return;
+    }
+
+    if (message.chatType !== undefined && message.chatType !== 'private') {
+      await this.repository.createInteractionLog({
+        chatId: message.chatId,
+        ...(message.telegramUserId === undefined ? {} : { telegramUserId: message.telegramUserId }),
+        ...(message.telegramUsername === undefined ? {} : { telegramUsername: message.telegramUsername }),
+        status: 'IGNORED',
+        textPreview: truncatePreview(message.text),
+        metadata: { reason: 'private_chat_required', updateId: update.update_id },
       });
       return;
     }
@@ -120,7 +146,7 @@ export class TelegramBotService {
       await this.sendChunks(message.chatId, reply);
       await this.logMessage(message, link, parsed.command, 'PROCESSED');
     } catch (error: unknown) {
-      await this.sendChunks(message.chatId, 'No pude procesar la solicitud en este momento. Intenta de nuevo mas tarde.');
+      if (options.sendFailureReply !== false) await this.sendChunks(message.chatId, 'No pude procesar la solicitud en este momento. Intenta de nuevo mas tarde.').catch(() => undefined);
       await this.logMessage(
         message,
         undefined,
@@ -128,6 +154,32 @@ export class TelegramBotService {
         'ERROR',
         safeErrorMessage(error),
       );
+      if (options.rethrowFailures === true) throw error;
+    }
+  }
+
+  /** Procesa un update persistido sin bloquear el webhook de Telegram. */
+  public async processNextQueuedUpdate(input: { readonly workerId: string; readonly leaseMs: number; readonly retryBackoffMs: number }): Promise<{ readonly processed: boolean; readonly status?: TelegramInboundUpdate['status'] }> {
+    const claimed = await this.repository.claimNextInboundUpdate({
+      workerId: input.workerId,
+      leaseExpiredBefore: new Date(Date.now() - Math.max(1_000, input.leaseMs)),
+    });
+    if (claimed === null) return { processed: false };
+
+    try {
+      await this.handleUpdate(claimed.payload as TelegramUpdate, { rethrowFailures: true, sendFailureReply: false });
+      await this.repository.completeInboundUpdate({ id: claimed.id, workerId: input.workerId, status: 'PROCESSED' });
+      return { processed: true, status: 'PROCESSED' };
+    } catch (error: unknown) {
+      const retryable = claimed.attemptCount < claimed.maxAttempts;
+      await this.repository.completeInboundUpdate({
+        id: claimed.id,
+        workerId: input.workerId,
+        status: retryable ? 'PENDING' : 'FAILED',
+        errorMessage: safeErrorMessage(error),
+        ...(retryable ? { nextAttemptAt: new Date(Date.now() + retryTelegramUpdateDelay(input.retryBackoffMs, claimed.attemptCount)) } : {}),
+      });
+      return { processed: true, status: retryable ? 'PENDING' : 'FAILED' };
     }
   }
 
@@ -189,6 +241,10 @@ export class TelegramBotService {
         return this.formatCosts(link);
       case '/oportunidades':
         return this.formatOpportunities(link);
+      case '/tenants':
+        return formatTenants(this.repository, link);
+      case '/tenant':
+        return changeTenant(this.repository, link, parsed.argument);
       case 'TEXT':
         return this.answerChat(link, originalText);
       default:
@@ -221,7 +277,7 @@ export class TelegramBotService {
     }
 
     const response = await this.aiService.answerChat({
-      tenantId: link.tenantId,
+      tenantId: effectiveTelegramTenantId(link),
       userId: link.userId,
       message: trimmed,
     });
@@ -240,7 +296,7 @@ export class TelegramBotService {
    */
   private async formatSavingsReminders(link: TelegramChatLink): Promise<string> {
     const result = await this.savingsReminderService.getNotificationsForUser({
-      tenantId: link.tenantId,
+      tenantId: effectiveTelegramTenantId(link),
       userId: link.userId,
     });
 
@@ -257,7 +313,7 @@ export class TelegramBotService {
    * @returns El texto con las recomendaciones, o un aviso si no hay ninguna activa.
    */
   private async formatRecommendations(link: TelegramChatLink): Promise<string> {
-    const recommendations = await this.recommendationRepository.findByTenant({ tenantId: link.tenantId });
+    const recommendations = await this.recommendationRepository.findByTenant({ tenantId: effectiveTelegramTenantId(link) });
 
     return renderRecommendations(recommendations);
   }
@@ -272,7 +328,7 @@ export class TelegramBotService {
    * @returns El texto con el resumen de costos.
    */
   private async formatCosts(link: TelegramChatLink): Promise<string> {
-    const snapshot = await this.analyticsRepository.getLatestTenantSnapshot(link.tenantId);
+    const snapshot = await this.analyticsRepository.getLatestTenantSnapshot(effectiveTelegramTenantId(link));
 
     return renderCosts(snapshot);
   }
@@ -287,7 +343,7 @@ export class TelegramBotService {
    * @returns El texto con las oportunidades, o un aviso si no hay evidencia disponible.
    */
   private async formatOpportunities(link: TelegramChatLink): Promise<string> {
-    const snapshot = await this.analyticsRepository.getLatestTenantSnapshot(link.tenantId);
+    const snapshot = await this.analyticsRepository.getLatestTenantSnapshot(effectiveTelegramTenantId(link));
 
     return renderOpportunities(snapshot);
   }
@@ -328,7 +384,7 @@ export class TelegramBotService {
     metadata?: unknown,
   ): Promise<void> {
     await this.repository.createInteractionLog({
-      ...(link !== undefined ? { tenantId: link.tenantId, userId: link.userId } : {}),
+      ...(link !== undefined ? { tenantId: effectiveTelegramTenantId(link), userId: link.userId } : {}),
       chatId: message.chatId,
       ...(message.telegramUserId !== undefined ? { telegramUserId: message.telegramUserId } : {}),
       ...(message.telegramUsername !== undefined ? { telegramUsername: message.telegramUsername } : {}),

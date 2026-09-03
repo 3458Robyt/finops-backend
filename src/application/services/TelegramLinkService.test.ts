@@ -64,6 +64,18 @@ describe('TelegramLinkService', () => {
     expect(repository.auditEvents[0]?.action).toBe('TELEGRAM_TEST_MESSAGE_SENT');
   });
 
+  it('queues real test messages when the durable outbound repository is configured', async () => {
+    const repository = new LinkRepositoryFake();
+    repository.linkById = buildLink();
+    const outbound = { create: vi.fn(async (input: unknown) => ({ ...buildLink(), ...input })) } as never;
+    const service = new TelegramLinkService(repository, new ClientFake(), undefined, outbound);
+
+    await service.sendTestMessage(adminActor(), 'link-1');
+
+    expect(outbound.create).toHaveBeenCalledWith(expect.objectContaining({ status: 'PENDING', channel: 'TELEGRAM' }));
+    expect(repository.auditEvents[0]?.action).toBe('TELEGRAM_TEST_MESSAGE_QUEUED');
+  });
+
   it('generates a short-lived self-link code without persisting plaintext', async () => {
     const repository = {
       createSelfLinkCode: vi.fn(async () => undefined),
@@ -138,6 +150,10 @@ class LinkRepositoryFake implements ITelegramRepository {
     return this.existingByChatId;
   }
 
+  public async findActiveLinkByUserId(_userId: string): Promise<TelegramChatLink | null> {
+    return this.existingByChatId?.status === 'ACTIVE' ? this.existingByChatId : null;
+  }
+
   public async createOrUpdateLink(input: CreateOrUpdateTelegramLinkInput): Promise<TelegramChatLink> {
     const link = buildLink({
       tenantId: input.tenantId,
@@ -174,6 +190,26 @@ class LinkRepositoryFake implements ITelegramRepository {
 
   public async createAuditEvent(input: CreateTelegramAuditEventInput): Promise<void> {
     this.auditEvents.push(input);
+  }
+
+  public async findTenantOptionsForUser(_userId: string, activeTenantId: string) {
+    return [{ id: activeTenantId, name: 'Tenant de prueba', slug: 'tenant-prueba', isActive: true }];
+  }
+
+  public async setActiveTenantForChat(_input: { readonly chatId: string; readonly userId: string; readonly tenantId: string }): Promise<TelegramChatLink | null> {
+    return this.existingByChatId;
+  }
+
+  public async enqueueInboundUpdate(_input: { readonly updateId: string; readonly payload: unknown }): Promise<'ENQUEUED' | 'DUPLICATE'> {
+    return 'ENQUEUED';
+  }
+
+  public async claimNextInboundUpdate(_input: { readonly workerId: string; readonly leaseExpiredBefore: Date }): Promise<null> {
+    return null;
+  }
+
+  public async completeInboundUpdate(_input: { readonly id: string; readonly workerId: string; readonly status: 'PENDING' | 'PROCESSED' | 'FAILED'; readonly errorMessage?: string; readonly nextAttemptAt?: Date }): Promise<null> {
+    return null;
   }
 }
 

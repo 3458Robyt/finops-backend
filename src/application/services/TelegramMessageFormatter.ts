@@ -68,6 +68,8 @@ export class TelegramMessageFormatter {
       '/recomendaciones - Listar recomendaciones activas.',
       '/costos - Ver resumen de costos actual.',
       '/oportunidades - Ver oportunidades detectadas.',
+      '/tenants - Ver los tenants disponibles para tu usuario.',
+      '/tenant <nombre o numero> - Cambiar el tenant activo (tecnicos).',
       '/ayuda - Mostrar esta ayuda.',
       '',
       'Tambien puedes escribir una pregunta directamente y la tratare como chat.',

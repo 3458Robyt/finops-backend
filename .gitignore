@@ -30,5 +30,8 @@ analisis-proyecto-grado/
 .test-artifacts/
 test-results/
 playwright-report/
+# Local validation evidence may contain tenant-specific data.
+output/
+docs/resultados_a_la_fecha/
 graphify-out/
 .graphify-*/

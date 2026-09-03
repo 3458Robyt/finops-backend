@@ -29,7 +29,7 @@ describe('TelegramController', () => {
   it('accepts webhook calls with the configured secret', async () => {
     let handled = false;
     const controller = new TelegramController(
-      { handleUpdate: async () => { handled = true; } } as unknown as TelegramBotService,
+      { enqueueUpdate: async () => { handled = true; return 'ENQUEUED'; } } as unknown as TelegramBotService,
       {} as TelegramLinkService,
       'expected-secret',
       true,
@@ -45,8 +45,8 @@ describe('TelegramController', () => {
     );
 
     expect(handled).toBe(true);
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toEqual({ success: true });
+    expect(response.statusCode).toBe(202);
+    expect(response.body).toEqual({ success: true, queued: true, duplicate: false });
   });
 });
 

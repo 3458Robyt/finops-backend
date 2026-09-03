@@ -25,7 +25,9 @@ const booleanConfigKeys = [
   'MFA_REQUIRED_FOR_PRIVILEGED',
   'EMAIL_ENABLED',
   'SMTP_SECURE',
+  'SMTP_POOL_ENABLED',
   'TELEGRAM_ENABLED',
+  'TELEGRAM_INBOUND_WORKER_ENABLED',
   'INGESTION_WORKER_ENABLED',
   'METRIC_PROJECTION_WORKER_ENABLED',
   'AGENT_LEARNING_WORKER_ENABLED',
@@ -226,12 +228,6 @@ function validateEnabledIntegrations(env: NodeJS.ProcessEnv, issues: RuntimeVali
   if (isEnabled(env['TELEGRAM_ENABLED'])) {
     for (const key of ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_WEBHOOK_SECRET']) {
       if (isBlank(env[key])) issues.push({ key, message: 'Es obligatoria cuando TELEGRAM_ENABLED=true.' });
-    }
-  }
-
-  if (isEnabled(env['MESSAGE_SCHEDULER_ENABLED'])) {
-    for (const key of ['MESSAGE_SCHEDULER_TENANT_ID', 'MESSAGE_SCHEDULER_USER_ID']) {
-      if (isBlank(env[key])) issues.push({ key, message: 'Es obligatoria cuando MESSAGE_SCHEDULER_ENABLED=true.' });
     }
   }
 

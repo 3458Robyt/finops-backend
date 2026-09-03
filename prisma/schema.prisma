@@ -415,6 +415,13 @@ enum OutboundMessageStatus {
   SKIPPED
 }
 
+enum TelegramInboundUpdateStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
 enum ManualExecutionStatus {
   PLANNED
   EXECUTED
@@ -463,6 +470,7 @@ model Tenant {
   aiContextTraces               AiContextTrace[]
   contextBuildRuns              ContextBuildRun[]
   telegramChatLinks             TelegramChatLink[]
+  telegramChatLinksActive       TelegramChatLink[]          @relation("TelegramChatLinkActiveTenant")
   telegramLinkCodes             TelegramLinkCode[]
   telegramInteractionLogs       TelegramInteractionLog[]
   costAnomalies                 CostAnomaly[]
@@ -548,6 +556,7 @@ model User {
   telegramLinkCodes                   TelegramLinkCode[]
   telegramInteractionLogs             TelegramInteractionLog[]
   outboundMessageDeliveries           OutboundMessageDelivery[]
+  messagingPreference                 UserMessagingPreference?
   createdBudgets                      Budget[]                           @relation("BudgetCreatedBy")
   createdCostAllocationRules          CostAllocationRule[]               @relation("CostAllocationRuleCreatedBy")
   closedCostAllocationClosures        CostAllocationClosure[]            @relation("CostAllocationClosureClosedBy")
@@ -2167,6 +2176,7 @@ model TelegramChatLink {
   tenantId         String                 @map("tenant_id")
   userId           String                 @map("user_id")
   chatId           String                 @map("chat_id")
+  activeTenantId   String?                @map("active_tenant_id")
   telegramUserId   String?                @map("telegram_user_id")
   telegramUsername String?                @map("telegram_username")
   status           TelegramChatLinkStatus @default(ACTIVE)
@@ -2175,6 +2185,7 @@ model TelegramChatLink {
   createdAt        DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
   tenant           Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  activeTenant     Tenant?                @relation("TelegramChatLinkActiveTenant", fields: [activeTenantId], references: [id], onDelete: SetNull)
   user             User                   @relation("TelegramChatLinkUser", fields: [userId], references: [id], onDelete: Cascade)
   linkedBy         User                   @relation("TelegramChatLinkLinkedBy", fields: [linkedByUserId], references: [id], onDelete: Restrict)
 
@@ -2183,6 +2194,7 @@ model TelegramChatLink {
   @@index([tenantId, status])
   @@index([userId, status])
   @@index([linkedByUserId], map: "telegram_chat_links_linked_by_user_id_idx")
+  @@index([activeTenantId], map: "telegram_chat_links_active_tenant_id_idx")
   @@map("telegram_chat_links")
 }
 
@@ -2223,6 +2235,42 @@ model TelegramInteractionLog {
   @@index([status, createdAt])
   @@index([userId], map: "telegram_interaction_logs_user_id_idx")
   @@map("telegram_interaction_logs")
+}
+
+model TelegramInboundUpdate {
+  id            String                     @id @default(cuid())
+  updateId      String                     @unique @map("update_id")
+  payload       Json
+  status        TelegramInboundUpdateStatus @default(PENDING)
+  attemptCount  Int                        @default(0) @map("attempt_count")
+  maxAttempts   Int                        @default(3) @map("max_attempts")
+  nextAttemptAt DateTime                   @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lockedAt      DateTime?                  @map("locked_at") @db.Timestamptz(6)
+  lockedBy      String?                    @map("locked_by")
+  errorMessage  String?                    @map("error_message") @db.Text
+  processedAt   DateTime?                  @map("processed_at") @db.Timestamptz(6)
+  createdAt     DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, nextAttemptAt, lockedAt, createdAt])
+  @@map("telegram_inbound_updates")
+}
+
+model UserMessagingPreference {
+  id                    String   @id @default(cuid())
+  userId                String   @unique @map("user_id")
+  emailEnabled          Boolean  @default(true) @map("email_enabled")
+  telegramEnabled       Boolean  @default(false) @map("telegram_enabled")
+  operationalAlerts     Boolean  @default(true) @map("operational_alerts")
+  recommendationAlerts  Boolean  @default(true) @map("recommendation_alerts")
+  financialAlerts       Boolean  @default(true) @map("financial_alerts")
+  executiveSummaries    Boolean  @default(true) @map("executive_summaries")
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_messaging_preferences")
 }
 
 model OutboundMessageDelivery {

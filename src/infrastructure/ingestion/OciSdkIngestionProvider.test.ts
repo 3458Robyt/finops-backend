@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type {
   CloudIngestionJobContext,
   CloudIngestionResult,
@@ -109,7 +109,11 @@ compartmentCount: 3,
 });
 });
 
-it('normalizes metric samples from OCI TypeScript SDK items response', async () => {
+  it('normalizes metric samples from OCI TypeScript SDK items response', async () => {
+    // El proveedor OCI solo conserva 90 días; fija el reloj para que la
+    // fixture histórica no empiece a fallar cuando avance la fecha real.
+    vi.useFakeTimers({ now: new Date('2026-06-04T02:00:00Z') });
+    try {
     const provider = new OciSdkIngestionProvider();
     const requests: unknown[] = [];
 
@@ -150,6 +154,9 @@ it('normalizes metric samples from OCI TypeScript SDK items response', async () 
       }),
     ]);
     expect(result.warnings).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('discovers and parses OCI FOCUS reports from Object Storage prefixes', async () => {

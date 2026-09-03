@@ -67,7 +67,7 @@ try {
       APP_PROCESS_ROLE: 'api',
       DB_RUNTIME_ENFORCE: 'true',
       DB_RUNTIME_ROLE: 'finops_runtime',
-      DB_EXPECTED_MIGRATION: '202608290002_recommendation_candidate_audits',
+      DB_EXPECTED_MIGRATION: '202608310002_messaging_preferences_worker_rls',
       PROCESS_HEARTBEAT_ENABLED: 'false',
       INGESTION_WORKER_ENABLED: 'false',
       INGESTION_SCHEDULER_ENABLED: 'false',

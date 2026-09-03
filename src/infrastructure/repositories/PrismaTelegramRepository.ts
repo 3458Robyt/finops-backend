@@ -4,6 +4,9 @@ import type {
   CreateTelegramAuditEventInput,
   CreateTelegramInteractionLogInput,
   CreateTelegramSelfLinkCodeInput,
+  ClaimTelegramInboundUpdateInput,
+  CompleteTelegramInboundUpdateInput,
+  CreateTelegramInboundUpdateInput,
   ITelegramRepository,
 } from '../../domain/interfaces/ITelegramRepository.js';
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
@@ -14,21 +17,9 @@ import type {
 } from '../../domain/models/Telegram.js';
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { toChatLink, toInteractionLog, toLinkedUser } from './mappers/telegramMappers.js';
-
-/**
- * Proyección de columnas de la tabla `users` reutilizada en las consultas de
- * Telegram. Limita los campos expuestos del usuario a los estrictamente
- * necesarios para vincular cuentas (evita filtrar credenciales u otros datos
- * sensibles).
- */
-const userSelect = {
-  id: true,
-  tenantId: true,
-  email: true,
-  name: true,
-  role: true,
-  status: true,
-} as const;
+import { telegramUserSelect as userSelect } from './mappers/telegramRepositorySelects.js';
+import { PrismaTelegramLinkQueryRepository } from './PrismaTelegramLinkQueryRepository.js';
+import { PrismaTelegramInboundUpdateRepository } from './PrismaTelegramInboundUpdateRepository.js';
 
 /**
  * Adaptador de infraestructura (Clean Architecture) que implementa el puerto de
@@ -42,7 +33,13 @@ const userSelect = {
  * Telegram.
  */
 export class PrismaTelegramRepository implements ITelegramRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly linkQueries: PrismaTelegramLinkQueryRepository;
+  private readonly inboundUpdates: PrismaTelegramInboundUpdateRepository;
+
+  constructor(private readonly prisma: PrismaClient) {
+    this.linkQueries = new PrismaTelegramLinkQueryRepository(prisma);
+    this.inboundUpdates = new PrismaTelegramInboundUpdateRepository(prisma);
+  }
 
   /**
    * Busca un usuario por correo dentro de un tenant concreto, para vincularlo a
@@ -68,83 +65,32 @@ export class PrismaTelegramRepository implements ITelegramRepository {
     return user === null ? null : toLinkedUser(user);
   }
 
-  /**
-   * Lista todos los vínculos de chat de Telegram de un tenant, incluyendo los
-   * datos básicos del usuario asociado.
-   *
-   * Ordena por estado ascendente y, dentro de cada estado, por fecha de
-   * actualización descendente. Filtra por `tenantId` (aislamiento multi-tenant).
-   *
-   * @param tenantId Tenant cuyos vínculos se listan.
-   * @returns Lista de vínculos de dominio; arreglo vacío si no hay ninguno.
-   */
   public async findLinksByTenant(tenantId: string): Promise<TelegramChatLink[]> {
-    const rows = await this.prisma.telegramChatLink.findMany({
-      where: { tenantId },
-      include: { user: { select: userSelect } },
-      orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
-    });
-
-    return rows.map((row) => toChatLink(row));
+    return this.linkQueries.findLinksByTenant(tenantId);
   }
 
-  /**
-   * Busca un vínculo de chat por su identificador, restringido a un tenant.
-   *
-   * @param tenantId Tenant propietario del vínculo (aislamiento multi-tenant).
-   * @param id Identificador del vínculo.
-   * @returns El vínculo de dominio con su usuario, o `null` si no existe o no
-   *   pertenece al tenant.
-   */
   public async findLinkById(tenantId: string, id: string): Promise<TelegramChatLink | null> {
-    const row = await this.prisma.telegramChatLink.findFirst({
-      where: { id, tenantId },
-      include: { user: { select: userSelect } },
-    });
-
-    return row === null ? null : toChatLink(row);
+    return this.linkQueries.findLinkById(tenantId, id);
   }
 
-  /**
-   * Busca el vínculo activo asociado a un `chatId` de Telegram.
-   *
-   * `chatId` es único globalmente en Telegram, por lo que la búsqueda no filtra
-   * por tenant. Devuelve `null` si no existe vínculo o si su estado no es
-   * `ACTIVE` (p. ej. fue deshabilitado).
-   *
-   * @param chatId Identificador del chat de Telegram.
-   * @returns El vínculo activo de dominio, o `null` si no hay vínculo activo.
-   */
   public async findActiveLinkByChatId(chatId: string): Promise<TelegramChatLink | null> {
-    const row = await this.prisma.telegramChatLink.findUnique({
-      where: { chatId },
-      include: { user: { select: userSelect } },
-    });
-
-    if (row === null || row.status !== 'ACTIVE') {
-      return null;
-    }
-
-    return toChatLink(row);
+    return this.linkQueries.findActiveLinkByChatId(chatId);
   }
 
-  /**
-   * Busca cualquier vínculo asociado a un `chatId`, independientemente de su
-   * estado (activo o deshabilitado).
-   *
-   * A diferencia de {@link findActiveLinkByChatId}, no filtra por estado; útil
-   * para reactivar o inspeccionar vínculos existentes.
-   *
-   * @param chatId Identificador del chat de Telegram.
-   * @returns El vínculo de dominio si existe, o `null` en caso contrario.
-   */
-  public async findAnyLinkByChatId(chatId: string): Promise<TelegramChatLink | null> {
-    const row = await this.prisma.telegramChatLink.findUnique({
-      where: { chatId },
-      include: { user: { select: userSelect } },
-    });
+  public async findTenantOptionsForUser(userId: string, activeTenantId: string) {
+    return this.linkQueries.findTenantOptionsForUser(userId, activeTenantId);
+  }
 
-    return row === null ? null : toChatLink(row);
+  public async setActiveTenantForChat(input: { readonly chatId: string; readonly userId: string; readonly tenantId: string }): Promise<TelegramChatLink | null> {
+    return this.linkQueries.setActiveTenantForChat(input);
+  }
+
+  public async findAnyLinkByChatId(chatId: string): Promise<TelegramChatLink | null> {
+    return this.linkQueries.findAnyLinkByChatId(chatId);
+  }
+
+  public async findActiveLinkByUserId(userId: string): Promise<TelegramChatLink | null> {
+    return this.linkQueries.findActiveLinkByUserId(userId);
   }
 
   /**
@@ -169,6 +115,7 @@ export class PrismaTelegramRepository implements ITelegramRepository {
         ...(input.telegramUserId !== undefined ? { telegramUserId: input.telegramUserId } : {}),
         ...(input.telegramUsername !== undefined ? { telegramUsername: input.telegramUsername } : {}),
         linkedByUserId: input.linkedByUserId,
+        activeTenantId: null,
         status: 'ACTIVE',
         disabledAt: null,
       },
@@ -179,6 +126,7 @@ export class PrismaTelegramRepository implements ITelegramRepository {
         ...(input.telegramUserId !== undefined ? { telegramUserId: input.telegramUserId } : {}),
         ...(input.telegramUsername !== undefined ? { telegramUsername: input.telegramUsername } : {}),
         linkedByUserId: input.linkedByUserId,
+        activeTenantId: null,
       },
       include: { user: { select: userSelect } },
     });
@@ -238,6 +186,14 @@ export class PrismaTelegramRepository implements ITelegramRepository {
         throw new FinOpsBaseError('El chat de Telegram ya está vinculado a otra cuenta', 'CONFLICT');
       }
 
+      const existingForUser = await tx.telegramChatLink.findFirst({
+        where: { userId: code.userId, status: 'ACTIVE' },
+        select: { chatId: true },
+      });
+      if (existingForUser !== null && existingForUser.chatId !== input.chatId) {
+        throw new FinOpsBaseError('El usuario ya tiene otro chat de Telegram vinculado', 'CONFLICT');
+      }
+
       const link = await tx.telegramChatLink.upsert({
         where: { chatId: input.chatId },
         update: {
@@ -246,6 +202,7 @@ export class PrismaTelegramRepository implements ITelegramRepository {
           ...(input.telegramUserId === undefined ? {} : { telegramUserId: input.telegramUserId }),
           ...(input.telegramUsername === undefined ? {} : { telegramUsername: input.telegramUsername }),
           linkedByUserId: code.userId,
+          activeTenantId: null,
           status: 'ACTIVE',
           disabledAt: null,
         },
@@ -256,6 +213,7 @@ export class PrismaTelegramRepository implements ITelegramRepository {
           ...(input.telegramUserId === undefined ? {} : { telegramUserId: input.telegramUserId }),
           ...(input.telegramUsername === undefined ? {} : { telegramUsername: input.telegramUsername }),
           linkedByUserId: code.userId,
+          activeTenantId: null,
         },
         include: { user: { select: userSelect } },
       });
@@ -284,7 +242,7 @@ export class PrismaTelegramRepository implements ITelegramRepository {
    */
   public async disableLink(tenantId: string, id: string): Promise<TelegramChatLink | null> {
     const existing = await this.prisma.telegramChatLink.findFirst({
-      where: { id, tenantId },
+      where: { id, OR: [{ tenantId }, { activeTenantId: tenantId }] },
       select: { id: true },
     });
 
@@ -355,5 +313,17 @@ export class PrismaTelegramRepository implements ITelegramRepository {
         ...(input.metadata !== undefined ? { metadata: input.metadata as Prisma.InputJsonValue } : {}),
       },
     });
+  }
+
+  public async enqueueInboundUpdate(input: CreateTelegramInboundUpdateInput): Promise<'ENQUEUED' | 'DUPLICATE'> {
+    return this.inboundUpdates.enqueue(input);
+  }
+
+  public async claimNextInboundUpdate(input: ClaimTelegramInboundUpdateInput) {
+    return this.inboundUpdates.claim(input);
+  }
+
+  public async completeInboundUpdate(input: CompleteTelegramInboundUpdateInput) {
+    return this.inboundUpdates.complete(input);
   }
 }

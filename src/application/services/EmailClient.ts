@@ -12,6 +12,8 @@ export interface EmailSendInput {
 export interface IEmailClient {
   readonly enabled: boolean;
   send(input: EmailSendInput): Promise<{ readonly messageId?: string }>;
+  verify?(): Promise<void>;
+  close?(): Promise<void>;
 }
 
 export class EmailClient implements IEmailClient {
@@ -43,15 +45,21 @@ export class EmailClient implements IEmailClient {
     const fromName = config.fromName;
 
     this.from = `${fromName} <${fromEmail}>`;
-    this.transporter = nodemailer.createTransport({
+    const transportOptions = {
       host,
       port,
       secure,
+      pool: config.pool,
+      maxConnections: config.maxConnections,
+      maxMessages: config.maxMessages,
+      rateLimit: config.rateLimit,
       connectionTimeout: config.timeoutMs,
       greetingTimeout: config.timeoutMs,
       socketTimeout: config.timeoutMs,
       auth: { user, pass },
-    });
+    } as unknown as Parameters<typeof nodemailer.createTransport>[0];
+
+    this.transporter = nodemailer.createTransport(transportOptions);
   }
 
   public async send(input: EmailSendInput): Promise<{ readonly messageId?: string }> {
@@ -72,5 +80,17 @@ export class EmailClient implements IEmailClient {
     return {
       ...(typeof result.messageId === 'string' ? { messageId: result.messageId } : {}),
     };
+  }
+
+  /** Valida DNS/TCP/TLS/autenticación sin emitir correo. */
+  public async verify(): Promise<void> {
+    if (!this.enabled) throw new FinOpsBaseError('Email channel is disabled', 'EMAIL_DISABLED');
+    if (this.transporter === undefined) throw new ConfigurationError('Email client is not configured');
+    await this.transporter.verify();
+  }
+
+  /** Libera las conexiones SMTP persistentes durante el cierre ordenado. */
+  public async close(): Promise<void> {
+    this.transporter?.close();
   }
 }

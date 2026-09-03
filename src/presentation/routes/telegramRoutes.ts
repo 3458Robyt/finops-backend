@@ -12,7 +12,7 @@ import type { TelegramController } from '../controllers/TelegramController.js';
  * Endpoints expuestos:
  * | Método | Subruta                  | Auth        | Handler                              |
  * |--------|--------------------------|-------------|--------------------------------------|
- * | POST   | /webhook                 | —           | telegramController.webhook           |
+ * | POST   | /webhook                 | —           | telegramController.webhook (202 + cola) |
  * | GET    | /links                   | requireAuth | telegramController.listLinks         |
  * | POST   | /links                   | requireAuth | telegramController.createLink        |
  * | PATCH  | /links/:id/disable       | requireAuth | telegramController.disableLink       |

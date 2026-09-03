@@ -159,7 +159,7 @@ function createControllers(dependencies: ServerDependencies, config: NonNullable
     recommendation: new RecommendationController(dependencies.recommendationRepository, dependencies.aiService, dependencies.learningService, dependencies.valueRealizationService),
     kpi: new KpiController(dependencies.recommendationRepository),
     notification: new NotificationController(dependencies.savingsReminderService),
-    outbound: new OutboundMessageController(dependencies.outboundMessageService),
+    outbound: new OutboundMessageController(dependencies.outboundMessageService, dependencies.messagingPreferenceService),
     telegram: new TelegramController(dependencies.telegramBotService, dependencies.telegramLinkService, dependencies.telegramWebhookSecret, dependencies.telegramEnabled),
     masterAdmin: new MasterAdminController(dependencies.masterAdminService),
     masterAdminIngestion: new MasterAdminIngestionController(dependencies.masterAdminIngestionJobService),

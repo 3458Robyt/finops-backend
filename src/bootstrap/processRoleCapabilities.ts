@@ -5,6 +5,7 @@ export interface ProcessRoleCapabilities {
   readonly runsIngestionWorker: boolean;
   readonly runsMetricProjectionWorker: boolean;
   readonly runsLearningWorker: boolean;
+  readonly runsTelegramInboundWorker: boolean;
   readonly runsRecommendationAnalysisWorker: boolean;
   readonly runsSavingsReconciliationWorker: boolean;
   readonly runsIngestionScheduler: boolean;
@@ -19,6 +20,7 @@ const apiOnly: ProcessRoleCapabilities = {
   runsIngestionWorker: false,
   runsMetricProjectionWorker: false,
   runsLearningWorker: false,
+  runsTelegramInboundWorker: false,
   runsRecommendationAnalysisWorker: false,
   runsSavingsReconciliationWorker: false,
   runsIngestionScheduler: false,
@@ -34,6 +36,7 @@ const workerOnly: ProcessRoleCapabilities = {
   runsIngestionWorker: true,
   runsMetricProjectionWorker: true,
   runsLearningWorker: true,
+  runsTelegramInboundWorker: true,
   runsRecommendationAnalysisWorker: true,
   runsSavingsReconciliationWorker: true,
 };
@@ -44,6 +47,7 @@ const schedulerOnly: ProcessRoleCapabilities = {
   runsIngestionScheduler: true,
   runsRecommendationAnalysisScheduler: true,
   runsSavingsReconciliationWorker: true,
+  runsTelegramInboundWorker: true,
   runsNotificationScheduler: true,
   runsAuthCleanupScheduler: true,
   runsBudgetScheduler: true,
@@ -54,6 +58,7 @@ const allCapabilities: ProcessRoleCapabilities = {
   runsIngestionWorker: true,
   runsMetricProjectionWorker: true,
   runsLearningWorker: true,
+  runsTelegramInboundWorker: true,
   runsRecommendationAnalysisWorker: true,
   runsSavingsReconciliationWorker: true,
   runsIngestionScheduler: true,
@@ -70,7 +75,7 @@ const granularCapabilities: Readonly<Record<Exclude<ProcessRole, 'api' | 'worker
   'savings-reconciliation-worker': { ...apiOnly, runsApi: false, runsSavingsReconciliationWorker: true },
   'ingestion-scheduler': { ...apiOnly, runsApi: false, runsIngestionScheduler: true },
   'recommendation-analysis-scheduler': { ...apiOnly, runsApi: false, runsRecommendationAnalysisScheduler: true },
-  'notification-scheduler': { ...apiOnly, runsApi: false, runsNotificationScheduler: true },
+  'notification-scheduler': { ...apiOnly, runsApi: false, runsNotificationScheduler: true, runsTelegramInboundWorker: true },
   'auth-cleanup-scheduler': { ...apiOnly, runsApi: false, runsAuthCleanupScheduler: true },
   'budget-scheduler': { ...apiOnly, runsApi: false, runsBudgetScheduler: true },
 };

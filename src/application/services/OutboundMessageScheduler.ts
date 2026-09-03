@@ -22,7 +22,7 @@ export class OutboundMessageScheduler {
   ) {}
 
   public start(): void {
-    if (this.systemActor === undefined || this.loop !== undefined) {
+    if (this.loop !== undefined) {
       return;
     }
 
@@ -41,18 +41,14 @@ export class OutboundMessageScheduler {
   }
 
   public async runOnce(): Promise<void> {
-    if (this.systemActor === undefined) return;
     const actor = this.systemActor;
+    let processed = 0;
     await runWithDatabaseContext(
       {
-        tenantId: actor.tenantId,
-        userId: actor.userId,
-        role: actor.role,
-        loginEmail: actor.email,
+        role: 'MASTER_ADMIN',
         workerId: 'message-scheduler',
       },
       async () => {
-        let processed = 0;
         const batchSize = Math.max(1, Math.min(this.options.deliveryBatchSize, 500));
         while (processed < batchSize) {
           const result = await this.outboundMessageService.processNextPendingDelivery({
@@ -63,9 +59,21 @@ export class OutboundMessageScheduler {
           if (!result.processed) break;
           processed += 1;
         }
-        if (processed > 0) {
-          console.log(JSON.stringify({ level: 'info', event: 'outbound_message_deliveries_processed', count: processed }));
-        }
+      },
+    );
+    if (processed > 0) {
+      console.log(JSON.stringify({ level: 'info', event: 'outbound_message_deliveries_processed', count: processed }));
+    }
+    if (actor === undefined) return;
+    await runWithDatabaseContext(
+      {
+        tenantId: actor.tenantId,
+        userId: actor.userId,
+        role: actor.role,
+        loginEmail: actor.email,
+        workerId: 'message-scheduler',
+      },
+      async () => {
         await this.outboundMessageService.sendSavingsReminders(actor);
         if (typeof this.outboundMessageService.sendExecutiveSummaryIfConfigured === 'function') {
           await this.outboundMessageService.sendExecutiveSummaryIfConfigured(actor);

@@ -70,6 +70,10 @@ export interface RuntimeConfig {
   readonly email: {
     readonly enabled: boolean;
     readonly timeoutMs: number;
+    readonly pool: boolean;
+    readonly maxConnections: number;
+    readonly maxMessages: number;
+    readonly rateLimit: number;
     readonly host: string | undefined;
     readonly port: number;
     readonly secure: boolean;
@@ -105,6 +109,7 @@ export interface RuntimeConfig {
       readonly transactionTimeoutMs: number;
     };
     readonly learning: { readonly enabled: boolean; readonly id: string | undefined; readonly intervalMs: number; readonly leaseMs: number };
+    readonly telegramInbound: { readonly enabled: boolean; readonly id: string | undefined; readonly intervalMs: number; readonly leaseMs: number; readonly retryBackoffMs: number };
     readonly recommendationAnalysis: {
       readonly enabled: boolean;
       readonly id: string | undefined;

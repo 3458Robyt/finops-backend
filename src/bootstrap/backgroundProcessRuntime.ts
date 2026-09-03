@@ -27,6 +27,7 @@ export function startBackgroundProcesses(input: BackgroundProcessRuntimeInput): 
 
   startProcessHeartbeat(input, composition.processHeartbeatService);
   startMessageScheduler(input, outboundMessageService);
+  startTelegramInboundWorker(input, composition.serverDependencies.telegramBotService);
   startIngestionWorker(input, ingestionWorker);
   startMetricProjectionWorker(input, metricProjectionWorker);
   startLearningWorker(input, learningService);
@@ -36,6 +37,31 @@ export function startBackgroundProcesses(input: BackgroundProcessRuntimeInput): 
   startIngestionScheduler(input, prisma, composition.serverDependencies.cloudConnectionService);
   startAuthLifecycleCleanupScheduler(input, composition.authLifecycleCleanupService);
   startBudgetScheduler(input, budgetService);
+}
+
+function startTelegramInboundWorker(
+  input: BackgroundProcessRuntimeInput,
+  service: ApplicationComposition['serverDependencies']['telegramBotService'],
+): void {
+  const { config, capabilities } = input;
+  if (!capabilities.runsTelegramInboundWorker || !config.workers.telegramInbound.enabled) return;
+  const workerId = config.workers.telegramInbound.id ?? `telegram-inbound-${process.pid}`;
+  console.log(`   Telegram inbound worker: enabled (${workerId}, ${config.workers.telegramInbound.intervalMs}ms)`);
+  input.startBackgroundLoop({
+    metricName: 'telegram_inbound_worker_iteration',
+    run: () => runWithDatabaseContext(
+      { role: 'MASTER_ADMIN', workerId },
+      () => service.processNextQueuedUpdate({
+        workerId,
+        leaseMs: config.workers.telegramInbound.leaseMs,
+        retryBackoffMs: config.workers.telegramInbound.retryBackoffMs,
+      }),
+    ),
+    intervalMs: config.workers.telegramInbound.intervalMs,
+    fallbackIntervalMs: 1_000,
+    onError: (error) => console.error(JSON.stringify({ level: 'error', event: 'telegram_inbound_worker_iteration_failed', error: safeErrorMessage(error) })),
+    onSkip: () => console.warn('Telegram inbound iteration skipped because previous run is still active'),
+  });
 }
 
 function startMetricProjectionWorker(
@@ -62,15 +88,16 @@ function startMessageScheduler(input: BackgroundProcessRuntimeInput, service: Ap
   if (!capabilities.runsNotificationScheduler || !config.schedulers.message.enabled) return;
   const tenantId = config.schedulers.message.tenantId;
   const userId = config.schedulers.message.userId;
-  if (tenantId === undefined || userId === undefined) return;
-
-  const scheduler = new OutboundMessageScheduler(service, {
+  const systemActor = tenantId !== undefined && userId !== undefined ? {
     tenantId,
     userId,
     email: 'scheduler@system.local',
-    role: 'MASTER_ADMIN',
+    role: 'MASTER_ADMIN' as const,
     jwtId: 'scheduler',
-  }, {
+  } : undefined;
+  if (systemActor === undefined) console.warn('Message scheduler is running in queue-only mode; configure MESSAGE_SCHEDULER_TENANT_ID and MESSAGE_SCHEDULER_USER_ID to generate reminders.');
+
+  const scheduler = new OutboundMessageScheduler(service, systemActor, {
     intervalMinutes: config.schedulers.message.intervalMinutes,
     deliveryBatchSize: config.schedulers.message.deliveryBatchSize,
     deliveryLeaseMs: config.schedulers.message.deliveryLeaseMs,

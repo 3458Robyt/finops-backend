@@ -22,6 +22,7 @@ import { MasterAdminIngestionJobService } from '../application/services/MasterAd
 import { ClientInvitationService } from '../application/services/ClientInvitationService.js';
 import { MfaService } from '../application/services/MfaService.js';
 import { OutboundMessageService } from '../application/services/OutboundMessageService.js';
+import { MessagingPreferenceService } from '../application/services/MessagingPreferenceService.js';
 import { PasswordRecoveryService } from '../application/services/PasswordRecoveryService.js';
 import { RecommendationAnalysisService } from '../application/services/RecommendationAnalysisService.js';
 import { SavingsReminderService } from '../application/services/SavingsReminderService.js';
@@ -66,6 +67,7 @@ import { PrismaMfaRecoveryCodeRepository } from '../infrastructure/repositories/
 import { PrismaMfaRepository } from '../infrastructure/repositories/PrismaMfaRepository.js';
 import { PrismaNotificationRepository } from '../infrastructure/repositories/PrismaNotificationRepository.js';
 import { PrismaOutboundMessageRepository } from '../infrastructure/repositories/PrismaOutboundMessageRepository.js';
+import { PrismaMessagingPreferenceRepository } from '../infrastructure/repositories/PrismaMessagingPreferenceRepository.js';
 import { PrismaRecommendationAnalysisRunRepository } from '../infrastructure/repositories/PrismaRecommendationAnalysisRunRepository.js';
 import { PrismaRecommendationRepository } from '../infrastructure/repositories/PrismaRecommendationRepository.js';
 import { PrismaResourceLinkageReadinessRepository } from '../infrastructure/repositories/PrismaResourceLinkageReadinessRepository.js';
@@ -80,7 +82,6 @@ import { Argon2PasswordHasher } from '../infrastructure/security/Argon2PasswordH
 import { JwtTokenService } from '../infrastructure/security/JwtTokenService.js';
 import type { IAgentLearningService } from '../domain/interfaces/IAgentLearningService.js';
 import type { ServerDependencies } from '../presentation/server.js';
-
 export interface ApplicationComposition {
   readonly prisma: PrismaClient;
   readonly metricsRegistry: MetricsRegistry;
@@ -93,9 +94,9 @@ export interface ApplicationComposition {
   readonly processHeartbeatService: ProcessHeartbeatService;
   readonly ingestionWorker: CloudIngestionWorkerService | null;
   readonly metricProjectionWorker: PrismaMetricProjectionWorker | null;
+  readonly emailClient: EmailClient;
   readonly startupReadinessCheck: () => Promise<void>;
 }
-
 export function createApplicationComposition(
   runsIngestionWorker: boolean,
   config: RuntimeConfig = loadRuntimeConfig(),
@@ -118,6 +119,8 @@ export function createApplicationComposition(
   const resourceLinkageReadinessRepository = new PrismaResourceLinkageReadinessRepository(prisma, config.cloud.requiredTagKeys);
   const notificationRepository = new PrismaNotificationRepository(prisma);
   const outboundMessageRepository = new PrismaOutboundMessageRepository(prisma);
+  const messagingPreferenceRepository = new PrismaMessagingPreferenceRepository(prisma);
+  const messagingPreferenceService = new MessagingPreferenceService(messagingPreferenceRepository);
   const telegramRepository = new PrismaTelegramRepository(prisma);
   const agentContextRepository = new PrismaAgentContextRepository(prisma);
   const agentLearningRepository = new PrismaAgentLearningRepository(prisma);
@@ -144,18 +147,10 @@ export function createApplicationComposition(
   const mfaRecoveryCodeRepository = new PrismaMfaRecoveryCodeRepository(prisma);
   const authSessionRepository = new PrismaAuthSessionRepository(prisma, authSecurityRepository);
   const masterAdminRepository = new PrismaMasterAdminRepository(prisma);
-  const masterAdminIngestionJobRepository = new PrismaMasterAdminIngestionJobRepository(
-    prisma,
-    config.workers.ingestion.jobLeaseMs,
-  );
+  const masterAdminIngestionJobRepository = new PrismaMasterAdminIngestionJobRepository(prisma, config.workers.ingestion.jobLeaseMs);
   const clientInvitationRepository = new PrismaClientInvitationRepository(prisma);
   const passwordHasher = new Argon2PasswordHasher();
-  const tokenService = new JwtTokenService({
-    ...(config.security.jwtSecret === undefined ? {} : { secret: config.security.jwtSecret }),
-    issuer: config.security.jwtIssuer,
-    audience: config.security.jwtAudience,
-    expiresInSeconds: config.security.jwtExpiresInSeconds,
-  });
+  const tokenService = new JwtTokenService({ ...(config.security.jwtSecret === undefined ? {} : { secret: config.security.jwtSecret }), issuer: config.security.jwtIssuer, audience: config.security.jwtAudience, expiresInSeconds: config.security.jwtExpiresInSeconds });
   const mfaService = new MfaService(mfaRepository, credentialCipher, mfaRecoveryCodeRepository);
   const authService = new AuthService(
     userRepository,
@@ -221,11 +216,7 @@ export function createApplicationComposition(
       learningLeaseMs: config.workers.learning.leaseMs,
     },
   );
-  const contextEngineService = new ContextEngineService(
-    agentContextRepository,
-    agentInstructionService,
-    learningService,
-  );
+  const contextEngineService = new ContextEngineService(agentContextRepository, agentInstructionService, learningService);
   const aiObservabilityService = new AiObservabilityService(agentContextRepository);
   const agentQualityService = new AgentQualityService(agentQualityRepository, {
     ...(config.ai.inputCostPerMillionTokensUsd !== undefined ? { inputCostPerMillionTokensUsd: config.ai.inputCostPerMillionTokensUsd } : {}),
@@ -256,6 +247,7 @@ export function createApplicationComposition(
     telegramRepository,
     emailClient.enabled,
     telegramEnabled,
+    messagingPreferenceService,
   );
   const passwordRecoveryService = new PasswordRecoveryService(
     accountRecoveryRepository,
@@ -267,7 +259,13 @@ export function createApplicationComposition(
       resetTtlSeconds: config.security.passwordResetTtlSeconds,
     },
   );
-  const telegramLinkService = new TelegramLinkService(telegramRepository, telegramClient, config.telegram.botUsername);
+  const telegramLinkService = new TelegramLinkService(
+    telegramRepository,
+    telegramClient,
+    config.telegram.botUsername,
+    outboundMessageRepository,
+    telegramEnabled,
+  );
   const telegramBotService = new TelegramBotService(
     telegramRepository,
     telegramClient,
@@ -292,6 +290,7 @@ export function createApplicationComposition(
       ...(config.telegram.webhookSecret === undefined ? {} : { telegramWebhookSecret: config.telegram.webhookSecret }),
     },
     executiveSummaryDeliveryService,
+    messagingPreferenceService,
   );
   const valueRealizationService = new ValueRealizationService(
     valueRealizationRepository,
@@ -347,7 +346,6 @@ export function createApplicationComposition(
       },
     )
     : null;
-
   const serverDependencies: ServerDependencies = {
     authService,
     passwordRecoveryService,
@@ -366,6 +364,7 @@ export function createApplicationComposition(
     contextSummaryBuilderService,
     savingsReminderService,
     outboundMessageService,
+    messagingPreferenceService,
     telegramBotService,
     telegramLinkService,
     masterAdminService,
@@ -386,6 +385,7 @@ export function createApplicationComposition(
   return {
     prisma,
     metricsRegistry,
+    emailClient,
     serverDependencies,
     recommendationAnalysisRepository,
     recommendationAnalysisService,

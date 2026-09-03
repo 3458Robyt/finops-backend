@@ -48,7 +48,7 @@ export class TelegramController {
    * Cuerpo (`req.body`): el objeto update de Telegram, delegado a {@link TelegramBotService}.
    *
    * Respuestas:
-   * - 200: `{ success: true }` si la actualización se procesa correctamente.
+   * - 202: `{ success: true, queued, duplicate }` cuando el update queda encolado.
    * - 503 TELEGRAM_DISABLED: la integración está deshabilitada (`enabled` false).
    * - 503 CONFIGURATION_ERROR: el secreto del webhook no está configurado.
    * - 401 AUTHENTICATION_FAILED: el secreto de la cabecera no coincide.
@@ -71,15 +71,15 @@ export class TelegramController {
     }
 
     try {
-      await runWithDatabaseContext(
+      const result = await runWithDatabaseContext(
         {
           role: 'MASTER_ADMIN',
           workerId: 'telegram-webhook',
           ...(res.locals?.requestId === undefined ? {} : { requestId: res.locals.requestId }),
         },
-        () => this.botService.handleUpdate(req.body),
+        () => this.botService.enqueueUpdate(req.body),
       );
-      res.status(200).json({ success: true });
+      res.status(202).json({ success: true, queued: result === 'ENQUEUED', duplicate: result === 'DUPLICATE' });
     } catch (error: unknown) {
       respondWithFinOpsError(res, error, 'No fue posible procesar el webhook de Telegram', 'telegram_operation_failed', req.path);
     }

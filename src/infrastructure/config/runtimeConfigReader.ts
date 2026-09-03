@@ -67,6 +67,10 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
     email: {
       enabled: readBoolean(env['EMAIL_ENABLED'], false),
       timeoutMs: readPositiveInteger(env['OUTBOUND_PROVIDER_TIMEOUT_MS'], 15_000),
+      pool: readBoolean(env['SMTP_POOL_ENABLED'], true),
+      maxConnections: Math.min(10, readPositiveInteger(env['SMTP_MAX_CONNECTIONS'], 3)),
+      maxMessages: Math.min(1000, readPositiveInteger(env['SMTP_MAX_MESSAGES'], 100)),
+      rateLimit: readPositiveInteger(env['SMTP_RATE_LIMIT'], 20),
       host: readOptionalString(env['SMTP_HOST']),
       port: readPositiveInteger(env['SMTP_PORT'], 587),
       secure: readBoolean(env['SMTP_SECURE'], false),
@@ -106,6 +110,13 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
         id: readOptionalString(env['AGENT_LEARNING_WORKER_ID']),
         intervalMs: readPositiveInteger(env['AGENT_LEARNING_WORKER_INTERVAL_MS'], 5_000),
         leaseMs: readPositiveInteger(env['AGENT_LEARNING_LEASE_MS'], 60_000),
+      },
+      telegramInbound: {
+        enabled: readBoolean(env['TELEGRAM_INBOUND_WORKER_ENABLED'], false),
+        id: readOptionalString(env['TELEGRAM_INBOUND_WORKER_ID']),
+        intervalMs: readPositiveInteger(env['TELEGRAM_INBOUND_WORKER_INTERVAL_MS'], 1_000),
+        leaseMs: readPositiveInteger(env['TELEGRAM_INBOUND_WORKER_LEASE_MS'], 120_000),
+        retryBackoffMs: readPositiveInteger(env['TELEGRAM_INBOUND_WORKER_RETRY_BACKOFF_MS'], 5_000),
       },
       recommendationAnalysis: {
         enabled: readBoolean(env['RECOMMENDATION_ANALYSIS_WORKER_ENABLED'], false),

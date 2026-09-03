@@ -27,4 +27,21 @@ describe('TelegramClient', () => {
     await expect(client.sendMessage({ chatId: '123', text: 'Mensaje de prueba' }))
       .rejects.toMatchObject({ code: 'TELEGRAM_TIMEOUT' });
   });
+
+  it('surfaces Telegram rate limits with the provider retry hint', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: false, parameters: { retry_after: 7 } }), { status: 429 })));
+    const client = new TelegramClient('fixture-token', true, 5_000);
+
+    await expect(client.sendMessage({ chatId: '123', text: 'Mensaje de prueba' }))
+      .rejects.toMatchObject({ code: 'TELEGRAM_RATE_LIMITED', details: { retryAfterSeconds: 7 } });
+  });
+
+  it('verifies the bot identity without sending a message', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, result: { username: 'finops_bot' } }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new TelegramClient('fixture-token', true, 5_000);
+
+    await expect(client.verify?.()).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/getMe'), expect.objectContaining({ method: 'POST' }));
+  });
 });

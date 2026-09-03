@@ -49,6 +49,8 @@ export interface TelegramChatLink {
   readonly userId: string;
   /** Identificador del chat de Telegram (chat_id). */
   readonly chatId: string;
+  /** Tenant actualmente seleccionado por el bot para un técnico multi-tenant. */
+  readonly activeTenantId?: string;
   /** Identificador del usuario en Telegram (user id), si se conoce. */
   readonly telegramUserId?: string;
   /** Nombre de usuario (@username) en Telegram, si se conoce. */
@@ -65,6 +67,24 @@ export interface TelegramChatLink {
   readonly updatedAt: Date;
   /** Datos del usuario vinculado, embebidos cuando se solicitan. */
   readonly user?: TelegramLinkedUser;
+}
+
+export interface TelegramTenantOption {
+  readonly id: string;
+  readonly name: string;
+  readonly slug: string;
+  readonly isActive: boolean;
+}
+
+export interface TelegramInboundUpdate {
+  readonly id: string;
+  readonly updateId: string;
+  readonly payload: unknown;
+  readonly status: 'PENDING' | 'PROCESSING' | 'PROCESSED' | 'FAILED';
+  readonly attemptCount: number;
+  readonly maxAttempts: number;
+  readonly nextAttemptAt: Date;
+  readonly errorMessage?: string;
 }
 
 /**

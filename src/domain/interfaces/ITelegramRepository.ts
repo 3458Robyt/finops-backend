@@ -1,4 +1,4 @@
-import type { TelegramChatLink, TelegramInteractionLog, TelegramInteractionStatus, TelegramLinkedUser } from '../models/Telegram.js';
+import type { TelegramChatLink, TelegramInboundUpdate, TelegramInteractionLog, TelegramInteractionStatus, TelegramLinkedUser, TelegramTenantOption } from '../models/Telegram.js';
 
 /**
  * Datos de entrada para crear o actualizar el vínculo entre un chat de Telegram
@@ -77,6 +77,24 @@ export interface ConsumeTelegramSelfLinkCodeInput {
   readonly telegramUsername?: string;
 }
 
+export interface CreateTelegramInboundUpdateInput {
+  readonly updateId: string;
+  readonly payload: unknown;
+}
+
+export interface ClaimTelegramInboundUpdateInput {
+  readonly workerId: string;
+  readonly leaseExpiredBefore: Date;
+}
+
+export interface CompleteTelegramInboundUpdateInput {
+  readonly id: string;
+  readonly workerId: string;
+  readonly status: 'PENDING' | 'PROCESSED' | 'FAILED';
+  readonly errorMessage?: string;
+  readonly nextAttemptAt?: Date;
+}
+
 /**
  * Contrato de repositorio para la integración con Telegram.
  *
@@ -119,6 +137,12 @@ export interface ITelegramRepository {
    */
   findActiveLinkByChatId(chatId: string): Promise<TelegramChatLink | null>;
 
+  /** Lista los tenants accesibles por el usuario vinculado, para el selector del bot. */
+  findTenantOptionsForUser(userId: string, activeTenantId: string): Promise<readonly TelegramTenantOption[]>;
+
+  /** Cambia atómicamente el tenant activo del chat tras validar el acceso del usuario. */
+  setActiveTenantForChat(input: { readonly chatId: string; readonly userId: string; readonly tenantId: string }): Promise<TelegramChatLink | null>;
+
   /**
    * Busca cualquier vínculo asociado a un chat de Telegram, esté activo o no.
    *
@@ -126,6 +150,8 @@ export interface ITelegramRepository {
    * @returns El vínculo si existe (activo o deshabilitado); `null` si no hay ninguno.
    */
   findAnyLinkByChatId(chatId: string): Promise<TelegramChatLink | null>;
+
+  findActiveLinkByUserId(userId: string): Promise<TelegramChatLink | null>;
 
   /**
    * Crea o actualiza el vínculo entre un chat de Telegram y un usuario.
@@ -164,4 +190,13 @@ export interface ITelegramRepository {
    * @param input - Datos del evento de auditoría.
    */
   createAuditEvent(input: CreateTelegramAuditEventInput): Promise<void>;
+
+  /** Encola de forma idempotente un update recibido por webhook. */
+  enqueueInboundUpdate(input: CreateTelegramInboundUpdateInput): Promise<'ENQUEUED' | 'DUPLICATE'>;
+
+  /** Reclama un update pendiente usando lease para permitir varios workers. */
+  claimNextInboundUpdate(input: ClaimTelegramInboundUpdateInput): Promise<TelegramInboundUpdate | null>;
+
+  /** Completa o reprograma un update reclamado. */
+  completeInboundUpdate(input: CompleteTelegramInboundUpdateInput): Promise<TelegramInboundUpdate | null>;
 }

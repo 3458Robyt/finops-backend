@@ -1,4 +1,5 @@
 import { FinOpsBaseError } from '../../domain/errors/errors.js';
+import type { IOutboundMessageRepository } from '../../domain/interfaces/IOutboundMessageRepository.js';
 import type { ITelegramRepository } from '../../domain/interfaces/ITelegramRepository.js';
 import type { AuthContext } from '../../domain/models/AuthContext.js';
 import type { TelegramChatLink } from '../../domain/models/Telegram.js';
@@ -33,7 +34,8 @@ export interface TelegramSelfLinkCodeResult {
  *
  * Colaboradores inyectados:
  * - {@link ITelegramRepository}: persistencia de vínculos, usuarios y eventos de auditoría.
- * - {@link ITelegramClient}: envío de mensajes de prueba a Telegram.
+ * - {@link ITelegramClient}: envío directo de compatibilidad y pruebas aisladas.
+ * - {@link IOutboundMessageRepository}: cola durable para entregas reales.
  *
  * Rol dentro del flujo: punto de administración del canal Telegram; todas las
  * operaciones requieren rol administrativo.
@@ -43,6 +45,8 @@ export class TelegramLinkService {
     private readonly repository: ITelegramRepository,
     private readonly telegramClient: ITelegramClient,
     private readonly botUsername?: string,
+    private readonly outboundRepository?: IOutboundMessageRepository,
+    private readonly telegramEnabled = true,
   ) {}
 
   /**
@@ -153,6 +157,11 @@ export class TelegramLinkService {
 
     const existing = await this.repository.findAnyLinkByChatId(chatId);
 
+    const existingForUser = await this.repository.findActiveLinkByUserId(user.id);
+    if (existingForUser !== null && existingForUser.chatId !== chatId) {
+      throw new FinOpsBaseError('Este usuario ya tiene otro chat de Telegram vinculado', 'CONFLICT');
+    }
+
     if (
       existing !== null &&
       existing.status === 'ACTIVE' &&
@@ -255,19 +264,34 @@ export class TelegramLinkService {
       throw new FinOpsBaseError('Telegram link is disabled', 'VALIDATION_ERROR');
     }
 
-    await this.telegramClient.sendMessage({
-      chatId: link.chatId,
-      text: [
-        'Vinculacion Telegram activa.',
-        `Usuario FinOps: ${link.user?.email ?? link.userId}`,
-        'Ya puedes usar /ayuda para ver comandos disponibles.',
-      ].join('\n'),
-    });
+    const text = [
+      'Vinculacion Telegram activa.',
+      `Usuario FinOps: ${link.user?.email ?? link.userId}`,
+      'Ya puedes usar /ayuda para ver comandos disponibles.',
+    ].join('\n');
+
+    const queued = this.outboundRepository !== undefined;
+    if (!queued) {
+      await this.telegramClient.sendMessage({ chatId: link.chatId, text });
+    } else {
+      await this.outboundRepository.create({
+        tenantId: actor.tenantId,
+        userId: link.userId,
+        channel: 'TELEGRAM',
+        messageType: 'TEST',
+        status: this.telegramEnabled ? 'PENDING' : 'SKIPPED',
+        preview: text,
+        body: text,
+        maxAttempts: 3,
+        metadata: { chatId: link.chatId },
+        ...(this.telegramEnabled ? {} : { errorMessage: 'Telegram channel disabled' }),
+      });
+    }
 
     await this.repository.createAuditEvent({
       tenantId: actor.tenantId,
       actorUserId: actor.userId,
-      action: 'TELEGRAM_TEST_MESSAGE_SENT',
+      action: queued ? 'TELEGRAM_TEST_MESSAGE_QUEUED' : 'TELEGRAM_TEST_MESSAGE_SENT',
       entityType: 'TelegramChatLink',
       entityId: link.id,
       metadata: {

@@ -122,7 +122,7 @@ describe('validateRuntimeConfig', () => {
       .toThrow(`Configuracion runtime invalida.`);
   });
 
-  it('requires credentials for enabled outbound integrations and scheduler targets', () => {
+  it('requires credentials for enabled outbound integrations and actor-backed scheduler targets', () => {
     expect(() => validateRuntimeConfig({
       ...productionEnv,
       EMAIL_ENABLED: 'true',
@@ -134,7 +134,7 @@ describe('validateRuntimeConfig', () => {
     expect(() => validateRuntimeConfig({
       ...productionEnv,
       MESSAGE_SCHEDULER_ENABLED: 'true',
-    })).toThrow(`Configuracion runtime invalida.`);
+    })).not.toThrow();
     expect(() => validateRuntimeConfig({
       ...productionEnv,
       BUDGET_SCHEDULER_ENABLED: 'true',
@@ -153,7 +153,7 @@ describe('validateRuntimeConfig', () => {
     expect(() => validateRuntimeConfig({
       ...productionEnv,
       MESSAGE_SCHEDULER_ENABLED: ' true ',
-    })).toThrow(`Configuracion runtime invalida.`);
+    })).not.toThrow();
   });
 
   it('accepts explicitly configured outbound integrations', () => {

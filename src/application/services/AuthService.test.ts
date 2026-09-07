@@ -165,7 +165,12 @@ describe('AuthService', () => {
     });
     expect(result.activeTenant).toMatchObject({ id: 'tenant-1', isCurrent: true });
     expect(result.availableTenants).toHaveLength(2);
-    expect(tokenService.issuedContexts[0]).toMatchObject({ tenantId: 'tenant-1' });
+    expect(result.authorization).toMatchObject({ effectiveRole: 'OPERATOR_ADMIN', persona: 'TECHNICAL' });
+    expect(tokenService.issuedContexts[0]).toMatchObject({
+      tenantId: 'tenant-1',
+      role: 'OPERATOR_ADMIN',
+      identityRole: 'ADMIN',
+    });
     expect(users.createdSession).toMatchObject({
       userId: 'user-1',
       jwtId: 'jwt-1',
@@ -195,6 +200,12 @@ describe('AuthService', () => {
     expect(result.user.homeTenantId).toBe('tenant-1');
     expect(result.activeTenant).toMatchObject({ id: 'tenant-2', isCurrent: true });
     expect(result.availableTenants.map((tenant) => tenant.isCurrent)).toEqual([false, true]);
+    expect(result.authorization.effectiveRole).toBe('FINOPS_TECHNICIAN');
+    expect(tokenService.issuedContexts[0]).toMatchObject({
+      tenantId: 'tenant-2',
+      role: 'FINOPS_TECHNICIAN',
+      identityRole: 'ADMIN',
+    });
     expect(sessions.revokedCurrent).toBe(1);
   });
 

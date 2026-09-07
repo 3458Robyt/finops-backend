@@ -54,8 +54,8 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
     ai: {
       apiKey: readOptionalString(env['AI_API_KEY']),
       baseUrl: readString(env['AI_BASE_URL'], 'https://api.openai.com/v1'),
-      model: readString(env['AI_MODEL'], 'gpt-5.4-mini'),
-      auditorModel: readString(env['AI_AUDITOR_MODEL'], readString(env['AI_MODEL'], 'gpt-5.4-mini')),
+      model: readString(env['AI_MODEL'], 'gpt-5.6-luna'),
+      auditorModel: readString(env['AI_AUDITOR_MODEL'], readString(env['AI_MODEL'], 'gpt-5.6-luna')),
       timeoutMs: readPositiveInteger(env['AI_TIMEOUT_MS'], 60_000),
       maxRetries: readNonNegativeInteger(env['AI_MAX_RETRIES'], 1),
       learningAuditTimeoutMs: readPositiveInteger(env['LEARNING_AUDIT_TIMEOUT_MS'], 15_000),

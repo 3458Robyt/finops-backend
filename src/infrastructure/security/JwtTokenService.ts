@@ -8,14 +8,15 @@ import { AuthenticationError, ConfigurationError } from '../../domain/errors/err
  * Conjunto de roles válidos aceptados al verificar un token JWT.
  *
  * Debe mantenerse sincronizado con el tipo {@link UserRole} y el enum `UserRole`
- * de `prisma/schema.prisma`. Cubre los seis roles reales del sistema:
- * `ADMIN`, `VIEWER`, `OPERATOR_ADMIN`, `FINOPS_TECHNICIAN`, `CLIENT_APPROVER` y `CLIENT_VIEWER`.
+ * de `prisma/schema.prisma`. Incluye `MASTER_ADMIN`, `LEAD_TECHNICIAN`, los
+ * roles operativos y los roles de cliente, además de los roles legacy.
  */
 const VALID_USER_ROLES: ReadonlySet<UserRole> = new Set<UserRole>([
   'ADMIN',
   'MASTER_ADMIN',
   'VIEWER',
   'OPERATOR_ADMIN',
+  'LEAD_TECHNICIAN',
   'FINOPS_TECHNICIAN',
   'CLIENT_APPROVER',
   'CLIENT_VIEWER',
@@ -49,6 +50,7 @@ interface FinOpsJwtPayload extends JwtPayload {
   readonly email: string;
   /** Rol del usuario dentro del sistema. */
   readonly role: UserRole;
+  readonly identityRole?: UserRole;
 }
 
 /**
@@ -114,6 +116,7 @@ export class JwtTokenService implements ITokenService {
       tenantId: context.tenantId,
       email: context.email,
       role: context.role,
+      ...(context.identityRole === undefined ? {} : { identityRole: context.identityRole }),
     };
 
     const options: SignOptions = {
@@ -137,9 +140,8 @@ export class JwtTokenService implements ITokenService {
    *
    * Valida algoritmo (`HS256`), emisor, audiencia y caducidad, y comprueba que
    * los claims obligatorios (`sub`, `jti`, `tenantId`, `email`, `role`) estén
-   * presentes y bien tipados. El `role` debe ser uno de los seis roles válidos
-   * del sistema (`ADMIN`, `VIEWER`, `OPERATOR_ADMIN`, `FINOPS_TECHNICIAN`,
-   * `CLIENT_APPROVER`, `CLIENT_VIEWER`).
+   * presentes y bien tipados. El `role` debe ser uno de los roles válidos del
+   * sistema, incluidos los roles legacy y `LEAD_TECHNICIAN`.
    *
    * @param token - Token JWT en formato compacto a verificar.
    * @returns El {@link AuthContext} reconstruido a partir de los claims.
@@ -176,6 +178,9 @@ export class JwtTokenService implements ITokenService {
         tenantId: payload.tenantId,
         email: payload.email,
         role: payload.role,
+        ...(typeof payload.identityRole === 'string' && VALID_USER_ROLES.has(payload.identityRole as UserRole)
+          ? { identityRole: payload.identityRole as UserRole }
+          : {}),
         jwtId: payload.jti,
       };
     } catch (error: unknown) {

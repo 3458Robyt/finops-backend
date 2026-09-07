@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
-const { openAiConstructor } = vi.hoisted(() => ({
+const { openAiConstructor, completionCreate } = vi.hoisted(() => ({
   openAiConstructor: vi.fn(),
+  completionCreate: vi.fn(),
 }));
 
 vi.mock('openai', () => ({
@@ -12,7 +13,7 @@ vi.mock('openai', () => ({
 
     public readonly chat = {
       completions: {
-        create: vi.fn(),
+        create: completionCreate,
       },
     };
   },
@@ -24,13 +25,14 @@ describe('OpenAiCompatibleAiGateway', () => {
   afterEach(() => {
     process.env = { ...originalEnv };
     openAiConstructor.mockClear();
+    completionCreate.mockReset();
     vi.resetModules();
   });
 
   test('uses generic AI configuration as the primary provider settings', async () => {
     process.env['AI_API_KEY'] = 'test-ai-key';
     process.env['AI_BASE_URL'] = 'https://api.example.test/v1';
-    process.env['AI_MODEL'] = 'gpt-5.4-mini';
+    process.env['AI_MODEL'] = 'gpt-5.6-luna';
     process.env['AI_TIMEOUT_MS'] = '15000';
     process.env['AI_MAX_RETRIES'] = '0';
     process.env['NVIDIA_API_KEY'] = 'legacy-key';
@@ -39,7 +41,7 @@ describe('OpenAiCompatibleAiGateway', () => {
     const { OpenAiCompatibleAiGateway } = await import('./OpenAiCompatibleAiGateway.js');
     const gateway = new OpenAiCompatibleAiGateway();
 
-    expect(gateway.modelName).toBe('gpt-5.4-mini');
+    expect(gateway.modelName).toBe('gpt-5.6-luna');
     expect(openAiConstructor).toHaveBeenCalledWith({
       apiKey: 'test-ai-key',
       baseURL: 'https://api.example.test/v1',
@@ -60,5 +62,24 @@ describe('OpenAiCompatibleAiGateway', () => {
 
     expect(() => new OpenAiCompatibleAiGateway()).toThrow('AI_API_KEY must be configured');
     expect(openAiConstructor).not.toHaveBeenCalled();
+  });
+
+  test('sends only the standard OpenAI-compatible payload', async () => {
+    process.env['AI_API_KEY'] = 'test-ai-key';
+    process.env['AI_BASE_URL'] = 'https://api.example.test/v1';
+    process.env['AI_MODEL'] = 'gpt-5.6-luna';
+    completionCreate.mockResolvedValue((async function* () {
+      yield { choices: [{ delta: { content: 'respuesta' } }] };
+    })());
+
+    const { OpenAiCompatibleAiGateway } = await import('./OpenAiCompatibleAiGateway.js');
+    const gateway = new OpenAiCompatibleAiGateway();
+    await gateway.generateText({ messages: [{ role: 'user', content: 'hola' }] });
+
+    expect(completionCreate).toHaveBeenCalledWith(
+      expect.not.objectContaining({ chat_template_kwargs: expect.anything() }),
+      expect.anything(),
+    );
+    expect(completionCreate.mock.calls[0]?.[0]).toMatchObject({ model: 'gpt-5.6-luna', stream: true });
   });
 });

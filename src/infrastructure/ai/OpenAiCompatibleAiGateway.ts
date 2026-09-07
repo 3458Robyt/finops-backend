@@ -62,8 +62,7 @@ export class OpenAiCompatibleAiGateway implements IAiGateway {
           top_p: 0.95,
           max_tokens: request.maxTokens ?? 2048,
           stream: true,
-          chat_template_kwargs: { thinking: false },
-        } as unknown as Parameters<OpenAI['chat']['completions']['create']>[0],
+        },
         {
           ...(request.timeoutMs !== undefined ? { timeout: request.timeoutMs } : {}),
           ...(request.maxRetries !== undefined ? { maxRetries: request.maxRetries } : {}),

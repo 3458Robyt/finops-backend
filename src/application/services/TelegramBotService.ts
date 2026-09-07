@@ -280,6 +280,7 @@ export class TelegramBotService {
       tenantId: effectiveTelegramTenantId(link),
       userId: link.userId,
       message: trimmed,
+      outputFormat: 'PLAIN_TEXT',
     });
 
     return response.answer;

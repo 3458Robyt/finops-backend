@@ -28,6 +28,7 @@
     "test:api:onboarding": "tsx scripts/testing/cloud-onboarding-api-smoke.ts",
     "test:canary:runtime-rls": "tsx scripts/testing/runtime-rls-canary.ts",
     "test:canary:ai": "tsx scripts/testing/ai-live-canary.ts",
+    "test:canary:ai:gpt56": "tsx scripts/testing/ai-gpt56-coherence.ts",
     "test:canary:learning": "cross-env AI_CANARY_SCOPE=learning tsx scripts/testing/ai-live-canary.ts",
     "test:ai:offline": "vitest run src/application/services/ai/evaluation",
     "test:ai:live": "tsx scripts/testing/ai-live-audit.ts",

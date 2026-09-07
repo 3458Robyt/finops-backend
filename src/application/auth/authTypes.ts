@@ -1,4 +1,5 @@
-import type { AccessibleTenant } from '../../domain/interfaces/IUserRepository.js';
+import type { AccessibleTenant, EffectiveTenantRole } from '../../domain/interfaces/IUserRepository.js';
+import type { FinOpsPermission } from '../../domain/security/AuthorizationPolicy.js';
 import type { UserRole } from '../../domain/models/AuthContext.js';
 
 export interface LoginInput {
@@ -20,7 +21,14 @@ export interface AuthTenant {
   readonly name: string;
   readonly slug: string;
   readonly accessRole: AccessibleTenant['accessRole'];
+  readonly effectiveRole: EffectiveTenantRole;
   readonly isCurrent: boolean;
+}
+
+export interface AuthorizationSnapshot {
+  readonly effectiveRole: EffectiveTenantRole;
+  readonly persona: 'MASTER' | 'TECHNICAL' | 'CLIENT';
+  readonly permissions: readonly FinOpsPermission[];
 }
 
 export interface LoginResult {
@@ -37,6 +45,7 @@ export interface LoginResult {
   };
   readonly activeTenant: AuthTenant;
   readonly availableTenants: readonly AuthTenant[];
+  readonly authorization: AuthorizationSnapshot;
   /** One-time plaintext recovery codes returned only immediately after MFA enrollment. */
   readonly mfaRecoveryCodes?: readonly string[];
 }

@@ -268,8 +268,8 @@ export class MasterAdminService {
   }
 
   private normalizeStaffRole(role: UserRole): UserRole {
-    if (role !== 'OPERATOR_ADMIN' && role !== 'FINOPS_TECHNICIAN') {
-      throw new FinOpsBaseError('role must be OPERATOR_ADMIN or FINOPS_TECHNICIAN', 'VALIDATION_ERROR');
+    if (role !== 'OPERATOR_ADMIN' && role !== 'LEAD_TECHNICIAN' && role !== 'FINOPS_TECHNICIAN') {
+      throw new FinOpsBaseError('role must be OPERATOR_ADMIN, LEAD_TECHNICIAN or FINOPS_TECHNICIAN', 'VALIDATION_ERROR');
     }
 
     return role;

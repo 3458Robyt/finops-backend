@@ -94,7 +94,7 @@ export class PrismaMasterAdminRepository implements IMasterAdminRepository {
   public async listStaffUsers(): Promise<readonly MasterAdminUser[]> {
     return this.prisma.user.findMany({
       where: {
-        role: { in: ['MASTER_ADMIN', 'OPERATOR_ADMIN', 'FINOPS_TECHNICIAN', 'ADMIN'] },
+        role: { in: ['MASTER_ADMIN', 'OPERATOR_ADMIN', 'LEAD_TECHNICIAN', 'FINOPS_TECHNICIAN', 'ADMIN'] },
       },
       orderBy: [{ role: 'asc' }, { name: 'asc' }],
       select: userSelect,

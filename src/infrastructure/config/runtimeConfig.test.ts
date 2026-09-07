@@ -13,8 +13,8 @@ const productionEnv: NodeJS.ProcessEnv = {
   DB_EXPECTED_MIGRATION: '202608120005_runtime_process_heartbeats',
   AI_API_KEY: 'sk-fixture-key',
   AI_BASE_URL: 'https://ai.example.com/v1',
-  AI_MODEL: 'gpt-5.4-mini',
-  AI_AUDITOR_MODEL: 'gpt-5.4-mini',
+  AI_MODEL: 'gpt-5.6-luna',
+  AI_AUDITOR_MODEL: 'gpt-5.6-luna',
   MFA_REQUIRED_FOR_PRIVILEGED: 'true',
   METRICS_TOKEN: 'metrics-fixture-token',
 };

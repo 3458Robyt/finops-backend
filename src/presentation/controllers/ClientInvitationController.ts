@@ -136,6 +136,7 @@ function toPublicLoginResult(result: LoginResult): object {
     user: result.user,
     activeTenant: result.activeTenant,
     availableTenants: result.availableTenants,
+    authorization: result.authorization,
     ...(result.mfaRecoveryCodes === undefined ? {} : { mfaRecoveryCodes: result.mfaRecoveryCodes }),
   };
 }

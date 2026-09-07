@@ -5,6 +5,7 @@
  * - `MASTER_ADMIN`: Administrador maestro con acceso a todos los tenants activos.
  * - `VIEWER`: Usuario con acceso de solo lectura.
  * - `OPERATOR_ADMIN`: Administrador del operador (proveedor del servicio FinOps).
+ * - `LEAD_TECHNICIAN`: Técnico líder, con capacidad de configurar el agente.
  * - `FINOPS_TECHNICIAN`: Técnico FinOps con permisos operativos.
  * - `CLIENT_APPROVER`: Usuario del cliente con permiso para aprobar recomendaciones.
  * - `CLIENT_VIEWER`: Usuario del cliente con acceso de solo lectura.
@@ -14,6 +15,7 @@ export type UserRole =
   | 'MASTER_ADMIN'
   | 'VIEWER'
   | 'OPERATOR_ADMIN'
+  | 'LEAD_TECHNICIAN'
   | 'FINOPS_TECHNICIAN'
   | 'CLIENT_APPROVER'
   | 'CLIENT_VIEWER';
@@ -32,6 +34,8 @@ export interface AuthContext {
   readonly email: string;
   /** Rol del usuario, que determina sus permisos. */
   readonly role: UserRole;
+  /** Rol de identidad original, separado del rol efectivo del tenant. */
+  readonly identityRole?: UserRole;
   /** Identificador del JWT (claim `jti`) usado para trazabilidad y revocación. */
   readonly jwtId: string;
 }

@@ -25,6 +25,7 @@ if (!liveEnabled) {
 const manifest = JSON.parse(await readFile(resolve(process.env['E2E_FIXTURE_FILE'] ?? '.test-artifacts/e2e-fixtures.json'), 'utf8')) as E2eFixtureManifest;
 const token = await login(manifest.admin.email, manifest.password);
 const checks: AuditCheck[] = [];
+const expectedModel = process.env['AI_EXPECTED_MODEL'] ?? 'gpt-5.6-luna';
 
 const chat = await post('/ai/chat', {
   message: 'Responde en una frase: cual es la principal oportunidad FinOps segun los datos disponibles?',
@@ -34,6 +35,26 @@ checks.push({
   name: 'chat_responde_en_espanol',
   passed: containsSpanishSignal(chatAnswer),
   detail: chatAnswer.slice(0, 300),
+});
+
+const formattedChat = await post('/ai/chat', {
+  message: 'Responde con un encabezado breve y dos viñetas Markdown: ¿cuál es la principal oportunidad según los datos? No inventes datos.',
+});
+const formattedChatAnswer = String(readJsonPath(formattedChat, ['answer']) ?? '');
+checks.push({
+  name: 'chat_formato_markdown_seguro',
+  passed: containsSpanishSignal(formattedChatAnswer) && !containsUnsafeMarkup(formattedChatAnswer),
+  detail: formattedChatAnswer.slice(0, 500),
+});
+
+const unsupportedTechnicalChat = await post('/ai/chat', {
+  message: '¿Cuál es el p95 de CPU y memoria de este tenant? Responde solo si existe evidencia técnica.',
+});
+const unsupportedTechnicalAnswer = String(readJsonPath(unsupportedTechnicalChat, ['answer']) ?? '');
+checks.push({
+  name: 'chat_no_inventa_metricas_tecnicas',
+  passed: containsSpanishSignal(unsupportedTechnicalAnswer) && !containsUnsupportedTechnicalClaim(unsupportedTechnicalAnswer),
+  detail: unsupportedTechnicalAnswer.slice(0, 500),
 });
 
 const recommendationStartedAt = Date.now();
@@ -85,12 +106,104 @@ checks.push({
   detail: JSON.stringify(recommendations.map((recommendation) => recommendation['estimatedMonthlySavings'])),
 });
 
+const recommendationId = manifest.recommendationIds[0];
+const latestPlanPath = recommendationId === undefined
+  ? undefined
+  : '/recommendations/' + encodeURIComponent(recommendationId) + '/execution-plans/latest';
+const latestPlanBeforeResult = latestPlanPath === undefined
+  ? { ok: false as const, status: 0, body: {} }
+  : await getMaybe(latestPlanPath);
+const latestPlanBefore = latestPlanBeforeResult.ok
+  ? asRecord(latestPlanBeforeResult.body['executionPlan'])
+  : undefined;
+const planStartedAt = Date.now();
+const planPath = recommendationId === undefined
+  ? undefined
+  : '/recommendations/' + encodeURIComponent(recommendationId) + '/execution-plan';
+const planResult = planPath === undefined
+  ? { ok: false as const, status: 0, body: {} }
+  : await postMaybe(planPath, {});
+const planLatencyMs = Date.now() - planStartedAt;
+checks.push({
+  name: 'endpoint_plan_ejecucion_responde',
+  passed: planResult.ok,
+  detail: planResult.ok ? 'HTTP 200' : JSON.stringify({
+    status: planResult.status,
+    ...summarizeAiFailure(planResult.body),
+  }),
+});
+const executionPlan = planResult.ok ? asRecord(planResult.body['executionPlan']) : undefined;
+const planContent = asRecord(executionPlan?.['content']);
+const planAudit = asRecord(executionPlan?.['auditReport']);
+const requiredPlanArrays = ['prerequisites', 'steps', 'validation', 'risks', 'rollback', 'successCriteria'];
+checks.push({
+  name: 'plan_tiene_estructura_manual_y_en_espanol',
+  passed: planContent !== undefined
+    && requiredPlanArrays.every((field) => Array.isArray(planContent[field]) && (planContent[field] as unknown[]).length > 0)
+    && containsSpanishSignal(JSON.stringify(planContent))
+    && !/(ejecutará automáticamente|ejecución automática|ejecutar automáticamente)/i.test(JSON.stringify(planContent)),
+  detail: JSON.stringify({
+    fields: requiredPlanArrays.map((field) => ({ field, present: Array.isArray(planContent?.[field]) })),
+    auditVerdict: executionPlan?.['auditVerdict'],
+    auditScore: executionPlan?.['auditScore'],
+  }),
+});
+checks.push({
+  name: 'plan_aprobado_por_auditor',
+  passed: executionPlan?.['auditVerdict'] === 'APPROVED'
+    && planAudit?.['verdict'] === 'APPROVED'
+    && readNonNegativeNumber(executionPlan?.['auditScore']) >= 80,
+  detail: JSON.stringify({ verdict: executionPlan?.['auditVerdict'], score: executionPlan?.['auditScore'] }),
+});
+
+const latestPlanResult = latestPlanPath === undefined
+  ? { ok: false as const, status: 0, body: {} }
+  : await getMaybe(latestPlanPath);
+const latestPlan = latestPlanResult.ok ? asRecord(latestPlanResult.body['executionPlan']) : undefined;
+const generatedPlanId = typeof executionPlan?.['id'] === 'string' ? executionPlan['id'] : undefined;
+const latestPlanId = typeof latestPlan?.['id'] === 'string' ? latestPlan['id'] : undefined;
+checks.push({
+  name: 'plan_persistido_y_recuperable',
+  passed: planResult.ok
+    && latestPlanResult.ok
+    && latestPlan !== undefined
+    && latestPlan['recommendationId'] === recommendationId
+    && generatedPlanId !== undefined
+    && latestPlanId === generatedPlanId,
+  detail: JSON.stringify({
+    status: latestPlanResult.status,
+    recommendationId: latestPlan?.['recommendationId'],
+    expectedRecommendationId: recommendationId,
+    generatedPlanId,
+    latestPlanId,
+  }),
+});
+checks.push({
+  name: 'plan_rechazado_no_se_persistio',
+  passed: planResult.ok || (
+    planResult.body['code'] === 'AI_AUDIT_REJECTED'
+    && latestPlanResult.ok
+    && latestPlanId === (typeof latestPlanBefore?.['id'] === 'string' ? latestPlanBefore['id'] : undefined)
+  ),
+  detail: JSON.stringify({
+    planStatus: planResult.status,
+    planCode: planResult.body['code'],
+    previousPlanId: latestPlanBefore?.['id'],
+    latestPlanId,
+  }),
+});
+
 const traceResponse = await get('/agent/context-traces?limit=5');
 const traces = Array.isArray(traceResponse['traces']) ? traceResponse['traces'] as Record<string, unknown>[] : [];
 checks.push({
   name: 'registra_trazas_ia',
   passed: traces.some((trace) => trace['status'] === 'SUCCESS'),
   detail: JSON.stringify(traces.slice(0, 3)),
+});
+checks.push({
+  name: 'usa_modelo_esperado',
+  passed: traces.some((trace) => trace['status'] === 'SUCCESS' && trace['model'] === expectedModel),
+  detail: `Modelo esperado: ${expectedModel}; modelos observados: ${JSON.stringify([...new Set(traces.map((trace) => trace['model']))])}`,
 });
 
 const tokenEstimate = traces.reduce((total, trace) => (
@@ -105,9 +218,11 @@ const output = {
   apiBaseUrl,
   metrics: {
     recommendationLatencyMs,
+    planLatencyMs,
     traceLatencyMs,
     tokenEstimate,
     recommendationCount: recommendations.length,
+    expectedModel,
   },
   checks,
 };
@@ -160,10 +275,25 @@ async function postMaybe(
     body: JSON.stringify(body),
   });
   const text = await response.text();
-  const bodyJson = text.trim().length > 0 ? JSON.parse(text) as Record<string, unknown> : {};
+  const bodyJson = parseResponseRecord(text);
   return response.ok
     ? { ok: true, status: response.status, body: bodyJson }
     : { ok: false, status: response.status, body: bodyJson };
+}
+
+async function getMaybe(
+  path: string,
+): Promise<{ readonly ok: true; readonly status: number; readonly body: Record<string, unknown> } | { readonly ok: false; readonly status: number; readonly body: Record<string, unknown> }> {
+  const response = await fetch(apiBaseUrl + path, {
+    headers: {
+      Authorization: 'Bearer ' + token,
+    },
+  });
+  const text = await response.text();
+  const body = parseResponseRecord(text);
+  return response.ok
+    ? { ok: true, status: response.status, body }
+    : { ok: false, status: response.status, body };
 }
 
 async function get(path: string): Promise<Record<string, unknown>> {
@@ -192,10 +322,28 @@ function containsSpanishSignal(text: string): boolean {
   return ['costo', 'ahorro', 'oportunidad', 'recomendacion', 'recomendación', 'segun', 'según'].some((word) => normalized.includes(word));
 }
 
+function containsUnsafeMarkup(text: string): boolean {
+  return /<\s*(script|img|iframe|object|svg)\b|javascript\s*:/i.test(text);
+}
+
+function containsUnsupportedTechnicalClaim(text: string): boolean {
+  return /\b(?:p95|cpu|memoria|iops|throughput)\b\s*(?:=|:|es|fue|alcanz[oó]|promedio|al)\s*\d+(?:[.,]\d+)?\s*%?/i.test(text);
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+function parseResponseRecord(text: string): Record<string, unknown> {
+  if (text.trim() === '') return {};
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return asRecord(parsed) ?? { error: 'The endpoint returned a non-object JSON response.' };
+  } catch {
+    return { error: text.slice(0, 300) };
+  }
 }
 
 function readNonNegativeNumber(value: unknown): number {

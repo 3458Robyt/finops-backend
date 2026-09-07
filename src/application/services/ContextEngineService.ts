@@ -26,9 +26,10 @@ const budgets: Record<AiContextOperation, number> = {
  * Servicio de aplicación central del Context Engine. Su responsabilidad es
  * ensamblar el contexto que se inyecta al agente principal de IA combinando
  * múltiples fuentes de evidencia: el perfil global TAK, las reglas del tenant,
- * los resúmenes cacheados, la memoria de aprendizaje auditada y el snapshot
- * factual de la operación. El contexto resultante se acota al presupuesto del
- * tipo de operación.
+ * los resúmenes cacheados y la memoria de aprendizaje auditada. El snapshot
+ * factual y la recomendación permanecen en el prompt específico de cada
+ * operación; el Context Engine no los vuelve a serializar para evitar duplicar
+ * contexto y gasto de tokens.
  *
  * Colaboradores inyectados:
  * - {@link IAgentContextRepository}: acceso a reglas de tenant y resúmenes de contexto.
@@ -62,7 +63,9 @@ export class ContextEngineService implements IContextEngineService {
    * de contexto de aprendizaje (no escribe datos).
    *
    * @param input - Parámetros de construcción: tenant, operación, texto de consulta,
-   *   snapshot factual y, opcionalmente, una recomendación objetivo.
+   *   snapshot factual y, opcionalmente, una recomendación objetivo. Estos dos
+   *   últimos datos se reciben para mantener el contrato común, pero los
+   *   serializa el prompt específico de la operación.
    * @returns El contexto ensamblado: instrucciones de sistema, texto de contexto
    *   truncado, identificadores de evidencia, conflictos detectados, versión del
    *   perfil y la estimación de tokens del prompt.
@@ -93,14 +96,10 @@ export class ContextEngineService implements IContextEngineService {
     });
     const budget = budgets[input.operation];
     const rawContext = [
-      this.formatProfile(profile.structuredRules, profile.freeformNotes),
+      this.formatProfile(profile.structuredRules, profile.freeformNotes, input.operation),
       this.formatTenantRules(acceptedRules),
       this.formatSummaries(summaries),
       this.formatLearning(learningContext.summary),
-      this.formatSnapshot(input.snapshot),
-      input.recommendation !== undefined
-        ? `Recomendacion objetivo:\n${JSON.stringify(input.recommendation, null, 2)}`
-        : '',
     ].filter((section) => section.trim() !== '').join('\n\n');
     const contextText = this.budgeter.truncate(rawContext, budget);
     const systemInstructions = [
@@ -110,6 +109,9 @@ export class ContextEngineService implements IContextEngineService {
       'Usar el contexto como evidencia, no como permiso para inventar datos.',
       'No inferir CPU, memoria, IOPS, throughput ni utilizacion tecnica desde FOCUS.',
       'No prometer ejecucion automatica de cambios cloud.',
+      ...(input.operation === 'CHAT'
+        ? ['En CHAT, responde la pregunta concreta sin convertirla en una recomendacion si el usuario no la solicita.']
+        : []),
     ].join('\n');
 
     return {
@@ -134,12 +136,15 @@ export class ContextEngineService implements IContextEngineService {
   private formatProfile(
     rules: Awaited<ReturnType<AgentInstructionService['getActiveProfile']>>['structuredRules'],
     freeformNotes: string | undefined,
+    operation: AiContextOperation,
   ): string {
     return [
       'Perfil global TAK:',
       `Objetivo: ${rules.objective}`,
       `Tono: ${rules.tone}`,
-      `Prioridades: ${rules.recommendationPriorities.join('; ')}`,
+      operation === 'CHAT'
+        ? 'Prioridades de recomendacion: se aplican solo cuando el usuario solicita una recomendacion.'
+        : `Prioridades: ${rules.recommendationPriorities.join('; ')}`,
       `Requisitos de evidencia: ${rules.evidenceRequirements.join('; ')}`,
       `Politica de riesgo: ${rules.riskPolicy}`,
       `Acciones prohibidas: ${rules.forbiddenActions.join('; ')}`,
@@ -187,15 +192,6 @@ export class ContextEngineService implements IContextEngineService {
     return summary.trim() === ''
       ? 'Memoria auditada relevante: no hay patrones previos relevantes.'
       : `Memoria auditada relevante:\n${summary}`;
-  }
-
-  /**
-   * Serializa el snapshot factual autorizado como JSON indentado. Este snapshot
-   * es la única fuente de datos numéricos/factuales que el modelo debe tratar
-   * como verdad, frente al resto de secciones que son contextuales.
-   */
-  private formatSnapshot(snapshot: unknown): string {
-    return `Snapshot factual autorizado:\n${JSON.stringify(snapshot, null, 2)}`;
   }
 
   private estimateTokens(value: string): number {

@@ -31,6 +31,7 @@ describe('FinOps authorization policy', () => {
     expect(permissionsByRole).toEqual({
       MASTER_ADMIN: [...tenantAdminPermissions, 'TENANT_MANAGE'],
       OPERATOR_ADMIN: tenantAdminPermissions,
+      LEAD_TECHNICIAN: [...technicianPermissions, 'AGENT_CONFIGURE'],
       FINOPS_TECHNICIAN: technicianPermissions,
       ADMIN: tenantAdminPermissions,
       CLIENT_APPROVER: ['FINOPS_READ', 'RECOMMENDATION_DECIDE', 'SAVINGS_VERIFY'],
@@ -60,13 +61,13 @@ describe('FinOps authorization policy', () => {
 
   test('matches the established operational and agent administration boundaries', () => {
     expect(rolesForPermission('CLOUD_MANAGE')).toEqual([
-      'MASTER_ADMIN', 'OPERATOR_ADMIN', 'FINOPS_TECHNICIAN', 'ADMIN',
+      'MASTER_ADMIN', 'OPERATOR_ADMIN', 'LEAD_TECHNICIAN', 'FINOPS_TECHNICIAN', 'ADMIN',
     ]);
     expect(rolesForPermission('AGENT_CONFIGURE')).toEqual([
-      'MASTER_ADMIN', 'OPERATOR_ADMIN', 'ADMIN',
+      'MASTER_ADMIN', 'OPERATOR_ADMIN', 'LEAD_TECHNICIAN', 'ADMIN',
     ]);
     expect(rolesForPermission('AGENT_OBSERVE')).toEqual([
-      'MASTER_ADMIN', 'OPERATOR_ADMIN', 'FINOPS_TECHNICIAN', 'ADMIN',
+      'MASTER_ADMIN', 'OPERATOR_ADMIN', 'LEAD_TECHNICIAN', 'FINOPS_TECHNICIAN', 'ADMIN',
     ]);
     expect(rolesForPermission('TENANT_MANAGE')).toEqual(['MASTER_ADMIN']);
     expect(isPrivilegedRole('FINOPS_TECHNICIAN')).toBe(true);

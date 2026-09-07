@@ -5,6 +5,8 @@ import type { IAuthSecurityRepository } from '../../domain/interfaces/IAuthSecur
 import type { AuthTenant, LoginResult } from './authTypes.js';
 import { createOpaqueToken, DEFAULT_REFRESH_TOKEN_TTL_SECONDS, hashOpaqueToken } from './opaqueToken.js';
 import { AuthorizationError } from '../../domain/errors/errors.js';
+import { permissionsByRole } from '../../domain/security/AuthorizationPolicy.js';
+import { resolveEffectiveRoleForAccess, resolveEffectiveTenantRole } from '../../domain/security/effectiveTenantRole.js';
 
 export class AuthSessionIssuer {
   public constructor(
@@ -23,12 +25,14 @@ export class AuthSessionIssuer {
     const accessibleTenants = await this.users.listAccessibleTenants(input.user);
     const activeTenant = accessibleTenants.find((tenant) => tenant.id === input.activeTenantId);
     if (activeTenant === undefined) throw new AuthorizationError();
+    const effectiveRole = resolveEffectiveTenantRole(input.user, activeTenant);
 
     const access = this.tokenService.issueToken({
       userId: input.user.id,
       tenantId: activeTenant.id,
       email: input.user.email,
-      role: input.user.role,
+      role: effectiveRole,
+      identityRole: input.user.role,
     });
     const refresh = this.security === undefined ? undefined : createOpaqueToken(this.refreshTokenTtlSeconds);
 
@@ -63,12 +67,19 @@ export class AuthSessionIssuer {
     });
   }
 
-  public toAuthTenants(tenants: readonly AccessibleTenant[], activeTenantId: string): readonly AuthTenant[] {
+  public toAuthTenants(
+    tenants: readonly AccessibleTenant[],
+    activeTenantId: string,
+    identityRole?: AuthUser['role'],
+  ): readonly AuthTenant[] {
     return tenants.map((tenant) => ({
       id: tenant.id,
       name: tenant.name,
       slug: tenant.slug,
       accessRole: tenant.accessRole,
+      effectiveRole: tenant.effectiveRole ?? (identityRole === undefined
+        ? 'CLIENT_VIEWER'
+        : resolveEffectiveRoleForAccess(tenant.accessRole, identityRole)),
       isCurrent: tenant.id === activeTenantId,
     }));
   }
@@ -82,6 +93,7 @@ export class AuthSessionIssuer {
   }): LoginResult {
     const activeTenant = input.accessibleTenants.find((tenant) => tenant.id === input.activeTenantId);
     if (activeTenant === undefined) throw new AuthorizationError();
+    const effectiveRole = resolveEffectiveTenantRole(input.user, activeTenant);
     return {
       accessToken: input.accessToken.token,
       expiresAt: input.accessToken.expiresAt,
@@ -99,9 +111,19 @@ export class AuthSessionIssuer {
         name: activeTenant.name,
         slug: activeTenant.slug,
         accessRole: activeTenant.accessRole,
+        effectiveRole,
         isCurrent: true,
       },
-      availableTenants: this.toAuthTenants(input.accessibleTenants, activeTenant.id),
+      availableTenants: this.toAuthTenants(input.accessibleTenants, activeTenant.id, input.user.role),
+      authorization: {
+        effectiveRole,
+        persona: effectiveRole === 'MASTER_ADMIN'
+          ? 'MASTER'
+          : effectiveRole === 'CLIENT_APPROVER' || effectiveRole === 'CLIENT_VIEWER'
+            ? 'CLIENT'
+            : 'TECHNICAL',
+        permissions: permissionsByRole[effectiveRole],
+      },
     };
   }
 }

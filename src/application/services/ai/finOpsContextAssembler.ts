@@ -16,6 +16,7 @@ import {
   buildSnapshotQueryText,
   withBuiltContext,
 } from './finOpsAiPrompts.js';
+import type { AiChatOutputFormat } from './finOpsAiTypes.js';
 import type { TechnicalRecommendationEvidenceProvider } from './TechnicalRecommendationEvidenceService.js';
 import {
   formatRecommendationEvidenceSnapshot,
@@ -93,6 +94,7 @@ private readonly technicalEvidenceProvider?: TechnicalRecommendationEvidenceProv
     readonly userId?: string;
     readonly message: string;
     readonly snapshot: CostAnalyticsSnapshot;
+    readonly outputFormat?: AiChatOutputFormat;
   }): Promise<AssembledChatContext> {
     const builtContext = await this.buildOptionalContext({
       tenantId: input.tenantId,
@@ -105,7 +107,10 @@ private readonly technicalEvidenceProvider?: TechnicalRecommendationEvidenceProv
 
     return {
       builtContext,
-      systemPrompt: withBuiltContext(buildChatSystemPrompt(input.snapshot), builtContext),
+      systemPrompt: withBuiltContext(
+        buildChatSystemPrompt(input.snapshot, input.outputFormat ?? 'MARKDOWN'),
+        builtContext,
+      ),
     };
   }
 

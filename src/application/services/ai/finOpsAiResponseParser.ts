@@ -117,7 +117,7 @@ export function parseExecutionPlan(
     ...parsed,
     recommendationId: recommendation.id,
     cloudAccountId: recommendation.cloudAccountId,
-    generatedBy: 'nvidia-nim',
+    generatedBy: 'openai-compatible',
   };
 }
 
@@ -262,7 +262,7 @@ export function toRecommendationDraft(
     title,
     description,
     evidence: {
-      source: 'nvidia-nim',
+      source: 'openai-compatible',
       evidenceLevel,
       focusLimitation: 'FOCUS contiene costo y consumo facturado; no contiene CPU, memoria, IOPS, throughput ni utilizacion tecnica.',
       ...evidence,

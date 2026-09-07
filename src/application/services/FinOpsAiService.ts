@@ -20,6 +20,7 @@ import type { RuntimeConfig } from '../../infrastructure/config/runtimeConfigTyp
 export type {
   AiChatInput,
   AiChatMessage,
+  AiChatOutputFormat,
   AiChatResponse,
   GenerateAiRecommendationsInput,
   GenerateAiRecommendationsResponse,

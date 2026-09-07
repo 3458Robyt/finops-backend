@@ -20,6 +20,7 @@ export class FinOpsAiChatRunner {
 
   public async run(input: AiChatInput): Promise<AiChatResponse> {
     const message = input.message.trim();
+    const outputFormat = input.outputFormat ?? 'MARKDOWN';
     if (message === '') {
       throw new FinOpsBaseError('Chat message is required', 'VALIDATION_ERROR');
     }
@@ -30,6 +31,7 @@ export class FinOpsAiChatRunner {
       ...(input.userId !== undefined ? { userId: input.userId } : {}),
       message,
       snapshot,
+      outputFormat,
     });
     const startedAt = Date.now();
 

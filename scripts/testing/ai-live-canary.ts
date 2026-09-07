@@ -35,6 +35,7 @@ const prismaCli = resolve('node_modules/prisma/build/index.js');
 const tsxCli = resolve('node_modules/tsx/dist/cli.mjs');
 let server: ReturnType<typeof spawn> | undefined;
 const serverOutput: string[] = [];
+let canaryError: unknown;
 
 await mkdir(resolve('.test-artifacts'), { recursive: true });
 
@@ -98,11 +99,17 @@ try {
     }
   }
 } catch (error: unknown) {
+  canaryError = error;
   console.error(`AI live canary backend output:\n${serverOutput.join('')}`);
   throw error;
 } finally {
   await stopProcess(server);
-  await dropSchema(baseUrl, schema);
+  try {
+    await dropSchema(baseUrl, schema);
+  } catch (cleanupError: unknown) {
+    if (canaryError === undefined) throw cleanupError;
+    console.error(`AI live canary cleanup failed after the original failure: ${errorMessage(cleanupError)}`);
+  }
   await rm(fixtureFile, { force: true }).catch(() => undefined);
 }
 
@@ -175,4 +182,8 @@ async function stopProcess(child: ReturnType<typeof spawn> | undefined): Promise
 function appendOutput(buffer: string[], chunk: Buffer): void {
   buffer.push(chunk.toString());
   if (buffer.length > 20) buffer.shift();
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300);
 }

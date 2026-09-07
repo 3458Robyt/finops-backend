@@ -17,11 +17,21 @@ export type UserTenantAccessRole =
   | 'OPERATOR_ADMIN'
   | 'MASTER';
 
+/** Convierte el alcance del tenant a un rol efectivo de autorización. */
+export type EffectiveTenantRole =
+  | 'MASTER_ADMIN'
+  | 'OPERATOR_ADMIN'
+  | 'LEAD_TECHNICIAN'
+  | 'FINOPS_TECHNICIAN'
+  | 'CLIENT_APPROVER'
+  | 'CLIENT_VIEWER';
+
 export interface AccessibleTenant {
   readonly id: string;
   readonly name: string;
   readonly slug: string;
   readonly accessRole: UserTenantAccessRole;
+  readonly effectiveRole?: EffectiveTenantRole;
 }
 
 export interface CreateSessionInput {

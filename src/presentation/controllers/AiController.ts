@@ -86,6 +86,7 @@ export class AiController {
         tenantId: req.auth.tenantId,
         userId: req.auth.userId,
         message: parsed.data.message,
+        outputFormat: 'MARKDOWN',
         ...(parsed.data.history !== undefined ? { history: parsed.data.history } : {}),
       });
 

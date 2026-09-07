@@ -128,7 +128,7 @@ class FakeRecommendationRepository implements IRecommendationRepository {
       title: 'Reducir EC2 sobredimensionado',
       description: 'EC2 domina el costo del periodo; revisar instancias con baja utilizacion.',
       evidence: {
-        source: 'nvidia-nim',
+        source: 'openai-compatible',
         service: 'Amazon Elastic Compute Cloud',
         serviceCost: 52.1,
         action: 'Revisar instancias EC2 con baja utilizacion',
@@ -352,7 +352,7 @@ describe('FinOpsAiService', () => {
     expect(recommendations.created[0]?.tenantId).toBe('tenant-1');
     expect(recommendations.created[0]?.deduplicationKey).toMatch(/^[a-f0-9]{64}$/);
     expect(recommendations.created[0]?.evidence).toMatchObject({
-      source: 'nvidia-nim',
+      source: 'openai-compatible',
       aiAudit: {
         verdict: 'APPROVED',
         score: 94,

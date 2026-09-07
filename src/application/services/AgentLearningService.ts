@@ -72,7 +72,7 @@ export class AgentLearningService implements IAgentLearningService {
     private readonly contextBudgeter = new ContextBudgeter(),
     runtimeOptions: AgentLearningRuntimeOptions = defaultRuntimeOptions(),
   ) {
-    this.auditorModel = runtimeOptions.auditorModel || aiGateway.modelName || 'gpt-5.4-mini';
+    this.auditorModel = runtimeOptions.auditorModel || aiGateway.modelName || 'gpt-5.6-luna';
     this.learningWorkerLeaseMs = runtimeOptions.learningLeaseMs;
     this.eventProcessor = new LearningEventProcessor({
       recommendationRepository,

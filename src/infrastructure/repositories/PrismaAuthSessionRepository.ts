@@ -5,6 +5,7 @@ import type {
 } from '../../domain/interfaces/IAuthSessionRepository.js';
 import type { AuthContext } from '../../domain/models/AuthContext.js';
 import type { IAuthSecurityRepository } from '../../domain/interfaces/IAuthSecurityRepository.js';
+import { resolveEffectiveRoleForAccess } from '../../domain/security/effectiveTenantRole.js';
 
 export class PrismaAuthSessionRepository implements IAuthSessionRepository {
   public constructor(
@@ -37,18 +38,20 @@ export class PrismaAuthSessionRepository implements IAuthSessionRepository {
       || session.revokedAt !== null
       || session.expiresAt <= new Date()
       || session.user.status !== 'ACTIVE'
-      || session.user.role !== input.role
       || session.tenantId !== input.tenantId
     ) {
       return false;
     }
 
+    if (input.identityRole !== undefined && input.identityRole !== session.user.role) return false;
+
     if (session.user.role === 'MASTER_ADMIN') {
-      return this.hasActiveTenant(input.tenantId);
+      return input.role === 'MASTER_ADMIN' && await this.hasActiveTenant(input.tenantId);
     }
 
     if (session.user.tenantId === input.tenantId) {
-      return this.hasActiveTenant(input.tenantId);
+      return input.role === resolveEffectiveRoleForAccess('HOME', session.user.role)
+        && await this.hasActiveTenant(input.tenantId);
     }
 
     const assignment = await this.prisma.tenantAccessAssignment.findFirst({
@@ -58,10 +61,11 @@ export class PrismaAuthSessionRepository implements IAuthSessionRepository {
         disabledAt: null,
         tenant: { status: 'ACTIVE' },
       },
-      select: { id: true },
+      select: { role: true },
     });
 
-    return assignment !== null;
+    return assignment !== null
+      && input.role === resolveEffectiveRoleForAccess(assignment.role, session.user.role);
   }
 
   public async revokeCurrent(actor: AuthContext): Promise<boolean> {

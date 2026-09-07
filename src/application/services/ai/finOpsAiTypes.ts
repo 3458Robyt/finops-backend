@@ -29,6 +29,9 @@ export interface AiChatMessage {
   readonly content: string;
 }
 
+/** Formato interno solicitado por cada canal que consume el asistente. */
+export type AiChatOutputFormat = 'MARKDOWN' | 'PLAIN_TEXT';
+
 /**
  * Entrada del caso de uso de chat FinOps.
  */
@@ -40,6 +43,11 @@ export interface AiChatInput {
   readonly message: string;
   /** Historial de conversación previo (se normaliza y limita a los últimos turnos). */
   readonly history?: readonly AiChatMessage[];
+  /**
+   * Formato de salida solicitado por el canal. La web usa Markdown; canales
+   * sin parser, como Telegram, solicitan texto plano.
+   */
+  readonly outputFormat?: AiChatOutputFormat;
 }
 
 /**

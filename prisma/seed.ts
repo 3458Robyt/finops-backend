@@ -59,7 +59,7 @@ async function main(): Promise<void> {
     where: { email: 'ejecutivo@cliente.com' },
     update: {
       passwordHash,
-      role: UserRole.VIEWER,
+      role: UserRole.CLIENT_VIEWER,
       tenantId: tenant.id,
       status: 'ACTIVE',
     },
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
       email: 'ejecutivo@cliente.com',
       name: 'Ejecutivo Cliente',
       passwordHash,
-      role: UserRole.VIEWER,
+      role: UserRole.CLIENT_VIEWER,
     },
   });
 

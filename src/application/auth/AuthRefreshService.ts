@@ -5,6 +5,7 @@ import { AuthenticationError } from '../../domain/errors/errors.js';
 import type { AuthDatabaseContextRunner, LoginResult } from './authTypes.js';
 import { AuthSessionIssuer } from './AuthSessionIssuer.js';
 import { createOpaqueToken, DEFAULT_REFRESH_TOKEN_TTL_SECONDS, hashOpaqueToken } from './opaqueToken.js';
+import { resolveEffectiveTenantRole } from '../../domain/security/effectiveTenantRole.js';
 
 export class AuthRefreshService {
   public constructor(
@@ -51,7 +52,8 @@ export class AuthRefreshService {
         userId: user.id,
         tenantId: activeTenant.id,
         email: user.email,
-        role: user.role,
+        role: resolveEffectiveTenantRole(user, activeTenant),
+        identityRole: user.role,
       });
       const replacement = createOpaqueToken(this.refreshTokenTtlSeconds);
       const rotated = await this.security!.rotateRefreshToken({

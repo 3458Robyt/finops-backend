@@ -60,4 +60,15 @@ describe('FinOps AI prompt boundaries', () => {
     expect(prompt).toContain('Un candidato VALIDATION_ONLY puede no tener technicalEvidenceRefs suficientes');
     expect(prompt).toContain('resourceLinkReason=INVENTORY_RESOURCE_NOT_FOUND puede ser el estado honesto de trazabilidad');
   });
+
+  test('defines channel-specific chat output contracts', () => {
+    const markdownPrompt = buildChatSystemPrompt(snapshot, 'MARKDOWN');
+    const plainTextPrompt = buildChatSystemPrompt(snapshot, 'PLAIN_TEXT');
+
+    expect(markdownPrompt).toContain('Markdown GFM válido');
+    expect(markdownPrompt).toContain('No escapes los marcadores Markdown');
+    expect(plainTextPrompt).toContain('Formato de salida TELEGRAM');
+    expect(plainTextPrompt).toContain('texto plano');
+    expect(plainTextPrompt).toContain('dos asteriscos');
+  });
 });

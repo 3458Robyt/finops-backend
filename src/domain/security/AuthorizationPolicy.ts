@@ -4,6 +4,7 @@ import type { UserRole } from '../models/AuthContext.js';
 export const userRoles: readonly UserRole[] = [
   'MASTER_ADMIN',
   'OPERATOR_ADMIN',
+  'LEAD_TECHNICIAN',
   'FINOPS_TECHNICIAN',
   'ADMIN',
   'CLIENT_APPROVER',
@@ -76,6 +77,7 @@ const tenantAdministrator: readonly FinOpsPermission[] = [
 export const permissionsByRole: Readonly<Record<UserRole, readonly FinOpsPermission[]>> = {
   MASTER_ADMIN: [...tenantAdministrator, 'TENANT_MANAGE'],
   OPERATOR_ADMIN: tenantAdministrator,
+  LEAD_TECHNICIAN: [...technician, 'AGENT_CONFIGURE'],
   FINOPS_TECHNICIAN: technician,
   ADMIN: tenantAdministrator,
   CLIENT_APPROVER: clientApprover,

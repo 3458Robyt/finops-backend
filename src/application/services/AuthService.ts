@@ -164,7 +164,7 @@ export class AuthService {
   public async listAccessibleTenants(actor: AuthContext): Promise<readonly AuthTenant[]> {
     const user = await this.findActiveUser(actor.userId);
     const tenants = await this.users.listAccessibleTenants(user);
-    return this.issuer.toAuthTenants(tenants, actor.tenantId);
+    return this.issuer.toAuthTenants(tenants, actor.tenantId, user.role);
   }
 
   public async switchTenant(input: SwitchTenantInput): Promise<LoginResult> {

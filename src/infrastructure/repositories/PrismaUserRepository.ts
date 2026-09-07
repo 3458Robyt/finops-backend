@@ -5,6 +5,7 @@ import type {
   IUserRepository,
 } from '../../domain/interfaces/IUserRepository.js';
 import type { PrismaClient } from '../../generated/prisma/client.js';
+import { resolveEffectiveRoleForAccess } from '../../domain/security/effectiveTenantRole.js';
 
 export class PrismaUserRepository implements IUserRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -38,6 +39,7 @@ export class PrismaUserRepository implements IUserRepository {
       return tenants.map((tenant) => ({
         ...tenant,
         accessRole: 'MASTER',
+        effectiveRole: 'MASTER_ADMIN',
       }));
     }
 
@@ -71,6 +73,7 @@ export class PrismaUserRepository implements IUserRepository {
       tenantsById.set(homeTenant.id, {
         ...homeTenant,
         accessRole: 'HOME',
+        effectiveRole: resolveEffectiveRoleForAccess('HOME', user.role),
       });
     }
 
@@ -79,6 +82,7 @@ export class PrismaUserRepository implements IUserRepository {
         tenantsById.set(assignment.tenant.id, {
           ...assignment.tenant,
           accessRole: assignment.role,
+          effectiveRole: resolveEffectiveRoleForAccess(assignment.role, user.role),
         });
       }
     }

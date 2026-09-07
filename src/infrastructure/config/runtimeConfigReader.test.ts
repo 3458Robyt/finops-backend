@@ -58,7 +58,7 @@ describe('loadRuntimeConfig', () => {
     expect(config.environment.processRole).toBe('all');
     expect(config.http.port).toBe(3000);
     expect(config.security.cookieSameSite).toBe('lax');
-    expect(config.ai.model).toBe('gpt-5.4-mini');
+    expect(config.ai.model).toBe('gpt-5.6-luna');
     expect(config.email.timeoutMs).toBe(15_000);
     expect(config.telegram.timeoutMs).toBe(15_000);
     expect(config.schedulers.ingestion.enabled).toBe(false);

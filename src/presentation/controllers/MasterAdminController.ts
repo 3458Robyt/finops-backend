@@ -154,8 +154,8 @@ export class MasterAdminController {
   }
 
   private parseUserRole(value: unknown): UserRole {
-    if (value !== 'OPERATOR_ADMIN' && value !== 'FINOPS_TECHNICIAN') {
-      throw new FinOpsBaseError('role must be OPERATOR_ADMIN or FINOPS_TECHNICIAN', 'VALIDATION_ERROR');
+    if (value !== 'OPERATOR_ADMIN' && value !== 'LEAD_TECHNICIAN' && value !== 'FINOPS_TECHNICIAN') {
+      throw new FinOpsBaseError('role must be OPERATOR_ADMIN, LEAD_TECHNICIAN or FINOPS_TECHNICIAN', 'VALIDATION_ERROR');
     }
 
     return value;

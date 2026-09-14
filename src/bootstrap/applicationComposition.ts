@@ -34,7 +34,6 @@ import { TelegramMessageFormatter } from '../application/services/TelegramMessag
 import { ValueRealizationService } from '../application/services/ValueRealizationService.js';
 import { MetricsRegistry } from '../application/observability/MetricsRegistry.js';
 import { TechnicalRecommendationEvidenceService } from '../application/services/ai/TechnicalRecommendationEvidenceService.js';
-import { CloudIngestionWorkerService } from '../application/services/CloudIngestionWorkerService.js';
 import { ResourceLinkageReadinessService } from '../application/services/ResourceLinkageReadinessService.js';
 import { OpenAiCompatibleAiGateway } from '../infrastructure/ai/OpenAiCompatibleAiGateway.js';
 import { getPrismaClient } from '../infrastructure/database/prisma.js';
@@ -42,10 +41,9 @@ import { loadRuntimeConfig } from '../infrastructure/config/runtimeConfigReader.
 import type { RuntimeConfig } from '../infrastructure/config/runtimeConfigTypes.js';
 import { runWithDatabaseContext } from '../infrastructure/database/tenantContext.js';
 import { createProcessIdentity } from './processIdentity.js';
+import { createApplicationWorkers } from './applicationWorkers.js';
 import { AwsSdkIngestionProvider } from '../infrastructure/ingestion/AwsSdkIngestionProvider.js';
 import { OciSdkIngestionProvider } from '../infrastructure/ingestion/OciSdkIngestionProvider.js';
-import { PrismaCloudIngestionJobRepository } from '../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
-import { PrismaMetricProjectionWorker } from '../infrastructure/ingestion/PrismaMetricProjectionWorker.js';
 import { PrismaAgentContextRepository } from '../infrastructure/repositories/PrismaAgentContextRepository.js';
 import { PrismaAgentLearningRepository } from '../infrastructure/repositories/PrismaAgentLearningRepository.js';
 import { PrismaAgentQualityRepository } from '../infrastructure/repositories/PrismaAgentQualityRepository.js';
@@ -77,11 +75,14 @@ import { PrismaUserRepository } from '../infrastructure/repositories/PrismaUserR
 import { PrismaValueRealizationRepository } from '../infrastructure/repositories/PrismaValueRealizationRepository.js';
 import { PrismaFxRateRepository } from '../infrastructure/repositories/PrismaFxRateRepository.js';
 import { ColombiaTrmProvider } from '../infrastructure/fx/ColombiaTrmProvider.js';
+import { CurrencyConverter } from '../infrastructure/finance/CurrencyConverter.js';
 import { CredentialCipher } from '../infrastructure/security/CredentialCipher.js';
 import { Argon2PasswordHasher } from '../infrastructure/security/Argon2PasswordHasher.js';
 import { JwtTokenService } from '../infrastructure/security/JwtTokenService.js';
 import type { IAgentLearningService } from '../domain/interfaces/IAgentLearningService.js';
 import type { ServerDependencies } from '../presentation/server.js';
+import type { CloudIngestionWorkerService } from '../application/services/CloudIngestionWorkerService.js';
+import type { PrismaMetricProjectionWorker } from '../infrastructure/ingestion/PrismaMetricProjectionWorker.js';
 export interface ApplicationComposition {
   readonly prisma: PrismaClient;
   readonly metricsRegistry: MetricsRegistry;
@@ -107,15 +108,17 @@ export function createApplicationComposition(
     ? new CredentialCipher(config.security.credentialEncryptionKey, config.security.credentialKeyVersion)
     : undefined;
   const cloudConnectionRepository = new PrismaCloudConnectionRepository(prisma, credentialCipher);
-  const costAnalyticsRepository = new PrismaCostAnalyticsRepository(prisma);
   const fxRateRepository = new PrismaFxRateRepository(prisma);
-  const costRepository = new PrismaCostRepository(prisma, fxRateRepository, new ColombiaTrmProvider());
-  const budgetRepository = new PrismaBudgetRepository(prisma);
-  const recommendationRepository = new PrismaRecommendationRepository(prisma);
-  const valueRealizationRepository = new PrismaValueRealizationRepository(prisma);
+  const fxRateProvider = new ColombiaTrmProvider();
+  const currencyConverter = new CurrencyConverter(fxRateRepository, fxRateProvider);
+  const costAnalyticsRepository = new PrismaCostAnalyticsRepository(prisma, currencyConverter);
+  const costRepository = new PrismaCostRepository(prisma, fxRateRepository, fxRateProvider, currencyConverter);
+  const budgetRepository = new PrismaBudgetRepository(prisma, currencyConverter);
+  const recommendationRepository = new PrismaRecommendationRepository(prisma, currencyConverter);
+  const valueRealizationRepository = new PrismaValueRealizationRepository(prisma, currencyConverter);
   const costAllocationRepository = new PrismaCostAllocationRepository(prisma, valueRealizationRepository);
   const recommendationAnalysisRepository = new PrismaRecommendationAnalysisRunRepository(prisma);
-  const resourceMetricRepository = new PrismaResourceMetricRepository(prisma);
+  const resourceMetricRepository = new PrismaResourceMetricRepository(prisma, currencyConverter);
   const resourceLinkageReadinessRepository = new PrismaResourceLinkageReadinessRepository(prisma, config.cloud.requiredTagKeys);
   const notificationRepository = new PrismaNotificationRepository(prisma);
   const outboundMessageRepository = new PrismaOutboundMessageRepository(prisma);
@@ -131,8 +134,9 @@ export function createApplicationComposition(
     new PrismaAuthLifecycleCleanupRepository(prisma),
     config.schedulers.authCleanup.batchSize,
   );
+  const processHeartbeatRepository = new PrismaProcessHeartbeatRepository(prisma);
   const processHeartbeatService = new ProcessHeartbeatService(
-    new PrismaProcessHeartbeatRepository(prisma),
+    processHeartbeatRepository,
     config.operations.processHeartbeat.staleAfterMs,
     metricsRegistry,
   );
@@ -237,6 +241,9 @@ export function createApplicationComposition(
     recommendationAnalysisRepository,
     aiService,
     notificationRepository,
+    recommendationRepository,
+    processHeartbeatRepository,
+    config.operations.processHeartbeat.staleAfterMs,
   );
   const telegramEnabled = config.telegram.enabled;
   const telegramClient = new TelegramClient(config.telegram.botToken, telegramEnabled, config.telegram.timeoutMs);
@@ -308,44 +315,15 @@ export function createApplicationComposition(
       })
       : undefined,
   );
-  const ingestionWorker = runsIngestionWorker && config.workers.ingestion.enabled
-    ? new CloudIngestionWorkerService(
-      new PrismaCloudIngestionJobRepository(
-        prisma,
-        credentialCipher ?? new CredentialCipher(
-          config.security.credentialEncryptionKey,
-          config.security.credentialKeyVersion,
-        ),
-        config.workers.ingestion.jobLeaseMs,
-        config.workers.ingestion.retryBackoffMs,
-      ),
-      ingestionProviders,
-      // The legacy `worker` alias may keep the post-ingestion hook. Granular
-      // ingestion workers stay isolated; reconciliation runs in its own role.
-      (config.environment.processRole === 'worker' || config.environment.processRole === 'all')
-        && config.finops.savingsReconciliationEnabled
-        ? ({ tenantId }) => valueRealizationService.reconcile(
-          tenantId,
-          config.finops.savingsReconciliationBatchSize,
-        ).then(() => undefined)
-        : undefined,
-      metricsRegistry,
-      config.workers.ingestion.jobHeartbeatMs,
-      config.workers.ingestion.progressUpdateMs,
-      config.workers.ingestion.concurrency,
-    )
-    : null;
-  const metricProjectionWorker = runsIngestionWorker && config.workers.metricProjection.enabled
-    ? new PrismaMetricProjectionWorker(
-      prisma,
-      metricsRegistry,
-      {
-        leaseMs: config.workers.metricProjection.leaseMs,
-        retryBackoffMs: config.workers.metricProjection.retryBackoffMs,
-        transactionTimeoutMs: config.workers.metricProjection.transactionTimeoutMs,
-      },
-    )
-    : null;
+  const { ingestionWorker, metricProjectionWorker } = createApplicationWorkers({
+    runsIngestionWorker,
+    config,
+    prisma,
+    credentialCipher,
+    ingestionProviders,
+    valueRealizationService,
+    metricsRegistry,
+  });
   const serverDependencies: ServerDependencies = {
     authService,
     passwordRecoveryService,

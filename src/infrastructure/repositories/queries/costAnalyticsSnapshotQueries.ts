@@ -1,4 +1,4 @@
-import { Prisma, type PrismaClient } from '../../../generated/prisma/client.js';
+import type { PrismaClient } from '../../../generated/prisma/client.js';
 import type {
   AccountRow,
   CurrencyRow,
@@ -27,6 +27,7 @@ import type {
 export interface SnapshotSummary {
   readonly metricCount: number;
   readonly totalCost: number;
+  readonly byCurrency: readonly { readonly currency: string; readonly metricCount: number; readonly totalCost: number }[];
 }
 
 /** Conjunto de agregaciones que componen el snapshot mensual de un tenant. */
@@ -61,22 +62,19 @@ export async function runSnapshotAggregations(
   tenantId: string,
   periodStart: Date,
   periodEnd: Date,
-  billingCurrency?: string,
 ): Promise<SnapshotAggregations> {
-  const currencyFilter = billingCurrency === undefined ? Prisma.sql`` : Prisma.sql`and billing_currency = ${billingCurrency}`;
-  const scopedWhere = {
-    tenantId,
-    chargePeriodStart: { gte: periodStart, lt: periodEnd },
-    ...(billingCurrency === undefined ? {} : { billingCurrency }),
-  };
   const [summary, currencies, providers, accounts, services, environments, topResources, topUsage] = await Promise.all([
-    prisma.costMetric.aggregate({
-      where: scopedWhere,
-      _count: true,
-      _sum: {
-        billedCost: true,
-      },
-    }),
+    prisma.$queryRaw<readonly { readonly currency: string; readonly metric_count: number; readonly total_cost: number }[]>`
+      select billing_currency as currency,
+             count(*)::int as metric_count,
+             coalesce(sum(billed_cost), 0)::float8 as total_cost
+      from cost_metrics
+      where tenant_id = ${tenantId}
+        and charge_period_start >= ${periodStart}
+        and charge_period_start < ${periodEnd}
+      group by billing_currency
+      order by billing_currency asc
+    `,
     // Divisa predominante del periodo: la divisa de facturación más frecuente
     // (mayor número de métricas). Se usa como divisa de presentación del
     // snapshot cuando el tenant mezcla varias.
@@ -86,7 +84,6 @@ export async function runSnapshotAggregations(
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
-        ${currencyFilter}
       group by billing_currency
       order by count(*) desc
       limit 1
@@ -97,13 +94,13 @@ export async function runSnapshotAggregations(
     prisma.$queryRaw<ProviderRow[]>`
       select provider::text as provider,
              count(*)::int as metric_count,
-             coalesce(sum(billed_cost), 0)::float8 as total_cost
+             coalesce(sum(billed_cost), 0)::float8 as total_cost,
+             billing_currency as currency
       from cost_metrics
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
-        ${currencyFilter}
-      group by provider
+      group by provider, billing_currency
       order by total_cost desc
     `,
     // Coste por cuenta cloud: join con cloud_accounts para resolver el nombre
@@ -113,14 +110,14 @@ export async function runSnapshotAggregations(
              cm.provider::text as provider,
              max(ca.name) as name,
              count(*)::int as metric_count,
-             coalesce(sum(cm.billed_cost), 0)::float8 as total_cost
+             coalesce(sum(cm.billed_cost), 0)::float8 as total_cost,
+             cm.billing_currency as currency
       from cost_metrics cm
       inner join cloud_accounts ca on ca.id = cm.cloud_account_id
       where cm.tenant_id = ${tenantId}
         and cm.charge_period_start >= ${periodStart}
         and cm.charge_period_start < ${periodEnd}
-        ${currencyFilter}
-      group by cm.cloud_account_id, cm.provider
+      group by cm.cloud_account_id, cm.provider, cm.billing_currency
       order by total_cost desc
     `,
     // Top 10 de servicios por gasto, agrupando por servicio y proveedor.
@@ -128,13 +125,13 @@ export async function runSnapshotAggregations(
       select service_name,
              provider::text as provider,
              count(*)::int as metric_count,
-             coalesce(sum(billed_cost), 0)::float8 as total_cost
+             coalesce(sum(billed_cost), 0)::float8 as total_cost,
+             billing_currency as currency
       from cost_metrics
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
-        ${currencyFilter}
-      group by service_name, provider
+      group by service_name, provider, billing_currency
       order by total_cost desc
       limit 10
     `,
@@ -143,13 +140,13 @@ export async function runSnapshotAggregations(
     prisma.$queryRaw<EnvironmentRow[]>`
       select coalesce(tags->>'environment', 'unknown') as environment,
              count(*)::int as metric_count,
-             coalesce(sum(billed_cost), 0)::float8 as total_cost
+             coalesce(sum(billed_cost), 0)::float8 as total_cost,
+             billing_currency as currency
       from cost_metrics
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
-        ${currencyFilter}
-      group by coalesce(tags->>'environment', 'unknown')
+      group by coalesce(tags->>'environment', 'unknown'), billing_currency
       order by total_cost desc
     `,
     // Top 10 de recursos por gasto. Excluye resource_id vacío (métricas no
@@ -160,14 +157,14 @@ export async function runSnapshotAggregations(
              max(service_name) as service_name,
              max(provider::text) as provider,
              count(*)::int as metric_count,
-             coalesce(sum(billed_cost), 0)::float8 as total_cost
+             coalesce(sum(billed_cost), 0)::float8 as total_cost,
+             billing_currency as currency
       from cost_metrics
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
         and resource_id <> ''
-        ${currencyFilter}
-      group by resource_id
+      group by resource_id, billing_currency
       order by total_cost desc
       limit 10
     `,
@@ -178,7 +175,7 @@ export async function runSnapshotAggregations(
       select service_name,
              provider::text as provider,
              consumed_unit,
-             max(billing_currency) as currency,
+           billing_currency as currency,
              count(*)::int as metric_count,
              coalesce(sum(consumed_quantity), 0)::float8 as consumed_quantity,
              coalesce(sum(billed_cost), 0)::float8 as total_cost
@@ -186,11 +183,10 @@ export async function runSnapshotAggregations(
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
-        ${currencyFilter}
         and consumed_quantity is not null
         and consumed_unit is not null
         and consumed_unit <> ''
-      group by service_name, provider, consumed_unit
+     group by service_name, provider, consumed_unit, billing_currency
       order by total_cost desc, consumed_quantity desc
       limit 10
     `,
@@ -198,8 +194,9 @@ export async function runSnapshotAggregations(
 
   return {
     summary: {
-      metricCount: summary._count,
-      totalCost: Number(summary._sum.billedCost ?? 0),
+      metricCount: summary.reduce((total, row) => total + row.metric_count, 0),
+      totalCost: summary.reduce((total, row) => total + row.total_cost, 0),
+      byCurrency: summary.map((row) => ({ currency: row.currency, metricCount: row.metric_count, totalCost: row.total_cost })),
     },
     currencies,
     providers,

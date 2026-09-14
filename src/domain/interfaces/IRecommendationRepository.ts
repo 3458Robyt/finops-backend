@@ -182,6 +182,8 @@ export interface SavingsKpis {
   readonly confirmedMonthlySavings: number;
   /** Ahorro perdido agregado por recomendaciones no ejecutadas a tiempo. */
   readonly missedSavingsAmount: number;
+  /** Number of monetary records that could not be projected safely. */
+  readonly conversionIssueCount?: number;
   readonly currency: string;
   /** Número de recomendaciones ejecutadas. */
   readonly executedRecommendations: number;

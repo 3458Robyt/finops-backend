@@ -28,6 +28,7 @@ export function toItem(row: ValueRealizationRow): ValueRealizationItem {
   const observationEnd = dateValue(row['observation_end']);
   const verifiedAt = dateValue(row['verified_at']);
   const measurementStatus = stringValue(row['measurement_status']) as ValueRealizationItem['measurementStatus'] | undefined;
+  const conversionStatus = stringValue(row['conversion_status']) as ValueRealizationItem['conversionStatus'] | undefined;
   return {
     recommendationId: stringValue(row['recommendation_id']) ?? '',
     ...(manualExecutionId !== undefined ? { manualExecutionId } : {}),
@@ -61,6 +62,7 @@ export function toItem(row: ValueRealizationRow): ValueRealizationItem {
     nextAction: (stringValue(row['next_action']) ?? 'NONE') as ValueRealizationItem['nextAction'],
     createdAt: dateValue(row['created_at']) ?? new Date(0),
     updatedAt: dateValue(row['updated_at']) ?? new Date(0),
+    ...(conversionStatus === undefined ? {} : { conversionStatus }),
   };
 }
 

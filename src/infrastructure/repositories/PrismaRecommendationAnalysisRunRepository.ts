@@ -14,6 +14,7 @@ import {
   runInclude,
   toRecommendationAnalysisRunDomain,
 } from './mappers/recommendationAnalysisRunMappers.js';
+import { completeRecommendationAnalysisRun } from './queries/recommendationAnalysisRunCompletion.js';
 
 const toDomain = toRecommendationAnalysisRunDomain;
 
@@ -86,9 +87,83 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
         stage: 'FINISHED',
         completedAt: new Date(),
         nextAttemptAt: null,
+        cancelRequestedAt: null,
+        lockedAt: null,
+        workerId: null,
+        errorCode: 'CANCELLED_BY_USER',
+        errorMessage: 'La corrida fue cancelada por el usuario antes de iniciar.',
       },
     });
     return result.count === 0 ? null : this.findById(tenantId, runId);
+  }
+
+  public async requestCancellation(
+    tenantId: string,
+    runId: string,
+    staleBefore: Date,
+  ): Promise<RecommendationAnalysisRun | null> {
+    const requestedAt = new Date();
+    const staleResult = await this.prisma.recommendationAnalysisRun.updateMany({
+      where: {
+        id: runId,
+        tenantId,
+        status: 'RUNNING',
+        stage: { not: 'PERSISTENCE' },
+        lockedAt: { lt: staleBefore },
+      },
+      data: {
+        status: 'CANCELLED',
+        stage: 'FINISHED',
+        completedAt: requestedAt,
+        nextAttemptAt: null,
+        cancelRequestedAt: null,
+        lockedAt: null,
+        workerId: null,
+        errorCode: 'CANCELLED_STALE_RUN',
+        errorMessage: 'La corrida fue cancelada porque su worker dejó de responder.',
+      },
+    });
+    if (staleResult.count > 0) return this.findById(tenantId, runId);
+
+    const requestResult = await this.prisma.recommendationAnalysisRun.updateMany({
+      // PERSISTENCE is a short publication fence. Once entered, cancellation
+      // must wait for the atomic run finalization instead of leaving orphaned
+      // recommendations between the two writes.
+      where: { id: runId, tenantId, status: 'RUNNING', stage: { not: 'PERSISTENCE' } },
+      data: { cancelRequestedAt: requestedAt },
+    });
+    if (requestResult.count > 0) return this.findById(tenantId, runId);
+
+    const current = await this.findById(tenantId, runId);
+    return current?.status === 'RUNNING' ? current : null;
+  }
+
+  public async isCancellationRequested(runId: string): Promise<boolean> {
+    const row = await this.prisma.recommendationAnalysisRun.findUnique({
+      where: { id: runId },
+      select: { status: true, cancelRequestedAt: true },
+    });
+    return row?.status === 'CANCELLED' || row?.cancelRequestedAt !== null;
+  }
+
+  public async finalizeCancellation(runId: string): Promise<RecommendationAnalysisRun | null> {
+    const result = await this.prisma.recommendationAnalysisRun.updateMany({
+      where: { id: runId, status: { in: ['PENDING', 'RUNNING'] } },
+      data: {
+        status: 'CANCELLED',
+        stage: 'FINISHED',
+        completedAt: new Date(),
+        nextAttemptAt: null,
+        cancelRequestedAt: null,
+        lockedAt: null,
+        workerId: null,
+        errorCode: 'CANCELLED_BY_USER',
+        errorMessage: 'La corrida fue cancelada por el usuario.',
+      },
+    });
+    if (result.count === 0) return null;
+    const row = await this.prisma.recommendationAnalysisRun.findUnique({ where: { id: runId }, include: runInclude });
+    return row === null ? null : toDomain(row);
   }
 
   public async retryFailed(
@@ -130,12 +205,31 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
           AND "attempts" >= "max_attempts"
       `;
 
+      await tx.$executeRaw`
+        UPDATE "recommendation_analysis_runs"
+        SET
+          "status" = 'CANCELLED',
+          "stage" = 'FINISHED',
+          "error_code" = 'CANCELLED_BY_USER',
+          "error_message" = 'La corrida fue cancelada por el usuario.',
+          "completed_at" = NOW(),
+          "cancel_requested_at" = NULL,
+          "locked_at" = NULL,
+          "worker_id" = NULL,
+          "next_attempt_at" = NULL,
+          "updated_at" = NOW()
+        WHERE "status" = 'RUNNING'
+          AND "cancel_requested_at" IS NOT NULL
+          AND "locked_at" < ${staleBefore}
+      `;
+
       const candidates = await tx.$queryRaw<{ id: string }[]>`
         SELECT "id"
         FROM "recommendation_analysis_runs"
         WHERE (
           (
             "status" = 'PENDING'
+            AND "cancel_requested_at" IS NULL
             AND ("next_attempt_at" IS NULL OR "next_attempt_at" <= NOW())
           )
           OR
@@ -162,6 +256,7 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
           lockedAt: new Date(),
           startedAt: new Date(),
           nextAttemptAt: null,
+          cancelRequestedAt: null,
           errorCode: null,
           errorMessage: null,
         },
@@ -176,14 +271,14 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
     stage: Parameters<IRecommendationAnalysisRunRepository['updateStage']>[1],
   ): Promise<void> {
     await this.prisma.recommendationAnalysisRun.updateMany({
-      where: { id: runId, status: 'RUNNING' },
+      where: { id: runId, status: 'RUNNING', cancelRequestedAt: null },
       data: { stage, lockedAt: new Date() },
     });
   }
 
   public async savePrepared(runId: string, input: PreparedRecommendationAnalysisRunInput): Promise<void> {
-    await this.prisma.recommendationAnalysisRun.update({
-      where: { id: runId },
+    await this.prisma.recommendationAnalysisRun.updateMany({
+      where: { id: runId, status: 'RUNNING', cancelRequestedAt: null },
       data: {
         periodStart: input.periodStart,
         periodEnd: input.periodEnd,
@@ -232,67 +327,7 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
     runId: string,
     input: CompleteRecommendationAnalysisRunInput,
   ): Promise<RecommendationAnalysisRun> {
-    const row = await this.prisma.$transaction(async (tx) => {
-      if (input.recommendationLinks.length > 0) {
-        await tx.recommendationAnalysisRunRecommendation.createMany({
-          data: input.recommendationLinks.map((link) => ({
-            runId,
-            recommendationId: link.recommendationId,
-            ...(link.candidateId !== undefined ? { candidateId: link.candidateId } : {}),
-            disposition: link.disposition,
-          })),
-          skipDuplicates: true,
-        });
-      }
-
-      if ((input.candidateAudits?.length ?? 0) > 0) {
-        await tx.recommendationAnalysisCandidateAudit.createMany({
-          data: input.candidateAudits!.map((item) => ({
-            tenantId: item.tenantId,
-            runId,
-            candidateId: item.candidateId,
-            draftIndex: item.draftIndex,
-            ...(item.recommendationId === undefined ? {} : { recommendationId: item.recommendationId }),
-            ...(item.deterministicEvidence === undefined ? {} : { deterministicEvidence: item.deterministicEvidence as Prisma.InputJsonValue }),
-            ...(item.draft === undefined ? {} : { draft: item.draft as Prisma.InputJsonValue }),
-            auditVerdict: item.auditVerdict,
-            auditScore: item.auditScore,
-            auditChecks: item.auditChecks as unknown as Prisma.InputJsonValue,
-            blockingIssues: item.blockingIssues as unknown as Prisma.InputJsonValue,
-            requiredChanges: item.requiredChanges as unknown as Prisma.InputJsonValue,
-            repairAttempt: item.repairAttempt,
-            finalDisposition: item.finalDisposition,
-            ...(item.model === undefined ? {} : { model: item.model }),
-            ...(item.auditorModel === undefined ? {} : { auditorModel: item.auditorModel }),
-            ...(item.promptHash === undefined ? {} : { promptHash: item.promptHash }),
-            ...(item.evidenceHash === undefined ? {} : { evidenceHash: item.evidenceHash }),
-          })),
-          skipDuplicates: true,
-        });
-      }
-
-      return tx.recommendationAnalysisRun.update({
-        where: { id: runId },
-        data: {
-          status: input.status,
-          stage: 'FINISHED',
-          candidateResults: input.candidateResults as unknown as Prisma.InputJsonValue,
-          recommendationsGenerated: input.recommendationsGenerated,
-          recommendationsRejected: input.recommendationsRejected,
-          recommendationsPersisted: input.recommendationLinks.length,
-          promptTokenEstimate: input.promptTokenEstimate,
-          responseTokenEstimate: input.responseTokenEstimate,
-          latencyMs: input.latencyMs,
-          ...(input.errorCode !== undefined ? { errorCode: input.errorCode } : { errorCode: null }),
-          ...(input.errorMessage !== undefined ? { errorMessage: input.errorMessage } : { errorMessage: null }),
-          completedAt: new Date(),
-          lockedAt: null,
-          workerId: null,
-          nextAttemptAt: null,
-        },
-        include: runInclude,
-      });
-    });
+    const row = await completeRecommendationAnalysisRun(this.prisma, runId, input);
     return toDomain(row);
   }
 
@@ -301,6 +336,9 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
     input: { readonly code: string; readonly message: string; readonly retryAt: Date },
   ): Promise<RecommendationAnalysisRun> {
     const current = await this.prisma.recommendationAnalysisRun.findUniqueOrThrow({ where: { id: runId } });
+    if (current.status === 'CANCELLED' || current.cancelRequestedAt !== null) {
+      return (await this.finalizeCancellation(runId)) ?? toDomain(await this.prisma.recommendationAnalysisRun.findUniqueOrThrow({ where: { id: runId }, include: runInclude }));
+    }
     const retry = current.attempts < current.maxAttempts;
     const row = await this.prisma.recommendationAnalysisRun.update({
       where: { id: runId },
@@ -313,6 +351,7 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
         completedAt: retry ? null : new Date(),
         workerId: null,
         lockedAt: null,
+        cancelRequestedAt: null,
       },
       include: runInclude,
     });

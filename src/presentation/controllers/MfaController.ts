@@ -2,7 +2,6 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { MfaService } from '../../application/services/MfaService.js';
 import { isPrivilegedRole } from '../../domain/security/AuthorizationPolicy.js';
-import { AuthorizationError } from '../../domain/errors/errors.js';
 import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const codeSchema = z.object({ code: z.string().regex(/^\d{6}$/) });
@@ -30,7 +29,7 @@ export class MfaController {
   };
 
   public setup = async (req: Request, res: Response): Promise<void> => {
-    if (!this.requirePrivileged(req, res) || req.auth === undefined) return;
+    if (!this.requireAuthenticated(req, res) || req.auth === undefined) return;
     try {
       const result = await this.service.beginSetup(req.auth.userId, req.auth.email);
       res.status(200).json({ success: true, ...result, message: 'Escanea el código y confirma un código MFA para activarlo.' });
@@ -40,7 +39,7 @@ export class MfaController {
   };
 
   public confirm = async (req: Request, res: Response): Promise<void> => {
-    if (!this.requirePrivileged(req, res) || req.auth === undefined) return;
+    if (!this.requireAuthenticated(req, res) || req.auth === undefined) return;
     const parsed = codeSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ success: false, error: 'El código MFA debe contener seis dígitos.', code: 'VALIDATION_ERROR' });
@@ -59,7 +58,7 @@ export class MfaController {
   };
 
   public regenerateRecoveryCodes = async (req: Request, res: Response): Promise<void> => {
-    if (!this.requirePrivileged(req, res) || req.auth === undefined) return;
+    if (!this.requireAuthenticated(req, res) || req.auth === undefined) return;
     const parsed = codeSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ success: false, error: 'Confirma un código MFA de seis dígitos.', code: 'VALIDATION_ERROR' });
@@ -78,7 +77,7 @@ export class MfaController {
   };
 
   public disable = async (req: Request, res: Response): Promise<void> => {
-    if (!this.requirePrivileged(req, res) || req.auth === undefined) return;
+    if (!this.requireAuthenticated(req, res) || req.auth === undefined) return;
     const parsed = codeSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ success: false, error: 'Confirma un código MFA de seis dígitos.', code: 'VALIDATION_ERROR' });
@@ -96,13 +95,9 @@ export class MfaController {
     }
   };
 
-  private requirePrivileged(req: Request, res: Response): boolean {
+  private requireAuthenticated(req: Request, res: Response): boolean {
     if (req.auth === undefined) {
       res.status(401).json({ success: false, error: 'Se requiere autenticación.', code: 'AUTHENTICATION_REQUIRED' });
-      return false;
-    }
-    if (!isPrivilegedRole(req.auth.role)) {
-      respondWithFinOpsError(res, new AuthorizationError(), 'No estás autorizado para administrar MFA.', 'auth_mfa_authorization', req.path);
       return false;
     }
     return true;

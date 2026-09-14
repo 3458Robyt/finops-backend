@@ -68,7 +68,7 @@ try {
       database: {
         runtimeEnforce: true,
         runtimeRole: 'finops_runtime',
-        expectedMigration: '202608310002_messaging_preferences_worker_rls',
+        expectedMigration: '202609070002_process_heartbeat_status_read',
       },
       operations: { processHeartbeat: { enabled: true, intervalMs: 30_000, staleAfterMs: 30_000 } },
       ai: { apiKey: undefined },
@@ -88,6 +88,15 @@ try {
     () => runtime!.$transaction((transaction) => transaction.runtimeProcessHeartbeat.findUnique({ where: { processId } })),
   );
   assert(hiddenFromOtherProcess === null, 'RLS exposed another process heartbeat.');
+
+  const visibleFromStatusProbe = await runWithDatabaseContext(
+    { role: 'MASTER_ADMIN', workerId: 'recommendation-analysis-status' },
+    () => new PrismaProcessHeartbeatRepository(runtime!).findFreshByRoles({
+      processRoles: ['worker'],
+      staleBefore: new Date(startedAt.getTime() - 1),
+    }),
+  );
+  assert(visibleFromStatusProbe?.processId === processId, 'The API status probe cannot inspect a fresh worker heartbeat.');
 
   await runWithDatabaseContext(
     { role: 'MASTER_ADMIN', workerId: processId },

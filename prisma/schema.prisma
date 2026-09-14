@@ -1492,6 +1492,7 @@ model RecommendationAnalysisRun {
   workerId                 String?                                   @map("worker_id")
   lockedAt                 DateTime?                                 @map("locked_at") @db.Timestamptz(6)
   nextAttemptAt            DateTime?                                 @map("next_attempt_at") @db.Timestamptz(6)
+  cancelRequestedAt        DateTime?                                 @map("cancel_requested_at") @db.Timestamptz(6)
   errorCode                String?                                   @map("error_code")
   errorMessage             String?                                   @map("error_message") @db.Text
   startedAt                DateTime?                                 @map("started_at") @db.Timestamptz(6)
@@ -1510,6 +1511,7 @@ model RecommendationAnalysisRun {
   @@index([tenantId, scopeKey, evidenceHash])
   @@index([tenantId, cloudResourceId, createdAt])
   @@index([status, nextAttemptAt, createdAt])
+  @@index([status, cancelRequestedAt])
   @@index([requestedByUserId, createdAt])
   @@index([retriedFromRunId], map: "recommendation_analysis_runs_retried_from_run_id_idx")
   @@map("recommendation_analysis_runs")

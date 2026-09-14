@@ -18,7 +18,7 @@ describe('PrismaBudgetRepository allocation destinations', () => {
       createdAt: new Date('2026-07-01T00:00:00.000Z'), updatedAt: new Date('2026-07-01T00:00:00.000Z'),
     };
 
-    await expect(repository.getActualCost(budget)).resolves.toEqual({ amount: 12.5, available: true, source: 'CLOSED_ALLOCATION' });
+    await expect(repository.getActualCost(budget)).resolves.toEqual({ amount: 12.5, available: true, source: 'CLOSED_ALLOCATION', currency: 'USD' });
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { tenantId: 'tenant-1', periodStart: budget.periodStart } }));
   });
 

@@ -44,6 +44,10 @@ export interface FinOpsRecommendation {
   readonly estimatedMonthlySavings?: number;
   /** Divisa del ahorro estimado, en formato ISO 4217 de 3 letras (e.g., "USD"). */
   readonly currency: string;
+  /** Native estimate retained when the read model is projected to reporting currency. */
+  readonly nativeEstimatedMonthlySavings?: number;
+  readonly nativeCurrency?: string;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
   /** Fecha de creación del registro. */
   readonly createdAt: Date;
   /** Fecha de la última actualización del registro. */

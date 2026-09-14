@@ -10,6 +10,7 @@ import type {
 import type { FinOpsRecommendation } from "../../domain/models/FinOpsRecommendation.js";
 import type { RecommendationExecutionPlan } from "../../domain/models/RecommendationExecutionPlan.js";
 import { Prisma, type PrismaClient } from "../../generated/prisma/client.js";
+import { CurrencyConverter } from "../finance/CurrencyConverter.js";
 import {
   toDomain,
   toExecutionPlanDomain,
@@ -19,10 +20,17 @@ import {
   createDecisionTx,
   createManualExecutionTx,
 } from "./queries/recommendationWriteQueries.js";
+import {
+  projectRecommendation,
+  projectRecommendations,
+} from './recommendationCurrencyProjection.js';
 
 /** Persists recommendation identity, lifecycle and manual execution state. */
 export class PrismaRecommendationLifecycleRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly currencyConverter?: CurrencyConverter,
+  ) {}
 
   public async findById(
     tenantId: string,
@@ -35,7 +43,7 @@ export class PrismaRecommendationLifecycleRepository {
       },
     });
 
-    return row === null ? null : toDomain(row);
+    return row === null ? null : projectRecommendation(this.prisma, this.currencyConverter, row);
   }
 
   /**
@@ -84,7 +92,7 @@ export class PrismaRecommendationLifecycleRepository {
       orderBy: [{ createdAt: "desc" }],
     });
 
-    return rows.map((row) => toDomain(row));
+    return projectRecommendations(this.prisma, this.currencyConverter, rows);
   }
 
   /**
@@ -150,7 +158,7 @@ export class PrismaRecommendationLifecycleRepository {
       }),
     );
 
-    return rows.map((row) => toDomain(row));
+    return projectRecommendations(this.prisma, this.currencyConverter, rows);
   }
 
   /**
@@ -271,7 +279,7 @@ export class PrismaRecommendationLifecycleRepository {
 
     return {
       decisionId: result.decisionId,
-      recommendation: toDomain(result.recommendation),
+      recommendation: await projectRecommendation(this.prisma, this.currencyConverter, result.recommendation),
     };
   }
 

@@ -31,6 +31,7 @@ import { PrismaResourceMetricCostContextReader } from './PrismaResourceMetricCos
 import { PrismaResourceMetricSeriesReader } from './PrismaResourceMetricSeriesReader.js';
 import { PrismaCloudResourceInventoryReader } from './PrismaCloudResourceInventoryReader.js';
 import { PrismaResourceMetricSummaryReader } from './PrismaResourceMetricSummaryReader.js';
+import type { CurrencyConverter } from '../finance/CurrencyConverter.js';
 
 /**
  * Fachada de persistencia para las lecturas de métricas técnicas. Las consultas
@@ -44,10 +45,13 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
   private readonly inventoryReader: PrismaCloudResourceInventoryReader;
   private readonly summaryReader: PrismaResourceMetricSummaryReader;
 
-  constructor(private readonly prisma: PrismaClient) {
+  constructor(
+    private readonly prisma: PrismaClient,
+    currencyConverter?: CurrencyConverter,
+  ) {
     this.seriesReader = new PrismaResourceMetricSeriesReader(prisma);
     this.coverageReader = new PrismaResourceMetricCoverageReader(prisma);
-    this.costContextReader = new PrismaResourceMetricCostContextReader(prisma);
+    this.costContextReader = new PrismaResourceMetricCostContextReader(prisma, currencyConverter);
     this.inventoryReader = new PrismaCloudResourceInventoryReader(prisma);
     this.summaryReader = new PrismaResourceMetricSummaryReader(prisma);
   }

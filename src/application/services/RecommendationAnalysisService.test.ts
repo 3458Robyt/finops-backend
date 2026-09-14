@@ -2,6 +2,8 @@ import { describe, expect, test, vi } from 'vitest';
 
 import { AiAuditRejectedError, AuthorizationError } from '../../domain/errors/errors.js';
 import type { INotificationRepository } from '../../domain/interfaces/INotificationRepository.js';
+import type { IProcessHeartbeatRepository } from '../../domain/interfaces/IProcessHeartbeatRepository.js';
+import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
 import type { IRecommendationAnalysisRunRepository } from '../../domain/interfaces/IRecommendationAnalysisRunRepository.js';
 import type { AuthContext } from '../../domain/models/AuthContext.js';
 import type { RecommendationAnalysisRun } from '../../domain/models/RecommendationAnalysisRun.js';
@@ -24,6 +26,32 @@ describe('RecommendationAnalysisService', () => {
 
     await expect(service.queue({ ...actor, role: 'CLIENT_VIEWER' }, {}))
       .rejects.toBeInstanceOf(AuthorizationError);
+  });
+
+  test('no encola una corrida cuando el worker no tiene heartbeat vigente', async () => {
+    const { service, repository } = createSubject(buildPrepared([], []), {
+      findFreshByRoles: vi.fn(async () => null),
+    });
+
+    await expect(service.queue(actor, {})).rejects.toMatchObject({
+      code: 'RECOMMENDATION_ANALYSIS_WORKER_UNAVAILABLE',
+    });
+    expect(repository.queue).not.toHaveBeenCalled();
+  });
+
+  test('solicita la cancelación de una corrida que ya está en ejecución', async () => {
+    const running = buildRun({ status: 'RUNNING', stage: 'AI_GENERATION' });
+    const { service, repository } = createSubject();
+    vi.mocked(repository.requestCancellation).mockResolvedValueOnce(running);
+
+    const result = await service.cancel(actor, running.id);
+
+    expect(result).toBe(running);
+    expect(repository.requestCancellation).toHaveBeenCalledWith(
+      actor.tenantId,
+      running.id,
+      expect.any(Date),
+    );
   });
 
   test('omite la IA cuando la compuerta no encuentra evidencia suficiente', async () => {
@@ -152,15 +180,72 @@ describe('RecommendationAnalysisService', () => {
     );
     expect(notifications.create).not.toHaveBeenCalled();
   });
+
+  test('no publica recomendaciones si se solicita cancelar después de la IA', async () => {
+    const prepared = buildPrepared([buildCandidate('GENERATABLE')], []);
+    const { service, repository, aiService, recommendationRepository } = createSubject(prepared, undefined, {
+      createMany: vi.fn(async () => []),
+    } as unknown as IRecommendationRepository);
+    vi.mocked(repository.isCancellationRequested)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    vi.mocked(repository.finalizeCancellation).mockResolvedValueOnce(
+      buildRun({ status: 'CANCELLED', stage: 'FINISHED' }),
+    );
+    vi.mocked(aiService.generateRecommendations).mockResolvedValueOnce({
+      recommendations: [{
+        id: 'rec-ephemeral',
+        cloudAccountId: 'account-1',
+        type: 'RIGHTSIZING',
+        status: 'PENDING',
+        severity: 'MEDIUM',
+        title: 'Validar dimensionamiento',
+        description: 'Fixture efímero',
+        evidence: { candidateId: 'candidate-1' },
+        estimatedMonthlySavings: 10,
+        currency: 'USD',
+        createdAt: new Date('2026-07-23T00:00:00.000Z'),
+        updatedAt: new Date('2026-07-23T00:00:00.000Z'),
+      }],
+      snapshot: prepared.snapshot,
+      persisted: false,
+      analysis: {
+        readinessReport: prepared.readinessReport,
+        evidenceHash: prepared.evidenceHash,
+        generatedCount: 1,
+        rejectedCount: 0,
+        promptTokenEstimate: 100,
+        responseTokenEstimate: 50,
+        model: prepared.model,
+        auditorModel: prepared.auditorModel,
+      },
+    });
+
+    const result = await service.processNext('worker-1');
+
+    expect(result?.status).toBe('CANCELLED');
+    expect(recommendationRepository.createMany).not.toHaveBeenCalled();
+    expect(repository.finalizeCancellation).toHaveBeenCalledWith('run-1');
+  });
 });
 
-function createSubject(prepared = buildPrepared([], [])) {
+function createSubject(
+  prepared = buildPrepared([], []),
+  processHeartbeatRepository?: { readonly findFreshByRoles: ReturnType<typeof vi.fn> },
+  recommendationRepository?: IRecommendationRepository,
+) {
   const running = buildRun({ status: 'RUNNING', stage: 'SELECTING_DATA', attempts: 1 });
   const repository = {
     queue: vi.fn(async () => ({ run: buildRun(), reused: false })),
     findById: vi.fn(async () => null),
     listByTenant: vi.fn(async () => []),
     cancelPending: vi.fn(async () => null),
+    requestCancellation: vi.fn(async () => null),
+    isCancellationRequested: vi.fn(async () => false),
+    finalizeCancellation: vi.fn(async () => null),
     retryFailed: vi.fn(async () => null),
     claimNext: vi.fn(async () => running),
     updateStage: vi.fn(async () => undefined),
@@ -190,7 +275,14 @@ function createSubject(prepared = buildPrepared([], [])) {
     repository,
     aiService,
     notifications,
-    service: new RecommendationAnalysisService(repository, aiService, notifications),
+    recommendationRepository,
+    service: new RecommendationAnalysisService(
+      repository,
+      aiService,
+      notifications,
+      recommendationRepository,
+      processHeartbeatRepository as IProcessHeartbeatRepository | undefined,
+    ),
   };
 }
 

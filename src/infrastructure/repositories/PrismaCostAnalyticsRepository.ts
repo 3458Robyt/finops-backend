@@ -10,16 +10,7 @@ import type {
   PersistCostForecastInput,
 } from '../../domain/interfaces/ICostAnalyticsRepository.js';
 import { type PrismaClient } from '../../generated/prisma/client.js';
-import {
-  toAccountItem,
-  toAnomalyDomain,
-  toEnvironmentItem,
-  toForecastDomain,
-  toProviderItem,
-  toResourceItem,
-  toServiceItem,
-  toUsageItem,
-} from './mappers/costAnalyticsMappers.js';
+import { toAnomalyDomain, toForecastDomain } from './mappers/costAnalyticsMappers.js';
 import { runSnapshotAggregations } from './queries/costAnalyticsSnapshotQueries.js';
 import {
   queryMonthlyCostRows,
@@ -29,9 +20,18 @@ import {
   replaceTenantAnomalies,
   replaceTenantForecasts,
 } from './queries/costAnalyticsPersistenceQueries.js';
+import { CurrencyConverter, normalizeCurrencyCode } from '../finance/CurrencyConverter.js';
+import {
+  projectMonthlyCostRows,
+  projectMonthlyUsageRows,
+  projectSnapshotAggregations,
+} from './queries/costAnalyticsCurrencyProjection.js';
 
 export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly currencyConverter?: CurrencyConverter,
+  ) {}
 
   /**
    * Construye el snapshot analítico de costes más reciente de un tenant.
@@ -78,19 +78,9 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       1,
     ));
 
-    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { reportingCurrency: true } });
-    const periodCurrencies = await this.prisma.$queryRaw<readonly { readonly currency: string }[]>`
-      SELECT billing_currency AS currency
-      FROM cost_metrics
-      WHERE tenant_id = ${tenantId}
-        AND charge_period_start >= ${periodStart}
-        AND charge_period_start < ${periodEnd}
-      GROUP BY billing_currency
-      ORDER BY COUNT(*) DESC, billing_currency ASC
-    `;
-    const preferredCurrency = periodCurrencies.find((item) => item.currency === tenant?.reportingCurrency)?.currency
-      ?? periodCurrencies[0]?.currency;
-    const aggregations = await runSnapshotAggregations(this.prisma, tenantId, periodStart, periodEnd, preferredCurrency);
+    const reportingCurrency = normalizeCurrencyCode(await this.getReportingCurrency(tenantId));
+    const aggregations = await runSnapshotAggregations(this.prisma, tenantId, periodStart, periodEnd);
+    const projected = await projectSnapshotAggregations(aggregations, periodStart, reportingCurrency, this.currencyConverter);
 
     const [anomalies, forecasts] = await Promise.all([
       this.findAnomalies(tenantId),
@@ -101,15 +91,17 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       tenantId,
       periodStart: periodStart.toISOString(),
       periodEnd: periodEnd.toISOString(),
-      totalCost: aggregations.summary.totalCost,
-      currency: aggregations.currencies[0]?.currency ?? tenant?.reportingCurrency ?? 'USD',
+      totalCost: projected.summary.totalCost,
+      currency: reportingCurrency,
+      nativeTotals: aggregations.summary.byCurrency.map((item) => ({ currency: item.currency, amount: item.totalCost })),
+      ...(projected.summary.conversionIssueCount === 0 ? {} : { conversionIssueCount: projected.summary.conversionIssueCount }),
       metricCount: aggregations.summary.metricCount,
-      providers: aggregations.providers.map(toProviderItem),
-      accounts: aggregations.accounts.map(toAccountItem),
-      services: aggregations.services.map(toServiceItem),
-      environments: aggregations.environments.map(toEnvironmentItem),
-      topResources: aggregations.topResources.map(toResourceItem),
-      topUsage: aggregations.topUsage.map(toUsageItem),
+      providers: projected.providers,
+      accounts: projected.accounts,
+      services: projected.services,
+      environments: projected.environments,
+      topResources: projected.topResources,
+      topUsage: projected.topUsage,
       anomalies: anomalies.slice(0, 5),
       forecasts: forecasts.slice(0, 6),
     };
@@ -137,20 +129,7 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
   ): Promise<MonthlyCostPoint[]> {
     const groupBy = filters.groupBy ?? 'service';
     const rows = await queryMonthlyCostRows(this.prisma, tenantId, groupBy, filters);
-
-    return rows.map((row) => ({
-      month: row.month.toISOString(),
-      groupBy,
-      groupKey: `${row.group_key} [${row.currency}]`,
-      ...(row.provider !== null ? { provider: row.provider } : {}),
-      ...(row.cloud_account_id !== null ? { cloudAccountId: row.cloud_account_id } : {}),
-      ...(row.service_name !== null ? { serviceName: row.service_name } : {}),
-      ...(row.resource_id !== null ? { resourceId: row.resource_id } : {}),
-      ...(row.environment !== null ? { environment: row.environment } : {}),
-      cost: row.total_cost,
-      currency: row.currency,
-      metricCount: row.metric_count,
-    }));
+    return [...await projectMonthlyCostRows(rows, groupBy, await this.getReportingCurrency(tenantId), this.currencyConverter)];
   }
 
   /**
@@ -175,27 +154,7 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
   ): Promise<MonthlyUsagePoint[]> {
     const groupBy = filters.groupBy ?? 'service';
     const rows = await queryMonthlyUsageRows(this.prisma, tenantId, groupBy, filters);
-
-    return rows.map((row) => {
-      const unitCost = row.consumed_quantity > 0 ? row.total_cost / row.consumed_quantity : undefined;
-
-      return {
-        month: row.month.toISOString(),
-        groupBy,
-        groupKey: `${row.group_key} (${row.consumed_unit}) [${row.currency}]`,
-        ...(row.provider !== null ? { provider: row.provider } : {}),
-        ...(row.cloud_account_id !== null ? { cloudAccountId: row.cloud_account_id } : {}),
-        ...(row.service_name !== null ? { serviceName: row.service_name } : {}),
-        ...(row.resource_id !== null ? { resourceId: row.resource_id } : {}),
-        ...(row.environment !== null ? { environment: row.environment } : {}),
-        consumedQuantity: row.consumed_quantity,
-        consumedUnit: row.consumed_unit,
-        cost: row.total_cost,
-        ...(unitCost !== undefined ? { unitCost } : {}),
-        currency: row.currency,
-        metricCount: row.metric_count,
-      };
-    });
+    return [...await projectMonthlyUsageRows(rows, groupBy, await this.getReportingCurrency(tenantId), this.currencyConverter)];
   }
 
   /**
@@ -230,7 +189,38 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       take: 100,
     });
 
-    return rows.map((row) => toAnomalyDomain(row));
+    const anomalies = rows.map((row) => toAnomalyDomain(row));
+    if (this.currencyConverter === undefined) return anomalies;
+
+    const reportingCurrency = await this.getReportingCurrency(tenantId);
+    const convertible = anomalies.filter((anomaly) => anomaly.currency !== undefined);
+    if (convertible.length === 0) return anomalies;
+    const projections = await this.currencyConverter.convertMany(
+      convertible.flatMap((anomaly) => [
+        { amount: anomaly.baselineCost, currency: anomaly.currency ?? 'USD', at: new Date(anomaly.periodStart) },
+        { amount: anomaly.observedCost, currency: anomaly.currency ?? 'USD', at: new Date(anomaly.periodStart) },
+        { amount: anomaly.deltaAmount, currency: anomaly.currency ?? 'USD', at: new Date(anomaly.periodStart) },
+      ]),
+      reportingCurrency,
+    );
+    const projectedById = new Map(convertible.map((anomaly, index) => {
+      const nativeCurrency = anomaly.currency;
+      const baseline = projections[index * 3];
+      const observed = projections[index * 3 + 1];
+      const delta = projections[index * 3 + 2];
+      if (baseline === undefined || observed === undefined || delta === undefined) return [anomaly.id, anomaly] as const;
+      const native = {
+        nativeBaselineCost: anomaly.baselineCost,
+        nativeObservedCost: anomaly.observedCost,
+        nativeDeltaAmount: anomaly.deltaAmount,
+        nativeCurrency: nativeCurrency ?? 'USD',
+        conversionStatus: mergeCurrencyStatus(baseline.status, observed.status, delta.status),
+      } as const;
+      return [anomaly.id, baseline.amount === null || observed.amount === null || delta.amount === null
+        ? { ...anomaly, ...native }
+        : { ...anomaly, baselineCost: baseline.amount, observedCost: observed.amount, deltaAmount: delta.amount, currency: reportingCurrency, ...native }] as const;
+    }));
+    return anomalies.map((anomaly) => projectedById.get(anomaly.id) ?? anomaly);
   }
 
   /**
@@ -290,7 +280,42 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       take: 100,
     });
 
-    return rows.map((row) => toForecastDomain(row));
+    const forecasts = rows.map((row) => toForecastDomain(row));
+    if (this.currencyConverter === undefined) return forecasts;
+
+    const reportingCurrency = await this.getReportingCurrency(tenantId);
+    const projections = await this.currencyConverter.convertMany(
+      forecasts.flatMap((forecast) => [
+        { amount: forecast.predictedCost, currency: forecast.currency, at: new Date(forecast.forecastMonth) },
+        { amount: forecast.lowerBound, currency: forecast.currency, at: new Date(forecast.forecastMonth) },
+        { amount: forecast.upperBound, currency: forecast.currency, at: new Date(forecast.forecastMonth) },
+      ]),
+      reportingCurrency,
+    );
+
+    return forecasts.map((forecast, index) => {
+      const predicted = projections[index * 3];
+      const lower = projections[index * 3 + 1];
+      const upper = projections[index * 3 + 2];
+      if (predicted === undefined || lower === undefined || upper === undefined) return forecast;
+      const status = mergeCurrencyStatus(predicted.status, lower.status, upper.status);
+      const native = {
+        nativePredictedCost: forecast.predictedCost,
+        nativeLowerBound: forecast.lowerBound,
+        nativeUpperBound: forecast.upperBound,
+        nativeCurrency: forecast.currency,
+        conversionStatus: status,
+      } as const;
+      if (predicted.amount === null || lower.amount === null || upper.amount === null) return { ...forecast, ...native };
+      return {
+        ...forecast,
+        predictedCost: predicted.amount,
+        lowerBound: lower.amount,
+        upperBound: upper.amount,
+        currency: reportingCurrency,
+        ...native,
+      };
+    });
   }
 
   /**
@@ -342,4 +367,21 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       forecasts: [],
     };
   }
+
+  private async getReportingCurrency(tenantId: string): Promise<string> {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { reportingCurrency: true },
+    });
+    return normalizeCurrencyCode(tenant?.reportingCurrency ?? 'USD');
+  }
+}
+
+function mergeCurrencyStatus(
+  ...statuses: readonly CostForecast['conversionStatus'][]
+): NonNullable<CostForecast['conversionStatus']> {
+  if (statuses.includes('MISSING_RATE')) return 'MISSING_RATE';
+  if (statuses.includes('UNSUPPORTED_CURRENCY')) return 'UNSUPPORTED_CURRENCY';
+  if (statuses.includes('CONVERTED')) return 'CONVERTED';
+  return 'NOT_REQUIRED';
 }

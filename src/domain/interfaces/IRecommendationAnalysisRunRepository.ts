@@ -62,6 +62,9 @@ export interface IRecommendationAnalysisRunRepository {
   findById(tenantId: string, runId: string): Promise<RecommendationAnalysisRun | null>;
   listByTenant(tenantId: string, limit?: number): Promise<RecommendationAnalysisRun[]>;
   cancelPending(tenantId: string, runId: string): Promise<RecommendationAnalysisRun | null>;
+  requestCancellation(tenantId: string, runId: string, staleBefore: Date): Promise<RecommendationAnalysisRun | null>;
+  isCancellationRequested(runId: string): Promise<boolean>;
+  finalizeCancellation(runId: string): Promise<RecommendationAnalysisRun | null>;
   retryFailed(tenantId: string, runId: string, requestedByUserId: string): Promise<RecommendationAnalysisRun | null>;
   claimNext(workerId: string, staleBefore: Date): Promise<ClaimedRecommendationAnalysisRun | null>;
   updateStage(runId: string, stage: RecommendationAnalysisRunStage): Promise<void>;

@@ -1,5 +1,7 @@
 import { AiAuditRejectedError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { INotificationRepository } from '../../domain/interfaces/INotificationRepository.js';
+import type { CreateRecommendationInput } from '../../domain/interfaces/IRecommendationRepository.js';
+import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
 import type { IRecommendationAnalysisRunRepository } from '../../domain/interfaces/IRecommendationAnalysisRunRepository.js';
 import type { RecommendationAnalysisRun } from '../../domain/models/RecommendationAnalysisRun.js';
 import type { FinOpsAiService } from './FinOpsAiService.js';
@@ -17,12 +19,14 @@ import {
   retryDelayMs,
 } from './recommendationAnalysisSupport.js';
 import { notifyAnalysisCompletion } from './recommendationAnalysisNotification.js';
+import { buildRecommendationDeduplicationKey } from './ai/recommendationEvidence.js';
 
 export class RecommendationAnalysisRunProcessor {
   constructor(
     private readonly repository: IRecommendationAnalysisRunRepository,
     private readonly aiService: FinOpsAiService,
     private readonly notificationRepository: INotificationRepository,
+    private readonly recommendationRepository?: IRecommendationRepository,
   ) {}
 
   public async processNext(workerId: string, staleAfterMs = 30 * 60 * 1000): Promise<RecommendationAnalysisRun | null> {
@@ -36,6 +40,9 @@ export class RecommendationAnalysisRunProcessor {
           try {
             return await this.processRun(run, startedAt);
           } catch (error: unknown) {
+            if (error instanceof RecommendationAnalysisCancelledError) {
+              return (await this.repository.finalizeCancellation(run.id)) ?? run;
+            }
             if (error instanceof AiAuditRejectedError) return this.completeAuditRejection(run, error, startedAt);
             if (error instanceof FinOpsBaseError && error.code === 'VALIDATION_ERROR') {
               return this.repository.complete(run.id, {
@@ -63,6 +70,7 @@ export class RecommendationAnalysisRunProcessor {
   }
 
   private async processRun(run: RecommendationAnalysisRun, startedAt: number): Promise<RecommendationAnalysisRun> {
+    await this.ensureActive(run.id);
     await this.repository.updateStage(run.id, 'SELECTING_DATA');
     const prepared = await this.aiService.prepareRecommendationAnalysis({
       tenantId: run.tenantId,
@@ -73,6 +81,7 @@ export class RecommendationAnalysisRunProcessor {
     const initialCandidateResults = buildInitialCandidateResults(prepared);
     const resourcesEvaluated = countResources(prepared);
 
+    await this.ensureActive(run.id);
     await this.repository.updateStage(run.id, 'DETERMINISTIC_ANALYSIS');
     await this.repository.savePrepared(run.id, {
       periodStart: bounds.start,
@@ -92,6 +101,7 @@ export class RecommendationAnalysisRunProcessor {
     const equivalent = await this.repository.findEquivalentCompleted(
       run.tenantId, run.scopeKey, bounds.start, bounds.end, prepared.evidenceHash, run.id,
     );
+    await this.ensureActive(run.id);
     if (equivalent !== null) {
       return this.repository.complete(run.id, {
         status: 'SKIPPED',
@@ -111,6 +121,7 @@ export class RecommendationAnalysisRunProcessor {
       });
     }
 
+    await this.ensureActive(run.id);
     await this.repository.updateStage(run.id, 'EVIDENCE_GATE');
     if (prepared.readinessReport.candidates.length === 0) {
       return this.repository.complete(run.id, {
@@ -133,11 +144,45 @@ export class RecommendationAnalysisRunProcessor {
       ...(run.externalResourceId !== undefined ? { externalResourceId: run.externalResourceId } : {}),
       ...(run.cloudResourceId !== undefined ? { cloudResourceId: run.cloudResourceId } : {}),
       analysisRunId: run.id,
-      persist: true,
+      // Keep the provider response ephemeral until the run has crossed the
+      // cancellation fence below. Persisting inside FinOpsAiService would
+      // publish recommendations while the AI call is still cancellable.
+      persist: false,
       prepared,
-      onStage: (stage) => this.repository.updateStage(run.id, stage),
+      onStage: async (stage) => {
+        await this.ensureActive(run.id);
+        await this.repository.updateStage(run.id, stage);
+        await this.ensureActive(run.id);
+      },
     });
-    const links = result.recommendations.map((recommendation) => {
+    await this.ensureActive(run.id);
+    const recommendationInputs = result.recommendations.map((recommendation) => ({
+      tenantId: run.tenantId,
+      cloudAccountId: recommendation.cloudAccountId,
+      ...(recommendation.cloudResourceId === undefined ? {} : { cloudResourceId: recommendation.cloudResourceId }),
+      ...(recommendation.resourceLinkReason === undefined ? {} : { resourceLinkReason: recommendation.resourceLinkReason }),
+      deduplicationKey: buildRecommendationDeduplicationKey(
+        { ...recommendation, tenantId: run.tenantId },
+        prepared.snapshot.periodStart,
+        prepared.snapshot.periodEnd,
+      ),
+      type: recommendation.type,
+      origin: recommendation.origin,
+      severity: recommendation.severity,
+      title: recommendation.title,
+      description: recommendation.description,
+      evidence: recommendation.evidence,
+      ...(recommendation.estimatedMonthlySavings === undefined ? {} : { estimatedMonthlySavings: recommendation.estimatedMonthlySavings }),
+      currency: recommendation.currency,
+    } satisfies CreateRecommendationInput));
+    // The production composition supplies the recommendation port so
+    // persistence happens only after the cancellation fence. The fallback is
+    // kept for isolated processor tests that provide a pre-persisted fixture.
+    const persistedRecommendations = this.recommendationRepository === undefined
+      ? result.recommendations
+      : await this.recommendationRepository.createMany(recommendationInputs);
+    await this.ensureActive(run.id);
+    const links = persistedRecommendations.map((recommendation) => {
       const candidateId = readCandidateId(recommendation.evidence);
       return {
         recommendationId: recommendation.id,
@@ -154,13 +199,13 @@ export class RecommendationAnalysisRunProcessor {
           'El auditor IA rechazó este candidato; no se publicó la recomendación.',
         ]]),
     );
-    const candidateResults = mergePublishedCandidates(initialCandidateResults, result.recommendations.map((recommendation) => {
+    const candidateResults = mergePublishedCandidates(initialCandidateResults, persistedRecommendations.map((recommendation) => {
       const candidateId = readCandidateId(recommendation.evidence);
       return { id: recommendation.id, ...(candidateId !== undefined ? { candidateId } : {}) };
     }), rejectedCandidateAudits);
 
     const createdRecommendationIds = new Set(links.filter((link) => link.disposition === 'CREATED').map((link) => link.recommendationId));
-    const createdRecommendations = result.recommendations.filter((item) => createdRecommendationIds.has(item.id));
+    const createdRecommendations = persistedRecommendations.filter((item) => createdRecommendationIds.has(item.id));
     const recommendationByCandidate = new Map(
       links
         .filter((link): link is typeof link & { candidateId: string } => link.candidateId !== undefined)
@@ -201,9 +246,10 @@ export class RecommendationAnalysisRunProcessor {
       notifications: this.notificationRepository,
     });
 
+    await this.ensureActive(run.id);
     const rejectedCount = result.analysis.rejectedCount ?? 0;
     return this.repository.complete(run.id, {
-      status: notificationFailed || rejectedCount > 0 ? 'PARTIAL' : result.recommendations.length > 0 ? 'COMPLETED' : 'SKIPPED',
+      status: notificationFailed || rejectedCount > 0 ? 'PARTIAL' : persistedRecommendations.length > 0 ? 'COMPLETED' : 'SKIPPED',
       recommendationsGenerated: result.analysis.generatedCount,
       recommendationsRejected: rejectedCount,
       candidateResults,
@@ -216,10 +262,16 @@ export class RecommendationAnalysisRunProcessor {
         ? { errorCode: 'NOTIFICATION_FAILED', errorMessage: 'Las recomendaciones se publicaron, pero no pudo crearse la notificación.' }
         : rejectedCount > 0
           ? { errorCode: 'AI_PARTIAL_AUDIT', errorMessage: `${rejectedCount} recomendación(es) fueron retenidas por auditoría.` }
-        : result.recommendations.length === 0
+        : persistedRecommendations.length === 0
           ? { errorCode: 'NO_NEW_OPPORTUNITIES', errorMessage: 'El análisis no publicó oportunidades nuevas.' }
           : {}),
     });
+  }
+
+  private async ensureActive(runId: string): Promise<void> {
+    if (await this.repository.isCancellationRequested(runId)) {
+      throw new RecommendationAnalysisCancelledError();
+    }
   }
 
   private completeAuditRejection(run: RecommendationAnalysisRun, error: AiAuditRejectedError, startedAt: number): Promise<RecommendationAnalysisRun> {
@@ -241,3 +293,5 @@ export class RecommendationAnalysisRunProcessor {
     });
   }
 }
+
+class RecommendationAnalysisCancelledError extends Error {}

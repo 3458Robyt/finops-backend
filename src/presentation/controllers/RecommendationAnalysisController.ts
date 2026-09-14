@@ -85,8 +85,8 @@ export class RecommendationAnalysisController {
     if (req.auth === undefined) return this.unauthorized(res);
     const limit = parseLimit(req.query['limit']);
     try {
-      const runs = await this.service.list(req.auth, limit);
-      res.status(200).json({ success: true, runs: runs.map((run) => serializeRun(run, false)) });
+      const [runs, worker] = await Promise.all([this.service.list(req.auth, limit), this.service.workerStatus()]);
+      res.status(200).json({ success: true, runs: runs.map((run) => serializeRun(run, false)), worker: serializeWorker(worker) });
     } catch (error: unknown) {
       this.respondError(res, error);
     }
@@ -100,7 +100,8 @@ export class RecommendationAnalysisController {
         res.status(404).json({ success: false, code: 'NOT_FOUND', error: 'La corrida de análisis no existe.' });
         return;
       }
-      res.status(200).json({ success: true, run: serializeRun(run, true) });
+      const worker = await this.service.workerStatus();
+      res.status(200).json({ success: true, run: serializeRun(run, true), worker: serializeWorker(worker) });
     } catch (error: unknown) {
       this.respondError(res, error);
     }
@@ -165,6 +166,7 @@ function serializeRun(run: RecommendationAnalysisRun, detail: boolean): Record<s
     promptTokenEstimate: run.promptTokenEstimate,
     responseTokenEstimate: run.responseTokenEstimate,
     ...(run.latencyMs !== undefined ? { latencyMs: run.latencyMs } : {}),
+    ...(run.cancelRequestedAt !== undefined ? { cancelRequestedAt: run.cancelRequestedAt.toISOString() } : {}),
     ...(run.errorCode !== undefined ? { errorCode: run.errorCode } : {}),
     ...(run.errorMessage !== undefined ? { errorMessage: run.errorMessage } : {}),
     ...(run.startedAt !== undefined ? { startedAt: run.startedAt.toISOString() } : {}),
@@ -193,6 +195,15 @@ function serializeRun(run: RecommendationAnalysisRun, detail: boolean): Record<s
           })),
         }
       : {}),
+  };
+}
+
+function serializeWorker(worker: Awaited<ReturnType<RecommendationAnalysisService['workerStatus']>>): Record<string, unknown> {
+  return {
+    available: worker.available,
+    ...(worker.processId === undefined ? {} : { processId: worker.processId }),
+    ...(worker.processRole === undefined ? {} : { processRole: worker.processRole }),
+    ...(worker.lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt: worker.lastHeartbeatAt.toISOString() }),
   };
 }
 

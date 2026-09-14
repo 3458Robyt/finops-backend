@@ -11,14 +11,15 @@ import type {
 } from '../../domain/interfaces/IValueRealizationRepository.js';
 import { PrismaValueRealizationAllocationRepository } from './PrismaValueRealizationAllocationRepository.js';
 import { PrismaValueRealizationPortfolioRepository } from './PrismaValueRealizationPortfolioRepository.js';
+import type { CurrencyConverter } from '../finance/CurrencyConverter.js';
 
 export class PrismaValueRealizationRepository implements IValueRealizationRepository {
   private readonly portfolio: PrismaValueRealizationPortfolioRepository;
   private readonly allocation: PrismaValueRealizationAllocationRepository;
 
-  constructor(prisma: PrismaClient) {
-    this.portfolio = new PrismaValueRealizationPortfolioRepository(prisma);
-    this.allocation = new PrismaValueRealizationAllocationRepository(prisma);
+  constructor(prisma: PrismaClient, currencyConverter?: CurrencyConverter) {
+    this.portfolio = new PrismaValueRealizationPortfolioRepository(prisma, currencyConverter);
+    this.allocation = new PrismaValueRealizationAllocationRepository(prisma, currencyConverter);
   }
 
   public getSummary(filters: ValueRealizationFilters): Promise<ValueRealizationSummary> {

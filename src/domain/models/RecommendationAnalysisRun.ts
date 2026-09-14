@@ -96,6 +96,7 @@ export interface RecommendationAnalysisRun {
   readonly responseTokenEstimate: number;
   readonly latencyMs?: number;
   readonly workerId?: string;
+  readonly cancelRequestedAt?: Date;
   readonly errorCode?: string;
   readonly errorMessage?: string;
   readonly startedAt?: Date;

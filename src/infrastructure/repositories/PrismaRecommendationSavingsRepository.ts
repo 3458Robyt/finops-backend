@@ -9,6 +9,7 @@ import type {
   VerifySavingsMeasurementInput,
 } from "../../domain/interfaces/IRecommendationRepository.js";
 import type { PrismaClient } from "../../generated/prisma/client.js";
+import { CurrencyConverter, normalizeCurrencyCode } from "../finance/CurrencyConverter.js";
 import {
   computeAdoptionKpis,
   computeSavingsKpis,
@@ -24,10 +25,23 @@ import {
 
 /** Reads and mutates savings realization data related to recommendations. */
 export class PrismaRecommendationSavingsRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly currencyConverter?: CurrencyConverter,
+  ) {}
 
   public async getSavingsKpis(tenantId: string): Promise<SavingsKpis> {
-    return computeSavingsKpis(this.prisma, tenantId);
+    if (this.currencyConverter === undefined) return computeSavingsKpis(this.prisma, tenantId);
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { reportingCurrency: true },
+    });
+    return computeSavingsKpis(
+      this.prisma,
+      tenantId,
+      this.currencyConverter,
+      normalizeCurrencyCode(tenant?.reportingCurrency ?? 'USD'),
+    );
   }
 
   /**

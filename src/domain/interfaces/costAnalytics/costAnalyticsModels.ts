@@ -21,6 +21,9 @@ export interface CostAnalyticsProviderItem {
   readonly totalCost: number;
   /** Número de métricas que componen el agregado. */
   readonly metricCount: number;
+  /** Currency of the comparable reporting projection. */
+  readonly currency?: string;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
 }
 
 /**
@@ -33,6 +36,8 @@ export interface CostAnalyticsAccountItem {
   readonly name: string;
   readonly totalCost: number;
   readonly metricCount: number;
+  readonly currency?: string;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
 }
 
 /**
@@ -43,6 +48,8 @@ export interface CostAnalyticsServiceItem {
   readonly provider: string;
   readonly totalCost: number;
   readonly metricCount: number;
+  readonly currency?: string;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
 }
 
 /**
@@ -52,6 +59,8 @@ export interface CostAnalyticsEnvironmentItem {
   readonly environment: string;
   readonly totalCost: number;
   readonly metricCount: number;
+  readonly currency?: string;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
 }
 
 /**
@@ -63,6 +72,8 @@ export interface CostAnalyticsResourceItem {
   readonly provider: string;
   readonly totalCost: number;
   readonly metricCount: number;
+  readonly currency?: string;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
 }
 
 /**
@@ -101,6 +112,10 @@ export interface CostAnalyticsSnapshot {
   readonly periodEnd: string;
   readonly totalCost: number;
   readonly currency: string;
+  /** Native totals retained for audit and reconciliation. */
+  readonly nativeTotals?: readonly { readonly currency: string; readonly amount: number }[];
+  /** Number of native aggregates that could not be projected. */
+  readonly conversionIssueCount?: number;
   readonly metricCount: number;
   /** Desglose de costos por proveedor. */
   readonly providers: readonly CostAnalyticsProviderItem[];
@@ -147,6 +162,9 @@ export interface MonthlyCostPoint {
   /** Costo del mes para la agrupación indicada. */
   readonly cost: number;
   readonly currency: string;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
+  readonly nativeCost?: number;
+  readonly nativeCurrency?: string;
   readonly metricCount: number;
 }
 
@@ -174,6 +192,9 @@ export interface MonthlyUsagePoint {
   readonly unitCost?: number;
   readonly currency: string;
   readonly metricCount: number;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
+  readonly nativeCost?: number;
+  readonly nativeCurrency?: string;
 }
 
 /**
@@ -257,6 +278,13 @@ export interface CostAnomaly {
   readonly status: CostAnomalyStatus;
   /** Explicación legible de la anomalía. */
   readonly explanation: string;
+  /** Divisa del importe expuesto; se conserva el importe nativo debajo. */
+  readonly currency?: string;
+  readonly nativeBaselineCost?: number;
+  readonly nativeObservedCost?: number;
+  readonly nativeDeltaAmount?: number;
+  readonly nativeCurrency?: string;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
   readonly evidence?: unknown;
   /** Instante de detección de la anomalía, en formato ISO 8601. */
   readonly detectedAt: string;
@@ -287,6 +315,12 @@ export interface CostForecast {
   /** Nivel de confianza del pronóstico. */
   readonly confidence: number;
   readonly currency: string;
+  /** Native values retained when the forecast is projected at read time. */
+  readonly nativePredictedCost?: number;
+  readonly nativeLowerBound?: number;
+  readonly nativeUpperBound?: number;
+  readonly nativeCurrency?: string;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
   readonly evidence?: unknown;
   /** Instante de generación del pronóstico, en formato ISO 8601. */
   readonly generatedAt: string;

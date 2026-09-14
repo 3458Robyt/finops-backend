@@ -8,6 +8,8 @@ export interface BudgetActualCost {
   readonly amount: number;
   readonly available: boolean;
   readonly source: BudgetActualCostSource;
+  readonly currency?: string;
+  readonly conversionIssueCount?: number;
 }
 
 export interface Budget {
@@ -57,4 +59,5 @@ export interface BudgetPerformance {
   readonly variancePercent?: number;
   readonly health: BudgetHealth;
   readonly estimatedDepletionDate?: Date;
+  readonly conversionIssueCount?: number;
 }

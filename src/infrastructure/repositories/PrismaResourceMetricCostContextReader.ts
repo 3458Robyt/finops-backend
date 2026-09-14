@@ -1,10 +1,14 @@
 import type { TechnicalCostContextItem } from '../../domain/interfaces/IResourceMetricRepository.js';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { Prisma } from '../../generated/prisma/client.js';
+import { CurrencyConverter, normalizeCurrencyCode } from '../finance/CurrencyConverter.js';
 
 /** Reads tenant-scoped billing context for exact technical resource IDs. */
 export class PrismaResourceMetricCostContextReader {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly currencyConverter?: CurrencyConverter,
+  ) {}
 
   public async listForResources(
     tenantId: string,
@@ -24,11 +28,13 @@ export class PrismaResourceMetricCostContextReader {
       readonly total_cost: number;
       readonly currency: string;
       readonly metric_count: number;
+      readonly period: Date;
     }>>(Prisma.sql`
       SELECT
         COALESCE(cr.external_resource_id, btrim(cm.resource_id)) AS external_resource_id,
         cm.cloud_resource_id,
         cm.cloud_connection_id,
+        date_trunc('day', cm.charge_period_start)::timestamptz AS period,
         sum(cm.billed_cost)::float8 AS total_cost,
         cm.billing_currency AS currency,
         count(*)::int AS metric_count
@@ -57,16 +63,65 @@ export class PrismaResourceMetricCostContextReader {
           )
           )
         )
-      GROUP BY COALESCE(cr.external_resource_id, btrim(cm.resource_id)), cm.cloud_resource_id, cm.cloud_connection_id, cm.billing_currency
+      GROUP BY COALESCE(cr.external_resource_id, btrim(cm.resource_id)), cm.cloud_resource_id, cm.cloud_connection_id, date_trunc('day', cm.charge_period_start), cm.billing_currency
     `);
-
-    return rows.map((row) => ({
-      externalResourceId: row.external_resource_id,
-      ...(row.cloud_resource_id !== null ? { cloudResourceId: row.cloud_resource_id } : {}),
-      ...(row.cloud_connection_id !== null ? { cloudConnectionId: row.cloud_connection_id } : {}),
-      totalCost: Number(row.total_cost),
-      currency: row.currency,
-      metricCount: row.metric_count,
-    }));
+    const reportingCurrency = this.currencyConverter === undefined
+      ? undefined
+      : normalizeCurrencyCode((await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { reportingCurrency: true } }))?.reportingCurrency ?? 'USD');
+    const projections = this.currencyConverter === undefined || reportingCurrency === undefined
+      ? rows.map((row) => ({ amount: Number(row.total_cost), currency: row.currency, status: 'NOT_REQUIRED' as const }))
+      : await this.currencyConverter.convertMany(
+        rows.map((row) => ({ amount: Number(row.total_cost), currency: row.currency, at: row.period })),
+        reportingCurrency,
+      );
+    const grouped = new Map<string, TechnicalCostContextItem>();
+    rows.forEach((row, index) => {
+      const projection = projections[index]!;
+      const currency = projection.amount === null ? row.currency : reportingCurrency ?? row.currency;
+      const key = `${row.external_resource_id}:${row.cloud_resource_id ?? ''}:${row.cloud_connection_id ?? ''}:${currency}`;
+      const current = grouped.get(key);
+      const nativeTotals = addNativeTotal(current?.nativeTotals ?? [], row.currency, Number(row.total_cost));
+      if (current === undefined) {
+        grouped.set(key, {
+          externalResourceId: row.external_resource_id,
+          ...(row.cloud_resource_id !== null ? { cloudResourceId: row.cloud_resource_id } : {}),
+          ...(row.cloud_connection_id !== null ? { cloudConnectionId: row.cloud_connection_id } : {}),
+          totalCost: projection.amount ?? 0,
+          currency,
+          metricCount: row.metric_count,
+          nativeTotals,
+          conversionStatus: projection.status,
+        });
+        return;
+      }
+      grouped.set(key, {
+        ...current,
+        totalCost: current.totalCost + (projection.amount ?? 0),
+        metricCount: current.metricCount + row.metric_count,
+        nativeTotals,
+        conversionStatus: mergeStatus(current.conversionStatus, projection.status),
+      });
+    });
+    return [...grouped.values()];
   }
+}
+
+function addNativeTotal(
+  totals: readonly { readonly currency: string; readonly amount: number }[],
+  currency: string,
+  amount: number,
+): readonly { readonly currency: string; readonly amount: number }[] {
+  const next = new Map(totals.map((item) => [item.currency, item.amount]));
+  next.set(currency, (next.get(currency) ?? 0) + amount);
+  return [...next.entries()].map(([itemCurrency, itemAmount]) => ({ currency: itemCurrency, amount: itemAmount }));
+}
+
+function mergeStatus(
+  left: TechnicalCostContextItem['conversionStatus'] | undefined,
+  right: NonNullable<TechnicalCostContextItem['conversionStatus']>,
+): NonNullable<TechnicalCostContextItem['conversionStatus']> {
+  if (left === 'MISSING_RATE' || right === 'MISSING_RATE') return 'MISSING_RATE';
+  if (left === 'UNSUPPORTED_CURRENCY' || right === 'UNSUPPORTED_CURRENCY') return 'UNSUPPORTED_CURRENCY';
+  if (left === 'CONVERTED' || right === 'CONVERTED') return 'CONVERTED';
+  return 'NOT_REQUIRED';
 }

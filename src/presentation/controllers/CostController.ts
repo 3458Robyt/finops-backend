@@ -7,6 +7,9 @@ import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 interface ServiceBreakdownItem {
   cost: number;
   currency: string;
+  conversionStatus?: InternalCostMetric['conversionStatus'];
+  nativeCost?: number;
+  nativeCurrency?: string;
   usage?: number;
   usageUnit?: string;
 }
@@ -60,6 +63,7 @@ export class CostController {
 
       const { provider, cloudAccountId } = req.query;
       const { startDate, endDate } = this.resolveDateRange(req);
+      const reportingCurrency = await this.costRepository.getReportingCurrency(req.auth.tenantId);
 
       const metrics = await this.costRepository.findByDateRange({
         tenantId: req.auth.tenantId,
@@ -71,7 +75,7 @@ export class CostController {
 
       res.status(200).json({
         success: true,
-        summary: this.buildSummary(metrics),
+        summary: this.buildSummary(metrics, reportingCurrency),
         metrics,
         meta: {
           tenantId: req.auth.tenantId,
@@ -110,8 +114,10 @@ export class CostController {
         ? await this.resolveLatestAvailableRange(req.auth.tenantId, requestedRange, lookbackDays)
         : { ...requestedRange, usedLatestAvailableFallback: false };
       if (endDate <= startDate) throw new FinOpsBaseError('El rango de costos no es válido.', 'VALIDATION_ERROR');
-      const requestedCurrency = typeof req.query['reportingCurrency'] === 'string' ? req.query['reportingCurrency'] : undefined;
-      const reportingCurrency = this.normalizeCurrency(requestedCurrency ?? await this.costRepository.getReportingCurrency(req.auth.tenantId));
+      // The tenant setting is the single reporting-currency authority. Do not
+      // allow a query parameter to create a second, user-scoped interpretation
+      // of the same financial history.
+      const reportingCurrency = await this.costRepository.getReportingCurrency(req.auth.tenantId);
       const granularity = req.query['granularity'] === 'month' ? 'month' : 'day';
       const history = await this.costRepository.getCostHistory({
         tenantId: req.auth.tenantId,
@@ -193,12 +199,6 @@ export class CostController {
     return parsed;
   }
 
-  private normalizeCurrency(value: string): string {
-    const currency = value.trim().toUpperCase();
-    if (!/^[A-Z]{3}$/.test(currency)) throw new FinOpsBaseError('La moneda debe usar un código ISO 4217 de tres letras.', 'VALIDATION_ERROR');
-    return currency;
-  }
-
   private parseRangeMode(value: unknown): 'CALENDAR' | 'LATEST_AVAILABLE' {
     if (value === undefined || value === 'CALENDAR') return 'CALENDAR';
     if (value === 'LATEST_AVAILABLE') return value;
@@ -235,23 +235,33 @@ export class CostController {
   /**
    * Construye el resumen sin sumar nominalmente monedas distintas.
    */
-  private buildSummary(metrics: readonly InternalCostMetric[]): {
+  private buildSummary(metrics: readonly InternalCostMetric[], reportingCurrency: string): {
     totalCost: number;
     currency: string | null;
     totalsByCurrency: Record<string, number>;
     serviceBreakdown: Record<string, ServiceBreakdownItem>;
+    conversionIssueCount: number;
   } {
     const totalsByCurrency: Record<string, number> = {};
     const serviceBreakdown: Record<string, ServiceBreakdownItem> = {};
 
+    let conversionIssueCount = 0;
     for (const metric of metrics) {
       totalsByCurrency[metric.currency] = (totalsByCurrency[metric.currency] ?? 0) + metric.amount;
 
-      const breakdownKey = `${metric.service}::${metric.currency}`;
+      const displayAmount = metric.reportingAmount === undefined
+        ? metric.amount
+        : metric.reportingAmount;
+      const displayCurrency = metric.reportingAmount === undefined
+        ? metric.currency
+        : metric.reportingAmount === null ? metric.currency : metric.reportingCurrency ?? metric.currency;
+      if (metric.reportingAmount === null) conversionIssueCount += 1;
+      const breakdownKey = `${metric.service}::${displayCurrency}`;
       const existingBreakdown = serviceBreakdown[breakdownKey];
       const breakdown = existingBreakdown ?? {
         cost: 0,
-        currency: metric.currency,
+        currency: displayCurrency,
+        ...(metric.conversionStatus === undefined ? {} : { conversionStatus: metric.conversionStatus }),
       };
 
       if (metric.usageUnit !== undefined) {
@@ -262,7 +272,11 @@ export class CostController {
         serviceBreakdown[breakdownKey] = breakdown;
       }
 
-      breakdown.cost += metric.amount;
+      if (displayAmount !== null) breakdown.cost += displayAmount;
+      if (metric.reportingAmount !== undefined && metric.reportingAmount !== null && metric.reportingCurrency !== metric.currency) {
+        breakdown.nativeCost = (breakdown.nativeCost ?? 0) + metric.amount;
+        breakdown.nativeCurrency = metric.currency;
+      }
 
       if (metric.usage !== undefined) {
         breakdown.usage = (breakdown.usage ?? 0) + metric.usage;
@@ -270,14 +284,17 @@ export class CostController {
     }
 
     const currencyKeys = Object.keys(totalsByCurrency);
+    const hasProjection = metrics.some((metric) => metric.reportingAmount !== undefined);
+    const comparableTotal = metrics.reduce((total, metric) => {
+      const amount = hasProjection ? metric.reportingAmount : metric.amount;
+      return amount === null || amount === undefined ? total : total + amount;
+    }, 0);
     return {
-      // A nominal total across currencies is not meaningful. Consumers that
-      // need a comparable total must use /costs/history with a reporting
-      // currency and its explicit conversion metadata.
-      totalCost: currencyKeys.length === 1 ? totalsByCurrency[currencyKeys[0]!] ?? 0 : 0,
-      currency: currencyKeys.length === 1 ? currencyKeys[0] ?? null : null,
+      totalCost: comparableTotal,
+      currency: metrics.length === 0 ? null : reportingCurrency,
       totalsByCurrency,
       serviceBreakdown,
+      conversionIssueCount,
     };
   }
 }

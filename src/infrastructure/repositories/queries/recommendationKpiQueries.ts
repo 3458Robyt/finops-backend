@@ -19,6 +19,8 @@ import type {
   SavingsKpis,
 } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { PrismaClient } from '../../../generated/prisma/client.js';
+import type { CurrencyConverter } from '../../finance/CurrencyConverter.js';
+import { computeProjectedSavingsKpis } from './recommendationKpiCurrencyProjection.js';
 import {
   calculateMissedSavings,
   roundCurrency,
@@ -43,7 +45,16 @@ import {
  *   multi-tenant).
  * @returns KPIs de ahorro de dominio.
  */
-export async function computeSavingsKpis(prisma: PrismaClient, tenantId: string): Promise<SavingsKpis> {
+export async function computeSavingsKpis(
+  prisma: PrismaClient,
+  tenantId: string,
+  currencyConverter?: CurrencyConverter,
+  reportingCurrency = 'USD',
+): Promise<SavingsKpis> {
+  if (currencyConverter !== undefined) {
+    return computeProjectedSavingsKpis(prisma, tenantId, reportingCurrency, currencyConverter);
+  }
+
   const savingsMeasurementModel = (prisma as PrismaClient & {
     readonly recommendationSavingsMeasurement?: PrismaClient['recommendationSavingsMeasurement'];
   }).recommendationSavingsMeasurement;

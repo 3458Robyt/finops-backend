@@ -11,9 +11,13 @@ import {
   stringValue,
   type ValueRealizationRow,
 } from './valueRealizationRepositorySupport.js';
+import { CurrencyConverter, normalizeCurrencyCode, type CurrencyConversionStatus } from '../finance/CurrencyConverter.js';
 
 export class PrismaValueRealizationAllocationRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly currencyConverter?: CurrencyConverter,
+  ) {}
 
   public async listDestinationSummary(input: { readonly tenantId: string; readonly period: Date; readonly currency?: string }): Promise<readonly ValueRealizationDestinationSummary[]> {
     const period = monthStart(input.period);
@@ -50,16 +54,39 @@ export class PrismaValueRealizationAllocationRepository {
              COUNT(DISTINCT recommendation_id)::int AS attributed_recommendations
       FROM attributed GROUP BY allocation_key, currency ORDER BY currency ASC, allocation_key ASC
     `);
-    return rows.map((row) => ({
-      period: stringValue(row['period']) ?? period.toISOString().slice(0, 7),
-      allocationKey: stringValue(row['allocation_key']) ?? 'UNALLOCATED',
-      currency: stringValue(row['currency']) ?? 'USD',
-      potentialSavings: numberValue(row['potential_savings']),
-      approvedSavings: numberValue(row['approved_savings']),
-      verifiedSavings: numberValue(row['verified_savings']),
-      observedSavings: numberValue(row['observed_savings']),
-      attributedRecommendations: intValue(row['attributed_recommendations']),
+    const target = await this.getReportingCurrency(input.tenantId);
+    return Promise.all(rows.map(async (row) => {
+      const sourceCurrency = stringValue(row['currency']) ?? 'USD';
+      const raw = [
+        { amount: numberValue(row['potential_savings']), currency: sourceCurrency, at: period },
+        { amount: numberValue(row['approved_savings']), currency: sourceCurrency, at: period },
+        { amount: numberValue(row['verified_savings']), currency: sourceCurrency, at: period },
+        { amount: numberValue(row['observed_savings']), currency: sourceCurrency, at: period },
+      ];
+      const projections = this.currencyConverter === undefined
+        ? raw.map((item) => ({ amount: item.amount, status: 'NOT_REQUIRED' as const }))
+        : await this.currencyConverter.convertMany(raw, target);
+      const status = projections.reduce<CurrencyConversionStatus>((current, item) => mergeStatus(current, item.status), 'NOT_REQUIRED');
+      const hasIssue = projections.some((item) => item.amount === null);
+      const values = hasIssue ? raw.map((item) => item.amount) : projections.map((item) => item.amount ?? 0);
+      return {
+        period: stringValue(row['period']) ?? period.toISOString().slice(0, 7),
+        allocationKey: stringValue(row['allocation_key']) ?? 'UNALLOCATED',
+        currency: hasIssue ? sourceCurrency : target,
+        potentialSavings: values[0]!,
+        approvedSavings: values[1]!,
+        verifiedSavings: values[2]!,
+        observedSavings: values[3]!,
+        attributedRecommendations: intValue(row['attributed_recommendations']),
+        ...(this.currencyConverter === undefined ? {} : { conversionStatus: status }),
+      };
     }));
+  }
+
+  private async getReportingCurrency(tenantId: string): Promise<string> {
+    if (this.currencyConverter === undefined) return 'USD';
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { reportingCurrency: true } });
+    return normalizeCurrencyCode(tenant?.reportingCurrency ?? 'USD');
   }
 
   public async listReconciliationCandidates(input: { readonly tenantId: string; readonly limit: number }): Promise<readonly ValueRealizationReconciliationCandidate[]> {
@@ -98,4 +125,11 @@ export class PrismaValueRealizationAllocationRepository {
       };
     });
   }
+}
+
+function mergeStatus(current: CurrencyConversionStatus, next: CurrencyConversionStatus): CurrencyConversionStatus {
+  if (current === 'UNSUPPORTED_CURRENCY' || next === 'UNSUPPORTED_CURRENCY') return 'UNSUPPORTED_CURRENCY';
+  if (current === 'MISSING_RATE' || next === 'MISSING_RATE') return 'MISSING_RATE';
+  if (current === 'CONVERTED' || next === 'CONVERTED') return 'CONVERTED';
+  return 'NOT_REQUIRED';
 }

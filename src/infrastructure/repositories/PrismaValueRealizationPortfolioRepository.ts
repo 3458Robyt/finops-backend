@@ -5,6 +5,7 @@ import type {
   ValueRealizationSummary,
   ValueRealizationItemsPage,
   ValueRealizationTrendPoint,
+  ValueRealizationItem,
 } from '../../domain/interfaces/IValueRealizationRepository.js';
 import {
   defaultPageSize,
@@ -19,9 +20,17 @@ import {
   type ValueRealizationRow,
 } from './valueRealizationRepositorySupport.js';
 import { filterWhere, portfolioCte } from './valueRealizationRepositorySql.js';
+import { CurrencyConverter, normalizeCurrencyCode, type CurrencyConversionStatus } from '../finance/CurrencyConverter.js';
+
+type ItemAmountKey = 'estimatedMonthlySavings' | 'reportedMonthlySavings' | 'observedSavings' | 'projectedMonthlySavings' | 'verifiedMonthlySavings' | 'costIncreaseMonthlyAmount';
+interface AmountValue { readonly key: ItemAmountKey; readonly amount: number; readonly currency: string; readonly at: Date; }
+interface ProjectedAmounts { readonly values: readonly number[]; readonly currency: string; readonly status: CurrencyConversionStatus; readonly hasIssue: boolean; }
 
 export class PrismaValueRealizationPortfolioRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly currencyConverter?: CurrencyConverter,
+  ) {}
 
   public async getSummary(filters: ValueRealizationFilters): Promise<ValueRealizationSummary> {
     const rows = await this.prisma.$queryRaw<Array<ValueRealizationRow>>(Prisma.sql`
@@ -57,23 +66,11 @@ export class PrismaValueRealizationPortfolioRepository {
       ${filterWhere(filters)}
     `);
     const count = countRows[0] ?? {};
+    const projected = await this.projectSummaryRows(rows, filters.tenantId);
     return {
       generatedAt: new Date(),
-      currencies: rows.map((row) => {
-        const estimated = numberValue(row['estimated_monthly_savings']);
-        const verified = numberValue(row['verified_monthly_savings']);
-        return {
-          currency: stringValue(row['currency']) ?? 'USD',
-          estimatedMonthlySavings: estimated,
-          reportedMonthlySavings: numberValue(row['reported_monthly_savings']),
-          observedSavings: numberValue(row['observed_savings']),
-          projectedMonthlySavings: numberValue(row['projected_monthly_savings']),
-          verifiedMonthlySavings: verified,
-          costIncreaseMonthlyAmount: numberValue(row['cost_increase_monthly_amount']),
-          realizationRate: estimated > 0 ? verified / estimated : 0,
-          varianceAgainstEstimate: verified - estimated,
-        };
-      }),
+      currencies: projected.currencies,
+      ...(projected.conversionIssueCount === 0 ? {} : { conversionIssueCount: projected.conversionIssueCount }),
       counts: {
         identified: intValue(count['identified']),
         approved: intValue(count['approved']),
@@ -102,7 +99,7 @@ export class PrismaValueRealizationPortfolioRepository {
     const visibleRows = rows.slice(0, pageSize);
     const last = visibleRows.at(-1);
     return {
-      items: visibleRows.map(toItem),
+      items: await this.projectItems(visibleRows, filters.tenantId),
       hasMore: rows.length > pageSize,
       ...(rows.length > pageSize && last !== undefined ? { nextCursor: encodeCursor(last) } : {}),
     };
@@ -116,7 +113,7 @@ export class PrismaValueRealizationPortfolioRepository {
       ORDER BY created_at DESC, recommendation_id DESC
       LIMIT ${Math.min(Math.max(filters.pageSize ?? maxExportPageSize, 1), maxExportPageSize)}
     `);
-    return rows.map(toItem);
+    return this.projectItems(rows, filters.tenantId);
   }
 
   public async listTrend(filters: ValueRealizationFilters): Promise<readonly ValueRealizationTrendPoint[]> {
@@ -134,13 +131,146 @@ export class PrismaValueRealizationPortfolioRepository {
       GROUP BY 1, currency
       ORDER BY 1 ASC, currency ASC
     `);
-    return rows.map((row) => ({
-      period: stringValue(row['period']) ?? '',
-      currency: stringValue(row['currency']) ?? 'USD',
-      observedSavings: numberValue(row['observed_savings']),
-      verifiedMonthlySavings: numberValue(row['verified_monthly_savings']),
-      costIncreaseMonthlyAmount: numberValue(row['cost_increase_monthly_amount']),
-      verifiedMeasurements: intValue(row['verified_measurements']),
+    const target = await this.getReportingCurrency(filters.tenantId);
+    return Promise.all(rows.map(async (row) => {
+      const period = stringValue(row['period']) ?? '';
+      const sourceCurrency = stringValue(row['currency']) ?? 'USD';
+      const at = monthDate(period);
+      const raw = [
+        { amount: numberValue(row['observed_savings']), currency: sourceCurrency, at },
+        { amount: numberValue(row['verified_monthly_savings']), currency: sourceCurrency, at },
+        { amount: numberValue(row['cost_increase_monthly_amount']), currency: sourceCurrency, at },
+      ];
+      const projection = await this.projectAmounts(raw, target);
+      const values = projection.hasIssue ? raw.map((item) => item.amount) : projection.values;
+      return {
+        period,
+        currency: projection.hasIssue ? sourceCurrency : projection.currency,
+        observedSavings: values[0]!,
+        verifiedMonthlySavings: values[1]!,
+        costIncreaseMonthlyAmount: values[2]!,
+        verifiedMeasurements: intValue(row['verified_measurements']),
+        ...(this.currencyConverter === undefined ? {} : { conversionStatus: projection.status }),
+      };
     }));
   }
+
+  private async projectSummaryRows(rows: readonly ValueRealizationRow[], tenantId: string): Promise<{ readonly currencies: readonly ValueRealizationSummary['currencies'][number][]; readonly conversionIssueCount: number }> {
+    const target = await this.getReportingCurrency(tenantId);
+    const summaries = new Map<string, ValueRealizationSummary['currencies'][number]>();
+    let conversionIssueCount = 0;
+    for (const row of rows) {
+      const sourceCurrency = stringValue(row['currency']) ?? 'USD';
+      const raw = [
+        { amount: numberValue(row['estimated_monthly_savings']), currency: sourceCurrency, at: new Date() },
+        { amount: numberValue(row['reported_monthly_savings']), currency: sourceCurrency, at: new Date() },
+        { amount: numberValue(row['observed_savings']), currency: sourceCurrency, at: new Date() },
+        { amount: numberValue(row['projected_monthly_savings']), currency: sourceCurrency, at: new Date() },
+        { amount: numberValue(row['verified_monthly_savings']), currency: sourceCurrency, at: new Date() },
+        { amount: numberValue(row['cost_increase_monthly_amount']), currency: sourceCurrency, at: new Date() },
+      ];
+      const projection = await this.projectAmounts(raw, target);
+      if (projection.hasIssue) conversionIssueCount += 1;
+      const values = projection.hasIssue ? raw.map((item) => item.amount) : projection.values;
+      const currency = projection.hasIssue ? sourceCurrency : projection.currency;
+      const estimated = values[0]!;
+      const verified = values[4]!;
+      const current = summaries.get(currency);
+      summaries.set(currency, {
+        currency,
+        estimatedMonthlySavings: (current?.estimatedMonthlySavings ?? 0) + estimated,
+        reportedMonthlySavings: (current?.reportedMonthlySavings ?? 0) + values[1]!,
+        observedSavings: (current?.observedSavings ?? 0) + values[2]!,
+        projectedMonthlySavings: (current?.projectedMonthlySavings ?? 0) + values[3]!,
+        verifiedMonthlySavings: (current?.verifiedMonthlySavings ?? 0) + verified,
+        costIncreaseMonthlyAmount: (current?.costIncreaseMonthlyAmount ?? 0) + values[5]!,
+        realizationRate: 0,
+        varianceAgainstEstimate: 0,
+        ...(this.currencyConverter === undefined ? {} : { conversionStatus: mergeStatus(current?.conversionStatus, projection.status) }),
+      });
+    }
+    const currencies = [...summaries.values()].map((summary) => ({
+      ...summary,
+      realizationRate: summary.estimatedMonthlySavings > 0 ? summary.verifiedMonthlySavings / summary.estimatedMonthlySavings : 0,
+      varianceAgainstEstimate: summary.verifiedMonthlySavings - summary.estimatedMonthlySavings,
+    }));
+    return { currencies, conversionIssueCount };
+  }
+
+  private async projectItems(rows: readonly ValueRealizationRow[], tenantId: string): Promise<readonly ValueRealizationItem[]> {
+    const target = await this.getReportingCurrency(tenantId);
+    return Promise.all(rows.map(async (row) => {
+      const item = toItem(row);
+      if (this.currencyConverter === undefined) return item;
+      const at = dateValue(row['created_at']) ?? new Date();
+      const sourceCurrency = stringValue(row['currency']) ?? item.currency;
+      const reportedCurrency = stringValue(row['reported_currency']) ?? sourceCurrency;
+      const measurementCurrency = stringValue(row['measurement_currency']) ?? sourceCurrency;
+      const values: AmountValue[] = [
+        { key: 'estimatedMonthlySavings', amount: item.estimatedMonthlySavings, currency: sourceCurrency, at },
+        { key: 'reportedMonthlySavings', amount: item.reportedMonthlySavings, currency: reportedCurrency, at },
+        { key: 'verifiedMonthlySavings', amount: item.verifiedMonthlySavings, currency: measurementCurrency, at },
+        { key: 'costIncreaseMonthlyAmount', amount: item.costIncreaseMonthlyAmount, currency: measurementCurrency, at },
+      ];
+      if (item.observedSavings !== undefined) values.push({ key: 'observedSavings', amount: item.observedSavings, currency: measurementCurrency, at });
+      if (item.projectedMonthlySavings !== undefined) values.push({ key: 'projectedMonthlySavings', amount: item.projectedMonthlySavings, currency: measurementCurrency, at });
+      const projection = await this.projectAmounts(values, target);
+      if (projection.hasIssue) return { ...item, conversionStatus: projection.status };
+      const amounts = new Map(values.map((value, index) => [value.key, projection.values[index]!]));
+      return {
+        ...item,
+        currency: projection.currency,
+        estimatedMonthlySavings: amounts.get('estimatedMonthlySavings')!,
+        reportedMonthlySavings: amounts.get('reportedMonthlySavings')!,
+        ...(item.observedSavings === undefined ? {} : { observedSavings: amounts.get('observedSavings')! }),
+        ...(item.projectedMonthlySavings === undefined ? {} : { projectedMonthlySavings: amounts.get('projectedMonthlySavings')! }),
+        verifiedMonthlySavings: amounts.get('verifiedMonthlySavings')!,
+        costIncreaseMonthlyAmount: amounts.get('costIncreaseMonthlyAmount')!,
+        varianceAgainstEstimate: amounts.get('verifiedMonthlySavings')! - amounts.get('estimatedMonthlySavings')!,
+        conversionStatus: projection.status,
+      };
+    }));
+  }
+
+  private async projectAmounts(values: readonly { readonly amount: number; readonly currency: string; readonly at: Date }[], target: string): Promise<ProjectedAmounts> {
+    if (this.currencyConverter === undefined) {
+      return { values: values.map((value) => value.amount), currency: values[0]?.currency ?? target, status: 'NOT_REQUIRED', hasIssue: false };
+    }
+    const projections = await this.currencyConverter.convertMany(values, target);
+    const status = projections.reduce<CurrencyConversionStatus>((current, item) => mergeStatus(current, item.status), 'NOT_REQUIRED');
+    return {
+      values: projections.map((item, index) => item.amount ?? values[index]!.amount),
+      currency: normalizeCurrencyCode(target),
+      status,
+      hasIssue: projections.some((item) => item.amount === null),
+    };
+  }
+
+  private async getReportingCurrency(tenantId: string): Promise<string> {
+    if (this.currencyConverter === undefined) return 'USD';
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { reportingCurrency: true } });
+    return normalizeCurrencyCode(tenant?.reportingCurrency ?? 'USD');
+  }
+}
+
+function mergeStatus(current: CurrencyConversionStatus | undefined, next: CurrencyConversionStatus): CurrencyConversionStatus {
+  if (current === 'UNSUPPORTED_CURRENCY' || next === 'UNSUPPORTED_CURRENCY') return 'UNSUPPORTED_CURRENCY';
+  if (current === 'MISSING_RATE' || next === 'MISSING_RATE') return 'MISSING_RATE';
+  if (current === 'CONVERTED' || next === 'CONVERTED') return 'CONVERTED';
+  return 'NOT_REQUIRED';
+}
+
+function dateValue(value: unknown): Date | undefined {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return undefined;
+}
+
+function monthDate(value: string): Date {
+  const match = value.match(/^(\d{4})-(\d{2})$/);
+  if (match === null) return new Date();
+  return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1));
 }

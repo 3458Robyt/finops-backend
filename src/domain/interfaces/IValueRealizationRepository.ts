@@ -22,6 +22,7 @@ export interface ValueRealizationFilters {
 
 export interface ValueRealizationCurrencySummary {
   readonly currency: string;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
   readonly estimatedMonthlySavings: number;
   readonly reportedMonthlySavings: number;
   readonly observedSavings: number;
@@ -49,6 +50,7 @@ export interface ValueRealizationSummary {
   readonly generatedAt: Date;
   readonly currencies: readonly ValueRealizationCurrencySummary[];
   readonly counts: ValueRealizationCounts;
+  readonly conversionIssueCount?: number;
 }
 
 export type ValueRealizationNextAction =
@@ -93,6 +95,7 @@ export interface ValueRealizationItem {
   readonly nextAction: ValueRealizationNextAction;
   readonly createdAt: Date;
   readonly updatedAt: Date;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
 }
 
 export interface ValueRealizationItemsPage {
@@ -104,6 +107,7 @@ export interface ValueRealizationItemsPage {
 export interface ValueRealizationTrendPoint {
   readonly period: string;
   readonly currency: string;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
   readonly observedSavings: number;
   readonly verifiedMonthlySavings: number;
   readonly costIncreaseMonthlyAmount: number;
@@ -114,6 +118,7 @@ export interface ValueRealizationDestinationSummary {
   readonly period: string;
   readonly allocationKey: string;
   readonly currency: string;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
   readonly potentialSavings: number;
   readonly approvedSavings: number;
   readonly verifiedSavings: number;

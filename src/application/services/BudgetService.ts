@@ -60,7 +60,7 @@ export class BudgetService {
     const actualCost = actualResult.amount;
     const consumedPercent = round((actualCost / budget.amount) * 100);
     const health = actualResult.available ? healthFor(budget, Math.max(actualCost, forecastCost ?? 0)) : 'UNAVAILABLE';
-    return { budget, actualCost, actualCostAvailable: actualResult.available, actualCostSource: actualResult.source, remainingBudget: round(budget.amount - actualCost), consumedPercent, ...(forecastCost !== undefined ? { forecastCost, varianceAmount: round(forecastCost - budget.amount), variancePercent: round(((forecastCost - budget.amount) / budget.amount) * 100) } : {}), health, ...(actualResult.available && depletionDate(budget, actualCost, now) !== undefined ? { estimatedDepletionDate: depletionDate(budget, actualCost, now)! } : {}) };
+    return { budget, actualCost, actualCostAvailable: actualResult.available, actualCostSource: actualResult.source, remainingBudget: round(budget.amount - actualCost), consumedPercent, ...(forecastCost !== undefined ? { forecastCost, varianceAmount: round(forecastCost - budget.amount), variancePercent: round(((forecastCost - budget.amount) / budget.amount) * 100) } : {}), health, ...(actualResult.conversionIssueCount === undefined ? {} : { conversionIssueCount: actualResult.conversionIssueCount }), ...(actualResult.available && depletionDate(budget, actualCost, now) !== undefined ? { estimatedDepletionDate: depletionDate(budget, actualCost, now)! } : {}) };
   }
 
   public async evaluate(actor: AuthContext, budgetId?: string): Promise<{ readonly evaluated: number; readonly newAlerts: readonly BudgetAlert[] }> {

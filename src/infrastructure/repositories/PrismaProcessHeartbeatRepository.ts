@@ -48,6 +48,22 @@ export class PrismaProcessHeartbeatRepository implements IProcessHeartbeatReposi
     );
     return row === null ? null : toRecord(row);
   }
+
+  public async findFreshByRoles(input: {
+    readonly processRoles: readonly string[];
+    readonly staleBefore: Date;
+  }): Promise<ProcessHeartbeatRecord | null> {
+    if (input.processRoles.length === 0) return null;
+    const row = await this.prisma.runtimeProcessHeartbeat.findFirst({
+      where: {
+        processRole: { in: [...input.processRoles] },
+        status: 'RUNNING',
+        lastHeartbeatAt: { gte: input.staleBefore },
+      },
+      orderBy: { lastHeartbeatAt: 'desc' },
+    });
+    return row === null ? null : toRecord(row);
+  }
 }
 
 function toRecord(row: {

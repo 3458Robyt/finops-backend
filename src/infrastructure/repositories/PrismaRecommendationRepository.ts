@@ -19,6 +19,7 @@ import type {
 import type { FinOpsRecommendation } from "../../domain/models/FinOpsRecommendation.js";
 import type { RecommendationExecutionPlan } from "../../domain/models/RecommendationExecutionPlan.js";
 import type { PrismaClient } from "../../generated/prisma/client.js";
+import type { CurrencyConverter } from "../finance/CurrencyConverter.js";
 import { PrismaRecommendationLifecycleRepository } from "./PrismaRecommendationLifecycleRepository.js";
 import { PrismaRecommendationSavingsRepository } from "./PrismaRecommendationSavingsRepository.js";
 import { PrismaRecommendationTimelineRepository } from "./PrismaRecommendationTimelineRepository.js";
@@ -29,9 +30,9 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
   private readonly savings: PrismaRecommendationSavingsRepository;
   private readonly timeline: PrismaRecommendationTimelineRepository;
 
-  constructor(prisma: PrismaClient) {
-    this.lifecycle = new PrismaRecommendationLifecycleRepository(prisma);
-    this.savings = new PrismaRecommendationSavingsRepository(prisma);
+  constructor(prisma: PrismaClient, currencyConverter?: CurrencyConverter) {
+    this.lifecycle = new PrismaRecommendationLifecycleRepository(prisma, currencyConverter);
+    this.savings = new PrismaRecommendationSavingsRepository(prisma, currencyConverter);
     this.timeline = new PrismaRecommendationTimelineRepository(prisma);
   }
 

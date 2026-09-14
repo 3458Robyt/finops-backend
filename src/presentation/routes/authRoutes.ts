@@ -47,9 +47,9 @@ export function createAuthRoutes(
   }
   if (mfaController !== undefined) {
     router.get('/mfa/status', requireAuth, mfaController.status);
-    router.post('/mfa/setup', requireAuth, mfaController.setup);
-    router.post('/mfa/confirm', requireAuth, mfaController.confirm);
-    router.post('/mfa/recovery-codes/regenerate', requireAuth, mfaController.regenerateRecoveryCodes);
+    router.post('/mfa/setup', trustedOrigin, requireAuth, mfaController.setup);
+    router.post('/mfa/confirm', trustedOrigin, requireAuth, mfaController.confirm);
+    router.post('/mfa/recovery-codes/regenerate', trustedOrigin, requireAuth, mfaController.regenerateRecoveryCodes);
     router.post('/mfa/disable', trustedOrigin, requireAuth, mfaController.disable);
   }
   router.post('/logout', trustedOrigin, requireAuth, authSessionController.logout);

@@ -28,6 +28,7 @@ export interface ProviderRow {
   readonly provider: string;
   readonly metric_count: number;
   readonly total_cost: number;
+  readonly currency: string;
 }
 
 export interface AccountRow {
@@ -36,6 +37,7 @@ export interface AccountRow {
   readonly name: string;
   readonly metric_count: number;
   readonly total_cost: number;
+  readonly currency: string;
 }
 
 export interface ServiceRow {
@@ -43,12 +45,14 @@ export interface ServiceRow {
   readonly provider: string;
   readonly metric_count: number;
   readonly total_cost: number;
+  readonly currency: string;
 }
 
 export interface EnvironmentRow {
   readonly environment: string;
   readonly metric_count: number;
   readonly total_cost: number;
+  readonly currency: string;
 }
 
 export interface ResourceRow {
@@ -57,6 +61,7 @@ export interface ResourceRow {
   readonly provider: string;
   readonly metric_count: number;
   readonly total_cost: number;
+  readonly currency: string;
 }
 
 export interface CurrencyRow {
@@ -113,6 +118,7 @@ export function toProviderItem(row: ProviderRow): CostAnalyticsProviderItem {
     provider: row.provider,
     totalCost: row.total_cost,
     metricCount: row.metric_count,
+    currency: row.currency,
   };
 }
 
@@ -127,6 +133,7 @@ export function toAccountItem(row: AccountRow): CostAnalyticsAccountItem {
     name: row.name,
     totalCost: row.total_cost,
     metricCount: row.metric_count,
+    currency: row.currency,
   };
 }
 
@@ -140,6 +147,7 @@ export function toServiceItem(row: ServiceRow): CostAnalyticsServiceItem {
     provider: row.provider,
     totalCost: row.total_cost,
     metricCount: row.metric_count,
+    currency: row.currency,
   };
 }
 
@@ -153,6 +161,7 @@ export function toEnvironmentItem(row: EnvironmentRow): CostAnalyticsEnvironment
     environment: row.environment,
     totalCost: row.total_cost,
     metricCount: row.metric_count,
+    currency: row.currency,
   };
 }
 
@@ -167,6 +176,7 @@ export function toResourceItem(row: ResourceRow): CostAnalyticsResourceItem {
     provider: row.provider,
     totalCost: row.total_cost,
     metricCount: row.metric_count,
+    currency: row.currency,
   };
 }
 
@@ -207,6 +217,7 @@ export function toUsageItem(row: TopUsageRow): CostAnalyticsUsageItem {
  * @returns Anomalía de coste de dominio.
  */
 export function toAnomalyDomain(row: Awaited<ReturnType<PrismaClient['costAnomaly']['findFirst']>> & {}): CostAnomaly {
+  const currency = readEvidenceCurrency(row.evidence);
   return {
     id: row.id,
     tenantId: row.tenantId,
@@ -225,9 +236,18 @@ export function toAnomalyDomain(row: Awaited<ReturnType<PrismaClient['costAnomal
     severity: row.severity,
     status: row.status,
     explanation: row.explanation,
+    ...(currency === undefined ? {} : { currency }),
     ...(row.evidence !== null ? { evidence: row.evidence } : {}),
     detectedAt: row.detectedAt.toISOString(),
   };
+}
+
+function readEvidenceCurrency(value: unknown): string | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const currency = (value as Record<string, unknown>)['currency'];
+  return typeof currency === 'string' && /^[A-Z]{3}$/i.test(currency.trim())
+    ? currency.trim().toUpperCase()
+    : undefined;
 }
 
 /**

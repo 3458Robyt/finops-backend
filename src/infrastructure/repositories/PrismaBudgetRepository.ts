@@ -3,11 +3,15 @@ import { FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { Budget, BudgetActualCost, BudgetAlert } from '../../domain/models/Budget.js';
 import type { BudgetFilters, CreateBudgetInput, IBudgetRepository, UpdateBudgetInput } from '../../domain/interfaces/IBudgetRepository.js';
 import { PrismaCostAllocationRepository } from './PrismaCostAllocationRepository.js';
+import { CurrencyConverter, normalizeCurrencyCode } from '../finance/CurrencyConverter.js';
 
 export class PrismaBudgetRepository implements IBudgetRepository {
   private readonly allocation: PrismaCostAllocationRepository;
 
-  constructor(private readonly prisma: PrismaClient) {
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly currencyConverter?: CurrencyConverter,
+  ) {
     this.allocation = new PrismaCostAllocationRepository(prisma);
   }
 
@@ -55,17 +59,33 @@ export class PrismaBudgetRepository implements IBudgetRepository {
   public async getActualCost(budget: Budget): Promise<BudgetActualCost> {
     if (budget.scope === 'ALLOCATION_DESTINATION') return this.getAllocationDestinationCost(budget);
     const next = nextMonth(budget.periodStart);
-    const rows = await this.prisma.$queryRaw<readonly { total: Prisma.Decimal | null }[]>(Prisma.sql`
-      SELECT COALESCE(SUM("billed_cost"), 0) AS total
+    const rows = await this.prisma.$queryRaw<readonly { period: Date; currency: string; total: number }[]>(Prisma.sql`
+      SELECT date_trunc('day', "charge_period_start")::timestamptz AS period,
+             "billing_currency" AS currency,
+             COALESCE(SUM("billed_cost"), 0)::float8 AS total
       FROM "cost_metrics"
       WHERE "tenant_id" = ${budget.tenantId}
-        AND "billing_currency" = ${budget.currency}
         AND "charge_period_start" >= ${budget.periodStart}
         AND "charge_period_start" < ${next}
         ${budget.scope === 'CLOUD_ACCOUNT' ? Prisma.sql`AND "cloud_account_id" = ${budget.scopeKey}` : Prisma.empty}
         ${budget.scope === 'SERVICE' ? Prisma.sql`AND "service_name" = ${budget.scopeKey}` : Prisma.empty}
+      GROUP BY date_trunc('day', "charge_period_start"), "billing_currency"
+      ORDER BY period ASC, currency ASC
     `);
-    return { amount: Number(rows[0]?.total ?? 0), available: true, source: 'COST_METRICS' };
+    const projections = this.currencyConverter === undefined
+      ? rows.map((row) => ({ amount: row.currency === budget.currency ? row.total : null, status: row.currency === budget.currency ? 'NOT_REQUIRED' as const : 'MISSING_RATE' as const }))
+      : await this.currencyConverter.convertMany(
+        rows.map((row) => ({ amount: row.total, currency: row.currency, at: row.period })),
+        budget.currency,
+      );
+    const conversionIssueCount = projections.filter((item) => item.amount === null).length;
+    return {
+      amount: projections.reduce((total, item) => total + (item.amount ?? 0), 0),
+      available: conversionIssueCount === 0,
+      source: 'COST_METRICS',
+      currency: normalizeCurrencyCode(budget.currency),
+      ...(conversionIssueCount === 0 ? {} : { conversionIssueCount }),
+    };
   }
 
   public async cloudAccountExists(tenantId: string, cloudAccountId: string): Promise<boolean> {
@@ -84,22 +104,41 @@ export class PrismaBudgetRepository implements IBudgetRepository {
         where: {
           tenantId: budget.tenantId,
           forecastMonth: budget.periodStart,
-          currency: budget.currency,
           groupBy,
           ...(budget.scope === 'CLOUD_ACCOUNT' ? { cloudAccountId: budget.scopeKey } : {}),
           ...(budget.scope === 'SERVICE' ? { serviceName: budget.scopeKey } : {}),
         },
-        select: { predictedCost: true },
+        select: { predictedCost: true, currency: true, forecastMonth: true },
       });
-      if (rows.length > 0) return rows.reduce((total, row) => total + Number(row.predictedCost), 0);
+      if (rows.length > 0) {
+        const projections = this.currencyConverter === undefined
+          ? rows.filter((row) => row.currency === budget.currency).map((row) => ({ amount: Number(row.predictedCost) }))
+          : await this.currencyConverter.convertMany(
+            rows.map((row) => ({ amount: Number(row.predictedCost), currency: row.currency, at: row.forecastMonth })),
+            budget.currency,
+          );
+        if (projections.length === rows.length && projections.every((item) => item.amount !== null)) {
+          return projections.reduce((total, item) => total + (item.amount ?? 0), 0);
+        }
+      }
     }
     return undefined;
   }
 
   private async getAllocationDestinationCost(budget: Budget): Promise<BudgetActualCost> {
     const closures = await this.allocation.listClosures(budget.tenantId, budget.periodStart);
-    const closure = closures.find((item) => item.status === 'CLOSED' && item.currency === budget.currency);
-    if (closure !== undefined) return { amount: destinationTotal(closure.results, budget.scopeKey), available: true, source: 'CLOSED_ALLOCATION' };
+    const matching = closures.filter((item) => item.status === 'CLOSED');
+    if (matching.length > 0 && this.currencyConverter !== undefined) {
+      const projections = await this.currencyConverter.convertMany(
+        matching.map((item) => ({ amount: destinationTotal(item.results, budget.scopeKey), currency: item.currency, at: budget.periodStart })),
+        budget.currency,
+      );
+      if (projections.every((item) => item.amount !== null)) {
+        return { amount: projections.reduce((total, item) => total + (item.amount ?? 0), 0), available: true, source: 'CLOSED_ALLOCATION', currency: normalizeCurrencyCode(budget.currency) };
+      }
+    }
+    const closure = matching.find((item) => item.currency === budget.currency);
+    if (closure !== undefined) return { amount: destinationTotal(closure.results, budget.scopeKey), available: true, source: 'CLOSED_ALLOCATION', currency: normalizeCurrencyCode(budget.currency) };
     return { amount: 0, available: false, source: 'NO_CLOSED_ALLOCATION' };
   }
 

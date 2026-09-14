@@ -57,6 +57,7 @@ export function toRecommendationAnalysisRunDomain(row: RunRow | RunDetailRow): R
     responseTokenEstimate: row.responseTokenEstimate,
     ...(row.latencyMs !== null ? { latencyMs: row.latencyMs } : {}),
     ...(row.workerId !== null ? { workerId: row.workerId } : {}),
+    ...(row.cancelRequestedAt !== null ? { cancelRequestedAt: row.cancelRequestedAt } : {}),
     ...(row.errorCode !== null ? { errorCode: row.errorCode } : {}),
     ...(row.errorMessage !== null ? { errorMessage: row.errorMessage } : {}),
     ...(row.startedAt !== null ? { startedAt: row.startedAt } : {}),

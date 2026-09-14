@@ -37,6 +37,11 @@ export interface InternalCostMetric {
    */
   readonly currency: string;
 
+  /** Native amount is kept authoritative; these fields are a read projection. */
+  readonly reportingAmount?: number | null;
+  readonly reportingCurrency?: string;
+  readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
+
   /**
    * Cantidad de uso consumido (opcional).
    * Ej: 500.5

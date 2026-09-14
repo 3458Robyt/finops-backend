@@ -38,6 +38,8 @@ export function portfolioCte(tenantId: string): Prisma.Sql {
         COALESCE(lm.service_name, r.evidence ->> 'serviceName', r.evidence #>> '{resources,0,serviceName}') AS service_name,
         COALESCE(lm.resource_id, r.evidence ->> 'externalResourceId', r.evidence #>> '{resources,0,externalResourceId}') AS resource_id,
         r.currency,
+        le.currency AS reported_currency,
+        lm.currency AS measurement_currency,
         COALESCE(r.estimated_monthly_savings, 0)::float8 AS estimated_monthly_savings,
         COALESCE(le.observed_monthly_savings, 0)::float8 AS reported_monthly_savings,
         le.id AS manual_execution_id,

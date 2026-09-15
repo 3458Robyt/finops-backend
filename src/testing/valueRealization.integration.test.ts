@@ -3,8 +3,7 @@ import { PrismaValueRealizationRepository } from '../infrastructure/repositories
 import { cleanupE2eFixtures, createE2eFixtures, createTestingPrismaClient } from './e2eFixtures.js';
 
 describe('value realization PostgreSQL integration', () => {
-  test('keeps portfolio tenant-scoped and supports summary, cursor page and export read model', async () => {
-    if (process.env['RUN_DB_INTEGRATION_TESTS'] !== 'true') return;
+  test.skipIf(process.env['RUN_DB_INTEGRATION_TESTS'] !== 'true')('keeps portfolio tenant-scoped and supports summary, cursor page and export read model', async () => {
     const prisma = createTestingPrismaClient();
     const runId = `value-realization-${Date.now()}`;
     try {

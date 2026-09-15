@@ -1,4 +1,5 @@
 import type {
+  AdoptionKpiQuery,
   AdoptionKpis,
   CreateRecommendationDecisionInput,
   CreateRecommendationDecisionResult,
@@ -103,8 +104,8 @@ export class PrismaRecommendationRepository implements IRecommendationRepository
   public getSavingsKpis(tenantId: string): Promise<SavingsKpis> {
     return this.savings.getSavingsKpis(tenantId);
   }
-  public getAdoptionKpis(tenantId: string): Promise<AdoptionKpis> {
-    return this.savings.getAdoptionKpis(tenantId);
+  public getAdoptionKpis(tenantId: string, query?: AdoptionKpiQuery): Promise<AdoptionKpis> {
+    return this.savings.getAdoptionKpis(tenantId, query);
   }
   public getSavingsMeasurementReadiness(
     tenantId: string,

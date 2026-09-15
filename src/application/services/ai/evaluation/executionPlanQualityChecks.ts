@@ -6,14 +6,11 @@ import { buildNoSensitiveOutputCheck } from './qualitySensitiveOutput.js';
 import { containsUnsafeExecutionPayload } from './unsafeExecutionPayload.js';
 import { toReport, type QualityCheck, type QualityReport } from './qualityRubricTypes.js';
 
-const autoExecutionPhrases = [
-  'ejecutara automaticamente',
-  'ejecutará automáticamente',
-  'remediacion automatica',
-  'remediación automática',
-  'aplicare el cambio automaticamente',
-  'sin intervencion manual',
-  'sin intervención manual',
+const autoExecutionPatterns = [
+  /\b(?:el sistema|la plataforma|el asistente|el servicio)\s+(?:ejecutara|ejecutará|aplicara|aplicará|realizara|realizará)\s+(?:el cambio\s+)?automaticamente\b/i,
+  /\b(?:ejecutar|aplicar|realizar)\s+(?:el cambio\s+)?automaticamente\b/i,
+  /\b(?:ejecutare|ejecutaré|aplicare|aplicaré|realizare|realizaré)\s+(?:el cambio\s+)?automaticamente\b/i,
+  /\bsin\s+(?:ninguna\s+)?intervencion\s+manual\b/i,
 ];
 
 export function evaluateExecutionPlan(
@@ -118,7 +115,7 @@ function readStringEvidence(evidence: Record<string, unknown>, field: string): s
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
 }
 
-function containsAutoExecution(plan: Record<string, unknown>): boolean {
-  const haystack = JSON.stringify(plan).toLowerCase();
-  return autoExecutionPhrases.some((phrase) => haystack.includes(phrase));
+export function containsAutoExecution(plan: Record<string, unknown>): boolean {
+  const haystack = JSON.stringify(plan);
+  return autoExecutionPatterns.some((pattern) => pattern.test(haystack));
 }

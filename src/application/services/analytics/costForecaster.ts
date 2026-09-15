@@ -4,6 +4,7 @@ import type {
 } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import { roundCurrency, round, standardDeviation } from './statistics.js';
 import { groupCostSeries, sortByMonth } from './costSeriesGrouping.js';
+import { evaluateForecastBacktest } from './forecastBacktest.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -79,6 +80,7 @@ function forecastGroup(
   const variance = standardDeviation(costs);
   const confidence = Math.max(0.45, Math.min(0.9, 1 - (variance / Math.max(weightedAverage, 1))));
   const lastMonth = new Date(lastPoint.month);
+  const backtest = evaluateForecastBacktest(sorted);
   const forecasts: PersistCostForecastInput[] = [];
 
   for (let offset = 1; offset <= 3; offset += 1) {
@@ -101,9 +103,12 @@ function forecastGroup(
       confidence: round(confidence, 4),
       currency: lastPoint.currency,
       evidence: {
+        methodVersion: 'weighted-moving-average-linear-trend.v1',
+        dataThrough: lastPoint.month,
         sourceMonths: lastThree.map((point) => point.month),
         weightedAverage: roundCurrency(weightedAverage),
         monthlyTrend: roundCurrency(monthlyTrend),
+        backtest,
       },
     });
   }

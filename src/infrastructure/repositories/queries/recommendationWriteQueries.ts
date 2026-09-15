@@ -63,6 +63,7 @@ export async function createDecisionTx(
         recommendationId: input.recommendationId,
         ...(input.executionPlanId !== undefined ? { executionPlanId: input.executionPlanId } : {}),
         userId: input.userId,
+        ...(input.actorRole !== undefined ? { actorRole: input.actorRole } : {}),
         decision: input.decision,
         ...(input.reasonCode !== undefined ? { reasonCode: input.reasonCode } : {}),
         learningStatus: 'PENDING',

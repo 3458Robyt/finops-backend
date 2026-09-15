@@ -68,7 +68,7 @@ try {
       database: {
         runtimeEnforce: true,
         runtimeRole: 'finops_runtime',
-        expectedMigration: '202609070002_process_heartbeat_status_read',
+        expectedMigration: '202609140002_advisor_rls_hardening',
       },
       operations: { processHeartbeat: { enabled: true, intervalMs: 30_000, staleAfterMs: 30_000 } },
       ai: { apiKey: undefined },

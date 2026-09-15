@@ -81,6 +81,7 @@ export function buildRecommendationTimeline(
       createdAt: decision.createdAt,
       metadata: {
         decision: decision.decision,
+        actorRole: decision.actorRole,
         reasonCode: decision.reasonCode,
         executionPlanId: decision.executionPlanId,
       },

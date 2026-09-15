@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import type { Transporter } from 'nodemailer';
 import { ConfigurationError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import { loadRuntimeConfig } from '../../infrastructure/config/runtimeConfigReader.js';
 import type { RuntimeConfig } from '../../infrastructure/config/runtimeConfigTypes.js';
@@ -20,7 +21,7 @@ export class EmailClient implements IEmailClient {
   public readonly enabled: boolean;
 
   private readonly from: string | undefined;
-  private readonly transporter: nodemailer.Transporter | undefined;
+  private readonly transporter: Transporter | undefined;
 
   constructor(config: RuntimeConfig['email'] = loadRuntimeConfig().email) {
     this.enabled = config.enabled;

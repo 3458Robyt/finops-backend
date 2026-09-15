@@ -190,6 +190,7 @@ export async function handleCreateDecision(
       recommendationId,
       executionPlanId,
       userId: auth.userId,
+      actorRole: auth.role,
       decision,
       reasonCode,
       ...(reason !== undefined ? { reason } : {}),

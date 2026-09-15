@@ -61,6 +61,9 @@ export class OpenAiCompatibleAiGateway implements IAiGateway {
           temperature: request.temperature ?? 0.3,
           top_p: 0.95,
           max_tokens: request.maxTokens ?? 2048,
+          ...(request.responseFormat === 'json'
+            ? { response_format: { type: 'json_object' as const } }
+            : {}),
           stream: true,
         },
         {

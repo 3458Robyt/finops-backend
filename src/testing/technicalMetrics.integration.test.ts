@@ -7,11 +7,7 @@ import {
 } from './e2eFixtures.js';
 
 describe('technical metrics PostgreSQL integration', () => {
-  test('preserves raw values, bucket statistics, pagination and tenant isolation', async () => {
-    if (process.env['RUN_DB_INTEGRATION_TESTS'] !== 'true') {
-      return;
-    }
-
+  test.skipIf(process.env['RUN_DB_INTEGRATION_TESTS'] !== 'true')('preserves raw values, bucket statistics, pagination and tenant isolation', async () => {
     const prisma = createTestingPrismaClient();
     const runId = `metrics-${Date.now()}`;
     try {

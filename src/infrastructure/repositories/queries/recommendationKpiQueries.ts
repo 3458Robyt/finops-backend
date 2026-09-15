@@ -16,6 +16,7 @@
  */
 import type {
   AdoptionKpis,
+  AdoptionKpiQuery,
   SavingsKpis,
 } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { PrismaClient } from '../../../generated/prisma/client.js';
@@ -25,6 +26,7 @@ import {
   calculateMissedSavings,
   roundCurrency,
 } from '../mappers/recommendationMappers.js';
+import { computeAdoptionEngagement } from './adoptionKpiQueries.js';
 
 /**
  * Calcula los KPIs de ahorro de un tenant (ahorro estimado, observado,
@@ -170,10 +172,15 @@ export async function computeSavingsKpis(
  *   multi-tenant).
  * @returns KPIs de adopción de dominio.
  */
-export async function computeAdoptionKpis(prisma: PrismaClient, tenantId: string): Promise<AdoptionKpis> {
+export async function computeAdoptionKpis(
+  prisma: PrismaClient,
+  tenantId: string,
+  query: AdoptionKpiQuery = {},
+): Promise<AdoptionKpis> {
+  const range = queryRange(query);
   const grouped = await prisma.recommendation.groupBy({
     by: ['status'],
-    where: { tenantId },
+    where: { tenantId, ...range },
     _count: true,
   });
   const counts = new Map(grouped.map((row) => [row.status, row._count]));
@@ -183,6 +190,7 @@ export async function computeAdoptionKpis(prisma: PrismaClient, tenantId: string
   const completedRecommendations = counts.get('MANUAL_COMPLETED') ?? 0;
   const decided = approvedRecommendations + rejectedRecommendations + completedRecommendations;
 
+  const engagement = await computeAdoptionEngagement(prisma, tenantId, query);
   return {
     totalRecommendations,
     pendingRecommendations: counts.get('PENDING') ?? 0,
@@ -192,5 +200,21 @@ export async function computeAdoptionKpis(prisma: PrismaClient, tenantId: string
     acceptanceRate: decided > 0 ? (approvedRecommendations + completedRecommendations) / decided : 0,
     rejectionRate: decided > 0 ? rejectedRecommendations / decided : 0,
     executionRate: totalRecommendations > 0 ? completedRecommendations / totalRecommendations : 0,
+    engagement,
+    period: {
+      ...(query.from !== undefined ? { from: query.from.toISOString() } : {}),
+      ...(query.to !== undefined ? { to: query.to.toISOString() } : {}),
+      granularity: query.granularity ?? 'month',
+    },
+  };
+}
+
+function queryRange(query: AdoptionKpiQuery): { readonly createdAt?: { readonly gte?: Date; readonly lt?: Date } } {
+  if (query.from === undefined && query.to === undefined) return {};
+  return {
+    createdAt: {
+      ...(query.from !== undefined ? { gte: query.from } : {}),
+      ...(query.to !== undefined ? { lt: query.to } : {}),
+    },
   };
 }

@@ -3,7 +3,7 @@ import type { CostAnalyticsSnapshot } from '../../../../domain/interfaces/ICostA
 import type { AiRecommendationDraft } from '../finOpsAiTypes.js';
 import { goldenScenarios } from './goldenScenarios.js';
 import { runScenarioOffline } from './goldenScenarioRunner.js';
-import { evaluateExecutionPlan, evaluateRecommendationDrafts } from './qualityRubric.js';
+import { containsAutoExecution, evaluateExecutionPlan, evaluateRecommendationDrafts } from './qualityRubric.js';
 import type { RecommendationEvidenceSnapshot } from '../RecommendationEvidenceSnapshot.js';
 import type { FinOpsRecommendation } from '../../../../domain/models/FinOpsRecommendation.js';
 
@@ -81,6 +81,7 @@ describe('qualityRubric — recommendations', () => {
         type: 'SERVICE_COST_REVIEW',
         title: 'Revisar facturación de S3',
         description: 'Revisar el costo facturado y el consumo registrado del servicio.',
+        estimatedMonthlySavings: undefined,
         evidence: {
           candidateId: 'service-1',
           evidenceLevel: 'COST_ONLY',
@@ -95,6 +96,25 @@ describe('qualityRubric — recommendations', () => {
     );
 
     expect(report.checks.find((check) => check.name === 'focusHonesty')?.passed).toBe(true);
+    expect(report.checks.find((check) => check.name === 'financialSavingsHonesty')?.passed).toBe(true);
+  });
+
+  test('rejects quantified savings on a financial review without validated action', () => {
+    const report = evaluateRecommendationDrafts(
+      [draft({
+        type: 'SERVICE_COST_REVIEW',
+        evidence: {
+          evidenceLevel: 'COST_ONLY',
+          financialReviewOnly: true,
+          reviewScope: 'FINANCIAL',
+          requiresManualValidation: true,
+          operationalAuthorization: 'NONE',
+        },
+      })],
+      snapshot,
+    );
+
+    expect(report.checks.find((check) => check.name === 'financialSavingsHonesty')?.passed).toBe(false);
   });
 
   test('fails savings realism when savings exceed the total cost', () => {
@@ -296,6 +316,12 @@ describe('qualityRubric — execution plan', () => {
     const autoPlan = { ...validPlan, steps: ['El sistema ejecutara automaticamente el cambio en AWS.'] };
     const report = evaluateExecutionPlan(autoPlan, snapshot);
     expect(report.checks.find((check) => check.name === 'noAutoExecution')?.passed).toBe(false);
+  });
+
+  test('allows a plan to state that execution is not automatic', () => {
+    const safePlan = { ...validPlan, risks: ['El cambio no se ejecutará automáticamente.'] };
+    expect(containsAutoExecution(safePlan)).toBe(false);
+    expect(evaluateExecutionPlan(safePlan, snapshot).checks.find((check) => check.name === 'noAutoExecution')?.passed).toBe(true);
   });
 
   test('fails when the plan contains an executable tool or shell payload', () => {

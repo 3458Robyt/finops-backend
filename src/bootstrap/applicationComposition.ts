@@ -322,6 +322,7 @@ export function createApplicationComposition(
     credentialCipher,
     ingestionProviders,
     valueRealizationService,
+    analyticsService,
     metricsRegistry,
   });
   const serverDependencies: ServerDependencies = {

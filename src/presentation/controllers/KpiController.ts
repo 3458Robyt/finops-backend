@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
+import type { AdoptionGranularity, AdoptionKpiQuery } from '../../domain/interfaces/IRecommendationRepository.js';
 
 /**
  * Controlador de la capa de presentación para los KPIs (indicadores clave de
@@ -52,7 +53,46 @@ export class KpiController {
       return;
     }
 
-    const adoption = await this.recommendationRepository.getAdoptionKpis(req.auth.tenantId);
+    const from = parseDate(req.query['from']);
+    const to = parseDate(req.query['to']);
+    const granularity = parseGranularity(req.query['granularity']);
+    if (hasRepeatedQueryValue(req.query['from'])
+      || hasRepeatedQueryValue(req.query['to'])
+      || hasRepeatedQueryValue(req.query['granularity'])
+      || hasInvalidDate(req.query['from'], from)
+      || hasInvalidDate(req.query['to'], to)
+      || (req.query['granularity'] !== undefined && granularity === undefined)) {
+      res.status(400).json({ success: false, error: 'Los filtros de periodo o granularidad no son válidos.', code: 'VALIDATION_ERROR' });
+      return;
+    }
+    if (from !== undefined && to !== undefined && from >= to) {
+      res.status(400).json({ success: false, error: 'El inicio del periodo debe ser anterior al fin.', code: 'VALIDATION_ERROR' });
+      return;
+    }
+    const query: AdoptionKpiQuery = {
+      ...(from !== undefined ? { from } : {}),
+      ...(to !== undefined ? { to } : {}),
+      ...(granularity !== undefined ? { granularity } : {}),
+    };
+    const adoption = await this.recommendationRepository.getAdoptionKpis(req.auth.tenantId, query);
     res.status(200).json({ success: true, adoption });
   };
+}
+
+function parseDate(value: unknown): Date | undefined {
+  if (typeof value !== 'string' || value.trim() === '') return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function hasInvalidDate(value: unknown, parsed: Date | undefined): boolean {
+  return typeof value === 'string' && value.trim() !== '' && parsed === undefined;
+}
+
+function hasRepeatedQueryValue(value: unknown): boolean {
+  return Array.isArray(value);
+}
+
+function parseGranularity(value: unknown): AdoptionGranularity | undefined {
+  return value === 'day' || value === 'week' || value === 'month' ? value : undefined;
 }

@@ -5,6 +5,7 @@ import type {
   CreateManualExecutionInput,
   CreateRecommendationDecisionInput,
   CreateRecommendationDecisionResult,
+  AdoptionKpiQuery,
   CreateRecommendationExecutionPlanInput,
   CreateRecommendationInput,
   CreateSavingsMeasurementInput,
@@ -47,7 +48,7 @@ export interface IRecommendationLifecycleRepository {
     recommendationId: string,
   ): Promise<RecommendationTimelineEvent[]>;
   getSavingsKpis(tenantId: string): Promise<SavingsKpis>;
-  getAdoptionKpis(tenantId: string): Promise<AdoptionKpis>;
+  getAdoptionKpis(tenantId: string, query?: AdoptionKpiQuery): Promise<AdoptionKpis>;
 }
 
 /** Operaciones de medición, verificación y rechazo del ahorro. */

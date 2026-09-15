@@ -1,5 +1,6 @@
 import type { FinOpsRecommendation } from '../models/FinOpsRecommendation.js';
 import type { RecommendationFeedbackReason } from '../models/AgentLearning.js';
+import type { UserRole } from '../models/AuthContext.js';
 import type {
   AiAuditReport,
   AiAuditVerdict,
@@ -83,6 +84,8 @@ export interface CreateRecommendationDecisionInput {
   /** Plan de ejecución asociado a la decisión; opcional. */
   readonly executionPlanId?: string;
   readonly userId: string;
+  /** Rol efectivo congelado para conservar la procedencia de la decisión. */
+  readonly actorRole?: UserRole;
   /** Sentido de la decisión: aprobada, rechazada o marcada como realizada. */
   readonly decision: 'APPROVED' | 'REJECTED' | 'MARKED_DONE';
   /** Motivo codificado de la decisión; opcional. */
@@ -307,9 +310,41 @@ export interface RejectSavingsMeasurementInput {
   readonly reason: string;
 }
 
-/**
- * Indicadores (KPIs) de adopción de las recomendaciones de un tenant.
- */
+export type AdoptionGranularity = 'day' | 'week' | 'month';
+
+export interface AdoptionKpiQuery {
+  readonly from?: Date;
+  readonly to?: Date;
+  readonly granularity?: AdoptionGranularity;
+}
+
+export interface AdoptionEngagement {
+  readonly activeUsers: number;
+  readonly recurringUsers: number;
+  readonly chatInteractions: number;
+  readonly chatUsers: number;
+  readonly telegramInteractions: number;
+  readonly outboundSent: number;
+  readonly notificationCount: number;
+  readonly notificationsRead: number;
+  readonly notificationsDismissed: number;
+  readonly notificationReadRate: number;
+  readonly medianAlertToReadMinutes?: number;
+  readonly medianAlertToDecisionMinutes?: number;
+  readonly decisionsByRole: Readonly<Record<string, number>>;
+  readonly series: readonly AdoptionEngagementPeriod[];
+}
+
+export interface AdoptionEngagementPeriod {
+  readonly periodStart: string;
+  readonly activeUsers: number;
+  readonly chatInteractions: number;
+  readonly telegramInteractions: number;
+  readonly decisions: number;
+  readonly executions: number;
+}
+
+/** Indicadores (KPIs) de adopción de las recomendaciones de un tenant. */
 export interface AdoptionKpis {
   readonly totalRecommendations: number;
   readonly pendingRecommendations: number;
@@ -322,6 +357,9 @@ export interface AdoptionKpis {
   readonly rejectionRate: number;
   /** Proporción de recomendaciones ejecutadas (0–1). */
   readonly executionRate: number;
+  /** Métricas de interacción y respuesta; opcionales para clientes antiguos. */
+  readonly engagement?: AdoptionEngagement;
+  readonly period?: { readonly from?: string; readonly to?: string; readonly granularity: AdoptionGranularity };
 }
 
 /**

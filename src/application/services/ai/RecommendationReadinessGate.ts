@@ -17,6 +17,8 @@ export interface RecommendationOpportunityCandidate {
   readonly opportunityType: string;
   readonly evidenceLevelAllowed: 'COST_ONLY' | 'COST_AND_USAGE' | 'COST_USAGE_AND_TECHNICAL';
   readonly requiresTechnicalValidation: boolean;
+  /** Costo observado que limita el candidato; no es ahorro. */
+  readonly observedCost?: number;
   readonly maxEstimatedMonthlySavings: number;
   readonly currency: string;
   readonly sourceFacts: readonly string[];
@@ -114,6 +116,7 @@ function buildUsageCandidates(
       opportunityType: 'USAGE_OPTIMIZATION',
       evidenceLevelAllowed: 'COST_AND_USAGE',
       requiresTechnicalValidation: false,
+      observedCost: usage.totalCost,
       maxEstimatedMonthlySavings: round(Math.max(usage.totalCost * usageSavingsRate, 0)),
       currency: usage.currency,
       sourceFacts: [
@@ -162,6 +165,7 @@ function buildResourceCandidates(
       evidenceLevelAllowed:
         readiness === 'GENERATABLE' && hasResourceTechnicalEvidence ? 'COST_USAGE_AND_TECHNICAL' : 'COST_ONLY',
       requiresTechnicalValidation: readiness !== 'GENERATABLE' || hasResourceTechnicalEvidence,
+      observedCost: resource.totalCost,
       maxEstimatedMonthlySavings: round(
         Math.max(resource.totalCost * maxSavingsRate, 0),
       ),
@@ -216,6 +220,7 @@ function buildServiceCandidates(
       evidenceLevelAllowed: 'COST_ONLY',
       requiresTechnicalValidation: false,
       reviewScope: 'FINANCIAL',
+      observedCost: service.totalCost,
       maxEstimatedMonthlySavings: round(Math.max(service.totalCost * costSavingsRate, 0)),
       currency: snapshot.currency,
       sourceFacts: [

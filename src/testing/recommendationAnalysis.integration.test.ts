@@ -9,8 +9,7 @@ import {
 } from './e2eFixtures.js';
 
 describe('recommendation analysis PostgreSQL integration', () => {
-  test('claims once, isolates tenants, cancels, retries and links recommendations', async () => {
-    if (process.env['RUN_DB_INTEGRATION_TESTS'] !== 'true') return;
+  test.skipIf(process.env['RUN_DB_INTEGRATION_TESTS'] !== 'true')('claims once, isolates tenants, cancels, retries and links recommendations', async () => {
 
     const prisma = createTestingPrismaClient();
     const runId = `analysis-${Date.now()}`;

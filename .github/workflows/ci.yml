@@ -78,8 +78,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 3458Robyt/finops---front
-          # Keep cross-repository beta tests on the same branch as this PR.
-          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          # Backend and frontend use independent branches. Test the stable
+          # frontend here; the frontend workflow validates its own branch and
+          # the combined flow is run explicitly when both branches are ready.
+          ref: main
           path: finops-app
       - name: Install frontend E2E dependencies
         working-directory: finops-app

@@ -12,8 +12,7 @@ import {
 } from './e2eFixtures.js';
 
 describe('verified savings PostgreSQL integration', () => {
-  test('separates reported value, calculates comparable periods, is idempotent and verifies only the result', async () => {
-    if (process.env['RUN_DB_INTEGRATION_TESTS'] !== 'true') return;
+  test.skipIf(process.env['RUN_DB_INTEGRATION_TESTS'] !== 'true')('separates reported value, calculates comparable periods, is idempotent and verifies only the result', async () => {
 
     const prisma = createTestingPrismaClient();
     const runId = `savings-${Date.now()}`;

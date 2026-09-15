@@ -3,6 +3,8 @@ import 'dotenv/config';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { E2eFixtureManifest } from '../../src/testing/e2eFixtures.js';
+import { looksLikeSpanish } from '../../src/application/services/ai/aiLanguageGuard.js';
+import { containsAutoExecution } from '../../src/application/services/ai/evaluation/executionPlanQualityChecks.js';
 
 interface AuditCheck {
   readonly name: string;
@@ -33,7 +35,7 @@ const chat = await post('/ai/chat', {
 const chatAnswer = String(readJsonPath(chat, ['answer']) ?? '');
 checks.push({
   name: 'chat_responde_en_espanol',
-  passed: containsSpanishSignal(chatAnswer),
+  passed: looksLikeSpanish(chatAnswer),
   detail: chatAnswer.slice(0, 300),
 });
 
@@ -43,7 +45,7 @@ const formattedChat = await post('/ai/chat', {
 const formattedChatAnswer = String(readJsonPath(formattedChat, ['answer']) ?? '');
 checks.push({
   name: 'chat_formato_markdown_seguro',
-  passed: containsSpanishSignal(formattedChatAnswer) && !containsUnsafeMarkup(formattedChatAnswer),
+  passed: looksLikeSpanish(formattedChatAnswer) && !containsUnsafeMarkup(formattedChatAnswer),
   detail: formattedChatAnswer.slice(0, 500),
 });
 
@@ -53,12 +55,12 @@ const unsupportedTechnicalChat = await post('/ai/chat', {
 const unsupportedTechnicalAnswer = String(readJsonPath(unsupportedTechnicalChat, ['answer']) ?? '');
 checks.push({
   name: 'chat_no_inventa_metricas_tecnicas',
-  passed: containsSpanishSignal(unsupportedTechnicalAnswer) && !containsUnsupportedTechnicalClaim(unsupportedTechnicalAnswer),
+  passed: looksLikeSpanish(unsupportedTechnicalAnswer) && !containsUnsupportedTechnicalClaim(unsupportedTechnicalAnswer),
   detail: unsupportedTechnicalAnswer.slice(0, 500),
 });
 
 const recommendationStartedAt = Date.now();
-const generatedResult = await postMaybe('/ai/recommendations/generate', { persist: false });
+const generatedResult = await postMaybe('/ai/recommendations/generate', { persist: true });
 const recommendationLatencyMs = Date.now() - recommendationStartedAt;
 checks.push({
   name: 'endpoint_recomendaciones_responde',
@@ -106,7 +108,12 @@ checks.push({
   detail: JSON.stringify(recommendations.map((recommendation) => recommendation['estimatedMonthlySavings'])),
 });
 
-const recommendationId = manifest.recommendationIds[0];
+const generatedRecommendationId = recommendations.find((recommendation) => (
+  typeof recommendation['id'] === 'string' && !recommendation['id'].startsWith('ai-preview-')
+))?.['id'];
+const recommendationId = typeof generatedRecommendationId === 'string'
+  ? generatedRecommendationId
+  : manifest.recommendationIds[0];
 const latestPlanPath = recommendationId === undefined
   ? undefined
   : '/recommendations/' + encodeURIComponent(recommendationId) + '/execution-plans/latest';
@@ -136,14 +143,18 @@ const executionPlan = planResult.ok ? asRecord(planResult.body['executionPlan'])
 const planContent = asRecord(executionPlan?.['content']);
 const planAudit = asRecord(executionPlan?.['auditReport']);
 const requiredPlanArrays = ['prerequisites', 'steps', 'validation', 'risks', 'rollback', 'successCriteria'];
+const planText = planContent === undefined ? '' : JSON.stringify(planContent);
 checks.push({
   name: 'plan_tiene_estructura_manual_y_en_espanol',
   passed: planContent !== undefined
     && requiredPlanArrays.every((field) => Array.isArray(planContent[field]) && (planContent[field] as unknown[]).length > 0)
-    && containsSpanishSignal(JSON.stringify(planContent))
-    && !/(ejecutará automáticamente|ejecución automática|ejecutar automáticamente)/i.test(JSON.stringify(planContent)),
+    && looksLikeSpanish(planText)
+    && !containsAutoExecution(planContent),
   detail: JSON.stringify({
     fields: requiredPlanArrays.map((field) => ({ field, present: Array.isArray(planContent?.[field]) })),
+    spanish: planContent === undefined ? false : looksLikeSpanish(planText),
+    automaticExecution: planContent !== undefined && containsAutoExecution(planContent),
+    textPreview: planContent === undefined ? undefined : JSON.stringify(planContent).slice(0, 500),
     auditVerdict: executionPlan?.['auditVerdict'],
     auditScore: executionPlan?.['auditScore'],
   }),
@@ -315,11 +326,6 @@ function readJsonPath(value: Record<string, unknown>, path: readonly string[]): 
     }
     return (current as Record<string, unknown>)[key];
   }, value);
-}
-
-function containsSpanishSignal(text: string): boolean {
-  const normalized = text.toLowerCase();
-  return ['costo', 'ahorro', 'oportunidad', 'recomendacion', 'recomendación', 'segun', 'según'].some((word) => normalized.includes(word));
 }
 
 function containsUnsafeMarkup(text: string): boolean {

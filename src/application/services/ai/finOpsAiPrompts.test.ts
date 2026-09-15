@@ -61,6 +61,15 @@ describe('FinOps AI prompt boundaries', () => {
     expect(prompt).toContain('resourceLinkReason=INVENTORY_RESOURCE_NOT_FOUND puede ser el estado honesto de trazabilidad');
   });
 
+  test('does not apply recommendation-only evidence requirements to execution plans', () => {
+    const prompt = buildAuditSystemPrompt('execution_plan');
+
+    expect(prompt).toContain('El plan no necesita repetir evidence.candidateId');
+    expect(prompt).toContain('scope.cloudAccountId');
+    expect(prompt).not.toContain('Rechaza recomendaciones que no incluyan evidence.candidateId');
+    expect(prompt).not.toContain('candidateAudits');
+  });
+
   test('defines channel-specific chat output contracts', () => {
     const markdownPrompt = buildChatSystemPrompt(snapshot, 'MARKDOWN');
     const plainTextPrompt = buildChatSystemPrompt(snapshot, 'PLAIN_TEXT');

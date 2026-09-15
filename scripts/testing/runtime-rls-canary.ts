@@ -18,6 +18,8 @@ const tableNames = [
   'cloud_connections',
   'cloud_resources',
   'resource_metric_samples',
+  'resource_metric_rollups',
+  'fx_rates',
   'cost_metrics',
   'recommendations',
   'recommendation_decisions',
@@ -83,11 +85,16 @@ try {
           'select count(*)::int as count from recommendations where tenant_id = $1',
           [otherTenant],
         );
+        const crossTenantRollups = await pool.query<{ count: number }>(
+          'select count(*)::int as count from resource_metric_rollups where tenant_id = $1',
+          [otherTenant],
+        );
         return {
           tenantId,
           session: session.rows[0],
           counts,
           crossTenantRecommendationCount: crossTenant.rows[0]?.count ?? 0,
+          crossTenantRollupCount: crossTenantRollups.rows[0]?.count ?? 0,
         };
       },
     );
@@ -115,6 +122,7 @@ try {
       check.session?.tenant_id !== check.tenantId ? `${check.tenantId}: tenant context was not applied` : undefined,
       check.session?.worker_id !== 'runtime-rls-canary-worker' ? `${check.tenantId}: worker context was not applied` : undefined,
       check.crossTenantRecommendationCount !== 0 ? `${check.tenantId}: cross-tenant recommendation rows were visible` : undefined,
+      check.crossTenantRollupCount !== 0 ? `${check.tenantId}: cross-tenant rollup rows were visible` : undefined,
     ]),
     unscoped.rows[0]?.count !== 0 ? 'unscoped recommendation rows were visible' : undefined,
   ].filter((failure): failure is string => failure !== undefined);

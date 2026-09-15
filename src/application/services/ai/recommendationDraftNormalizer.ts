@@ -120,7 +120,7 @@ export function normalizeRecommendationDrafts(
 
     return {
       ...draftWithoutSavings,
-      ...(technicalValidationOnly || technicalReviewOnly || generatedSavings === undefined
+      ...(technicalValidationOnly || technicalReviewOnly || financialReviewOnly || generatedSavings === undefined
         ? {}
         : { estimatedMonthlySavings: generatedSavings }),
       ...(normalizedCloudResourceId !== undefined ? { cloudResourceId: normalizedCloudResourceId } : {}),
@@ -141,8 +141,9 @@ export function normalizeRecommendationDrafts(
           ? candidate.sourceFacts.filter((fact) => /^(CPU|Memoria)\b/i.test(fact))
           : candidate.sourceFacts,
         requiresTechnicalValidation,
+        ...(candidate.observedCost === undefined ? {} : { observedCost: candidate.observedCost }),
         maxEstimatedMonthlySavings: candidate.maxEstimatedMonthlySavings,
-        ...(generatedSavings !== undefined && (technicalValidationOnly || technicalReviewOnly)
+        ...(generatedSavings !== undefined && (technicalValidationOnly || technicalReviewOnly || financialReviewOnly)
           ? {
               potentialMonthlySavings: generatedSavings,
               savingsStatus: 'POTENTIAL_NOT_VERIFIED',
@@ -184,8 +185,10 @@ export function dropNonActionableFinancialDrafts(
     const candidate = candidateId === undefined ? undefined : candidatesById.get(candidateId);
     const isFinancialCandidate = candidate !== undefined && candidate.resourceId === undefined;
     const hasPositivePotential = (candidate?.maxEstimatedMonthlySavings ?? 0) > 0;
-    const estimatedSavings = typeof draft.estimatedMonthlySavings === 'number' ? draft.estimatedMonthlySavings : 0;
-    return !(isFinancialCandidate && hasPositivePotential && estimatedSavings <= 0);
+    const potential = typeof evidence['potentialMonthlySavings'] === 'number'
+      ? evidence['potentialMonthlySavings']
+      : draft.estimatedMonthlySavings;
+    return !(isFinancialCandidate && hasPositivePotential && (potential ?? 0) <= 0);
   });
 }
 

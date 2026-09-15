@@ -16,14 +16,21 @@ export interface CloudIngestionWorkerRunResult {
   readonly errorMessage?: string;
 }
 
+export interface SuccessfulIngestionInput {
+  readonly tenantId: string;
+  readonly jobId: string;
+  readonly providerCode: string;
+  readonly sourceType: string;
+}
+
 export class CloudIngestionWorkerService {
   private readonly providers: ReadonlyMap<string, CloudIngestionProvider>;
-  private readonly onSuccessfulIngestion: ((input: { readonly tenantId: string; readonly jobId: string; readonly providerCode: string }) => Promise<void>) | undefined;
+  private readonly onSuccessfulIngestion: ((input: SuccessfulIngestionInput) => Promise<void>) | undefined;
 
   constructor(
     private readonly jobs: PrismaCloudIngestionJobRepository,
     providers: readonly CloudIngestionProvider[],
-    onSuccessfulIngestion?: (input: { readonly tenantId: string; readonly jobId: string; readonly providerCode: string }) => Promise<void>,
+    onSuccessfulIngestion?: (input: SuccessfulIngestionInput) => Promise<void>,
     private readonly metrics?: MetricsRegistry,
     private readonly heartbeatMs = 60_000,
     private readonly progressUpdateMs = 2_000,
@@ -200,10 +207,11 @@ export class CloudIngestionWorkerService {
           tenantId: job.tenantId,
           jobId: job.id,
           providerCode: job.connection.providerCode,
+          sourceType: job.sourceType,
         }).catch((error: unknown) => {
           console.error(JSON.stringify({
             level: 'warn',
-            event: 'post_ingestion_value_reconciliation_failed',
+            event: 'post_ingestion_derivations_failed',
             jobId: job.id,
             tenantId: job.tenantId,
             error: safeErrorMessage(error),

@@ -116,8 +116,8 @@ export class FinOpsArtifactGenerator {
       ...(readinessReport === undefined ? {} : { readinessReport }),
     });
 
-    const repairInstructions = auditReport.repairInstructions ?? auditReport.requiredChanges;
-    const hasRepairInstructions = (auditReport.repairInstructions?.length ?? 0) > 0;
+    const repairInstructions = readRepairInstructions(auditReport);
+    const hasRepairInstructions = repairInstructions.length > 0;
     if (auditReport.verdict === 'NEEDS_REVISION' || (
       auditReport.verdict === 'REJECTED' &&
       hasRepairInstructions
@@ -200,8 +200,12 @@ export class FinOpsArtifactGenerator {
       artifact: content,
     });
 
-    if (auditReport.verdict === 'NEEDS_REVISION') {
-      const revisedRaw = await this.aiRunner.reviseExecutionPlan(systemPrompt, auditReport.requiredChanges);
+    const repairInstructions = readRepairInstructions(auditReport);
+    if (
+      (auditReport.verdict === 'NEEDS_REVISION' || auditReport.verdict === 'REJECTED')
+      && repairInstructions.length > 0
+    ) {
+      const revisedRaw = await this.aiRunner.reviseExecutionPlan(systemPrompt, repairInstructions);
       content = parseExecutionPlan(revisedRaw, recommendation);
       auditReport = await this.aiRunner.auditArtifact({
         artifactType: 'execution_plan',
@@ -271,4 +275,10 @@ export class FinOpsArtifactGenerator {
       ? { ...combined, verdict: 'APPROVED' }
       : combined;
   }
+}
+
+function readRepairInstructions(audit: AiAuditReport): readonly string[] {
+  return (audit.repairInstructions?.length ?? 0) > 0
+    ? audit.repairInstructions!
+    : audit.requiredChanges;
 }

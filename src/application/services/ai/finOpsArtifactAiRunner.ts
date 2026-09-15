@@ -116,7 +116,7 @@ export class FinOpsArtifactAiRunner {
       temperature: 0,
       maxTokens: 900,
       messages: [
-        { role: 'system', content: buildAuditSystemPrompt() },
+        { role: 'system', content: buildAuditSystemPrompt(input.artifactType) },
         {
           role: 'user',
           content: [

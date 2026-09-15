@@ -56,6 +56,7 @@ describe('normalizeRecommendationDrafts', () => {
           opportunityType: 'SERVICE_COST_REVIEW',
           evidenceLevelAllowed: 'COST_ONLY',
           requiresTechnicalValidation: false,
+          observedCost: 100,
           reviewScope: 'FINANCIAL',
           maxEstimatedMonthlySavings: 20,
           currency: 'USD',
@@ -71,10 +72,14 @@ describe('normalizeRecommendationDrafts', () => {
     expect(result[0]?.evidence).toMatchObject({
       financialReviewOnly: true,
       reviewScope: 'FINANCIAL',
+      observedCost: 100,
+      potentialMonthlySavings: 10,
+      savingsStatus: 'POTENTIAL_NOT_VERIFIED',
       requiresManualValidation: true,
       operationalAuthorization: 'NONE',
       requiresTechnicalValidation: false,
     });
+    expect(result[0]?.estimatedMonthlySavings).toBeUndefined();
   });
 
   test('keeps a resource without technical evidence as an explicit validation-only opportunity', () => {

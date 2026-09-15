@@ -82,4 +82,23 @@ describe('OpenAiCompatibleAiGateway', () => {
     );
     expect(completionCreate.mock.calls[0]?.[0]).toMatchObject({ model: 'gpt-5.6-luna', stream: true });
   });
+
+  test('requests JSON mode for structured AI artifacts', async () => {
+    process.env['AI_API_KEY'] = 'test-ai-key';
+    process.env['AI_BASE_URL'] = 'https://api.example.test/v1';
+    completionCreate.mockResolvedValue((async function* () {
+      yield { choices: [{ delta: { content: '{}' } }] };
+    })());
+
+    const { OpenAiCompatibleAiGateway } = await import('./OpenAiCompatibleAiGateway.js');
+    const gateway = new OpenAiCompatibleAiGateway();
+    await gateway.generateText({
+      responseFormat: 'json',
+      messages: [{ role: 'user', content: 'devuelve JSON' }],
+    });
+
+    expect(completionCreate.mock.calls[0]?.[0]).toMatchObject({
+      response_format: { type: 'json_object' },
+    });
+  });
 });

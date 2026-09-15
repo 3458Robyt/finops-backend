@@ -1,5 +1,5 @@
 import type { Response } from 'express';
-import { FinOpsBaseError } from '../../../domain/errors/errors.js';
+import { AiAuditRejectedError, FinOpsBaseError } from '../../../domain/errors/errors.js';
 import { safeErrorMessage } from '../../../application/observability/safeError.js';
 
 /**
@@ -40,6 +40,12 @@ export function respondWithRecommendationError(
       success: false,
       error: safeErrorMessage(error.message),
       code: error.code,
+      ...(error instanceof AiAuditRejectedError
+        ? {
+            diagnosticId: error.diagnosticId,
+            audit: summarizeAudit(error.audit),
+          }
+        : {}),
     });
     return;
   }
@@ -48,4 +54,30 @@ export function respondWithRecommendationError(
     success: false,
     error: safeErrorMessage(fallbackMessage),
   });
+}
+
+function summarizeAudit(value: unknown): Readonly<Record<string, unknown>> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
+  const audit = value as Record<string, unknown>;
+  return {
+    verdict: audit['verdict'],
+    score: audit['score'],
+    blockingIssues: readStrings(audit['blockingIssues']),
+    requiredChanges: readStrings(audit['requiredChanges']),
+    failedChecks: Array.isArray(audit['checks'])
+      ? audit['checks'].flatMap((item) => {
+          if (item === null || typeof item !== 'object' || Array.isArray(item)) return [];
+          const check = item as Record<string, unknown>;
+          return check['passed'] === false
+            ? [{ name: check['name'], notes: safeErrorMessage(String(check['notes'] ?? '')) }]
+            : [];
+        })
+      : [],
+  };
+}
+
+function readStrings(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string').map(safeErrorMessage)
+    : [];
 }

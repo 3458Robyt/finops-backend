@@ -113,8 +113,11 @@ export function parseExecutionPlan(
     throw new FinOpsBaseError('AI did not return a complete execution plan', 'AI_RESPONSE_ERROR');
   }
 
+  const estimatedSavings = normalizePlanSavings(parsed['estimatedSavings'], recommendation);
+
   return {
     ...parsed,
+    estimatedSavings,
     recommendationId: recommendation.id,
     cloudAccountId: recommendation.cloudAccountId,
     generatedBy: 'openai-compatible',
@@ -172,6 +175,29 @@ export function parseAuditReport(rawResponse: string): AiAuditReport {
     ...(recommendationIndexes.length > 0 ? { recommendationIndexes } : {}),
     ...(repairInstructions.length > 0 ? { repairInstructions } : {}),
     ...(candidateAudits.length > 0 ? { candidateAudits } : {}),
+  };
+}
+
+function normalizePlanSavings(
+  value: unknown,
+  recommendation: FinOpsRecommendation,
+): Record<string, unknown> {
+  const estimatedSavings = isRecord(value) ? { ...value } : {};
+  const evidence = isRecord(recommendation.evidence) ? recommendation.evidence : {};
+  const potential = readNumber(evidence, 'potentialMonthlySavings')
+    ?? recommendation.estimatedMonthlySavings;
+  const amount = readNumber(estimatedSavings, 'amount');
+
+  if (potential === undefined || potential <= 0 || (amount !== undefined && amount > 0)) {
+    return estimatedSavings;
+  }
+
+  return {
+    ...estimatedSavings,
+    amount: potential,
+    currency: recommendation.currency,
+    status: 'POTENTIAL_NOT_VERIFIED',
+    note: 'Importe potencial sujeto a validación; no representa ahorro garantizado.',
   };
 }
 

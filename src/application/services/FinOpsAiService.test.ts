@@ -364,6 +364,43 @@ describe('FinOpsAiService', () => {
     expect(gateway.requests[1]?.messages[0]?.content).toContain('agente auditor');
   });
 
+  test('persists each approved recommendation with its candidate audit in a partial batch', async () => {
+    const gateway = new FakeAiGateway([
+      JSON.stringify({ recommendations: [
+        {
+          cloudAccountId: 'account-focus-aws-prod', type: 'USAGE_OPTIMIZATION', severity: 'MEDIUM',
+          title: 'Revisar el consumo facturado de EC2',
+          description: 'Validar las horas consumidas y su costo unitario antes de optimizar.',
+          estimatedMonthlySavings: 6, currency: 'USD',
+          evidence: { candidateId: 'usage-1', evidenceLevel: 'COST_AND_USAGE', sourceFacts: [], assumptions: [], confidence: 0.8 },
+        },
+        {
+          cloudAccountId: 'account-focus-aws-prod', type: 'SERVICE_COST_REVIEW', severity: 'LOW',
+          title: 'Revisar el costo de EC2', description: 'Revisar el costo facturado del servicio.',
+          estimatedMonthlySavings: 9, currency: 'USD',
+          evidence: { candidateId: 'service-1', evidenceLevel: 'COST_ONLY', sourceFacts: [], assumptions: [], confidence: 0.7 },
+        },
+      ] }),
+      JSON.stringify({
+        verdict: 'REJECTED', score: 90, checks: [], blockingIssues: [], requiredChanges: [], recommendationIndexes: [1],
+        candidateAudits: [
+          { index: 0, candidateId: 'usage-1', verdict: 'APPROVED', score: 93, checks: [], blockingIssues: [], requiredChanges: [] },
+          { index: 1, candidateId: 'service-1', verdict: 'REJECTED', score: 70, checks: [], blockingIssues: ['No accionable'], requiredChanges: [] },
+        ],
+      }),
+    ]);
+    const recommendations = new FakeRecommendationRepository();
+    const service = new FinOpsAiService(new FakeCostAnalyticsRepository(), recommendations, gateway);
+
+    const response = await service.generateRecommendations({ tenantId: 'tenant-1', persist: true });
+
+    expect(response.recommendations).toHaveLength(1);
+    expect(recommendations.created[0]?.evidence).toMatchObject({
+      candidateId: 'usage-1',
+      aiAudit: { verdict: 'APPROVED', score: 93 },
+    });
+  });
+
   test('uses approved learning context when generating recommendations', async () => {
     const recommendationResponse = JSON.stringify({
       recommendations: [
@@ -561,7 +598,7 @@ describe('FinOpsAiService', () => {
         score: 51,
         checks: [],
         blockingIssues: ['El ahorro no esta justificado con la evidencia.'],
-        requiredChanges: ['Agregar validacion de utilizacion.'],
+        requiredChanges: [],
       }),
     ]);
     const recommendations = new FakeRecommendationRepository();
@@ -790,7 +827,18 @@ describe('FinOpsAiService', () => {
     expect(gateway.requests[1]?.messages[0]?.content).toContain('agente auditor');
   });
 
-  test('rejects an execution plan without persisting it when the auditor rejects it', async () => {
+  test('repairs and persists an execution plan when the first audit rejects it with required changes', async () => {
+    const revisedPlan = {
+      summary: 'Validar y ajustar capacidad EC2 manualmente.',
+      scope: { cloudAccountId: 'account-focus-aws-prod', service: 'Amazon Elastic Compute Cloud' },
+      prerequisites: ['Confirmar métricas de CPU y memoria y una ventana de mantenimiento.'],
+      steps: ['Comparar tamaños y solicitar aprobación antes de realizar cualquier cambio manual.'],
+      validation: ['Comparar rendimiento y costo diario antes y después.'],
+      risks: ['Posible degradación si la capacidad resulta insuficiente.'],
+      rollback: ['Restaurar manualmente el tamaño anterior.'],
+      successCriteria: ['Mantener el rendimiento y validar el ahorro observado.'],
+      estimatedSavings: { amount: 18.25, currency: 'USD' },
+    };
     const gateway = new FakeAiGateway([
       JSON.stringify({
         summary: 'Reducir capacidad EC2 despues de validar baja utilizacion.',
@@ -822,6 +870,8 @@ describe('FinOpsAiService', () => {
         blockingIssues: ['Falta validacion previa obligatoria de utilizacion.'],
         requiredChanges: ['Agregar validacion de CPU y memoria antes del cambio.'],
       }),
+      JSON.stringify(revisedPlan),
+      JSON.stringify({ verdict: 'APPROVED', score: 91, checks: [], blockingIssues: [], requiredChanges: [] }),
     ]);
     const recommendations = new FakeRecommendationRepository();
     const service = new FinOpsAiService(
@@ -830,12 +880,14 @@ describe('FinOpsAiService', () => {
       gateway,
     );
 
-    await expect(service.generateExecutionPlan({
+    const result = await service.generateExecutionPlan({
       tenantId: 'tenant-1',
       userId: 'user-1',
       recommendationId: 'rec-1',
-    })).rejects.toThrow('AI audit rejected execution plan output');
+    });
 
-    expect(recommendations.executionPlans).toHaveLength(0);
+    expect(result.auditVerdict).toBe('APPROVED');
+    expect(recommendations.executionPlans).toHaveLength(1);
+    expect(gateway.requests).toHaveLength(4);
   });
 });

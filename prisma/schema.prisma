@@ -1571,6 +1571,8 @@ model InAppNotification {
   recommendationId        String?                 @map("recommendation_id")
   type                    InAppNotificationType
   status                  InAppNotificationStatus @default(UNREAD)
+  readAt                  DateTime?               @map("read_at") @db.Timestamptz(6)
+  dismissedAt             DateTime?               @map("dismissed_at") @db.Timestamptz(6)
   title                   String
   message                 String                  @db.Text
   missedSavingsAmount     Decimal?                @map("missed_savings_amount") @db.Decimal(18, 6)
@@ -1592,6 +1594,7 @@ model InAppNotification {
   @@index([tenantId, userId, status, createdAt])
   @@index([recommendationId, createdAt])
   @@index([userId], map: "in_app_notifications_user_id_idx")
+  @@index([tenantId, status, readAt, createdAt], map: "in_app_notifications_response_idx")
   @@map("in_app_notifications")
 }
 
@@ -1622,6 +1625,7 @@ model RecommendationDecision {
   recommendationId    String                        @map("recommendation_id")
   executionPlanId     String?                       @map("execution_plan_id")
   userId              String                        @map("user_id")
+  actorRole           UserRole?                     @map("actor_role")
   decision            RecommendationDecisionType
   reasonCode          RecommendationFeedbackReason? @map("reason_code")
   reason              String?                       @db.Text
@@ -1638,6 +1642,7 @@ model RecommendationDecision {
   @@index([reasonCode, createdAt])
   @@index([learningStatus, createdAt])
   @@index([userId, createdAt])
+  @@index([actorRole, createdAt])
   @@map("recommendation_decisions")
 }
 

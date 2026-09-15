@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseAuditReport } from './finOpsAiResponseParser.js';
+import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
+import { parseAuditReport, parseExecutionPlan } from './finOpsAiResponseParser.js';
 
 describe('finOpsAiResponseParser', () => {
   it('keeps structured repair metadata from the AI auditor', () => {
@@ -37,5 +38,39 @@ describe('finOpsAiResponseParser', () => {
 
     expect(report.candidateAudits).toHaveLength(2);
     expect(report.candidateAudits?.[1]?.blockingIssues).toEqual(['Ahorro no sustentado']);
+  });
+
+  it('restores the factual potential savings when a plan returns zero', () => {
+    const recommendation = {
+      id: 'rec-1',
+      cloudAccountId: 'account-1',
+      type: 'RIGHTSIZING',
+      status: 'PENDING',
+      severity: 'HIGH',
+      title: 'Revisar capacidad',
+      description: 'Validar capacidad con métricas.',
+      evidence: { potentialMonthlySavings: 23.63 },
+      currency: 'USD',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as FinOpsRecommendation;
+
+    const plan = parseExecutionPlan(JSON.stringify({
+      summary: 'Plan manual de validación.',
+      scope: { cloudAccountId: 'account-1' },
+      prerequisites: ['Confirmar ventana.'],
+      steps: ['Validar métricas.'],
+      validation: ['Comparar resultados.'],
+      risks: ['Puede variar la carga.'],
+      rollback: ['Restaurar la capacidad anterior.'],
+      successCriteria: ['Mantener el servicio estable.'],
+      estimatedSavings: { amount: 0, currency: 'USD' },
+    }), recommendation);
+
+    expect(plan.estimatedSavings).toMatchObject({
+      amount: 23.63,
+      currency: 'USD',
+      status: 'POTENTIAL_NOT_VERIFIED',
+    });
   });
 });

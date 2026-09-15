@@ -57,6 +57,7 @@ describe('CloudIngestionWorkerService', () => {
 
   it('completes a job using the registered provider result', async () => {
     const job = createJob('oci');
+    const onSuccessfulIngestion = vi.fn(async () => undefined);
     const provider: CloudIngestionProvider = {
       providerCode: 'oci',
       validate: vi.fn(async () => ({ providerCode: 'oci', capabilities: [] })),
@@ -90,7 +91,7 @@ describe('CloudIngestionWorkerService', () => {
       claimNextPendingJob: vi.fn(async () => job),
       completeJob,
     } as unknown as PrismaCloudIngestionJobRepository;
-    const service = new CloudIngestionWorkerService(repository, [provider]);
+    const service = new CloudIngestionWorkerService(repository, [provider], onSuccessfulIngestion);
 
     const result = await service.runOnce('worker-1');
 
@@ -101,6 +102,12 @@ describe('CloudIngestionWorkerService', () => {
       jobId: 'job-1',
       providerCode: 'oci',
       summary,
+    });
+    expect(onSuccessfulIngestion).toHaveBeenCalledWith({
+      tenantId: 'tenant-1',
+      jobId: 'job-1',
+      providerCode: 'oci',
+      sourceType: 'TECHNICAL_METRIC',
     });
   });
 

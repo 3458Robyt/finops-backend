@@ -105,7 +105,7 @@ return [
     'Toda recomendacion que implique rightsizing, resize, apagar, detener, cambio de capacidad, CPU, memoria, IOPS o throughput debe incluir evidence.requiresTechnicalValidation=true, incluso si existe evidencia tecnica fuerte. La IA nunca autoriza por si sola un cambio operativo.',
     'Para candidatos readiness=VALIDATION_ONLY o evidenceLevelAllowed=COST_ONLY, usa COST_ONLY, conserva requiresTechnicalValidation=true y limita el texto a revisar costos/consumo y validar antes de cualquier cambio; no sugieras resize, apagado ni reduccion ejecutable.',
     'No conviertas un candidato SERVICE_COST_REVIEW en una accion tecnica: si no tiene technicalEvidenceRefs, redacta una revision de facturacion/consumo sin CPU, memoria, capacidad, resize ni ahorro por reduccion tecnica.',
-    'Cuando el candidato indique reviewScope=FINANCIAL, conserva evidence.financialReviewOnly=true, evidence.reviewScope=FINANCIAL, operationalAuthorization=NONE y requiresManualValidation=true. En ese caso COST_ONLY es valido sin requiresTechnicalValidation porque es una revisión financiera, no técnica; no hagas afirmaciones de utilización ni de ahorro garantizado.',
+    'Cuando el candidato indique reviewScope=FINANCIAL, conserva evidence.financialReviewOnly=true, evidence.reviewScope=FINANCIAL, operationalAuthorization=NONE y requiresManualValidation=true. En ese caso COST_ONLY es valido sin requiresTechnicalValidation porque es una revisión financiera, no técnica; usa estimatedMonthlySavings=0 y no hagas afirmaciones de utilización ni de ahorro cuantificado o garantizado.',
     'Los campos candidateId, sourceFacts, assumptions y confidence son obligatorios dentro de evidence; no los exijas en el nivel raiz.',
     'Una recomendacion COST_ONLY o COST_AND_USAGE puede ser valida sin technicalEvidenceRefs cuando se limita a revisar costo o consumo facturado; no exijas evidencia tecnica para una oportunidad financiera no tecnica.',
     'Evalua cada recomendacion por separado: no rechaces un lote solo porque combina una revision financiera FOCUS con una revision tecnica. SERVICE_COST_REVIEW y USAGE_OPTIMIZATION son validas sin recurso enlazado ni metricas tecnicas si no implican capacidad, CPU, memoria, resize, apagado ni otra accion operativa.',
@@ -126,7 +126,7 @@ return [
     'Copia literalmente desde el candidato y el snapshot los technicalEvidenceRefs, technicalSampleCount, technicalCoverageDays, latestTechnicalSampleAt, blockers, ruleMatches y recommendedActionType; no inventes ni mezcles referencias entre candidatos.',
     'Copia costEvidenceRefs desde el candidato normalizado. Esas referencias agregadas delimitan la consulta de costos y no deben inventarse.',
     'Si evidence.technicalReviewOnly=true, operationalAuthorization=NONE, requiresManualValidation=true o normalizedActionType=PERFORMANCE_CAPACITY_REVIEW, trata el artefacto como revisión preventiva: no lo conviertas en rightsizing ejecutable aunque deterministicRules.recommendedActionType conserve RIGHTSIZING como señal original.',
-    'En una revisión preventiva, estimatedMonthlySavings representa potencial sujeto a validación, no ahorro garantizado ni autorización de reducción. No rechaces el artefacto únicamente por conservar ese valor si está dentro del límite determinista.',
+    'En una revisión técnica preventiva, estimatedMonthlySavings representa potencial sujeto a validación, no ahorro garantizado ni autorización de reducción. Para revisiones solo financieras debe ser 0.',
     'La normalización puede retirar estimatedMonthlySavings del nivel raíz y conservar potentialMonthlySavings con savingsStatus=POTENTIAL_NOT_VERIFIED; esto es correcto para una revisión previa y no debe tratarse como ahorro ejecutable.',
     'El contexto de aprendizaje auditado orienta criterios, riesgos y patrones de aceptacion o rechazo; no lo trates como dato factual de costos.',
     learningContext.summary === ''
@@ -166,7 +166,7 @@ export function buildExecutionPlanSystemPrompt(
     untrustedContextInstruction,
     'Si la recomendacion solo tiene evidencia FOCUS, indica que CPU, memoria, IOPS o throughput deben validarse fuera de FOCUS antes de ejecutar cambios tecnicos.',
     'Devuelve solo JSON estricto con esta forma:',
-    '{"summary":"...","scope":{"cloudAccountId":"...","service":"..."},"prerequisites":["..."],"steps":["..."],"validation":["..."],"risks":["..."],"rollback":["..."],"successCriteria":["..."],"estimatedSavings":{"amount":0,"currency":"USD"}}',
+    '{"summary":"...","scope":{"cloudAccountId":"...","service":"..."},"prerequisites":["..."],"steps":["..."],"validation":["..."],"risks":["..."],"rollback":["..."],"successCriteria":["..."],"estimatedSavings":{"amount":0,"currency":"USD","status":"POTENTIAL_NOT_VERIFIED","note":"..."}}',
     'Contexto de costos:',
     JSON.stringify(compactSnapshot(snapshot), null, 2),
     'Recomendacion:',
@@ -183,39 +183,62 @@ export function buildExecutionPlanSystemPrompt(
  * rechazar promesas de ejecución automática. Define el JSON estricto del
  * reporte y la condición de aprobación (sin bloqueos y score ≥ 80).
  */
-export function buildAuditSystemPrompt(): string {
+export function buildAuditSystemPrompt(
+  artifactType: 'recommendations' | 'execution_plan' = 'recommendations',
+): string {
+  const recommendationAuditRules = artifactType === 'recommendations'
+    ? [
+        'Rechaza recomendaciones o planes que declaren COST_USAGE_AND_TECHNICAL sin technicalEvidenceRefs, recurso enlazado, muestras suficientes o latestTechnicalSampleAt reciente.',
+        'Rechaza acciones tecnicas como rightsizing, apagado, resize o cambio de capacidad cuando solo tienen costo/FOCUS y no marcan validacion tecnica pendiente.',
+        'Si evidence.blockers o deterministicRules.blockers contienen CPU_SATURATION_RISK, MEMORY_SATURATION_RISK o INSUFFICIENT_TECHNICAL_COVERAGE, rechaza cualquier recomendacion ejecutable de reduccion de capacidad que no marque requiresTechnicalValidation=true.',
+        'Trata deterministicRules como autoridad tecnica deterministica: el agente generador no puede contradecir readiness, blockers, ruleMatches ni maxTechnicalSavingsRate.',
+        'La normalización determinística puede cambiar un borrador de capacidad a PERFORMANCE_CAPACITY_REVIEW y añadir technicalReviewOnly=true; ese tipo y sus campos de autorización son la representación efectiva que debes auditar.',
+        'candidateId es el identificador de la lista de candidatos autorizados por la compuerta (por ejemplo, resource-1 o service-1); no tiene que aparecer como identificador dentro de technicalEvidenceSnapshot.',
+        'Para validar una recomendación técnica, primero relaciona evidence.candidateId con el candidato autorizado y después comprueba externalResourceId, cloudResourceId y technicalEvidenceRefs contra la evidencia técnica canónica. No rechaces un candidateId válido solo porque no sea un campo de un recurso técnico.',
+        'Un candidato VALIDATION_ONLY puede no tener technicalEvidenceRefs suficientes: es válido si la salida efectiva es TECHNICAL_VALIDATION_REQUIRED o PERFORMANCE_CAPACITY_REVIEW, mantiene requiresTechnicalValidation=true, operationalAuthorization=NONE y requiresManualValidation=true, y no promete ni instruye un cambio ejecutable.',
+        'Si el candidato tiene evidenceLevelAllowed=COST_ONLY y no existe un recurso técnico coincidente, resourceLinkReason=INVENTORY_RESOURCE_NOT_FOUND puede ser el estado honesto de trazabilidad; no lo rechaces si el artefacto es explícitamente TECHNICAL_VALIDATION_REQUIRED, no promete ejecución y pide validar el enlace de inventario y las métricas antes de actuar.',
+        'Si deterministicRules.recommendedActionType=RIGHTSIZING pero el artefacto efectivo es PERFORMANCE_CAPACITY_REVIEW con operationalAuthorization=NONE y requiresManualValidation=true, no lo rechaces por el nombre de la señal original: verifica el texto visible y la ausencia de autorización ejecutable.',
+        'Si recommendedActionType es PERFORMANCE_CAPACITY_REVIEW, la recomendacion debe enfocarse en capacidad/performance, no en ahorro por reduccion.',
+        'Cuando evidence.requiresTechnicalValidation=true, acepta PERFORMANCE_CAPACITY_REVIEW como representacion segura de un candidato RIGHTSIZING: significa revision previa, no ejecucion ni autorizacion del cambio.',
+        'Rechaza recomendaciones que no incluyan evidence.candidateId, sourceFacts, assumptions y confidence.',
+        'Rechaza una recomendación COST_ONLY sin costEvidenceRefs válidos; una referencia agregada `cost_metrics:aggregate:...` es válida cuando coincide con el alcance y período del candidato.',
+        'Acepta COST_ONLY sin requiresTechnicalValidation únicamente cuando evidence.financialReviewOnly=true, evidence.reviewScope=FINANCIAL, requiresManualValidation=true, operationalAuthorization=NONE y no declara estimatedMonthlySavings positivo; esto representa una revisión financiera FOCUS, no ahorro comprobado, una conclusión técnica ni una autorización operativa.',
+        'No confundas focusLimitation con ausencia de métricas técnicas: si indica que FOCUS y Monitoring/CloudWatch están separados, la evidencia técnica sigue siendo válida.',
+        'Los campos candidateId, sourceFacts, assumptions y confidence deben estar dentro de evidence; no rechaces una recomendacion porque no los repita en el nivel raiz.',
+        'Evalua cada recomendacion por separado: no rechaces un lote solo porque combina una revision financiera FOCUS con una revision tecnica. SERVICE_COST_REVIEW y USAGE_OPTIMIZATION son validas sin recurso enlazado ni metricas tecnicas si no implican capacidad, CPU, memoria, resize, apagado ni otra accion operativa.',
+        'Rechaza recomendaciones cuyo estimatedMonthlySavings supere el maxEstimatedMonthlySavings del candidato citado.',
+      ]
+    : [
+        'Para un execution_plan, audita el plan y la recomendacion original como artefactos relacionados. El plan no necesita repetir evidence.candidateId, sourceFacts, assumptions ni confidence: usa la evidencia de la Recomendacion original para comprobar la trazabilidad.',
+        'Comprueba que scope.cloudAccountId coincida con la cuenta de la Recomendacion original y que scope.cloudResourceId o scope.externalResourceId, cuando existan, no contradigan el recurso objetivo.',
+        'Comprueba que prerequisites, steps, validation, risks, rollback y successCriteria existan, sean concretos y describan una operación manual. El plan no autoriza ni ejecuta cambios.',
+        'Si la recomendacion requiere validacion tecnica, el plan debe exigir validacion de CPU, memoria, red, disco, disponibilidad u otra métrica pertinente antes de cambiar capacidad; no conviertas FOCUS en una métrica técnica.',
+        'El campo estimatedSavings es informativo y debe ser coherente con la recomendacion original. Si la recomendacion contiene potentialMonthlySavings positivo, copia exactamente ese importe y añade status=POTENTIAL_NOT_VERIFIED y una nota de que no es ahorro garantizado; no lo reemplaces por 0. Si no existe potencial cuantificado, usa amount=0 y dilo explícitamente.',
+      ];
+  const responseShape = artifactType === 'recommendations'
+    ? '{"verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":[],"requiredChanges":[],"recommendationIndexes":[0],"repairInstructions":[],"candidateAudits":[{"index":0,"candidateId":"resource-1","verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":[],"requiredChanges":[]}]}'
+    : '{"verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":[],"requiredChanges":[],"repairInstructions":[]}';
+
   return [
     'Eres un agente auditor FinOps independiente para FinOps Demo.',
     'Tu tarea es auditar contenido generado por otro agente IA antes de que sea persistido o aprobado.',
     'Debes comprobar que el contenido este en español, sea consistente con los datos, no invente recursos, sea realista, viable y tenga validaciones suficientes.',
     untrustedContextInstruction,
     'Verifica que el contenido no trate consumo FOCUS como CPU, memoria, IOPS, throughput o utilizacion tecnica.',
-    'Rechaza recomendaciones o planes que declaren COST_USAGE_AND_TECHNICAL sin technicalEvidenceRefs, recurso enlazado, muestras suficientes o latestTechnicalSampleAt reciente.',
-    'Rechaza acciones tecnicas como rightsizing, apagado, resize o cambio de capacidad cuando solo tienen costo/FOCUS y no marcan validacion tecnica pendiente.',
-    'Si evidence.blockers o deterministicRules.blockers contienen CPU_SATURATION_RISK, MEMORY_SATURATION_RISK o INSUFFICIENT_TECHNICAL_COVERAGE, rechaza cualquier recomendacion ejecutable de reduccion de capacidad que no marque requiresTechnicalValidation=true.',
-    'Trata deterministicRules como autoridad tecnica deterministica: el agente generador no puede contradecir readiness, blockers, ruleMatches ni maxTechnicalSavingsRate.',
-    'La normalización determinística puede cambiar un borrador de capacidad a PERFORMANCE_CAPACITY_REVIEW y añadir technicalReviewOnly=true; ese tipo y sus campos de autorización son la representación efectiva que debes auditar.',
-    'candidateId es el identificador de la lista de candidatos autorizados por la compuerta (por ejemplo, resource-1 o service-1); no tiene que aparecer como identificador dentro de technicalEvidenceSnapshot.',
-    'Para validar una recomendación técnica, primero relaciona evidence.candidateId con el candidato autorizado y después comprueba externalResourceId, cloudResourceId y technicalEvidenceRefs contra la evidencia técnica canónica. No rechaces un candidateId válido solo porque no sea un campo de un recurso técnico.',
-    'Un candidato VALIDATION_ONLY puede no tener technicalEvidenceRefs suficientes: es válido si la salida efectiva es TECHNICAL_VALIDATION_REQUIRED o PERFORMANCE_CAPACITY_REVIEW, mantiene requiresTechnicalValidation=true, operationalAuthorization=NONE y requiresManualValidation=true, y no promete ni instruye un cambio ejecutable.',
-    'Si el candidato tiene evidenceLevelAllowed=COST_ONLY y no existe un recurso técnico coincidente, resourceLinkReason=INVENTORY_RESOURCE_NOT_FOUND puede ser el estado honesto de trazabilidad; no lo rechaces si el artefacto es explícitamente TECHNICAL_VALIDATION_REQUIRED, no promete ejecución y pide validar el enlace de inventario y las métricas antes de actuar.',
-    'Si deterministicRules.recommendedActionType=RIGHTSIZING pero el artefacto efectivo es PERFORMANCE_CAPACITY_REVIEW con operationalAuthorization=NONE y requiresManualValidation=true, no lo rechaces por el nombre de la señal original: verifica el texto visible y la ausencia de autorización ejecutable.',
-    'Si recommendedActionType es PERFORMANCE_CAPACITY_REVIEW, la recomendacion debe enfocarse en capacidad/performance, no en ahorro por reduccion.',
-    'Cuando evidence.requiresTechnicalValidation=true, acepta PERFORMANCE_CAPACITY_REVIEW como representacion segura de un candidato RIGHTSIZING: significa revision previa, no ejecucion ni autorizacion del cambio.',
-    'Rechaza recomendaciones que no incluyan evidence.candidateId, sourceFacts, assumptions y confidence.',
-    'Rechaza una recomendación COST_ONLY sin costEvidenceRefs válidos; una referencia agregada `cost_metrics:aggregate:...` es válida cuando coincide con el alcance y período del candidato.',
-    'Acepta COST_ONLY sin requiresTechnicalValidation únicamente cuando evidence.financialReviewOnly=true, evidence.reviewScope=FINANCIAL, requiresManualValidation=true y operationalAuthorization=NONE; esto representa una revisión financiera FOCUS, no una conclusión técnica ni una autorización operativa.',
-    'No confundas focusLimitation con ausencia de métricas técnicas: si indica que FOCUS y Monitoring/CloudWatch están separados, la evidencia técnica sigue siendo válida.',
-    'Los campos candidateId, sourceFacts, assumptions y confidence deben estar dentro de evidence; no rechaces una recomendacion porque no los repita en el nivel raiz.',
-    'Evalua cada recomendacion por separado: no rechaces un lote solo porque combina una revision financiera FOCUS con una revision tecnica. SERVICE_COST_REVIEW y USAGE_OPTIMIZATION son validas sin recurso enlazado ni metricas tecnicas si no implican capacidad, CPU, memoria, resize, apagado ni otra accion operativa.',
-    'Rechaza recomendaciones cuyo estimatedMonthlySavings supere el maxEstimatedMonthlySavings del candidato citado.',
+    ...recommendationAuditRules,
     'Rechaza cualquier texto que use "anomalia" o "anomalias"; debe hablar de oportunidades.',
     'Rechaza cualquier contenido que prometa ejecucion automatica real de cambios cloud.',
     'Devuelve solo JSON estricto con esta forma:',
-    '{"verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":[],"requiredChanges":[],"recommendationIndexes":[0],"repairInstructions":[],"candidateAudits":[{"index":0,"candidateId":"resource-1","verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":[],"requiredChanges":[]}]}' ,
-    'Audita cada recomendacion por separado y devuelve un candidateAudits por cada indice del artefacto. Usa candidateId solo si corresponde al candidato autorizado; nunca inventes uno.',
-    'Usa APPROVED individual solo si esa recomendacion no tiene problemas bloqueantes y su score es mayor o igual a 80. Si una recomendacion falla, marca solo esa como REJECTED o NEEDS_REVISION; no ocultes el fallo en el lote.',
-    'Usa APPROVED global solo si todas las candidateAudits aprobadas cumplen la política. Para un lote parcial, deja los problemas específicos en candidateAudits y recommendationIndexes.',
+    responseShape,
+    ...(artifactType === 'recommendations'
+      ? [
+          'Audita cada recomendacion por separado y devuelve un candidateAudits por cada indice del artefacto. Usa candidateId solo si corresponde al candidato autorizado; nunca inventes uno.',
+          'Usa APPROVED individual solo si esa recomendacion no tiene problemas bloqueantes y su score es mayor o igual a 80. Si una recomendacion falla, marca solo esa como REJECTED o NEEDS_REVISION; no ocultes el fallo en el lote.',
+          'Usa APPROVED global solo si todas las candidateAudits aprobadas cumplen la política. Para un lote parcial, deja los problemas específicos en candidateAudits y recommendationIndexes.',
+        ]
+      : [
+          'Usa APPROVED solo si el plan supera todas las verificaciones y su score es mayor o igual a 80. Si falta información, devuelve NEEDS_REVISION con cambios concretos.',
+        ]),
   ].join('\n');
 }
 

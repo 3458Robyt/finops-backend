@@ -118,6 +118,14 @@ export function evaluateRecommendationDrafts(
   ));
 
   checks.push(buildAllPass(
+    'financialSavingsHonesty',
+    drafts,
+    (draft) => !readFinancialReviewOnly(draft) || draft.estimatedMonthlySavings === undefined,
+    'Las revisiones financieras no contabilizan potenciales sin verificar como ahorro estimado.',
+    'Hay una revisión financiera que presenta un potencial sin verificar como ahorro estimado.',
+  ));
+
+  checks.push(buildAllPass(
     'candidateSavingsCap',
     drafts,
     (draft) => isWithinCandidateSavingsCap(draft),

@@ -5,6 +5,7 @@ import { applyAuditEvidence, buildRecommendationDeduplicationKey } from './recom
 import { FinOpsArtifactGenerator } from './finOpsArtifactGenerator.js';
 import type { FinOpsContextAssembler } from './finOpsContextAssembler.js';
 import type { FinOpsAiRecommendationPreparer } from './FinOpsAiRecommendationPreparer.js';
+import { readCandidateId } from '../recommendationAnalysisSupport.js';
 import { toEphemeralRecommendation } from './finOpsAiResponseParser.js';
 import type {
   GenerateAiRecommendationsInput,
@@ -108,16 +109,32 @@ export class FinOpsAiRecommendationRunner {
       });
     }
 
-    const auditedDrafts = approvedDrafts.map((draft) => ({
-      ...applyAuditEvidence(
-        draft,
-        auditReport,
-        assembled.learningContext,
-        technicalEvidenceSnapshot,
-        input.analysisRunId,
-      ),
-      deduplicationKey: buildRecommendationDeduplicationKey(draft, snapshot.periodStart, snapshot.periodEnd),
-    }));
+    const auditedDrafts = approvedDrafts.map((draft) => {
+      const candidateId = readCandidateId(draft.evidence);
+      const candidateAudit = candidateAudits.find((item) => (
+        item.audit.verdict === 'APPROVED'
+        && item.audit.candidateId === candidateId
+      ));
+      const individualAudit = candidateAudit === undefined
+        ? auditReport
+        : {
+            verdict: candidateAudit.audit.verdict,
+            score: candidateAudit.audit.score,
+            checks: candidateAudit.audit.checks,
+            blockingIssues: candidateAudit.audit.blockingIssues,
+            requiredChanges: candidateAudit.audit.requiredChanges,
+          };
+      return {
+        ...applyAuditEvidence(
+          draft,
+          individualAudit,
+          assembled.learningContext,
+          technicalEvidenceSnapshot,
+          input.analysisRunId,
+        ),
+        deduplicationKey: buildRecommendationDeduplicationKey(draft, snapshot.periodStart, snapshot.periodEnd),
+      };
+    });
     const persisted = input.persist === true;
     await input.onStage?.('PERSISTENCE');
     const recommendations = persisted

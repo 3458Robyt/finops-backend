@@ -2,6 +2,7 @@ import type { CloudIngestionProvider } from '../domain/interfaces/ICloudIngestio
 import type { PrismaClient } from '../generated/prisma/client.js';
 import type { MetricsRegistry } from '../application/observability/MetricsRegistry.js';
 import { CloudIngestionWorkerService } from '../application/services/CloudIngestionWorkerService.js';
+import type { CostAnalyticsService } from '../application/services/CostAnalyticsService.js';
 import type { ValueRealizationService } from '../application/services/ValueRealizationService.js';
 import type { RuntimeConfig } from '../infrastructure/config/runtimeConfigTypes.js';
 import { PrismaCloudIngestionJobRepository } from '../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
@@ -20,6 +21,7 @@ export function createApplicationWorkers(input: {
   readonly credentialCipher?: CredentialCipher | undefined;
   readonly ingestionProviders: readonly CloudIngestionProvider[];
   readonly valueRealizationService: ValueRealizationService;
+  readonly analyticsService: CostAnalyticsService;
   readonly metricsRegistry: MetricsRegistry;
 }): ApplicationWorkers {
   const { config } = input;
@@ -36,11 +38,17 @@ export function createApplicationWorkers(input: {
       ),
       input.ingestionProviders,
       (config.environment.processRole === 'worker' || config.environment.processRole === 'all')
-        && config.finops.savingsReconciliationEnabled
-        ? ({ tenantId }) => input.valueRealizationService.reconcile(
-          tenantId,
-          config.finops.savingsReconciliationBatchSize,
-        ).then(() => undefined)
+        ? async ({ tenantId, sourceType }) => {
+          if (config.finops.savingsReconciliationEnabled) {
+            await input.valueRealizationService.reconcile(
+              tenantId,
+              config.finops.savingsReconciliationBatchSize,
+            );
+          }
+          if (sourceType === 'BILLING_EXPORT') {
+            await input.analyticsService.recompute({ tenantId });
+          }
+        }
         : undefined,
       input.metricsRegistry,
       config.workers.ingestion.jobHeartbeatMs,

@@ -1,4 +1,5 @@
 import type {
+  AdoptionKpiQuery,
   AdoptionKpis,
   CreateSavingsMeasurementInput,
   IRecommendationRepository,
@@ -61,8 +62,8 @@ export class PrismaRecommendationSavingsRepository {
    * @returns KPIs de adopción de dominio.
    */
 
-  public async getAdoptionKpis(tenantId: string): Promise<AdoptionKpis> {
-    return computeAdoptionKpis(this.prisma, tenantId);
+  public async getAdoptionKpis(tenantId: string, query?: AdoptionKpiQuery): Promise<AdoptionKpis> {
+    return computeAdoptionKpis(this.prisma, tenantId, query);
   }
 
   public async getSavingsMeasurementReadiness(

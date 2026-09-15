@@ -30,6 +30,11 @@ interface StatusCountRow {
   readonly _count: number;
 }
 
+interface ActivityRow {
+  readonly userId: string;
+  readonly createdAt: Date;
+}
+
 /**
  * Construye un stub de PrismaClient con los resultados predefinidos para las
  * (5) consultas que ejecutan los KPIs. Solo implementa los metodos usados; se
@@ -44,6 +49,24 @@ function createPrismaStub(input: {
   readonly executedGroups?: number;
   readonly pendingRecs?: readonly SavingsRecRow[];
   readonly statusCounts?: readonly StatusCountRow[];
+  readonly chatRows?: readonly ActivityRow[];
+  readonly telegramRows?: readonly ActivityRow[];
+  readonly notificationRows?: readonly {
+    readonly userId: string;
+    readonly recommendationId: string | null;
+    readonly status: string;
+    readonly createdAt: Date;
+    readonly readAt: Date | null;
+  }[];
+  readonly decisionRows?: readonly {
+    readonly userId: string;
+    readonly actorRole: string | null;
+    readonly decision: string;
+    readonly recommendationId: string;
+    readonly createdAt: Date;
+  }[];
+  readonly executionRows?: readonly ActivityRow[];
+  readonly outboundSent?: number;
 }): PrismaClient {
   const stub = {
     recommendation: {
@@ -51,9 +74,13 @@ function createPrismaStub(input: {
       findMany: async () => [...(input.pendingRecs ?? [])],
       groupBy: async () => [...(input.statusCounts ?? [])],
     },
+    recommendationDecision: {
+      findMany: async () => [...(input.decisionRows ?? [])],
+    },
     recommendationManualExecution: {
       aggregate: async () => ({ _sum: { observedMonthlySavings: input.observedSum ?? null } }),
       groupBy: async () => Array.from({ length: input.executedGroups ?? 0 }, (_unused, index) => ({ recommendationId: `rec-${index}` })),
+      findMany: async () => [...(input.executionRows ?? [])],
     },
     recommendationSavingsMeasurement: {
       aggregate: async (args: { readonly where?: { readonly status?: string | { readonly in: readonly string[] }; readonly costIncreaseMonthlyAmount?: unknown } }) => {
@@ -66,12 +93,65 @@ function createPrismaStub(input: {
         return { _sum: { costIncreaseMonthlyAmount: input.costIncreaseSum ?? null } };
       },
     },
+    aiContextTrace: { findMany: async () => [...(input.chatRows ?? [])] },
+    telegramInteractionLog: { findMany: async () => [...(input.telegramRows ?? [])] },
+    inAppNotification: { findMany: async () => [...(input.notificationRows ?? [])] },
+    outboundMessageDelivery: { count: async () => input.outboundSent ?? 0 },
   };
 
   return stub as unknown as PrismaClient;
 }
 
 describe('computeAdoptionKpis', () => {
+  it('calcula interacción, recurrencia, lectura y serie temporal sin mezclar tenants', async () => {
+    const may = new Date('2026-05-02T10:00:00.000Z');
+    const june = new Date('2026-06-03T10:00:00.000Z');
+    const prisma = createPrismaStub({
+      statusCounts: [{ status: 'APPROVED', _count: 1 }],
+      chatRows: [
+        { userId: 'user-1', createdAt: may },
+        { userId: 'user-1', createdAt: june },
+      ],
+      telegramRows: [{ userId: 'user-2', createdAt: june }],
+      notificationRows: [{
+        userId: 'user-1',
+        recommendationId: 'rec-1',
+        status: 'READ',
+        createdAt: may,
+        readAt: new Date('2026-05-02T11:00:00.000Z'),
+      }],
+      decisionRows: [{
+        userId: 'user-1',
+        actorRole: 'CLIENT_APPROVER',
+        decision: 'APPROVED',
+        recommendationId: 'rec-1',
+        createdAt: new Date('2026-05-02T12:00:00.000Z'),
+      }],
+      executionRows: [{ userId: 'user-1', createdAt: june }],
+      outboundSent: 2,
+    });
+
+    const kpis = await computeAdoptionKpis(prisma, 'tenant-1', { granularity: 'month' });
+
+    expect(kpis.engagement).toMatchObject({
+      activeUsers: 2,
+      recurringUsers: 1,
+      chatInteractions: 2,
+      chatUsers: 1,
+      telegramInteractions: 1,
+      outboundSent: 2,
+      notificationsRead: 1,
+      notificationReadRate: 1,
+      medianAlertToReadMinutes: 60,
+      medianAlertToDecisionMinutes: 120,
+      decisionsByRole: { CLIENT_APPROVER: 1 },
+    });
+    expect(kpis.engagement?.series).toEqual([
+      { periodStart: '2026-05-01', activeUsers: 1, chatInteractions: 1, telegramInteractions: 0, decisions: 1, executions: 0 },
+      { periodStart: '2026-06-01', activeUsers: 2, chatInteractions: 1, telegramInteractions: 1, decisions: 0, executions: 1 },
+    ]);
+  });
+
   it('cuenta solo APPROVED/REJECTED/MANUAL_COMPLETED como decididas y excluye PENDING del denominador', async () => {
     const prisma = createPrismaStub({
       statusCounts: [

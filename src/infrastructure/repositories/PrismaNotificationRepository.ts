@@ -103,14 +103,26 @@ export class PrismaNotificationRepository implements INotificationRepository {
     notificationId: string,
     status: InAppNotificationStatus,
   ): Promise<InAppNotification | null> {
-    await this.prisma.inAppNotification.updateMany({
+    const existing = await this.prisma.inAppNotification.findFirst({
       where: {
         id: notificationId,
         tenantId,
         userId,
       },
-      data: { status },
     });
+
+    if (existing === null) return null;
+
+    if (existing.status !== status) {
+      await this.prisma.inAppNotification.update({
+        where: { id: existing.id },
+        data: {
+          status,
+          ...(status === 'READ' && existing.readAt === null ? { readAt: new Date() } : {}),
+          ...(status === 'DISMISSED' && existing.dismissedAt === null ? { dismissedAt: new Date() } : {}),
+        },
+      });
+    }
 
     const row = await this.prisma.inAppNotification.findFirst({
       where: {
@@ -164,6 +176,8 @@ export class PrismaNotificationRepository implements INotificationRepository {
       ...(row.recommendationId !== null ? { recommendationId: row.recommendationId } : {}),
       type: row.type,
       status: row.status,
+      ...(row.readAt !== null ? { readAt: row.readAt } : {}),
+      ...(row.dismissedAt !== null ? { dismissedAt: row.dismissedAt } : {}),
       title: row.title,
       message: row.message,
       ...(row.missedSavingsAmount !== null ? { missedSavingsAmount: Number(row.missedSavingsAmount) } : {}),

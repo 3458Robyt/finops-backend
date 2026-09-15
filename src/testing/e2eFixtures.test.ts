@@ -22,11 +22,7 @@ test('solo permite bases o esquemas de prueba explícitos', async () => {
 });
 
 describe('e2e fixture utilities', () => {
-  test('create and cleanup isolated tenants in the configured database', async () => {
-    if (process.env['RUN_DB_INTEGRATION_TESTS'] !== 'true') {
-      return;
-    }
-
+  test.skipIf(process.env['RUN_DB_INTEGRATION_TESTS'] !== 'true')('create and cleanup isolated tenants in the configured database', async () => {
     const prisma = createTestingPrismaClient();
     const runId = `vitest-${Date.now()}`;
 

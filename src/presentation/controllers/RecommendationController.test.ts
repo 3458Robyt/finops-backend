@@ -15,6 +15,8 @@ import type {
 } from '../../domain/interfaces/IAgentLearningService.js';
 import type { FinOpsRecommendation } from '../../domain/models/FinOpsRecommendation.js';
 import type { RecommendationExecutionPlan } from '../../domain/models/RecommendationExecutionPlan.js';
+import type { FinOpsAiService } from '../../application/services/FinOpsAiService.js';
+import { AiAuditRejectedError } from '../../domain/errors/errors.js';
 
 class FakeAgentLearningService implements IAgentLearningService {
   public input: Parameters<IAgentLearningService['processRecommendationDecision']>[0] | null = null;
@@ -208,6 +210,35 @@ describe('RecommendationController decisions', () => {
     });
   });
 
+  test('returns a safe audit diagnostic when an execution plan is rejected', async () => {
+    const repository = new FakeRecommendationRepository();
+    const aiService = {
+      generateExecutionPlan: async () => {
+        throw new AiAuditRejectedError('Plan rechazado por el auditor', {
+          diagnosticId: 'audit-safe-1',
+          audit: {
+            verdict: 'REJECTED', score: 72,
+            checks: [{ name: 'rollback', passed: false, notes: 'Falta rollback verificable.' }],
+            blockingIssues: ['Falta validación previa.'],
+            requiredChanges: ['Agregar validación y rollback.'],
+            rawResponse: 'no debe exponerse',
+          },
+        });
+      },
+    } as unknown as FinOpsAiService;
+    const controller = new RecommendationController(repository, aiService);
+    const response = createResponse();
+
+    await controller.createExecutionPlan(createRequest(), response as unknown as Response);
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toMatchObject({
+      code: 'AI_AUDIT_REJECTED', diagnosticId: 'audit-safe-1',
+      audit: { verdict: 'REJECTED', score: 72, failedChecks: [{ name: 'rollback' }] },
+    });
+    expect(JSON.stringify(response.body)).not.toContain('rawResponse');
+  });
+
   test('forbids viewer users from deciding an execution plan', async () => {
     const repository = new FakeRecommendationRepository();
     const controller = new RecommendationController(repository);
@@ -335,6 +366,7 @@ describe('RecommendationController decisions', () => {
       recommendationId: 'rec-1',
       executionPlanId: 'plan-1',
       userId: 'admin-1',
+      actorRole: 'ADMIN',
       decision: 'APPROVED',
       reasonCode: 'APPROVED_HIGH_CONFIDENCE',
       reason: 'Validado por FinOps.',

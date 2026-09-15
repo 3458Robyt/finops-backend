@@ -34,6 +34,10 @@ export interface InAppNotification {
   readonly type: InAppNotificationType;
   /** Estado de lectura/gestión de la notificación. */
   readonly status: InAppNotificationStatus;
+  /** Instante en que el usuario la leyó, si aplica. */
+  readonly readAt?: Date;
+  /** Instante en que el usuario la descartó, si aplica. */
+  readonly dismissedAt?: Date;
   /** Título de la notificación. */
   readonly title: string;
   /** Cuerpo del mensaje de la notificación. */

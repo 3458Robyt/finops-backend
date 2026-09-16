@@ -8,6 +8,7 @@ import {
 } from '../domain/models/ResourceLinkage.js';
 import { PrismaResourceLinkageReadinessRepository } from '../infrastructure/repositories/PrismaResourceLinkageReadinessRepository.js';
 import { PrismaResourceMetricRepository } from '../infrastructure/repositories/PrismaResourceMetricRepository.js';
+import { PrismaMetricStreamSummaryPersistence } from '../infrastructure/ingestion/PrismaMetricStreamSummaryPersistence.js';
 import {
   cleanupE2eFixtures,
   createE2eFixtures,
@@ -41,8 +42,8 @@ describe.skipIf(!integrationEnabled)('normalized resource lineage integration', 
     const tenantId = fixtures.tenants[0]!.id;
     const resourceId = fixtures.resourceIds[0]!;
     const connection = await prisma.cloudConnection.findFirstOrThrow({ where: { tenantId }, select: { id: true } });
-    await prisma.resourceMetricSample.create({
-      data: {
+    const sampledAt = new Date();
+    const sample = {
         tenantId,
         cloudConnectionId: connection.id,
         cloudResourceId: resourceId,
@@ -51,10 +52,24 @@ describe.skipIf(!integrationEnabled)('normalized resource lineage integration', 
         metricName: 'ReadinessCanary',
         metricUnit: '%',
         value: new Prisma.Decimal(12),
-        sampledAt: new Date(),
+        sampledAt,
         granularitySeconds: 1800,
         sourceType: 'TECHNICAL_METRIC',
-      },
+    } as const;
+    await prisma.$transaction(async (tx) => {
+      await tx.resourceMetricSample.create({ data: sample });
+      await new PrismaMetricStreamSummaryPersistence().refreshMetricStreamSummaries(tx, connection.id, [{
+        tenantId,
+        cloudConnectionId: connection.id,
+        provider: 'AWS',
+        externalResourceId: sample.externalResourceId,
+        metricName: sample.metricName,
+        metricUnit: sample.metricUnit,
+        value: 12,
+        sampledAt,
+        granularitySeconds: 1800,
+        statistic: 'MEAN',
+      }]);
     });
 
     const readiness = await new PrismaResourceLinkageReadinessRepository(prisma).getForTenant(tenantId, 10);

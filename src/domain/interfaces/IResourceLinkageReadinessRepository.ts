@@ -88,6 +88,12 @@ export interface ResourceTagGovernance {
 
 export interface ResourceLinkageReadiness {
   readonly generatedAt: Date;
+  readonly performance?: {
+    readonly queryMs: number;
+    readonly metricCoverageSource: 'STREAM_SUMMARIES';
+    readonly metricResourceSource: 'STREAM_SUMMARIES';
+    readonly metricFreshnessSource: 'STREAM_SUMMARIES';
+  };
   readonly status: 'READY' | 'PARTIAL' | 'BLOCKED' | 'NO_DATA';
   readonly inventoryResources: number;
   readonly linkedResourcesWithCost: number;

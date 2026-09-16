@@ -47,7 +47,7 @@ const isolatedEnv = {
   RUN_DB_INTEGRATION_TESTS: 'true',
   DB_RUNTIME_ENFORCE: 'true',
   DB_RUNTIME_ROLE: 'finops_runtime',
-  DB_EXPECTED_MIGRATION: '202609140002_advisor_rls_hardening',
+  DB_EXPECTED_MIGRATION: '202609150001_readiness_summary_indexes',
 };
 
 let schemaCreated = false;

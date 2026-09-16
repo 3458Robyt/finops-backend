@@ -109,6 +109,7 @@ export class FinOpsAiService {
       this.traceRecorder,
       this.mainModel,
       this.auditorModel,
+      { timeoutMs: aiConfig.timeoutMs, maxRetries: aiConfig.maxRetries },
     );
     this.contextAssembler = new FinOpsContextAssembler(
       this.mainModel,
@@ -122,6 +123,7 @@ export class FinOpsAiService {
       this.contextAssembler,
       this.traceRecorder,
       this.mainModel,
+      { timeoutMs: aiConfig.timeoutMs, maxRetries: aiConfig.maxRetries },
     );
     this.executionPlanRunner = new FinOpsAiExecutionPlanRunner(
       analyticsRepository,

@@ -1302,6 +1302,7 @@ model ResourceMetricStreamSummary {
 
   @@unique([cloudConnectionId, providerNamespace, regionId, externalResourceId, metricName, statistic, granularitySeconds, dimensionsHash], map: "resource_metric_stream_summaries_identity_key")
   @@index([tenantId, state, lastSampledAt], map: "resource_metric_stream_summaries_tenant_state_idx")
+  @@index([tenantId, cloudResourceId], map: "resource_metric_stream_summaries_tenant_resource_idx")
   @@index([cloudConnectionId, metricName, statistic, lastSampledAt], map: "resource_metric_stream_summaries_connection_metric_idx")
   @@index([cloudResourceId, lastSampledAt], map: "resource_metric_stream_summaries_resource_idx")
   @@map("resource_metric_stream_summaries")

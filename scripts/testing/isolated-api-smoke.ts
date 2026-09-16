@@ -67,7 +67,7 @@ try {
       APP_PROCESS_ROLE: 'api',
       DB_RUNTIME_ENFORCE: 'true',
       DB_RUNTIME_ROLE: 'finops_runtime',
-      DB_EXPECTED_MIGRATION: '202609140002_advisor_rls_hardening',
+      DB_EXPECTED_MIGRATION: '202609150001_readiness_summary_indexes',
       PROCESS_HEARTBEAT_ENABLED: 'false',
       INGESTION_WORKER_ENABLED: 'false',
       INGESTION_SCHEDULER_ENABLED: 'false',

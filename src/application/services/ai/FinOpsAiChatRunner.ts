@@ -16,6 +16,7 @@ export class FinOpsAiChatRunner {
     private readonly contextAssembler: FinOpsContextAssembler,
     private readonly traceRecorder: AiTraceRecorder,
     private readonly model: string,
+    private readonly requestPolicy: { readonly timeoutMs: number; readonly maxRetries: number } = { timeoutMs: 60_000, maxRetries: 1 },
   ) {}
 
   public async run(input: AiChatInput): Promise<AiChatResponse> {
@@ -38,6 +39,8 @@ export class FinOpsAiChatRunner {
     try {
       const answer = await this.aiGateway.generateText({
         responseFormat: 'text',
+        timeoutMs: this.requestPolicy.timeoutMs,
+        maxRetries: this.requestPolicy.maxRetries,
         temperature: 0.3,
         maxTokens: 900,
         messages: [

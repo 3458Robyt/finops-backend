@@ -206,9 +206,10 @@ export function buildMetricWhereClause(
 export function buildMetricRollupWhereClause(
   tenantId: string,
   filters: MetricWhereFilters,
-  bucketSeconds: number,
+  bucketSeconds?: number,
 ): Prisma.Sql {
-  const clauses: Prisma.Sql[] = [Prisma.sql`tenant_id = ${tenantId}`, Prisma.sql`bucket_seconds = ${bucketSeconds}`];
+  const clauses: Prisma.Sql[] = [Prisma.sql`tenant_id = ${tenantId}`];
+  if (bucketSeconds !== undefined) clauses.push(Prisma.sql`bucket_seconds = ${bucketSeconds}`);
   if (filters.startDate !== undefined) clauses.push(Prisma.sql`bucket_start >= ${filters.startDate}`);
   if (filters.endDate !== undefined) clauses.push(Prisma.sql`bucket_start <= ${filters.endDate}`);
   if (filters.externalResourceId !== undefined) clauses.push(Prisma.sql`external_resource_id = ${filters.externalResourceId}`);

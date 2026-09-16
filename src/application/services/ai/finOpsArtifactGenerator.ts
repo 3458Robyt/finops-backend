@@ -17,7 +17,7 @@ import {
   dropNonActionableFinancialDrafts,
   normalizeRecommendationDrafts,
 } from './recommendationDraftNormalizer.js';
-import { FinOpsArtifactAiRunner } from './finOpsArtifactAiRunner.js';
+import { FinOpsArtifactAiRunner, type AiArtifactRequestPolicy } from './finOpsArtifactAiRunner.js';
 import { isAuditApproved, MIN_APPROVED_AUDIT_SCORE } from './auditApprovalPolicy.js';
 import { selectAuditedRecommendationDrafts } from './recommendationAuditSelection.js';
 
@@ -68,8 +68,15 @@ export class FinOpsArtifactGenerator {
     traceRecorder: AiTraceRecorder,
     mainModel: string,
     auditorModel: string,
+    requestPolicy?: AiArtifactRequestPolicy,
   ) {
-    this.aiRunner = new FinOpsArtifactAiRunner(aiGateway, traceRecorder, mainModel, auditorModel);
+    this.aiRunner = new FinOpsArtifactAiRunner(
+      aiGateway,
+      traceRecorder,
+      mainModel,
+      auditorModel,
+      requestPolicy,
+    );
   }
 
   /**
@@ -104,24 +111,37 @@ export class FinOpsArtifactGenerator {
       ), readinessReport),
       tenantId,
     );
-    await onAuditStart?.();
-    let auditReport = await this.aiRunner.auditArtifact({
-      artifactType: 'recommendations',
+    let auditReport: AiAuditReport;
+    const initialQuality = evaluateRecommendationDrafts(
+      drafts,
       snapshot,
-      tenantId,
-      ...(userId === undefined ? {} : { userId }),
-      artifact: drafts,
-      ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),
-      ...(deterministicAnalysis === undefined ? {} : { deterministicAnalysis }),
-      ...(readinessReport === undefined ? {} : { readinessReport }),
-    });
+      undefined,
+      externalResourceId,
+      technicalEvidenceSnapshot,
+    );
+    const deterministicRejected = !initialQuality.passed;
+    if (deterministicRejected) {
+      auditReport = buildDeterministicRejectionReport(initialQuality);
+    } else {
+      await onAuditStart?.();
+      auditReport = await this.aiRunner.auditArtifact({
+        artifactType: 'recommendations',
+        snapshot,
+        tenantId,
+        ...(userId === undefined ? {} : { userId }),
+        artifact: drafts,
+        ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),
+        ...(deterministicAnalysis === undefined ? {} : { deterministicAnalysis }),
+        ...(readinessReport === undefined ? {} : { readinessReport }),
+      });
+    }
 
     const repairInstructions = readRepairInstructions(auditReport);
     const hasRepairInstructions = repairInstructions.length > 0;
-    if (auditReport.verdict === 'NEEDS_REVISION' || (
+    if (!deterministicRejected && (auditReport.verdict === 'NEEDS_REVISION' || (
       auditReport.verdict === 'REJECTED' &&
       hasRepairInstructions
-    )) {
+    ))) {
       const revisedRaw = await this.aiRunner.reviseRecommendations(
         systemPrompt,
         repairInstructions,
@@ -135,17 +155,28 @@ export class FinOpsArtifactGenerator {
         ), readinessReport),
         tenantId,
       );
-      await onAuditStart?.();
-      auditReport = await this.aiRunner.auditArtifact({
-        artifactType: 'recommendations',
+      const revisedQuality = evaluateRecommendationDrafts(
+        drafts,
         snapshot,
-        tenantId,
-        ...(userId === undefined ? {} : { userId }),
-        artifact: drafts,
-        ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),
-        ...(deterministicAnalysis === undefined ? {} : { deterministicAnalysis }),
-        ...(readinessReport === undefined ? {} : { readinessReport }),
-      });
+        undefined,
+        externalResourceId,
+        technicalEvidenceSnapshot,
+      );
+      if (!revisedQuality.passed) {
+        auditReport = buildDeterministicRejectionReport(revisedQuality);
+      } else {
+        await onAuditStart?.();
+        auditReport = await this.aiRunner.auditArtifact({
+          artifactType: 'recommendations',
+          snapshot,
+          tenantId,
+          ...(userId === undefined ? {} : { userId }),
+          artifact: drafts,
+          ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),
+          ...(deterministicAnalysis === undefined ? {} : { deterministicAnalysis }),
+          ...(readinessReport === undefined ? {} : { readinessReport }),
+        });
+      }
     }
 
     const quality = evaluateRecommendationDrafts(drafts, snapshot, undefined, externalResourceId, technicalEvidenceSnapshot);
@@ -281,4 +312,20 @@ function readRepairInstructions(audit: AiAuditReport): readonly string[] {
   return (audit.repairInstructions?.length ?? 0) > 0
     ? audit.repairInstructions!
     : audit.requiredChanges;
+}
+
+function buildDeterministicRejectionReport(quality: QualityReport): AiAuditReport {
+  const failedChecks = quality.checks.filter((check) => !check.passed);
+  const issues = failedChecks.map((check) => check.detail);
+  return {
+    verdict: 'REJECTED',
+    score: quality.score,
+    checks: quality.checks.map((check) => ({
+      name: `deterministic:${check.name}`,
+      passed: check.passed,
+      notes: check.detail,
+    })),
+    blockingIssues: issues,
+    requiredChanges: issues,
+  };
 }

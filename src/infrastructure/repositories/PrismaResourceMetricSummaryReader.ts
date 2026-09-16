@@ -33,7 +33,7 @@ interface RawFastSummaryRow {
 }
 
 /**
- * Bounded overview projection backed by daily PostgreSQL rollups.
+ * Bounded overview projection backed by peak-preserving PostgreSQL rollups.
  *
  * Raw samples remain canonical for evidence, auditing, and drill-down. This
  * reader intentionally serves the interactive overview only; its weighted
@@ -46,8 +46,31 @@ export class PrismaResourceMetricSummaryReader {
     tenantId: string,
     filters: TechnicalMetricSummaryFilters,
   ): Promise<readonly TechnicalMetricSummaryItem[]> {
+    // Daily rows are the bounded overview projection. Prefer them per stream,
+    // while falling back to the finest available source-resolution rollup for
+    // streams whose daily projection has not been rebuilt yet.
+    const rows = await this.listRollupSummaries(tenantId, filters, Prisma.sql`r.bucket_seconds <= 86400`);
+    return rows.map(toSummaryItem);
+  }
+
+  private async listRollupSummaries(
+    tenantId: string,
+    filters: TechnicalMetricSummaryFilters,
+    bucketFilter: Prisma.Sql,
+  ): Promise<readonly RawFastSummaryRow[]> {
     const where = buildWhere(tenantId, filters);
-    const rows = await this.prisma.$queryRaw<RawFastSummaryRow[]>(Prisma.sql`
+    return this.prisma.$queryRaw<RawFastSummaryRow[]>(Prisma.sql`
+      WITH filtered AS (
+        SELECT r.*
+        FROM resource_metric_rollups r
+        WHERE ${where} AND ${bucketFilter}
+      ), preferred AS (
+        SELECT tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id, provider_namespace,
+          region_id, dimensions_hash, metric_name, statistic, max(bucket_seconds) AS bucket_seconds
+        FROM filtered
+        GROUP BY tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id, provider_namespace,
+          region_id, dimensions_hash, metric_name, statistic
+      )
       SELECT
         r.provider::text AS provider,
         r.external_resource_id,
@@ -62,7 +85,7 @@ export class PrismaResourceMetricSummaryReader {
         max(r.metric_unit) AS metric_unit,
         r.statistic::text AS statistic,
         sum(r.sample_count)::bigint AS sample_count,
-        count(DISTINCT r.bucket_start)::bigint AS coverage_days,
+        count(DISTINCT date_trunc('day', r.bucket_start))::bigint AS coverage_days,
         min(r.min_value)::float8 AS min_value,
         max(r.max_value)::float8 AS max_value,
         (sum(r.sum_value) / nullif(sum(r.sample_count), 0))::float8 AS avg_value,
@@ -75,9 +98,19 @@ export class PrismaResourceMetricSummaryReader {
         (array_agg(r.latest_value ORDER BY r.bucket_start DESC, r.latest_sampled_at DESC))[1]::float8 AS latest_value,
         min(r.min_sampled_at) AS first_sampled_at,
         max(r.latest_sampled_at) AS latest_sampled_at
-      FROM resource_metric_rollups r
+      FROM filtered r
+      INNER JOIN preferred p
+        ON p.tenant_id = r.tenant_id
+       AND p.cloud_connection_id = r.cloud_connection_id
+       AND p.cloud_resource_id IS NOT DISTINCT FROM r.cloud_resource_id
+       AND p.external_resource_id = r.external_resource_id
+       AND p.provider_namespace = r.provider_namespace
+       AND p.region_id = r.region_id
+       AND p.dimensions_hash = r.dimensions_hash
+       AND p.metric_name = r.metric_name
+       AND p.statistic = r.statistic
+       AND p.bucket_seconds = r.bucket_seconds
       LEFT JOIN cloud_resources cr ON cr.id = r.cloud_resource_id
-      WHERE ${where}
       GROUP BY r.provider, r.external_resource_id, r.cloud_resource_id,
         r.cloud_connection_id, r.provider_namespace, r.region_id,
         r.dimensions_hash, r.metric_name, r.statistic
@@ -86,8 +119,6 @@ export class PrismaResourceMetricSummaryReader {
         r.region_id ASC, r.metric_name ASC, r.dimensions_hash ASC
       LIMIT ${filters.limit}
     `);
-
-    return rows.map(toSummaryItem);
   }
 }
 
@@ -97,7 +128,6 @@ function buildWhere(
 ): Prisma.Sql {
   const clauses: Prisma.Sql[] = [
     Prisma.sql`r.tenant_id = ${tenantId}`,
-    Prisma.sql`r.bucket_seconds = 86400`,
   ];
   if (filters.startDate !== undefined) clauses.push(Prisma.sql`r.bucket_start >= ${filters.startDate}`);
   if (filters.endDate !== undefined) clauses.push(Prisma.sql`r.bucket_start <= ${filters.endDate}`);

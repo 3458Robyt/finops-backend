@@ -3,8 +3,9 @@ import { Prisma } from '../../generated/prisma/client.js';
 
 /**
  * Maintains peak-preserving rollups for technical metric series.
- * Raw samples remain canonical; affected buckets are recomputed from all raw
- * samples so retries and overlapping backfills remain idempotent.
+ * Raw samples remain canonical; each source resolution plus a compact daily
+ * projection is recomputed from all raw samples so retries and overlapping
+ * backfills remain idempotent.
  */
 export class PrismaResourceMetricRollupPersistence {
   public async refreshForJob(prisma: Pick<PrismaClient, '$executeRaw'>, ingestionJobId: string): Promise<number> {
@@ -54,11 +55,23 @@ export class PrismaResourceMetricRollupPersistence {
           AND affected.dimensions_hash = samples.dimensions_hash
           AND affected.metric_name = samples.metric_name
           AND affected.statistic = samples.statistic
-        CROSS JOIN (VALUES (1800), (3600), (86400)) AS buckets(bucket_seconds)
         CROSS JOIN LATERAL (
-            SELECT buckets.bucket_seconds,
-              to_timestamp(floor(extract(epoch FROM samples.sampled_at) / buckets.bucket_seconds) * buckets.bucket_seconds) AS bucket_start
-          ) bucket
+          SELECT CASE
+            WHEN samples.granularity_seconds <= 1800 THEN 1800
+            WHEN samples.granularity_seconds <= 3600 THEN 3600
+            ELSE 86400
+          END::int AS source_bucket_seconds
+        ) source_resolution
+        CROSS JOIN LATERAL (
+          SELECT source_resolution.source_bucket_seconds AS bucket_seconds
+          UNION ALL
+          SELECT 86400::int
+          WHERE source_resolution.source_bucket_seconds <> 86400
+        ) bucket_resolution
+        CROSS JOIN LATERAL (
+          SELECT bucket_resolution.bucket_seconds,
+            to_timestamp(floor(extract(epoch FROM samples.sampled_at) / bucket_resolution.bucket_seconds) * bucket_resolution.bucket_seconds) AS bucket_start
+        ) bucket
         WHERE bucket.bucket_start >= to_timestamp(
             floor(extract(epoch FROM job."target_start") / bucket.bucket_seconds)
             * bucket.bucket_seconds
@@ -151,31 +164,40 @@ export class PrismaResourceMetricRollupPersistence {
   }
 
   public async refreshAll(prisma: PrismaClient, tenantId?: string): Promise<number> {
-    const scope = tenantId === undefined ? Prisma.sql`` : Prisma.sql`WHERE tenant_id = ${tenantId}`;
-    await prisma.$executeRaw(Prisma.sql`DELETE FROM resource_metric_rollups ${scope}`);
-    let inserted = 0;
-    for (const bucketSeconds of [1800, 3600, 86400]) {
-      inserted += await this.refreshAllBucket(prisma, tenantId, bucketSeconds);
-    }
-    return inserted;
+    const deleteScope = tenantId === undefined ? Prisma.sql`` : Prisma.sql`WHERE tenant_id = ${tenantId}`;
+    await prisma.$executeRaw(Prisma.sql`DELETE FROM resource_metric_rollups ${deleteScope}`);
+    return this.refreshAllBucket(prisma, tenantId);
   }
 
   private async refreshAllBucket(
     prisma: PrismaClient,
     tenantId: string | undefined,
-    bucketSeconds: number,
   ): Promise<number> {
-    const scope = tenantId === undefined ? Prisma.sql`` : Prisma.sql`WHERE tenant_id = ${tenantId}`;
+    const scope = tenantId === undefined ? Prisma.sql`` : Prisma.sql`AND s.tenant_id = ${tenantId}`;
     return prisma.$executeRaw(Prisma.sql`
       WITH source AS (
         SELECT s.id, s.tenant_id, s.cloud_connection_id, s.cloud_resource_id,
           s.provider, s.external_resource_id, s.provider_namespace, s.region_id,
           s.compartment_id, s.dimensions_hash, s.metric_name, s.metric_unit,
           s.statistic, s.value, s.sampled_at, s.granularity_seconds,
-          ${bucketSeconds}::int AS bucket_seconds,
-          to_timestamp(floor(extract(epoch FROM s.sampled_at) / ${bucketSeconds}) * ${bucketSeconds}) AS bucket_start
+          bucket_resolution.bucket_seconds,
+          to_timestamp(floor(extract(epoch FROM s.sampled_at) / bucket_resolution.bucket_seconds) * bucket_resolution.bucket_seconds) AS bucket_start
         FROM resource_metric_samples s
-        ${scope}
+        CROSS JOIN LATERAL (
+          SELECT CASE
+            WHEN s.granularity_seconds <= 1800 THEN 1800
+            WHEN s.granularity_seconds <= 3600 THEN 3600
+            ELSE 86400
+          END::int AS source_bucket_seconds
+        ) source_resolution
+        CROSS JOIN LATERAL (
+          SELECT source_resolution.source_bucket_seconds AS bucket_seconds
+          UNION ALL
+          SELECT 86400::int
+          WHERE source_resolution.source_bucket_seconds <> 86400
+        ) bucket_resolution
+        WHERE s.source_type = 'TECHNICAL_METRIC'::"IngestionSourceType"
+          ${scope}
       ), grouped AS (
         SELECT tenant_id, cloud_connection_id, max(cloud_resource_id) AS cloud_resource_id,
           provider, external_resource_id, provider_namespace, region_id, max(compartment_id) AS compartment_id,

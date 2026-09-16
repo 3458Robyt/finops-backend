@@ -21,6 +21,11 @@ export interface ArtifactAuditInput {
   readonly readinessReport?: RecommendationReadinessReport;
 }
 
+export interface AiArtifactRequestPolicy {
+  readonly timeoutMs: number;
+  readonly maxRetries: number;
+}
+
 /**
  * Boundary for model calls used by recommendation and execution-plan artifacts.
  * It keeps prompt assembly, model selection and audit tracing out of the
@@ -32,11 +37,15 @@ export class FinOpsArtifactAiRunner {
     private readonly traceRecorder: AiTraceRecorder,
     private readonly mainModel: string,
     private readonly auditorModel: string,
+    private readonly requestPolicy: AiArtifactRequestPolicy = { timeoutMs: 60_000, maxRetries: 1 },
   ) {}
 
   public generateRecommendations(systemPrompt: string): Promise<string> {
     return this.aiGateway.generateText({
+      model: this.mainModel,
       responseFormat: 'json',
+      timeoutMs: this.requestPolicy.timeoutMs,
+      maxRetries: this.requestPolicy.maxRetries,
       // Las recomendaciones deben ser reproducibles: el contenido creativo
       // está acotado por candidatos/evidencia y no necesita aleatoriedad.
       temperature: 0,
@@ -54,7 +63,10 @@ export class FinOpsArtifactAiRunner {
 
   public reviseRecommendations(systemPrompt: string, requiredChanges: readonly string[]): Promise<string> {
     return this.aiGateway.generateText({
+      model: this.mainModel,
       responseFormat: 'json',
+      timeoutMs: this.requestPolicy.timeoutMs,
+      maxRetries: this.requestPolicy.maxRetries,
       temperature: 0,
       maxTokens: 900,
       messages: [
@@ -65,7 +77,7 @@ export class FinOpsArtifactAiRunner {
             'Corrige las recomendaciones usando exactamente estos cambios requeridos por auditoria.',
             'No agregues cuentas, proveedores ni recursos que no esten en el contexto.',
             'Conserva evidence.candidateId, sourceFacts, assumptions y confidence en cada recomendacion.',
-            JSON.stringify(requiredChanges, null, 2),
+            JSON.stringify(requiredChanges),
           ].join('\n'),
         },
       ],
@@ -76,6 +88,8 @@ export class FinOpsArtifactAiRunner {
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
+      timeoutMs: this.requestPolicy.timeoutMs,
+      maxRetries: this.requestPolicy.maxRetries,
       temperature: 0,
       maxTokens: 1200,
       messages: [
@@ -92,6 +106,8 @@ export class FinOpsArtifactAiRunner {
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
+      timeoutMs: this.requestPolicy.timeoutMs,
+      maxRetries: this.requestPolicy.maxRetries,
       temperature: 0,
       maxTokens: 1200,
       messages: [
@@ -101,7 +117,7 @@ export class FinOpsArtifactAiRunner {
           content: [
             'Corrige el plan de ejecucion usando exactamente estos cambios requeridos por auditoria.',
             'Mantiene el alcance manual y no prometas ejecucion automatica.',
-            JSON.stringify(requiredChanges, null, 2),
+            JSON.stringify(requiredChanges),
           ].join('\n'),
         },
       ],
@@ -113,6 +129,10 @@ export class FinOpsArtifactAiRunner {
     const request: AiGatewayRequest = {
       model: this.auditorModel,
       responseFormat: 'json',
+      // The auditor is a mandatory gate, but a failed provider must not turn a
+      // recommendation run into a multi-minute retry chain.
+      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 45_000),
+      maxRetries: 0,
       temperature: 0,
       maxTokens: 900,
       messages: [
@@ -122,24 +142,24 @@ export class FinOpsArtifactAiRunner {
           content: [
             `Audita este artefacto: ${input.artifactType}.`,
             'Contexto autorizado:',
-            JSON.stringify(compactSnapshot(input.snapshot), null, 2),
+            JSON.stringify(compactSnapshot(input.snapshot)),
             ...(input.technicalEvidenceSnapshot === undefined
               ? []
-              : ['Evidencia tecnica canonica:', JSON.stringify(input.technicalEvidenceSnapshot, null, 2)]),
+              : ['Evidencia tecnica canonica:', JSON.stringify(input.technicalEvidenceSnapshot)]),
             ...(input.deterministicAnalysis === undefined
               ? []
-              : ['Preanalisis deterministico de tendencias:', JSON.stringify(input.deterministicAnalysis, null, 2)]),
+              : ['Preanalisis deterministico de tendencias:', JSON.stringify(input.deterministicAnalysis)]),
             ...(input.readinessReport === undefined
               ? []
               : [
                   'Candidatos autorizados por la compuerta deterministica (candidateId pertenece a esta lista):',
-                  JSON.stringify(compactReadinessReport(input.readinessReport), null, 2),
+                  JSON.stringify(compactReadinessReport(input.readinessReport)),
                 ]),
             ...(input.recommendation === undefined
               ? []
-              : ['Recomendacion original:', JSON.stringify(input.recommendation, null, 2)]),
+              : ['Recomendacion original:', JSON.stringify(input.recommendation)]),
             'Artefacto generado:',
-            JSON.stringify(input.artifact, null, 2),
+            JSON.stringify(input.artifact),
           ].join('\n'),
         },
       ],

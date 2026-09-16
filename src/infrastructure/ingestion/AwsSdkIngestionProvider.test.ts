@@ -5,6 +5,7 @@ import type {
   NormalizedFocusCostLineItem,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import { AwsSdkIngestionProvider } from './AwsSdkIngestionProvider.js';
+import { buildAwsMetricWindows } from './aws/AwsMetricCollector.js';
 
 describe('AwsSdkIngestionProvider', () => {
   it('reports every capability as not configured without exposing credentials', async () => {
@@ -102,10 +103,37 @@ describe('AwsSdkIngestionProvider', () => {
         metricName: 'CPUUtilization',
         metricUnit: 'Percent',
         value: 42,
-        granularitySeconds: 1800,
+         granularitySeconds: 3600,
       }),
     ]);
     expect(result.warnings).toEqual([]);
+  });
+
+  it('splits CloudWatch requests at retention boundaries without changing the requested range', () => {
+    const now = new Date('2026-09-30T00:00:00Z');
+    const windows = buildAwsMetricWindows(
+      new Date('2026-07-01T00:00:00Z'),
+      new Date('2026-09-29T00:00:00Z'),
+      now,
+    );
+
+    expect(windows).toEqual([
+      {
+        start: new Date('2026-07-01T00:00:00Z'),
+        end: new Date('2026-07-29T00:00:00Z'),
+        periodSeconds: 3600,
+      },
+      {
+        start: new Date('2026-07-29T00:00:00Z'),
+        end: new Date('2026-09-15T00:00:00Z'),
+        periodSeconds: 300,
+      },
+      {
+        start: new Date('2026-09-15T00:00:00Z'),
+        end: new Date('2026-09-29T00:00:00Z'),
+        periodSeconds: 60,
+      },
+    ]);
   });
 
   it('preserves CloudWatch percentile and maximum statistics', async () => {

@@ -98,8 +98,12 @@ try {
     name: 'canary_no_degrada_calidad',
     passed: evaluation.safetyPassed,
     detail: JSON.stringify({
-      baselineScore: baseline.qualityScore,
-      candidateScore: candidate.qualityScore,
+      baselineAuditScore: baseline.auditScore ?? baseline.qualityScore,
+      candidateAuditScore: candidate.auditScore ?? candidate.qualityScore,
+      baselineApprovedRecommendations: baseline.approvedRecommendationCount,
+      candidateApprovedRecommendations: candidate.approvedRecommendationCount,
+      baselineRecommendationCount: baseline.recommendationCount,
+      candidateRecommendationCount: candidate.recommendationCount,
       blockers: evaluation.blockers,
     }),
   });

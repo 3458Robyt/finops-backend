@@ -26,8 +26,8 @@ const evidence: GlobalLearningCanaryEvidence = {
     latencyMs: 500,
   },
   candidate: {
-    recommendationCount: 1,
-    approvedRecommendationCount: 1,
+    recommendationCount: 2,
+    approvedRecommendationCount: 2,
     invalidOutputCount: 0,
     nonNegativeSavings: true,
     qualityScore: 95,
@@ -55,7 +55,12 @@ describe('GlobalLearningPromotionService', () => {
     const service = new GlobalLearningPromotionService(repository);
     const equalEvidence = {
       ...evidence,
-      candidate: { ...evidence.candidate, qualityScore: evidence.baseline.qualityScore },
+      candidate: {
+        ...evidence.candidate,
+        recommendationCount: evidence.baseline.recommendationCount,
+        approvedRecommendationCount: evidence.baseline.approvedRecommendationCount,
+        qualityScore: evidence.baseline.qualityScore,
+      },
     };
 
     await expect(service.promote({

@@ -57,7 +57,7 @@ describe('learning promotion evaluator', () => {
   test('requires strict live improvement before promoting a global candidate', () => {
     const evidence = canaryEvidence({
       baseline: { qualityScore: 92, approvedRecommendationCount: 1 },
-      candidate: { qualityScore: 95, approvedRecommendationCount: 1 },
+      candidate: { qualityScore: 95, recommendationCount: 2, approvedRecommendationCount: 2 },
     });
 
     expect(evaluateGlobalLearningCanary(evidence)).toMatchObject({
@@ -65,6 +65,30 @@ describe('learning promotion evaluator', () => {
       qualityImproved: true,
       noDegradation: true,
     });
+  });
+
+  test('does not treat auditor score variance as a quality regression', () => {
+    const evidence = canaryEvidence({
+      baseline: { qualityScore: 96, auditScore: 96 },
+      candidate: { qualityScore: 95, auditScore: 95 },
+    });
+
+    expect(evaluateGlobalLearningCanary(evidence)).toMatchObject({
+      passed: false,
+      safetyPassed: true,
+      noDegradation: true,
+      qualityImproved: false,
+    });
+  });
+
+  test('blocks an arm whose auditor score is below the safety threshold', () => {
+    const evidence = canaryEvidence({
+      candidate: { auditScore: 79 },
+    });
+
+    const result = evaluateGlobalLearningCanary(evidence);
+    expect(result.safetyPassed).toBe(false);
+    expect(result.blockers).toContain('El score del auditor del brazo candidate es inválido o inferior a 80.');
   });
 
   test('blocks equal-quality or degraded candidates and invalid outputs', () => {

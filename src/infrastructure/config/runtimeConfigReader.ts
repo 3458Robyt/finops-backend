@@ -11,7 +11,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
 
   const nodeEnv = env['NODE_ENV'] ?? 'development';
   const processRole = readProcessRole(env['APP_PROCESS_ROLE']);
-  const corsOrigins = readCsv(env['CORS_ORIGIN'], ['http://localhost:5173']);
+  const corsOrigins = readCsv(env['CORS_ORIGIN'], ['http://localhost:5173', 'http://127.0.0.1:5173']);
 
   return {
     environment: {

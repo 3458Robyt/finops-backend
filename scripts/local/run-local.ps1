@@ -16,6 +16,7 @@ $env:DATABASE_URL = "postgresql://postgres:$encodedPassword@127.0.0.1:5433/finop
 $env:DB_RUNTIME_ENFORCE = 'true'
 $env:DB_RUNTIME_ROLE = 'finops_runtime'
 $env:DB_EXPECTED_MIGRATION = '202609150001_readiness_summary_indexes'
+$env:CORS_ORIGIN = if ($env:CORS_ORIGIN) { $env:CORS_ORIGIN } else { 'http://localhost:5173,http://127.0.0.1:5173' }
 $env:ENABLE_OCI_PROVIDER = 'true'
 $env:INGESTION_SCHEDULER_PROVIDER = 'oci'
 $isApi = $Mode -eq 'dev'

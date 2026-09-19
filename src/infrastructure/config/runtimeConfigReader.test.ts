@@ -57,6 +57,7 @@ describe('loadRuntimeConfig', () => {
 
     expect(config.environment.processRole).toBe('all');
     expect(config.http.port).toBe(3000);
+    expect(config.http.corsOrigins).toEqual(['http://localhost:5173', 'http://127.0.0.1:5173']);
     expect(config.security.cookieSameSite).toBe('lax');
     expect(config.ai.model).toBe('gpt-5.6-luna');
     expect(config.email.timeoutMs).toBe(15_000);

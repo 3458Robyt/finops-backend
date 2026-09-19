@@ -250,6 +250,7 @@ function matchesReadinessCandidate(
     : cloudResourceId !== candidate.cloudResourceId) return false;
 
   if (readEvidenceLevel(draft) !== candidate.evidenceLevelAllowed) return false;
+  if (readRequiresTechnicalValidation(draft) !== candidate.requiresTechnicalValidation) return false;
 
   const observedCost = readOptionalNumericEvidence(draft.evidence, 'observedCost');
   if (candidate.observedCost !== undefined

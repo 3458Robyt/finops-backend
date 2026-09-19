@@ -61,10 +61,12 @@ export function normalizeRecommendationDrafts(
       ? removeTechnicalEvidenceFields(existingEvidence)
       : existingEvidence;
     const safeGeneratedEvidence = removeGeneratedSafetyAndCostFields(withoutStaleTechnicalFields);
+    // The readiness gate is authoritative. The model may not upgrade a
+    // cost/usage candidate into a technical-validation candidate by emitting
+    // a conflicting flag in its draft.
     const requiresTechnicalValidation = candidate.requiresTechnicalValidation
       || technicalResource !== undefined
-      || technicalValidationOnly
-      || existingEvidence['requiresTechnicalValidation'] === true;
+      || technicalValidationOnly;
     const resourceIdentifier = technicalResource?.externalResourceId ?? candidate.resourceId;
     const safeType = technicalReviewOnly
       ? 'PERFORMANCE_CAPACITY_REVIEW'

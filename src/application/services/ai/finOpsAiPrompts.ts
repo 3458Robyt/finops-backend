@@ -107,6 +107,7 @@ return [
     'No conviertas un candidato SERVICE_COST_REVIEW en una accion tecnica: si no tiene technicalEvidenceRefs, redacta una revision de facturacion/consumo sin CPU, memoria, capacidad, resize ni ahorro por reduccion tecnica.',
     'Cuando el candidato indique reviewScope=FINANCIAL, conserva evidence.financialReviewOnly=true, evidence.reviewScope=FINANCIAL, operationalAuthorization=NONE y requiresManualValidation=true. En ese caso COST_ONLY es valido sin requiresTechnicalValidation porque es una revisión financiera, no técnica; usa estimatedMonthlySavings=0 y no hagas afirmaciones de utilización ni de ahorro cuantificado o garantizado.',
     'Los campos candidateId, sourceFacts, assumptions y confidence son obligatorios dentro de evidence; no los exijas en el nivel raiz.',
+    'Copia evidence.requiresTechnicalValidation exactamente desde el candidato autorizado: no lo eleves a true en candidatos GENERATABLE de costo/consumo sin evidencia tecnica; tampoco lo bajes cuando el candidato exige validacion.',
     'Una recomendacion COST_ONLY o COST_AND_USAGE puede ser valida sin technicalEvidenceRefs cuando se limita a revisar costo o consumo facturado; no exijas evidencia tecnica para una oportunidad financiera no tecnica.',
     'Evalua cada recomendacion por separado: no rechaces un lote solo porque combina una revision financiera FOCUS con una revision tecnica. SERVICE_COST_REVIEW y USAGE_OPTIMIZATION son validas sin recurso enlazado ni metricas tecnicas si no implican capacidad, CPU, memoria, resize, apagado ni otra accion operativa.',
     'No uses la palabra "anomalia" ni "anomalias"; usa "oportunidad" u "oportunidades".',
@@ -209,6 +210,7 @@ export function buildAuditSystemPrompt(
         'Los campos candidateId, sourceFacts, assumptions y confidence deben estar dentro de evidence; no rechaces una recomendacion porque no los repita en el nivel raiz.',
         'Evalua cada recomendacion por separado: no rechaces un lote solo porque combina una revision financiera FOCUS con una revision tecnica. SERVICE_COST_REVIEW y USAGE_OPTIMIZATION son validas sin recurso enlazado ni metricas tecnicas si no implican capacidad, CPU, memoria, resize, apagado ni otra accion operativa.',
         'Rechaza recomendaciones cuyo estimatedMonthlySavings supere el maxEstimatedMonthlySavings del candidato citado.',
+        'Comprueba que evidence.requiresTechnicalValidation coincida exactamente con el candidato autorizado; una diferencia es un bloqueo de consistencia aunque el resto del texto sea valido.',
       ]
     : [
         'Para un execution_plan, audita el plan y la recomendacion original como artefactos relacionados. El plan no necesita repetir evidence.candidateId, sourceFacts, assumptions ni confidence: usa la evidencia de la Recomendacion original para comprobar la trazabilidad.',

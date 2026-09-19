@@ -169,6 +169,7 @@ describe('normalizeRecommendationDrafts', () => {
           candidateId: 'usage-1',
           evidenceLevel: 'COST_AND_USAGE',
           reviewScope: 'TECHNICAL',
+          requiresTechnicalValidation: true,
           normalizedMonthlyCost: 999,
         },
       }],
@@ -204,6 +205,7 @@ describe('normalizeRecommendationDrafts', () => {
     expect(result[0]?.cloudAccountId).toBe('account-1');
     expect(evidence['reviewScope']).toBeUndefined();
     expect(evidence['financialReviewOnly']).toBeUndefined();
+    expect(evidence['requiresTechnicalValidation']).toBe(false);
     expect(evidence['normalizedMonthlyCost']).toBe(100);
   });
 

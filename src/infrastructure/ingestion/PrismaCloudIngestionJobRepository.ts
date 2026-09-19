@@ -44,8 +44,12 @@ export class PrismaCloudIngestionJobRepository {
     this.support = new PrismaIngestionJobSupport(prisma, credentialCipher);
     this.claimRepository = new PrismaIngestionJobClaimRepository(prisma, this.support, jobLeaseMs);
   }
-  public async claimNextPendingJob(workerId: string): Promise<CloudIngestionJobContext | null> {
-    return this.claimRepository.claimNextPendingJob(workerId);
+  public async claimNextPendingJob(
+    workerId: string,
+    cloudConnectionId?: string,
+    sourceType?: string,
+  ): Promise<CloudIngestionJobContext | null> {
+    return this.claimRepository.claimNextPendingJob(workerId, cloudConnectionId, sourceType);
   }
   public async reconcileStaleJobs(now = new Date()): Promise<IngestionJobReconciliationResult> {
     return this.claimRepository.reconcileStaleJobs(now);

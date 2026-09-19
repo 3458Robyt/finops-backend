@@ -40,11 +40,15 @@ export class CloudIngestionWorkerService {
     this.onSuccessfulIngestion = onSuccessfulIngestion;
   }
 
-  public async runOnce(workerId: string): Promise<CloudIngestionWorkerRunResult> {
+  public async runOnce(
+    workerId: string,
+    cloudConnectionId?: string,
+    sourceType?: string,
+  ): Promise<CloudIngestionWorkerRunResult> {
     const startedAt = Date.now();
     try {
       const result = await runWithDatabaseContext({ workerId, role: 'MASTER_ADMIN' }, async () => {
-        const job = await this.jobs.claimNextPendingJob(workerId);
+        const job = await this.jobs.claimNextPendingJob(workerId, cloudConnectionId, sourceType);
         if (job === null) {
           return { processed: false };
         }
@@ -68,9 +72,14 @@ export class CloudIngestionWorkerService {
     }
   }
 
-  public async runBatch(workerId: string, concurrency = this.defaultConcurrency): Promise<readonly CloudIngestionWorkerRunResult[]> {
+  public async runBatch(
+    workerId: string,
+    concurrency = this.defaultConcurrency,
+    cloudConnectionId?: string,
+    sourceType?: string,
+  ): Promise<readonly CloudIngestionWorkerRunResult[]> {
     const slots = Math.max(1, Math.min(16, Math.floor(concurrency)));
-    return Promise.all(Array.from({ length: slots }, () => this.runOnce(workerId)));
+    return Promise.all(Array.from({ length: slots }, () => this.runOnce(workerId, cloudConnectionId, sourceType)));
   }
 
   private async processClaimedJob(

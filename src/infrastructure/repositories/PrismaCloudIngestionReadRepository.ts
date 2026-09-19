@@ -222,6 +222,7 @@ export class PrismaCloudIngestionReadRepository {
         lastValidatedAt: true,
         lastValidationAttemptAt: true,
         metadata: true,
+        metricDefinitions: { where: { enabled: true }, select: { id: true } },
         credentials: { where: { status: 'ACTIVE' }, select: { purpose: true } },
         ingestionJobs: {
           orderBy: { createdAt: 'desc' },
@@ -256,6 +257,7 @@ export class PrismaCloudIngestionReadRepository {
         lastValidatedAt: connection.lastValidatedAt,
         lastValidationAttemptAt: connection.lastValidationAttemptAt,
         metadata: connection.metadata,
+        configuredMetricDefinitionCount: connection.metricDefinitions.length,
         credentialPurposes: connection.credentials.map((credential) => credential.purpose),
         recentJobs: connection.ingestionJobs.map((job) => ({
           id: job.id,

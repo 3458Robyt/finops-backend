@@ -44,10 +44,13 @@ export class TechnicalRecommendationEvidenceService implements TechnicalRecommen
       : new Date(startDate.getTime() - technicalEvidenceLookbackDays * 24 * 60 * 60 * 1000);
     const evidenceEndDate = endDate !== undefined && endDate <= now ? endDate : now;
     const referenceDate = evidenceEndDate;
+    const candidateResourceIds: string[] = input.externalResourceId === undefined
+      ? [...new Set(input.snapshot.topResources.map((resource) => resource.resourceId).filter((id) => id.trim() !== ''))]
+      : [input.externalResourceId];
     const summaries = await this.repository.listMetricSummariesForTenant(input.tenantId, {
       ...(evidenceStartDate !== undefined ? { startDate: evidenceStartDate } : {}),
       ...(evidenceEndDate !== undefined ? { endDate: evidenceEndDate } : {}),
-      ...(input.externalResourceId !== undefined ? { externalResourceIds: [input.externalResourceId] } : {}),
+      ...(candidateResourceIds.length > 0 ? { externalResourceIds: candidateResourceIds } : {}),
       ...(input.cloudResourceId !== undefined ? { cloudResourceIds: [input.cloudResourceId] } : {}),
       limit: 1000,
     });

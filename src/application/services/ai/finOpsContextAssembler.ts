@@ -139,13 +139,13 @@ private readonly technicalEvidenceProvider?: TechnicalRecommendationEvidenceProv
         input.externalResourceId,
         input.cloudResourceId,
       );
-    const technicalEvidence = technicalEvidenceSnapshot === undefined
-      ? undefined
-      : formatRecommendationEvidenceSnapshot(technicalEvidenceSnapshot);
     const readinessReport = buildRecommendationReadinessReport({
       snapshot: input.snapshot,
       ...(technicalEvidenceSnapshot !== undefined ? { technicalEvidenceSnapshot } : {}),
     });
+    const technicalEvidence = technicalEvidenceSnapshot === undefined
+      ? undefined
+      : formatRecommendationEvidenceSnapshot(technicalEvidenceSnapshot, readinessReport.candidates);
     const builtContext = scoped
       ? undefined
       : await this.buildOptionalContext({

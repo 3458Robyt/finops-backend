@@ -1,5 +1,6 @@
 import type { CloudIngestionJobContext } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import type { PrismaClient } from '../../generated/prisma/client.js';
+import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaIngestionJobSupport } from './PrismaIngestionJobSupport.js';
 import { PrismaIngestionJobLeaseReconciler } from './PrismaIngestionJobLeaseReconciler.js';
 import type { IngestionJobReconciliationResult } from './PrismaIngestionJobLeaseReconciler.js';
@@ -22,7 +23,11 @@ export class PrismaIngestionJobClaimRepository {
     return this.leaseReconciler.reconcile(this.prisma, this.jobLeaseMs, now);
   }
 
-  public async claimNextPendingJob(workerId: string): Promise<CloudIngestionJobContext | null> {
+  public async claimNextPendingJob(
+    workerId: string,
+    cloudConnectionId?: string,
+    sourceType?: string,
+  ): Promise<CloudIngestionJobContext | null> {
     const now = new Date();
     return this.prisma.$transaction(async (tx) => {
       await this.leaseReconciler.reconcileInTransaction(tx, this.jobLeaseMs, now);
@@ -34,6 +39,8 @@ export class PrismaIngestionJobClaimRepository {
           AND cancel_requested_at IS NULL
           AND archived_at IS NULL
           AND status = 'PENDING'
+          ${cloudConnectionId === undefined ? Prisma.empty : Prisma.sql`AND cloud_connection_id = ${cloudConnectionId}`}
+          ${sourceType === undefined ? Prisma.empty : Prisma.sql`AND source_type = ${sourceType}::"IngestionSourceType"`}
         -- Technical backfills are consumed oldest-first so a newly requeued
         -- historical gap cannot wait behind newer jobs created earlier.
         ORDER BY priority ASC,

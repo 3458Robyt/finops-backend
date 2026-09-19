@@ -76,6 +76,8 @@ export interface GenerateAiRecommendationsInput {
   readonly analysisRunId?: string;
   /** Preparación factual ya calculada para garantizar que generador y auditor usen el mismo snapshot. */
   readonly prepared?: PreparedRecommendationAnalysis;
+  /** Las corridas durables desactivan la reparación para respetar el SLO de 120 s. */
+  readonly allowRepair?: boolean;
   readonly onStage?: (stage: 'AI_GENERATION' | 'AI_AUDIT' | 'PERSISTENCE') => Promise<void> | void;
 }
 

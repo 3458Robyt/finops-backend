@@ -16,6 +16,8 @@ async function main(): Promise<void> {
   const prisma = getPrismaClient();
   const workerId = process.env['INGESTION_WORKER_ID'] ?? `manual-worker-${process.pid}`;
   const concurrency = readConcurrency();
+  const cloudConnectionId = readOptionalArgument('--connection-id');
+  const sourceType = readSourceType();
   const worker = new CloudIngestionWorkerService(
     new PrismaCloudIngestionJobRepository(
       prisma,
@@ -28,17 +30,38 @@ async function main(): Promise<void> {
   );
 
   try {
-    const result = await worker.runBatch(workerId, concurrency);
+    const result = await worker.runBatch(workerId, concurrency, cloudConnectionId, sourceType);
     const durationMs = Date.now() - startedAt;
 
     console.log(JSON.stringify({
       durationMs,
       concurrency,
+      ...(cloudConnectionId === undefined ? {} : { cloudConnectionId }),
+      ...(sourceType === undefined ? {} : { sourceType }),
       result,
     }, null, 2));
   } finally {
     await prisma.$disconnect();
   }
+}
+
+function readOptionalArgument(name: string): string | undefined {
+  const index = process.argv.indexOf(name);
+  if (index < 0) return undefined;
+  const value = process.argv[index + 1];
+  if (value === undefined || value.startsWith('--') || value.trim() === '') {
+    throw new Error(`${name} requiere un valor.`);
+  }
+  return value.trim();
+}
+
+function readSourceType(): 'BILLING_EXPORT' | 'TECHNICAL_METRIC' | 'INVENTORY' | undefined {
+  const value = readOptionalArgument('--source-type');
+  if (value === undefined) return undefined;
+  if (value !== 'BILLING_EXPORT' && value !== 'TECHNICAL_METRIC' && value !== 'INVENTORY') {
+    throw new Error('--source-type debe ser BILLING_EXPORT, TECHNICAL_METRIC o INVENTORY.');
+  }
+  return value;
 }
 
 function readConcurrency(): number {

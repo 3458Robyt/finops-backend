@@ -6,41 +6,48 @@ import {
   isValidCredentialEncryptionKey,
 } from '../src/infrastructure/ingestion/ingestionReadiness.js';
 import type { IngestionReadinessIssue } from '../src/domain/interfaces/ICloudConnectionRepository.js';
+import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
 
 async function main(): Promise<void> {
   const prisma = getPrismaClient();
-  const connections = await prisma.cloudConnection.findMany({
-    where: {
-      providerCode: { in: ['aws', 'oci'] },
-      status: 'ACTIVE',
-    },
-    orderBy: [{ providerCode: 'asc' }, { createdAt: 'desc' }],
-    select: {
-      id: true,
-      name: true,
-      providerCode: true,
-      defaultRegion: true,
-      metadata: true,
-      credentials: {
-        where: { status: 'ACTIVE' },
-        select: { purpose: true },
+  const connections = await runWithDatabaseContext(
+    { workerId: 'ingestion-readiness-cli', role: 'MASTER_ADMIN' },
+    () => prisma.cloudConnection.findMany({
+      where: {
+        providerCode: { in: ['aws', 'oci'] },
+        status: 'ACTIVE',
       },
-      ingestionJobs: {
-        orderBy: { createdAt: 'desc' },
-        take: 5,
-        select: {
-          id: true,
-          sourceType: true,
-          status: true,
-          targetStart: true,
-          targetEnd: true,
-          errorMessage: true,
-          resultSummary: true,
-          completedAt: true,
+      orderBy: [{ providerCode: 'asc' }, { createdAt: 'desc' }],
+      select: {
+        id: true,
+        name: true,
+        providerCode: true,
+        defaultRegion: true,
+        lastValidatedAt: true,
+        lastValidationAttemptAt: true,
+        metadata: true,
+        metricDefinitions: { where: { enabled: true }, select: { id: true } },
+        credentials: {
+          where: { status: 'ACTIVE' },
+          select: { purpose: true },
+        },
+        ingestionJobs: {
+          orderBy: { createdAt: 'desc' },
+          take: 5,
+          select: {
+            id: true,
+            sourceType: true,
+            status: true,
+            targetStart: true,
+            targetEnd: true,
+            errorMessage: true,
+            resultSummary: true,
+            completedAt: true,
+          },
         },
       },
-    },
-  });
+    }),
+  );
 
   const globalIssues = buildGlobalIssues();
   const readiness = buildIngestionReadinessSummary({
@@ -51,7 +58,10 @@ async function main(): Promise<void> {
       name: connection.name,
       providerCode: connection.providerCode,
       defaultRegion: connection.defaultRegion,
+      lastValidatedAt: connection.lastValidatedAt,
+      lastValidationAttemptAt: connection.lastValidationAttemptAt,
       metadata: connection.metadata,
+      configuredMetricDefinitionCount: connection.metricDefinitions.length,
       credentialPurposes: connection.credentials.map((credential) => credential.purpose),
       recentJobs: connection.ingestionJobs.map((job) => ({
         id: job.id,

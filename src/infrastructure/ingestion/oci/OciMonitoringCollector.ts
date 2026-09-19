@@ -13,6 +13,9 @@ import { getOrCreateRegionalClient, mapWithConcurrency, regionKey } from './OciM
 export { buildOciGroupedMetricQuery, buildOciResourceMetricQuery } from './OciMonitoringQueryBuilder.js';
 
 const MAX_PERSIST_BATCH_SIZE = 5_000;
+// Keep long-running backfills away from the moving 90-day boundary. A small
+// margin is not enough when a job spends several minutes in provider calls.
+const OCI_RETENTION_SAFETY_MARGIN_MS = 6 * 60 * 60 * 1000;
 
 export interface OciMonitoringDependencies {
   readonly createClient: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciMonitoringClient;
@@ -340,8 +343,7 @@ export function resolveOciRequestRange(job: Pick<CloudIngestionJobContext, 'targ
   readonly endTime: Date;
 } {
   const retentionMs = 90 * 24 * 60 * 60 * 1000;
-  const safetyMarginMs = 15 * 60 * 1000;
-  const earliestAllowed = new Date(now.getTime() - retentionMs + safetyMarginMs);
+  const earliestAllowed = new Date(now.getTime() - retentionMs + OCI_RETENTION_SAFETY_MARGIN_MS);
   const startTime = job.targetStart > earliestAllowed ? job.targetStart : earliestAllowed;
   const endTime = job.targetEnd < now ? job.targetEnd : now;
   if (endTime <= startTime) {

@@ -21,6 +21,8 @@ import {
 import { notifyAnalysisCompletion } from './recommendationAnalysisNotification.js';
 import { buildRecommendationDeduplicationKey } from './ai/recommendationEvidence.js';
 
+const maxAnalysisDurationMs = 120_000;
+
 export class RecommendationAnalysisRunProcessor {
   constructor(
     private readonly repository: IRecommendationAnalysisRunRepository,
@@ -33,17 +35,18 @@ export class RecommendationAnalysisRunProcessor {
     return runWithDatabaseContext({ workerId, role: 'MASTER_ADMIN' }, async () => {
       const run = await this.repository.claimNext(workerId, new Date(Date.now() - staleAfterMs));
       if (run === null) return null;
+      const stageTimer = new AnalysisStageTimer();
       return runWithDatabaseContext(
         { tenantId: run.tenantId, workerId, role: 'MASTER_ADMIN' },
         async () => {
           const startedAt = Date.now();
           try {
-            return await this.processRun(run, startedAt);
+            return await this.processRun(run, startedAt, stageTimer);
           } catch (error: unknown) {
             if (error instanceof RecommendationAnalysisCancelledError) {
               return (await this.repository.finalizeCancellation(run.id)) ?? run;
             }
-            if (error instanceof AiAuditRejectedError) return this.completeAuditRejection(run, error, startedAt);
+            if (error instanceof AiAuditRejectedError) return this.completeAuditRejection(run, error, startedAt, stageTimer);
             if (error instanceof FinOpsBaseError && error.code === 'VALIDATION_ERROR') {
               return this.repository.complete(run.id, {
                 status: 'SKIPPED',
@@ -54,6 +57,7 @@ export class RecommendationAnalysisRunProcessor {
                 promptTokenEstimate: 0,
                 responseTokenEstimate: 0,
                 latencyMs: Date.now() - startedAt,
+                stageTimings: stageTimer.snapshot(),
                 errorCode: 'INSUFFICIENT_EVIDENCE',
                 errorMessage: safeMessage(error),
               });
@@ -62,6 +66,7 @@ export class RecommendationAnalysisRunProcessor {
               code: error instanceof FinOpsBaseError ? error.code : 'ANALYSIS_PROVIDER_ERROR',
               message: safeMessage(error),
               retryAt: new Date(Date.now() + retryDelayMs(run.attempts)),
+              stageTimings: stageTimer.snapshot(),
             });
           }
         },
@@ -69,9 +74,13 @@ export class RecommendationAnalysisRunProcessor {
     });
   }
 
-  private async processRun(run: RecommendationAnalysisRun, startedAt: number): Promise<RecommendationAnalysisRun> {
-    await this.ensureActive(run.id);
-    await this.repository.updateStage(run.id, 'SELECTING_DATA');
+  private async processRun(
+    run: RecommendationAnalysisRun,
+    startedAt: number,
+    stageTimer: AnalysisStageTimer,
+  ): Promise<RecommendationAnalysisRun> {
+    await this.ensureActive(run.id, startedAt);
+    await this.setStage(run.id, 'SELECTING_DATA', stageTimer);
     const prepared = await this.aiService.prepareRecommendationAnalysis({
       tenantId: run.tenantId,
       ...(run.externalResourceId !== undefined ? { externalResourceId: run.externalResourceId } : {}),
@@ -81,8 +90,8 @@ export class RecommendationAnalysisRunProcessor {
     const initialCandidateResults = buildInitialCandidateResults(prepared);
     const resourcesEvaluated = countResources(prepared);
 
-    await this.ensureActive(run.id);
-    await this.repository.updateStage(run.id, 'DETERMINISTIC_ANALYSIS');
+    await this.ensureActive(run.id, startedAt);
+    await this.setStage(run.id, 'DETERMINISTIC_ANALYSIS', stageTimer);
     await this.repository.savePrepared(run.id, {
       periodStart: bounds.start,
       periodEnd: bounds.end,
@@ -101,7 +110,7 @@ export class RecommendationAnalysisRunProcessor {
     const equivalent = await this.repository.findEquivalentCompleted(
       run.tenantId, run.scopeKey, bounds.start, bounds.end, prepared.evidenceHash, run.id,
     );
-    await this.ensureActive(run.id);
+    await this.ensureActive(run.id, startedAt);
     if (equivalent !== null) {
       return this.repository.complete(run.id, {
         status: 'SKIPPED',
@@ -116,13 +125,14 @@ export class RecommendationAnalysisRunProcessor {
         promptTokenEstimate: 0,
         responseTokenEstimate: 0,
         latencyMs: Date.now() - startedAt,
+        stageTimings: stageTimer.snapshot(),
         errorCode: 'UNCHANGED_EVIDENCE',
         errorMessage: 'No se repitió el análisis porque la evidencia no cambió.',
       });
     }
 
-    await this.ensureActive(run.id);
-    await this.repository.updateStage(run.id, 'EVIDENCE_GATE');
+    await this.ensureActive(run.id, startedAt);
+    await this.setStage(run.id, 'EVIDENCE_GATE', stageTimer);
     if (prepared.readinessReport.candidates.length === 0) {
       return this.repository.complete(run.id, {
         status: 'SKIPPED',
@@ -133,6 +143,7 @@ export class RecommendationAnalysisRunProcessor {
         promptTokenEstimate: 0,
         responseTokenEstimate: 0,
         latencyMs: Date.now() - startedAt,
+        stageTimings: stageTimer.snapshot(),
         errorCode: 'INSUFFICIENT_EVIDENCE',
         errorMessage: 'No hay evidencia suficiente para generar recomendaciones auditables.',
       });
@@ -144,18 +155,19 @@ export class RecommendationAnalysisRunProcessor {
       ...(run.externalResourceId !== undefined ? { externalResourceId: run.externalResourceId } : {}),
       ...(run.cloudResourceId !== undefined ? { cloudResourceId: run.cloudResourceId } : {}),
       analysisRunId: run.id,
+      allowRepair: false,
       // Keep the provider response ephemeral until the run has crossed the
       // cancellation fence below. Persisting inside FinOpsAiService would
       // publish recommendations while the AI call is still cancellable.
       persist: false,
       prepared,
       onStage: async (stage) => {
-        await this.ensureActive(run.id);
-        await this.repository.updateStage(run.id, stage);
-        await this.ensureActive(run.id);
+        await this.ensureActive(run.id, startedAt);
+        await this.setStage(run.id, stage, stageTimer);
+        await this.ensureActive(run.id, startedAt);
       },
     });
-    await this.ensureActive(run.id);
+    await this.ensureActive(run.id, startedAt);
     const recommendationInputs = result.recommendations.map((recommendation) => ({
       tenantId: run.tenantId,
       cloudAccountId: recommendation.cloudAccountId,
@@ -181,7 +193,7 @@ export class RecommendationAnalysisRunProcessor {
     const persistedRecommendations = this.recommendationRepository === undefined
       ? result.recommendations
       : await this.recommendationRepository.createMany(recommendationInputs);
-    await this.ensureActive(run.id);
+    await this.ensureActive(run.id, startedAt);
     const links = persistedRecommendations.map((recommendation) => {
       const candidateId = readCandidateId(recommendation.evidence);
       return {
@@ -246,7 +258,8 @@ export class RecommendationAnalysisRunProcessor {
       notifications: this.notificationRepository,
     });
 
-    await this.ensureActive(run.id);
+    await this.ensureActive(run.id, startedAt);
+    await this.setStage(run.id, 'NOTIFICATION', stageTimer);
     const rejectedCount = result.analysis.rejectedCount ?? 0;
     return this.repository.complete(run.id, {
       status: notificationFailed || rejectedCount > 0 ? 'PARTIAL' : persistedRecommendations.length > 0 ? 'COMPLETED' : 'SKIPPED',
@@ -258,6 +271,7 @@ export class RecommendationAnalysisRunProcessor {
       promptTokenEstimate: result.analysis.promptTokenEstimate,
       responseTokenEstimate: result.analysis.responseTokenEstimate,
       latencyMs: Date.now() - startedAt,
+      stageTimings: stageTimer.snapshot(),
       ...(notificationFailed
         ? { errorCode: 'NOTIFICATION_FAILED', errorMessage: 'Las recomendaciones se publicaron, pero no pudo crearse la notificación.' }
         : rejectedCount > 0
@@ -268,13 +282,30 @@ export class RecommendationAnalysisRunProcessor {
     });
   }
 
-  private async ensureActive(runId: string): Promise<void> {
+  private async setStage(
+    runId: string,
+    stage: Parameters<IRecommendationAnalysisRunRepository['updateStage']>[1],
+    stageTimer: AnalysisStageTimer,
+  ): Promise<void> {
+    stageTimer.start(stage);
+    await this.repository.updateStage(runId, stage);
+  }
+
+  private async ensureActive(runId: string, startedAt?: number): Promise<void> {
     if (await this.repository.isCancellationRequested(runId)) {
       throw new RecommendationAnalysisCancelledError();
     }
+    if (startedAt !== undefined && Date.now() - startedAt > maxAnalysisDurationMs) {
+      throw new RecommendationAnalysisTimeoutError();
+    }
   }
 
-  private completeAuditRejection(run: RecommendationAnalysisRun, error: AiAuditRejectedError, startedAt: number): Promise<RecommendationAnalysisRun> {
+  private completeAuditRejection(
+    run: RecommendationAnalysisRun,
+    error: AiAuditRejectedError,
+    startedAt: number,
+    stageTimer: AnalysisStageTimer,
+  ): Promise<RecommendationAnalysisRun> {
     const audit = isRecord(error.audit) ? error.audit : {};
     const reasons = Array.isArray(audit['blockingIssues']) ? audit['blockingIssues'].filter((item): item is string => typeof item === 'string') : ['El auditor rechazó el artefacto generado.'];
     const candidateResults = auditCandidateResults(audit, reasons);
@@ -288,6 +319,7 @@ export class RecommendationAnalysisRunProcessor {
       promptTokenEstimate: summary.promptTokenEstimate,
       responseTokenEstimate: summary.responseTokenEstimate,
       latencyMs: Date.now() - startedAt,
+      stageTimings: stageTimer.snapshot(),
       errorCode: 'AI_AUDIT_REJECTED',
       errorMessage: 'El auditor rechazó las recomendaciones generadas; no se publicó ninguna.',
     });
@@ -295,3 +327,31 @@ export class RecommendationAnalysisRunProcessor {
 }
 
 class RecommendationAnalysisCancelledError extends Error {}
+
+class RecommendationAnalysisTimeoutError extends FinOpsBaseError {
+  constructor() {
+    super('El análisis superó el límite de 120 segundos y fue detenido.', 'ANALYSIS_TIMEOUT');
+  }
+}
+
+class AnalysisStageTimer {
+  private activeStage: { readonly stage: string; readonly startedAt: number } | undefined;
+  private readonly durations = new Map<string, number>();
+
+  public start(stage: string): void {
+    this.finish();
+    this.activeStage = { stage, startedAt: Date.now() };
+  }
+
+  public snapshot(): Readonly<Record<string, number>> {
+    this.finish();
+    return Object.fromEntries(this.durations);
+  }
+
+  private finish(): void {
+    if (this.activeStage === undefined) return;
+    const elapsed = Math.max(0, Date.now() - this.activeStage.startedAt);
+    this.durations.set(this.activeStage.stage, (this.durations.get(this.activeStage.stage) ?? 0) + elapsed);
+    this.activeStage = undefined;
+  }
+}

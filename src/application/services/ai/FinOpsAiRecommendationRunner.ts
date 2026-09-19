@@ -77,6 +77,7 @@ export class FinOpsAiRecommendationRunner {
       prepared.deterministicAnalysis,
       readinessReport,
       () => input.onStage?.('AI_AUDIT'),
+      { allowRepair: input.allowRepair ?? true },
     );
 
     if (drafts.length > 0 && approvedDrafts.length === 0) {

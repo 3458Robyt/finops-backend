@@ -154,6 +154,103 @@ describe('normalizeRecommendationDrafts', () => {
     });
     expect(evidence['technicalEvidenceRefs']).toBeUndefined();
   });
+
+  test('overwrites monthly cost evidence and removes an invalid technical scope from usage candidates', () => {
+    const result = normalizeRecommendationDrafts(
+      [{
+        cloudAccountId: 'account-2',
+        type: 'USAGE_OPTIMIZATION',
+        severity: 'MEDIUM',
+        title: 'Optimizar consumo',
+        description: 'Reducir el consumo facturado.',
+        estimatedMonthlySavings: 5,
+        currency: 'USD',
+        evidence: {
+          candidateId: 'usage-1',
+          evidenceLevel: 'COST_AND_USAGE',
+          reviewScope: 'TECHNICAL',
+          normalizedMonthlyCost: 999,
+        },
+      }],
+      {
+        summary: 'fixture',
+        blocked: [],
+        deferred: [],
+        candidates: [{
+          id: 'usage-1',
+          readiness: 'GENERATABLE',
+          cloudAccountId: 'account-1',
+          provider: 'OCI',
+          serviceName: 'Object Storage',
+          opportunityType: 'USAGE_OPTIMIZATION',
+          evidenceLevelAllowed: 'COST_AND_USAGE',
+          requiresTechnicalValidation: false,
+          observedCost: 100,
+          maxEstimatedMonthlySavings: 12,
+          currency: 'USD',
+          sourceFacts: ['Costo de consumo observado: 100 USD.'],
+          costEvidenceRefs: ['cost_metrics:usage:fixture'],
+          technicalEvidenceRefs: [],
+          reasons: [],
+          forbiddenClaims: [],
+        }],
+      },
+      undefined,
+      undefined,
+      30,
+    );
+
+    const evidence = result[0]?.evidence as Record<string, unknown>;
+    expect(result[0]?.cloudAccountId).toBe('account-1');
+    expect(evidence['reviewScope']).toBeUndefined();
+    expect(evidence['financialReviewOnly']).toBeUndefined();
+    expect(evidence['normalizedMonthlyCost']).toBe(100);
+  });
+
+  test('preserves the canonical inventory link when technical evidence is unavailable', () => {
+    const result = normalizeRecommendationDrafts(
+      [{
+        cloudAccountId: 'account-1',
+        type: 'TECHNICAL_VALIDATION_REQUIRED',
+        severity: 'MEDIUM',
+        title: 'Validar recurso',
+        description: 'Validar el recurso antes de actuar.',
+        currency: 'USD',
+        evidence: { candidateId: 'resource-3', evidenceLevel: 'COST_ONLY' },
+      }],
+      {
+        summary: 'fixture',
+        blocked: [],
+        deferred: [],
+        candidates: [{
+          id: 'resource-3',
+          readiness: 'VALIDATION_ONLY',
+          cloudAccountId: 'account-1',
+          provider: 'OCI',
+          serviceName: 'Compute',
+          resourceId: 'instance-3',
+          cloudResourceId: 'inventory-3',
+          opportunityType: 'TECHNICAL_VALIDATION_REQUIRED',
+          evidenceLevelAllowed: 'COST_ONLY',
+          requiresTechnicalValidation: true,
+          observedCost: 100,
+          maxEstimatedMonthlySavings: 18,
+          currency: 'USD',
+          sourceFacts: ['Costo observado.'],
+          costEvidenceRefs: ['cost-ref'],
+          technicalEvidenceRefs: [],
+          reasons: [],
+          forbiddenClaims: [],
+        }],
+      },
+      { version: '1', hash: 'hash', tenantId: 'tenant-1', periodStart: '2026-08-01', periodEnd: '2026-08-12', generatedAt: '2026-08-12', availability: 'COST_ONLY_AVAILABLE', deterministicRules: [], resources: [] },
+      undefined,
+      30,
+    );
+
+    expect(result[0]?.cloudResourceId).toBe('inventory-3');
+    expect((result[0]?.evidence as Record<string, unknown>)['cloudResourceId']).toBe('inventory-3');
+  });
 });
 
 function buildReadiness(): RecommendationReadinessReport {

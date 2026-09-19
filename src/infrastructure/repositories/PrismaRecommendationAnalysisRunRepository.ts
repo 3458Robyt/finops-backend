@@ -333,7 +333,12 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
 
   public async recordFailure(
     runId: string,
-    input: { readonly code: string; readonly message: string; readonly retryAt: Date },
+    input: {
+      readonly code: string;
+      readonly message: string;
+      readonly retryAt: Date;
+      readonly stageTimings?: Readonly<Record<string, number>>;
+    },
   ): Promise<RecommendationAnalysisRun> {
     const current = await this.prisma.recommendationAnalysisRun.findUniqueOrThrow({ where: { id: runId } });
     if (current.status === 'CANCELLED' || current.cancelRequestedAt !== null) {
@@ -347,6 +352,7 @@ export class PrismaRecommendationAnalysisRunRepository implements IRecommendatio
         stage: retry ? 'QUEUED' : 'FINISHED',
         errorCode: input.code,
         errorMessage: input.message,
+        ...(input.stageTimings === undefined ? {} : { stageTimings: input.stageTimings as Prisma.InputJsonValue }),
         nextAttemptAt: retry ? input.retryAt : null,
         completedAt: retry ? null : new Date(),
         workerId: null,

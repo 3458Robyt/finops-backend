@@ -29,6 +29,14 @@ describe('ingestionReadiness', () => {
     });
   });
 
+  it('uses enabled table definitions when connection metadata is stale', () => {
+    expect(summarizeReadinessMetadata('oci', {}, 372)).toMatchObject({
+      ociMetricDefinitions: 372,
+      ociFocusReportObjects: 0,
+      ociFocusReportLocations: 0,
+    });
+  });
+
   it('builds a readiness summary with credential and metadata issues', () => {
     const summary = buildIngestionReadinessSummary({
       generatedAt: new Date('2026-06-05T12:00:00.000Z'),

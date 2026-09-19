@@ -316,6 +316,11 @@ describe('FinOpsAiService', () => {
             serviceName: 'Amazon Elastic Compute Cloud',
             evidenceLevel: 'COST_ONLY',
             requiresTechnicalValidation: true,
+            candidateId: 'resource-1',
+            externalResourceId: 'i-prod-001',
+            observedCost: 14.9,
+            normalizedMonthlyCost: 14.9,
+            maxEstimatedMonthlySavings: 2.68,
           },
         },
       ],
@@ -347,7 +352,7 @@ describe('FinOpsAiService', () => {
     });
 
     expect(response.recommendations).toHaveLength(1);
-    expect(response.recommendations[0]?.title).toBe('Reducir EC2 sobredimensionado');
+    expect(response.recommendations[0]?.title).toBe('Validar señales técnicas de i-prod-001');
     expect(recommendations.created).toHaveLength(1);
     expect(recommendations.created[0]?.tenantId).toBe('tenant-1');
     expect(recommendations.created[0]?.deduplicationKey).toMatch(/^[a-f0-9]{64}$/);
@@ -416,6 +421,11 @@ describe('FinOpsAiService', () => {
             serviceName: 'Amazon Elastic Compute Cloud',
             evidenceLevel: 'COST_ONLY',
             requiresTechnicalValidation: true,
+            candidateId: 'resource-1',
+            externalResourceId: 'i-prod-001',
+            observedCost: 14.9,
+            normalizedMonthlyCost: 14.9,
+            maxEstimatedMonthlySavings: 2.68,
           },
         },
       ],
@@ -589,6 +599,11 @@ describe('FinOpsAiService', () => {
               serviceName: 'Amazon Elastic Compute Cloud',
               evidenceLevel: 'COST_ONLY',
               requiresTechnicalValidation: true,
+              candidateId: 'resource-1',
+              externalResourceId: 'i-prod-001',
+              observedCost: 14.9,
+              normalizedMonthlyCost: 14.9,
+              maxEstimatedMonthlySavings: 2.68,
             },
           },
         ],
@@ -716,6 +731,11 @@ describe('FinOpsAiService', () => {
               serviceName: 'Amazon Elastic Compute Cloud',
               evidenceLevel: 'COST_ONLY',
               requiresTechnicalValidation: true,
+              candidateId: 'resource-1',
+              externalResourceId: 'i-prod-001',
+              observedCost: 14.9,
+              normalizedMonthlyCost: 14.9,
+              maxEstimatedMonthlySavings: 2.68,
             },
           },
         ],
@@ -741,6 +761,11 @@ describe('FinOpsAiService', () => {
               serviceName: 'Amazon Elastic Compute Cloud',
               evidenceLevel: 'COST_ONLY',
               requiresTechnicalValidation: true,
+              candidateId: 'resource-1',
+              externalResourceId: 'i-prod-001',
+              observedCost: 14.9,
+              normalizedMonthlyCost: 14.9,
+              maxEstimatedMonthlySavings: 2.68,
             },
           },
         ],
@@ -765,7 +790,7 @@ describe('FinOpsAiService', () => {
       persist: true,
     });
 
-    expect(response.recommendations[0]?.title).toBe('Reducir EC2 con validacion previa');
+    expect(response.recommendations[0]?.title).toBe('Validar señales técnicas de i-prod-001');
     expect(gateway.requests).toHaveLength(4);
     expect(gateway.requests[2]?.messages.at(-1)?.content).toContain('Agregar validaciones previas y rollback');
   });

@@ -8,6 +8,7 @@ import type { AiTraceRecorder } from './aiTraceRecorder.js';
 import type { RecommendationEvidenceSnapshot } from './RecommendationEvidenceSnapshot.js';
 import type { DeterministicTrendAnalysis } from './DeterministicTrendAnalysis.js';
 import type { RecommendationReadinessReport } from './RecommendationReadinessGate.js';
+import { compactRecommendationEvidenceSnapshot } from './RecommendationEvidenceSnapshot.js';
 
 export interface ArtifactAuditInput {
   readonly artifactType: 'recommendations' | 'execution_plan';
@@ -44,8 +45,8 @@ export class FinOpsArtifactAiRunner {
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
-      timeoutMs: this.requestPolicy.timeoutMs,
-      maxRetries: this.requestPolicy.maxRetries,
+      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 45_000),
+      maxRetries: 0,
       // Las recomendaciones deben ser reproducibles: el contenido creativo
       // está acotado por candidatos/evidencia y no necesita aleatoriedad.
       temperature: 0,
@@ -65,8 +66,8 @@ export class FinOpsArtifactAiRunner {
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
-      timeoutMs: this.requestPolicy.timeoutMs,
-      maxRetries: this.requestPolicy.maxRetries,
+      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 45_000),
+      maxRetries: 0,
       temperature: 0,
       maxTokens: 900,
       messages: [
@@ -88,8 +89,8 @@ export class FinOpsArtifactAiRunner {
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
-      timeoutMs: this.requestPolicy.timeoutMs,
-      maxRetries: this.requestPolicy.maxRetries,
+      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 45_000),
+      maxRetries: 0,
       temperature: 0,
       maxTokens: 1200,
       messages: [
@@ -106,8 +107,8 @@ export class FinOpsArtifactAiRunner {
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
-      timeoutMs: this.requestPolicy.timeoutMs,
-      maxRetries: this.requestPolicy.maxRetries,
+      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 45_000),
+      maxRetries: 0,
       temperature: 0,
       maxTokens: 1200,
       messages: [
@@ -131,7 +132,7 @@ export class FinOpsArtifactAiRunner {
       responseFormat: 'json',
       // The auditor is a mandatory gate, but a failed provider must not turn a
       // recommendation run into a multi-minute retry chain.
-      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 45_000),
+      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 30_000),
       maxRetries: 0,
       temperature: 0,
       maxTokens: 900,
@@ -145,7 +146,13 @@ export class FinOpsArtifactAiRunner {
             JSON.stringify(compactSnapshot(input.snapshot)),
             ...(input.technicalEvidenceSnapshot === undefined
               ? []
-              : ['Evidencia tecnica canonica:', JSON.stringify(input.technicalEvidenceSnapshot)]),
+              : [
+                  'Evidencia tecnica canonica:',
+                  JSON.stringify(compactRecommendationEvidenceSnapshot(
+                    input.technicalEvidenceSnapshot,
+                    input.readinessReport?.candidates,
+                  )),
+                ]),
             ...(input.deterministicAnalysis === undefined
               ? []
               : ['Preanalisis deterministico de tendencias:', JSON.stringify(input.deterministicAnalysis)]),
@@ -190,8 +197,17 @@ function compactReadinessReport(report: RecommendationReadinessReport): Readonly
       opportunityType: candidate.opportunityType,
       evidenceLevelAllowed: candidate.evidenceLevelAllowed,
       requiresTechnicalValidation: candidate.requiresTechnicalValidation,
+      cloudAccountId: candidate.cloudAccountId,
+      provider: candidate.provider,
+      serviceName: candidate.serviceName,
+      ...(candidate.observedCost === undefined ? {} : { observedCost: candidate.observedCost }),
+      maxEstimatedMonthlySavings: candidate.maxEstimatedMonthlySavings,
+      currency: candidate.currency,
+      costEvidenceRefs: candidate.costEvidenceRefs,
+      ...(candidate.reviewScope === undefined ? {} : { reviewScope: candidate.reviewScope }),
       ...(candidate.resourceId === undefined ? {} : { resourceId: candidate.resourceId }),
       ...(candidate.cloudResourceId === undefined ? {} : { cloudResourceId: candidate.cloudResourceId }),
+      ...(candidate.cloudConnectionId === undefined ? {} : { cloudConnectionId: candidate.cloudConnectionId }),
       ...(candidate.technicalEvidenceRefs.length === 0 ? {} : { technicalEvidenceRefs: candidate.technicalEvidenceRefs }),
       ...(candidate.blockers === undefined ? {} : { blockers: candidate.blockers }),
       ...(candidate.ruleMatches === undefined ? {} : { ruleMatches: candidate.ruleMatches }),
@@ -200,7 +216,14 @@ function compactReadinessReport(report: RecommendationReadinessReport): Readonly
       id: candidate.id,
       readiness: candidate.readiness,
       opportunityType: candidate.opportunityType,
+      cloudAccountId: candidate.cloudAccountId,
+      provider: candidate.provider,
+      serviceName: candidate.serviceName,
+      ...(candidate.observedCost === undefined ? {} : { observedCost: candidate.observedCost }),
+      maxEstimatedMonthlySavings: candidate.maxEstimatedMonthlySavings,
+      currency: candidate.currency,
       ...(candidate.resourceId === undefined ? {} : { resourceId: candidate.resourceId }),
+      ...(candidate.cloudResourceId === undefined ? {} : { cloudResourceId: candidate.cloudResourceId }),
       ...(candidate.blockers === undefined ? {} : { blockers: candidate.blockers }),
     })),
   };

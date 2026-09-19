@@ -57,6 +57,10 @@ export interface EnvironmentRow {
 
 export interface ResourceRow {
   readonly resource_id: string;
+  readonly cloud_account_id: string;
+  readonly cloud_connection_id: string | null;
+  readonly cloud_resource_id: string | null;
+  readonly resource_name: string | null;
   readonly service_name: string;
   readonly provider: string;
   readonly metric_count: number;
@@ -172,6 +176,10 @@ export function toEnvironmentItem(row: EnvironmentRow): CostAnalyticsEnvironment
 export function toResourceItem(row: ResourceRow): CostAnalyticsResourceItem {
   return {
     resourceId: row.resource_id,
+    cloudAccountId: row.cloud_account_id,
+    ...(row.cloud_connection_id === null ? {} : { cloudConnectionId: row.cloud_connection_id }),
+    ...(row.cloud_resource_id === null ? {} : { cloudResourceId: row.cloud_resource_id }),
+    ...(row.resource_name === null ? {} : { resourceName: row.resource_name }),
     serviceName: row.service_name,
     provider: row.provider,
     totalCost: row.total_cost,

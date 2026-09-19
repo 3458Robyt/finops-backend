@@ -71,11 +71,14 @@ export function hashRecommendationEvidenceSnapshot(
   return createHash('sha256').update(JSON.stringify(stableFacts)).digest('hex');
 }
 
-export function formatRecommendationEvidenceSnapshot(snapshot: RecommendationEvidenceSnapshot): string {
+export function formatRecommendationEvidenceSnapshot(
+  snapshot: RecommendationEvidenceSnapshot,
+  candidateResources?: readonly Readonly<{ readonly resourceId?: string; readonly cloudResourceId?: string }>[],
+): string {
   return [
     'Evidencia tecnica canonica:',
     JSON.stringify({
-      snapshot,
+      snapshot: compactRecommendationEvidenceSnapshot(snapshot, candidateResources),
       rules: [
         'Solo usa COST_USAGE_AND_TECHNICAL cuando la recomendacion cite referencias existentes del snapshot.',
         'Si linkQuality no es COST_AND_TECHNICAL o las reglas tienen blockers, exige requiresTechnicalValidation=true.',
@@ -83,4 +86,38 @@ export function formatRecommendationEvidenceSnapshot(snapshot: RecommendationEvi
       ],
     }),
   ].join('\n');
+}
+
+/**
+ * Proyección para el prompt: conserva hechos necesarios y elimina la copia
+ * redundante de `metricSummary` y reglas de recursos que no entran en el lote
+ * de candidatos. El snapshot completo sigue siendo el que se persiste y se
+ * usa en las compuertas determinísticas.
+ */
+export function compactRecommendationEvidenceSnapshot(
+  snapshot: RecommendationEvidenceSnapshot,
+  candidateResources?: readonly Readonly<{ readonly resourceId?: string; readonly cloudResourceId?: string }>[],
+): Readonly<Record<string, unknown>> {
+  const resources = snapshot.resources
+    .filter((resource) => candidateResources === undefined || candidateResources.some((candidate) => (
+      candidate.resourceId === resource.externalResourceId
+      && (candidate.cloudResourceId === undefined || candidate.cloudResourceId === resource.cloudResourceId)
+    )))
+    .map((resource) => ({
+    ...resource,
+    ruleEvaluation: compactRuleEvaluation(resource.ruleEvaluation),
+    }));
+
+  return {
+    ...snapshot,
+    resources,
+    deterministicRules: resources.map((resource) => resource.ruleEvaluation),
+  };
+}
+
+function compactRuleEvaluation(
+  evaluation: RecommendationEvidenceSnapshot['resources'][number]['ruleEvaluation'],
+): Readonly<Record<string, unknown>> {
+  const { metricSummary: _metricSummary, ...compact } = evaluation;
+  return compact;
 }

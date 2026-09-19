@@ -182,7 +182,7 @@ describe('OCI monitoring collector', () => {
       targetEnd: new Date('2026-05-25T18:30:00Z'),
     }, now);
 
-    expect(range.startTime.toISOString()).toBe('2026-05-18T18:51:00.000Z');
+    expect(range.startTime.toISOString()).toBe('2026-05-19T00:36:00.000Z');
     expect(range.endTime.toISOString()).toBe('2026-05-25T18:30:00.000Z');
   });
 });

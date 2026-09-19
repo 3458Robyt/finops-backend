@@ -14,6 +14,7 @@ export interface RecommendationOpportunityCandidate {
   readonly serviceName: string;
   readonly resourceId?: string;
   readonly cloudResourceId?: string;
+  readonly cloudConnectionId?: string;
   readonly opportunityType: string;
   readonly evidenceLevelAllowed: 'COST_ONLY' | 'COST_AND_USAGE' | 'COST_USAGE_AND_TECHNICAL';
   readonly requiresTechnicalValidation: boolean;
@@ -46,6 +47,7 @@ const maxCandidates = 6;
 const costSavingsRate = 0.18;
 const usageSavingsRate = 0.12;
 const technicalSavingsRate = 0.25;
+const standardMonthDays = 30;
 
 export function buildRecommendationReadinessReport(input: {
   readonly snapshot: CostAnalyticsSnapshot;
@@ -61,13 +63,17 @@ export function buildRecommendationReadinessReport(input: {
   ]
     .sort((left, right) => right.maxEstimatedMonthlySavings - left.maxEstimatedMonthlySavings);
 
-  const batch = prioritized.slice(0, maxCandidates);
-  const deferred = prioritized.slice(maxCandidates).map((candidate) => ({
+  // Los candidatos bloqueados se informan aparte y no consumen el cupo de
+  // generación: una oportunidad ambigua no debe ocultar otra que sí pueda
+  // auditarse.
+  const eligible = prioritized.filter((candidate) => candidate.readiness !== 'BLOCKED_NO_EVIDENCE');
+  const batch = eligible.slice(0, maxCandidates);
+  const deferred = eligible.slice(maxCandidates).map((candidate) => ({
     ...candidate,
     reasons: [...candidate.reasons, 'Aplazado porque existen candidatos de mayor impacto en este lote.'],
   }));
-  const allowed = batch.filter((candidate) => candidate.readiness !== 'BLOCKED_NO_EVIDENCE');
-  const blocked = batch.filter((candidate) => candidate.readiness === 'BLOCKED_NO_EVIDENCE');
+  const allowed = batch;
+  const blocked = prioritized.filter((candidate) => candidate.readiness === 'BLOCKED_NO_EVIDENCE');
 
   return {
     candidates: allowed,
@@ -90,15 +96,20 @@ export function formatRecommendationReadinessForPrompt(report: RecommendationRea
         'No generes recomendaciones para candidatos BLOCKED_NO_EVIDENCE.',
         'Si readiness es VALIDATION_ONLY, la recomendacion debe pedir validacion tecnica y no debe afirmar ahorro tecnico probado.',
         'estimatedMonthlySavings no puede superar maxEstimatedMonthlySavings.',
-        'Debes copiar sourceFacts y technicalEvidenceRefs relevantes en evidence.',
+      'Debes copiar sourceFacts y technicalEvidenceRefs relevantes en evidence.',
       ],
       summary: report.summary,
-      candidates: report.candidates,
-      blocked: report.blocked,
+      candidates: report.candidates.map(compactCandidate),
+      blocked: report.blocked.map(compactCandidate),
     },
     null,
     2,
   );
+}
+
+function compactCandidate(candidate: RecommendationOpportunityCandidate): Readonly<Record<string, unknown>> {
+  const { metricSummary: _metricSummary, ...compact } = candidate;
+  return compact;
 }
 
 function buildUsageCandidates(
@@ -117,11 +128,12 @@ function buildUsageCandidates(
       evidenceLevelAllowed: 'COST_AND_USAGE',
       requiresTechnicalValidation: false,
       observedCost: usage.totalCost,
-      maxEstimatedMonthlySavings: round(Math.max(usage.totalCost * usageSavingsRate, 0)),
+      maxEstimatedMonthlySavings: round(Math.max(normalizeMonthlyAmount(usage.totalCost, snapshot) * usageSavingsRate, 0)),
       currency: usage.currency,
       sourceFacts: [
         `Servicio ${usage.serviceName} consumio ${usage.consumedQuantity} ${usage.consumedUnit}.`,
         `Costo observado del consumo: ${usage.totalCost} ${usage.currency}.`,
+        `Costo mensual normalizado: ${round(normalizeMonthlyAmount(usage.totalCost, snapshot))} ${usage.currency}.`,
         `Costo unitario observado: ${usage.unitCost ?? 'no disponible'} ${usage.currency}/${usage.consumedUnit}.`,
       ],
       costEvidenceRefs: [costEvidenceRef(snapshot, 'usage', usage.provider, usage.serviceName)],
@@ -138,12 +150,38 @@ function buildResourceCandidates(
   evidenceResources: readonly RecommendationEvidenceResource[],
 ): RecommendationOpportunityCandidate[] {
   return snapshot.topResources.map((resource, index) => {
-    const account = pickAccountForProvider(snapshot, accountById, resource.provider);
-    const matchingEvidence = evidenceResources.filter((item) =>
+    const providerAccounts = snapshot.accounts.filter((account) => account.provider === resource.provider);
+    const account = resource.cloudAccountId !== undefined
+      ? accountById.get(resource.cloudAccountId)
+      : providerAccounts.length === 1
+        ? providerAccounts[0]
+        : undefined;
+    const resourceEvidence = evidenceResources.filter((item) =>
       item.externalResourceId === resource.resourceId && item.provider === resource.provider,
     );
-    const evidenceResource = matchingEvidence.length === 1 ? matchingEvidence[0] : undefined;
-    const ambiguous = matchingEvidence.length > 1;
+    const matchingEvidence = resource.cloudResourceId === undefined
+      ? resourceEvidence
+      : resourceEvidence.filter((item) => item.cloudResourceId === resource.cloudResourceId);
+    const connectionMatchedEvidence = resource.cloudConnectionId === undefined
+      ? matchingEvidence
+      : matchingEvidence.filter((item) => item.cloudConnectionId === resource.cloudConnectionId);
+    const identityAmbiguous = account === undefined
+      || (resource.cloudResourceId === undefined && resourceEvidence.length > 1)
+      || (resource.cloudResourceId !== undefined && resourceEvidence.length > 0 && matchingEvidence.length === 0)
+      || (resource.cloudConnectionId !== undefined && matchingEvidence.length > 0 && connectionMatchedEvidence.length === 0);
+    const evidenceAmbiguous = connectionMatchedEvidence.length > 1;
+    const ambiguous = identityAmbiguous || evidenceAmbiguous;
+    const evidenceResource = connectionMatchedEvidence.length === 1 ? connectionMatchedEvidence[0] : undefined;
+    const linkedCloudResourceId = resource.cloudResourceId ?? evidenceResource?.cloudResourceId;
+    const linkedCloudConnectionId = resource.cloudConnectionId ?? evidenceResource?.cloudConnectionId;
+    const identityReason = account === undefined
+      ? 'El recurso no tiene una cuenta cloud inequívoca en el snapshot.'
+      : resource.cloudResourceId !== undefined && matchingEvidence.length === 0 && resourceEvidence.length > 0
+        ? 'El cloudResourceId del costo no coincide con la evidencia técnica disponible.'
+        : resource.cloudConnectionId !== undefined && matchingEvidence.length > 0 && connectionMatchedEvidence.length === 0
+          ? 'La conexión cloud del costo no coincide con la evidencia técnica disponible.'
+        : 'El identificador externo coincide con más de un recurso/conexión; se requiere el cloudResourceId canónico.';
+    const resolvedAccountId = account?.cloudAccountId ?? resource.cloudAccountId ?? 'unknown-account';
     const ruleEvaluation = evidenceResource?.ruleEvaluation;
     const refsForResource = evidenceResource?.metrics.map((metric) => metric.evidenceRef) ?? [];
     const hasResourceTechnicalEvidence =
@@ -152,31 +190,34 @@ function buildResourceCandidates(
       ? 'BLOCKED_NO_EVIDENCE'
       : ruleEvaluation?.readiness ?? (hasResourceTechnicalEvidence ? 'GENERATABLE' : 'VALIDATION_ONLY');
     const maxSavingsRate = ruleEvaluation?.maxTechnicalSavingsRate ?? (hasResourceTechnicalEvidence ? technicalSavingsRate : costSavingsRate);
+    const normalizedMonthlyCost = normalizeMonthlyAmount(resource.totalCost, snapshot);
 
     return {
       id: `resource-${index + 1}`,
       readiness,
-      cloudAccountId: account.cloudAccountId,
+      cloudAccountId: resolvedAccountId,
       provider: resource.provider,
       serviceName: resource.serviceName,
       resourceId: resource.resourceId,
-      ...(evidenceResource?.cloudResourceId !== undefined ? { cloudResourceId: evidenceResource.cloudResourceId } : {}),
+      ...(linkedCloudResourceId === undefined ? {} : { cloudResourceId: linkedCloudResourceId }),
+      ...(linkedCloudConnectionId === undefined ? {} : { cloudConnectionId: linkedCloudConnectionId }),
       opportunityType: ruleEvaluation?.recommendedActionType ?? (hasResourceTechnicalEvidence ? 'TECHNICAL_OPTIMIZATION' : 'TECHNICAL_VALIDATION_REQUIRED'),
       evidenceLevelAllowed:
         readiness === 'GENERATABLE' && hasResourceTechnicalEvidence ? 'COST_USAGE_AND_TECHNICAL' : 'COST_ONLY',
       requiresTechnicalValidation: readiness !== 'GENERATABLE' || hasResourceTechnicalEvidence,
       observedCost: resource.totalCost,
       maxEstimatedMonthlySavings: round(
-        Math.max(resource.totalCost * maxSavingsRate, 0),
+        Math.max(normalizedMonthlyCost * maxSavingsRate, 0),
       ),
       currency: snapshot.currency,
       sourceFacts: [
-        `Recurso ${resource.resourceId} en ${resource.serviceName}.`,
+        `Recurso ${resource.resourceName ?? resource.resourceId} (${resource.resourceId}) en ${resource.serviceName}.`,
         `Costo observado del recurso: ${resource.totalCost} ${snapshot.currency}.`,
+        `Costo mensual normalizado: ${round(normalizedMonthlyCost)} ${snapshot.currency}.`,
         `Cantidad de registros FOCUS asociados: ${resource.metricCount}.`,
         ...(ruleEvaluation?.sourceFacts ?? []),
       ],
-      costEvidenceRefs: [costEvidenceRef(snapshot, 'resource', resource.provider, resource.resourceId)],
+      costEvidenceRefs: [costEvidenceRef(snapshot, 'resource', resource.provider, resource.resourceId, resolvedAccountId)],
       technicalEvidenceRefs: ruleEvaluation?.technicalEvidenceRefs ?? refsForResource,
       ...(ruleEvaluation?.evidenceStrength !== undefined ? { evidenceStrength: ruleEvaluation.evidenceStrength } : {}),
       ...(ruleEvaluation?.ruleMatches !== undefined ? { ruleMatches: ruleEvaluation.ruleMatches } : {}),
@@ -184,7 +225,7 @@ function buildResourceCandidates(
       ...(ruleEvaluation?.metricSummary !== undefined ? { metricSummary: ruleEvaluation.metricSummary } : {}),
       reasons:
         ambiguous
-          ? ['El identificador externo coincide con más de un recurso/conexión; se requiere el cloudResourceId canónico.']
+          ? [identityReason]
           : ruleEvaluation?.blockers !== undefined && ruleEvaluation.blockers.length > 0
           ? [`Reglas deterministicas detectaron bloqueos: ${ruleEvaluation.blockers.join(', ')}.`]
           : hasResourceTechnicalEvidence
@@ -192,7 +233,7 @@ function buildResourceCandidates(
             : ['Hay costo por recurso, pero falta evidencia tecnica fuerte para ejecutar cambios de capacidad.'],
       forbiddenClaims:
         ambiguous
-          ? ['No afirmes evidencia técnica ni propongas cambios ejecutables mientras el recurso sea ambiguo.']
+          ? ['No afirmes evidencia técnica ni propongas cambios ejecutables mientras la identidad del recurso sea ambigua.']
           : ruleEvaluation?.blockers !== undefined && ruleEvaluation.blockers.length > 0
           ? ['No recomiendes rightsizing, apagado o resize como accion ejecutable porque existen bloqueos tecnicos.']
           : hasResourceTechnicalEvidence
@@ -221,10 +262,11 @@ function buildServiceCandidates(
       requiresTechnicalValidation: false,
       reviewScope: 'FINANCIAL',
       observedCost: service.totalCost,
-      maxEstimatedMonthlySavings: round(Math.max(service.totalCost * costSavingsRate, 0)),
+      maxEstimatedMonthlySavings: round(Math.max(normalizeMonthlyAmount(service.totalCost, snapshot) * costSavingsRate, 0)),
       currency: snapshot.currency,
       sourceFacts: [
         `Servicio ${service.serviceName} costo ${service.totalCost} ${snapshot.currency}.`,
+        `Costo mensual normalizado: ${round(normalizeMonthlyAmount(service.totalCost, snapshot))} ${snapshot.currency}.`,
         `Cantidad de registros FOCUS asociados: ${service.metricCount}.`,
       ],
       costEvidenceRefs: [costEvidenceRef(snapshot, 'service', service.provider, service.serviceName)],
@@ -250,6 +292,21 @@ function round(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+export function getRecommendationPeriodDays(snapshot: CostAnalyticsSnapshot): number {
+  const start = new Date(snapshot.periodStart).getTime();
+  const end = new Date(snapshot.periodEnd).getTime();
+  const elapsedDays = (end - start) / (24 * 60 * 60 * 1000);
+  return Number.isFinite(elapsedDays) && elapsedDays > 0
+    ? elapsedDays
+    : snapshot.coveredDays !== undefined && Number.isFinite(snapshot.coveredDays) && snapshot.coveredDays > 0
+      ? snapshot.coveredDays
+      : standardMonthDays;
+}
+
+function normalizeMonthlyAmount(amount: number, snapshot: CostAnalyticsSnapshot): number {
+  return amount * standardMonthDays / getRecommendationPeriodDays(snapshot);
+}
+
 /**
  * Identificador estable de evidencia agregada de costos. No es un ID de fila:
  * representa la consulta FOCUS/cost_metrics delimitada por período y alcance,
@@ -260,6 +317,7 @@ function costEvidenceRef(
   scope: 'usage' | 'resource' | 'service',
   provider: string,
   key: string,
+  cloudAccountId?: string,
 ): string {
-  return `cost_metrics:aggregate:${snapshot.periodStart}:${snapshot.periodEnd}:${scope}:${provider}:${key}`;
+  return `cost_metrics:aggregate:${snapshot.periodStart}:${snapshot.periodEnd}:${scope}:${provider}:${cloudAccountId ?? 'unknown-account'}:${key}`;
 }

@@ -40,6 +40,8 @@ export interface SnapshotAggregations {
   readonly environments: readonly EnvironmentRow[];
   readonly topResources: readonly ResourceRow[];
   readonly topUsage: readonly TopUsageRow[];
+  readonly observedThrough: Date | null;
+  readonly coveredDays: number;
 }
 
 /**
@@ -63,7 +65,7 @@ export async function runSnapshotAggregations(
   periodStart: Date,
   periodEnd: Date,
 ): Promise<SnapshotAggregations> {
-  const [summary, currencies, providers, accounts, services, environments, topResources, topUsage] = await Promise.all([
+  const [summary, currencies, providers, accounts, services, environments, topResources, topUsage, coverage] = await Promise.all([
     prisma.$queryRaw<readonly { readonly currency: string; readonly metric_count: number; readonly total_cost: number }[]>`
       select billing_currency as currency,
              count(*)::int as metric_count,
@@ -154,6 +156,10 @@ export async function runSnapshotAggregations(
     // representativos del recurso agrupado.
     prisma.$queryRaw<ResourceRow[]>`
       select resource_id,
+             cloud_account_id,
+             max(cloud_connection_id) as cloud_connection_id,
+             max(cloud_resource_id) as cloud_resource_id,
+             max(resource_name) as resource_name,
              max(service_name) as service_name,
              max(provider::text) as provider,
              count(*)::int as metric_count,
@@ -164,7 +170,7 @@ export async function runSnapshotAggregations(
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
         and resource_id <> ''
-      group by resource_id, billing_currency
+      group by resource_id, cloud_account_id, billing_currency
       order by total_cost desc
       limit 10
     `,
@@ -190,7 +196,17 @@ export async function runSnapshotAggregations(
       order by total_cost desc, consumed_quantity desc
       limit 10
     `,
+    prisma.$queryRaw<readonly { readonly observed_through: Date | null; readonly covered_days: number }[]>`
+      select max(charge_period_end) as observed_through,
+             count(distinct (charge_period_start at time zone 'UTC')::date)::int as covered_days
+      from cost_metrics
+      where tenant_id = ${tenantId}
+        and charge_period_start >= ${periodStart}
+        and charge_period_start < ${periodEnd}
+    `,
   ]);
+
+  const coverageRow = coverage[0];
 
   return {
     summary: {
@@ -205,5 +221,20 @@ export async function runSnapshotAggregations(
     environments,
     topResources,
     topUsage,
+    observedThrough: coverageRow?.observed_through ?? null,
+    coveredDays: coverageRow?.covered_days ?? 0,
   };
+}
+
+/** Lee el límite superior de costos con la consulta acotada por tenant. */
+export async function queryLatestObservedThrough(
+  prisma: PrismaClient,
+  tenantId: string,
+): Promise<Date | undefined> {
+  const rows = await prisma.$queryRaw<readonly [{ readonly observed_through: Date | null }]>`
+    select max(charge_period_end) as observed_through
+    from cost_metrics
+    where tenant_id = ${tenantId}
+  `;
+  return rows[0]?.observed_through ?? undefined;
 }

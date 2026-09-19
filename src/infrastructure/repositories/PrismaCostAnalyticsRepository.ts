@@ -11,7 +11,10 @@ import type {
 } from '../../domain/interfaces/ICostAnalyticsRepository.js';
 import { type PrismaClient } from '../../generated/prisma/client.js';
 import { toAnomalyDomain, toForecastDomain } from './mappers/costAnalyticsMappers.js';
-import { runSnapshotAggregations } from './queries/costAnalyticsSnapshotQueries.js';
+import {
+  queryLatestObservedThrough,
+  runSnapshotAggregations,
+} from './queries/costAnalyticsSnapshotQueries.js';
 import {
   queryMonthlyCostRows,
   queryMonthlyUsageRows,
@@ -25,6 +28,7 @@ import {
   projectMonthlyCostRows,
   projectMonthlyUsageRows,
   projectSnapshotAggregations,
+  mergeCurrencyStatus,
 } from './queries/costAnalyticsCurrencyProjection.js';
 
 export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
@@ -41,16 +45,8 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
    * inclusive, `periodEnd` exclusivo). Si el tenant no tiene métricas, devuelve
    * un snapshot vacío (ver {@link emptySnapshot}).
    *
-   * Luego ejecuta en paralelo varias agregaciones (todas filtradas por
-   * `tenant_id` para aislamiento multi-tenant y por el rango mensual):
-   * - resumen (conteo y suma de `billed_cost`),
-   * - divisa predominante (la más frecuente en el periodo),
-   * - desgloses por proveedor, cuenta (join con `cloud_accounts`), servicio (top
-   *   10), entorno (etiqueta `tags->>'environment'`) y recursos (top 10,
-   *   excluyendo `resource_id` vacío),
-   * - top de uso por servicio/unidad consumida.
-   * Finalmente añade anomalías (máx. 5) y pronósticos (máx. 6). Los importes en
-   * SQL se castean a `float8` para devolver `number` y no `Decimal`.
+    * Luego ejecuta agregaciones tenant-scoped en paralelo para costos, uso,
+    * recursos, anomalías y pronósticos; los importes SQL se castean a `float8`.
    *
    * @param tenantId Tenant del que se construye el snapshot.
    * @returns Snapshot analítico de costes; snapshot vacío si no hay métricas.
@@ -78,6 +74,27 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       1,
     ));
 
+    return this.getSnapshotForPeriod(tenantId, periodStart, periodEnd);
+  }
+
+  public getLatestObservedThrough(tenantId: string): Promise<Date | undefined> {
+    return queryLatestObservedThrough(this.prisma, tenantId);
+  }
+
+  /** Snapshot de costos para una ventana explícita, útil para análisis móvil. */
+  public async getTenantSnapshotForPeriod(
+    tenantId: string,
+    periodStart: Date,
+    periodEnd: Date,
+  ): Promise<CostAnalyticsSnapshot> {
+    return this.getSnapshotForPeriod(tenantId, periodStart, periodEnd);
+  }
+
+  private async getSnapshotForPeriod(
+    tenantId: string,
+    periodStart: Date,
+    periodEnd: Date,
+  ): Promise<CostAnalyticsSnapshot> {
     const reportingCurrency = normalizeCurrencyCode(await this.getReportingCurrency(tenantId));
     const aggregations = await runSnapshotAggregations(this.prisma, tenantId, periodStart, periodEnd);
     const projected = await projectSnapshotAggregations(aggregations, periodStart, reportingCurrency, this.currencyConverter);
@@ -86,11 +103,15 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
       this.findAnomalies(tenantId),
       this.findForecasts(tenantId),
     ]);
+    const expectedDays = Math.max(0, Math.ceil((periodEnd.getTime() - periodStart.getTime()) / (24 * 60 * 60 * 1000)));
 
     return {
       tenantId,
       periodStart: periodStart.toISOString(),
       periodEnd: periodEnd.toISOString(),
+      ...(aggregations.observedThrough === null ? {} : { observedThrough: aggregations.observedThrough.toISOString() }),
+      coveredDays: aggregations.coveredDays,
+      isComplete: expectedDays === 0 || aggregations.coveredDays >= expectedDays,
       totalCost: projected.summary.totalCost,
       currency: reportingCurrency,
       nativeTotals: aggregations.summary.byCurrency.map((item) => ({ currency: item.currency, amount: item.totalCost })),
@@ -375,13 +396,4 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
     });
     return normalizeCurrencyCode(tenant?.reportingCurrency ?? 'USD');
   }
-}
-
-function mergeCurrencyStatus(
-  ...statuses: readonly CostForecast['conversionStatus'][]
-): NonNullable<CostForecast['conversionStatus']> {
-  if (statuses.includes('MISSING_RATE')) return 'MISSING_RATE';
-  if (statuses.includes('UNSUPPORTED_CURRENCY')) return 'UNSUPPORTED_CURRENCY';
-  if (statuses.includes('CONVERTED')) return 'CONVERTED';
-  return 'NOT_REQUIRED';
 }

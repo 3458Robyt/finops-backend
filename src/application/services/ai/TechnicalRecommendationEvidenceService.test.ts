@@ -138,6 +138,28 @@ describe('TechnicalRecommendationEvidenceService', () => {
     expect(evidence).not.toContain('ocid1.instance.other');
   });
 
+  test('limits tenant-wide evidence to resources present in the cost snapshot', async () => {
+    const repository = new FakeResourceMetricRepository();
+    repository.summaries = [metricSummary('CpuUtilization', 8, 25)];
+    const service = new TechnicalRecommendationEvidenceService(repository);
+
+    await service.buildRecommendationEvidenceSnapshot({
+      tenantId: 'tenant-1',
+      snapshot: {
+        ...snapshot,
+        topResources: [{
+          resourceId: 'ocid1.instance.oc1.test',
+          provider: 'OCI',
+          serviceName: 'Compute',
+          totalCost: 100,
+          metricCount: 10,
+        }],
+      },
+    });
+
+    expect(repository.summaryFilters?.externalResourceIds).toEqual(['ocid1.instance.oc1.test']);
+  });
+
   test('does not treat a future monthly period end as stale technical evidence', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-20T12:00:00.000Z'));

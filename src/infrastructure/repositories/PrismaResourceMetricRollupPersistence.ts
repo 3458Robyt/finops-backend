@@ -1,6 +1,8 @@
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { Prisma } from '../../generated/prisma/client.js';
 
+const rollupRebuildChunkDays = 7;
+
 /**
  * Maintains peak-preserving rollups for technical metric series.
  * Raw samples remain canonical; each source resolution plus a compact daily
@@ -166,14 +168,38 @@ export class PrismaResourceMetricRollupPersistence {
   public async refreshAll(prisma: PrismaClient, tenantId?: string): Promise<number> {
     const deleteScope = tenantId === undefined ? Prisma.sql`` : Prisma.sql`WHERE tenant_id = ${tenantId}`;
     await prisma.$executeRaw(Prisma.sql`DELETE FROM resource_metric_rollups ${deleteScope}`);
-    return this.refreshAllBucket(prisma, tenantId);
+
+    const tenantScope = tenantId === undefined ? Prisma.sql`` : Prisma.sql`AND tenant_id = ${tenantId}`;
+    const bounds = await prisma.$queryRaw<readonly [{ readonly first_sampled_at: Date | null; readonly last_sampled_at: Date | null }]>(Prisma.sql`
+      SELECT min(sampled_at) AS first_sampled_at, max(sampled_at) AS last_sampled_at
+      FROM resource_metric_samples
+      WHERE source_type = 'TECHNICAL_METRIC'::"IngestionSourceType" ${tenantScope}
+    `);
+    const first = bounds[0]?.first_sampled_at;
+    const last = bounds[0]?.last_sampled_at;
+    if (first === null || first === undefined || last === null || last === undefined) return 0;
+
+    let affected = 0;
+    let chunkStart = startOfUtcDay(first);
+    const finalExclusive = new Date(last.getTime() + 1);
+    while (chunkStart < finalExclusive) {
+      const chunkEnd = new Date(chunkStart.getTime() + rollupRebuildChunkDays * 24 * 60 * 60 * 1000);
+      affected += await this.refreshAllBucket(prisma, tenantId, chunkStart, chunkEnd);
+      chunkStart = chunkEnd;
+    }
+    return affected;
   }
 
   private async refreshAllBucket(
     prisma: PrismaClient,
     tenantId: string | undefined,
+    startDate?: Date,
+    endDate?: Date,
   ): Promise<number> {
     const scope = tenantId === undefined ? Prisma.sql`` : Prisma.sql`AND s.tenant_id = ${tenantId}`;
+    const timeScope = startDate === undefined || endDate === undefined
+      ? Prisma.sql``
+      : Prisma.sql`AND s.sampled_at >= ${startDate} AND s.sampled_at < ${endDate}`;
     return prisma.$executeRaw(Prisma.sql`
       WITH source AS (
         SELECT s.id, s.tenant_id, s.cloud_connection_id, s.cloud_resource_id,
@@ -198,6 +224,7 @@ export class PrismaResourceMetricRollupPersistence {
         ) bucket_resolution
         WHERE s.source_type = 'TECHNICAL_METRIC'::"IngestionSourceType"
           ${scope}
+          ${timeScope}
       ), grouped AS (
         SELECT tenant_id, cloud_connection_id, max(cloud_resource_id) AS cloud_resource_id,
           provider, external_resource_id, provider_namespace, region_id, max(compartment_id) AS compartment_id,
@@ -241,4 +268,8 @@ export class PrismaResourceMetricRollupPersistence {
       FROM grouped
     `);
   }
+}
+
+function startOfUtcDay(value: Date): Date {
+  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
 }

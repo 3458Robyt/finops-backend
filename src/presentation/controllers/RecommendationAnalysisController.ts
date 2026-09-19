@@ -166,6 +166,7 @@ function serializeRun(run: RecommendationAnalysisRun, detail: boolean): Record<s
     promptTokenEstimate: run.promptTokenEstimate,
     responseTokenEstimate: run.responseTokenEstimate,
     ...(run.latencyMs !== undefined ? { latencyMs: run.latencyMs } : {}),
+    ...(run.stageTimings !== undefined ? { stageTimings: run.stageTimings } : {}),
     ...(run.cancelRequestedAt !== undefined ? { cancelRequestedAt: run.cancelRequestedAt.toISOString() } : {}),
     ...(run.errorCode !== undefined ? { errorCode: run.errorCode } : {}),
     ...(run.errorMessage !== undefined ? { errorMessage: run.errorMessage } : {}),

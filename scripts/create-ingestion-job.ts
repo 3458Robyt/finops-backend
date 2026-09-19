@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
 import type { IngestionSourceType } from '../src/generated/prisma/enums.js';
+import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
 
 const allowedSourceTypes = ['BILLING_EXPORT', 'TECHNICAL_METRIC', 'INVENTORY'] as const satisfies readonly IngestionSourceType[];
 
@@ -14,32 +15,38 @@ async function main(): Promise<void> {
   const window = parseWindow(args, hours);
   const prisma = getPrismaClient();
 
-  const connection = await prisma.cloudConnection.findFirstOrThrow({
-    where: {
-      ...(connectionId !== undefined ? { id: connectionId } : { providerCode: provider, status: 'ACTIVE' }),
-    },
-    orderBy: { createdAt: 'desc' },
-    select: { id: true, tenantId: true, providerCode: true },
-  });
+  const { connection, job } = await runWithDatabaseContext(
+    { workerId: 'create-ingestion-job-cli', role: 'MASTER_ADMIN' },
+    async () => {
+      const connection = await prisma.cloudConnection.findFirstOrThrow({
+        where: {
+          ...(connectionId !== undefined ? { id: connectionId } : { providerCode: provider, status: 'ACTIVE' }),
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, tenantId: true, providerCode: true },
+      });
 
-  const job = await prisma.ingestionJob.create({
-    data: {
-      tenantId: connection.tenantId,
-      cloudConnectionId: connection.id,
-      sourceType,
-      targetStart: window.start,
-      targetEnd: window.end,
-      maxAttempts,
+      const job = await prisma.ingestionJob.create({
+        data: {
+          tenantId: connection.tenantId,
+          cloudConnectionId: connection.id,
+          sourceType,
+          targetStart: window.start,
+          targetEnd: window.end,
+          maxAttempts,
+        },
+        select: {
+          id: true,
+          cloudConnectionId: true,
+          sourceType: true,
+          status: true,
+          targetStart: true,
+          targetEnd: true,
+        },
+      });
+      return { connection, job };
     },
-    select: {
-      id: true,
-      cloudConnectionId: true,
-      sourceType: true,
-      status: true,
-      targetStart: true,
-      targetEnd: true,
-    },
-  });
+  );
 
   console.log(JSON.stringify({
     success: true,

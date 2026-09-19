@@ -53,6 +53,7 @@ export interface CompleteRecommendationAnalysisRunInput {
   readonly promptTokenEstimate: number;
   readonly responseTokenEstimate: number;
   readonly latencyMs: number;
+  readonly stageTimings?: Readonly<Record<string, number>>;
   readonly errorCode?: string;
   readonly errorMessage?: string;
 }
@@ -80,6 +81,11 @@ export interface IRecommendationAnalysisRunRepository {
   complete(runId: string, input: CompleteRecommendationAnalysisRunInput): Promise<RecommendationAnalysisRun>;
   recordFailure(
     runId: string,
-    input: { readonly code: string; readonly message: string; readonly retryAt: Date },
+    input: {
+      readonly code: string;
+      readonly message: string;
+      readonly retryAt: Date;
+      readonly stageTimings?: Readonly<Record<string, number>>;
+    },
   ): Promise<RecommendationAnalysisRun>;
 }

@@ -111,6 +111,7 @@ return [
     'Evalua cada recomendacion por separado: no rechaces un lote solo porque combina una revision financiera FOCUS con una revision tecnica. SERVICE_COST_REVIEW y USAGE_OPTIMIZATION son validas sin recurso enlazado ni metricas tecnicas si no implican capacidad, CPU, memoria, resize, apagado ni otra accion operativa.',
     'No uses la palabra "anomalia" ni "anomalias"; usa "oportunidad" u "oportunidades".',
     'estimatedMonthlySavings nunca puede superar maxEstimatedMonthlySavings del candidato usado.',
+    'Usa normalizedMonthlyCost del candidato sin recalcularlo con coveredDays. La normalización autorizada es costo observado * 30 / días exactos entre periodStart y periodEnd; para un período de 30 días coincide con el costo observado.',
     'Cada recomendacion debe incluir evidence.candidateId, sourceFacts, assumptions y confidence entre 0 y 1.',
     'type debe copiar exactamente opportunityType del candidateId citado; no inventes nombres de tipo ni mezcles candidatos.',
     'Genera como máximo una recomendacion por candidateId y no repitas un candidato. Si un candidato no permite una recomendacion segura, omitelo.',
@@ -121,6 +122,7 @@ return [
       ? []
       : [`El vínculo canónico obligatorio de este análisis es cloudResourceId="${scopedCloudResourceId}". Cópialo literalmente; no uses otro recurso ni conexión.`]),
     'Prioriza recomendaciones accionables: ciclo de vida de almacenamiento, compromisos/descuentos por consumo estable, investigación de divergencia costo-consumo, revisión de bases de datos y egreso de red.',
+    'Cuando existan candidatos USAGE_OPTIMIZATION o candidatos técnicos con maxEstimatedMonthlySavings positivo, priorízalos y no devuelvas únicamente SERVICE_COST_REVIEW financiero; las revisiones financieras sin ahorro cuantificable se descartan antes de la auditoría.',
     'Solo puedes usar evidence.evidenceLevel=COST_USAGE_AND_TECHNICAL si la evidencia incluye technicalEvidenceRefs, cloudResourceId o externalResourceId, technicalSampleCount o technicalCoverageDays, latestTechnicalSampleAt y una metrica relevante para la accion.',
     'Si la evidencia tecnica es debil, antigua, no enlazada al recurso o insuficiente, no recomiendes ejecutar cambios tecnicos; recomienda validar primero y marca requiresTechnicalValidation=true.',
     'Copia literalmente desde el candidato y el snapshot los technicalEvidenceRefs, technicalSampleCount, technicalCoverageDays, latestTechnicalSampleAt, blockers, ruleMatches y recommendedActionType; no inventes ni mezcles referencias entre candidatos.',

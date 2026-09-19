@@ -14,6 +14,8 @@ export interface IngestionReadinessConnectionInput {
   readonly lastValidatedAt?: Date | null;
   readonly lastValidationAttemptAt?: Date | null;
   readonly metadata: unknown;
+  /** Enabled definitions are persisted in the relational table, not only in metadata. */
+  readonly configuredMetricDefinitionCount?: number;
   readonly credentialPurposes: readonly string[];
   readonly recentJobs: readonly IngestionReadinessJobInput[];
 }
@@ -44,7 +46,11 @@ export function buildIngestionReadinessSummary(
   const connections = input.connections.map((connection) => {
     const metadata = isPlainRecord(connection.metadata) ? connection.metadata : {};
     const credentialPurposes = [...new Set(connection.credentialPurposes)].sort();
-    const metadataCounts = summarizeReadinessMetadata(connection.providerCode, metadata);
+    const metadataCounts = summarizeReadinessMetadata(
+      connection.providerCode,
+      metadata,
+      connection.configuredMetricDefinitionCount,
+    );
     const capabilities = readCapabilityValidation(metadata);
 
     issues.push(...assessReadinessConnection({
@@ -201,12 +207,18 @@ export function assessReadinessConnection(input: {
 export function summarizeReadinessMetadata(
   provider: ProviderCode,
   metadata: Readonly<Record<string, unknown>>,
+  configuredMetricDefinitionCount = 0,
 ): Readonly<Record<string, number>> {
   const keys = provider === 'aws'
     ? ['awsMetricDefinitions', 'awsFocusExportObjects', 'awsFocusExportLocations']
     : ['ociMetricDefinitions', 'ociFocusReportObjects', 'ociFocusReportLocations'];
 
-  return Object.fromEntries(keys.map((key) => [key, Array.isArray(metadata[key]) ? metadata[key].length : 0]));
+  const counts = Object.fromEntries(keys.map((key) => [key, Array.isArray(metadata[key]) ? metadata[key].length : 0]));
+  const metricKey = provider === 'aws' ? 'awsMetricDefinitions' : 'ociMetricDefinitions';
+  if (Number.isFinite(configuredMetricDefinitionCount) && configuredMetricDefinitionCount > 0) {
+    counts[metricKey] = Math.max(counts[metricKey] ?? 0, Math.floor(configuredMetricDefinitionCount));
+  }
+  return counts;
 }
 
 export function summarizeReadinessJobResult(resultSummary: unknown): Readonly<Record<string, unknown>> | null {

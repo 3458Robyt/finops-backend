@@ -7,6 +7,7 @@ import type {
 import { readCandidateId } from '../recommendationAnalysisSupport.js';
 import type { AiRecommendationDraft } from './finOpsAiTypes.js';
 import type { RecommendationEvidenceSnapshot } from './RecommendationEvidenceSnapshot.js';
+import type { RecommendationReadinessReport } from './RecommendationReadinessGate.js';
 import { evaluateRecommendationDrafts } from './evaluation/recommendationQualityChecks.js';
 
 export interface AuditedRecommendationSelection {
@@ -29,6 +30,7 @@ export function selectAuditedRecommendationDrafts(input: {
   readonly snapshot: CostAnalyticsSnapshot;
   readonly externalResourceId?: string;
   readonly technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot;
+  readonly readinessReport?: RecommendationReadinessReport;
 }): AuditedRecommendationSelection {
   const hasItemAudits = (input.auditReport.candidateAudits?.length ?? 0) > 0;
   const candidateAudits = input.drafts.map((draft, index) => {
@@ -43,6 +45,7 @@ export function selectAuditedRecommendationDrafts(input: {
       undefined,
       input.externalResourceId,
       input.technicalEvidenceSnapshot,
+      input.readinessReport,
     );
     const qualityChecks: AiAuditCheck[] = quality.checks.map((check) => ({
       name: `deterministic:${check.name}`,

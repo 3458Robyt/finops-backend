@@ -16,6 +16,7 @@ export function normalizeRecommendationDrafts(
   readinessReport: RecommendationReadinessReport | undefined,
   technicalEvidenceSnapshot: RecommendationEvidenceSnapshot | undefined,
   cloudResourceId?: string,
+  periodDays?: number,
 ): readonly AiRecommendationDraft[] {
   if (readinessReport === undefined) {
     return drafts;
@@ -59,6 +60,7 @@ export function normalizeRecommendationDrafts(
       || technicalValidationOnly
       ? removeTechnicalEvidenceFields(existingEvidence)
       : existingEvidence;
+    const safeGeneratedEvidence = removeGeneratedSafetyAndCostFields(withoutStaleTechnicalFields);
     const requiresTechnicalValidation = candidate.requiresTechnicalValidation
       || technicalResource !== undefined
       || technicalValidationOnly
@@ -120,6 +122,8 @@ export function normalizeRecommendationDrafts(
 
     return {
       ...draftWithoutSavings,
+      cloudAccountId: candidate.cloudAccountId,
+      currency: candidate.currency,
       ...(technicalValidationOnly || technicalReviewOnly || financialReviewOnly || generatedSavings === undefined
         ? {}
         : { estimatedMonthlySavings: generatedSavings }),
@@ -131,9 +135,10 @@ export function normalizeRecommendationDrafts(
       title: safeTitle,
       description: safeDescription,
       evidence: {
-        ...withoutStaleTechnicalFields,
+        ...safeGeneratedEvidence,
         candidateId: candidate.id,
         ...(resourceIdentifier !== undefined ? { externalResourceId: resourceIdentifier } : {}),
+        ...(normalizedCloudResourceId !== undefined ? { cloudResourceId: normalizedCloudResourceId } : {}),
         costEvidenceRefs: candidate.costEvidenceRefs,
         evidenceLevel: candidate.evidenceLevelAllowed,
         evidenceStrength: candidate.evidenceStrength ?? withoutStaleTechnicalFields['evidenceStrength'] ?? 'MEDIUM',
@@ -142,6 +147,9 @@ export function normalizeRecommendationDrafts(
           : candidate.sourceFacts,
         requiresTechnicalValidation,
         ...(candidate.observedCost === undefined ? {} : { observedCost: candidate.observedCost }),
+        ...(candidate.observedCost === undefined ? {} : {
+          normalizedMonthlyCost: round(normalizeMonthlyAmount(candidate.observedCost, periodDays)),
+        }),
         maxEstimatedMonthlySavings: candidate.maxEstimatedMonthlySavings,
         ...(generatedSavings !== undefined && (technicalValidationOnly || technicalReviewOnly || financialReviewOnly)
           ? {
@@ -267,6 +275,36 @@ function removeTechnicalEvidenceFields(evidence: Record<string, unknown>): Recor
     ...rest
   } = evidence;
   return rest;
+}
+
+function removeGeneratedSafetyAndCostFields(evidence: Record<string, unknown>): Record<string, unknown> {
+  const blockedKeys = new Set([
+    'financialReviewOnly',
+    'reviewScope',
+    'technicalReviewOnly',
+    'operationalAuthorization',
+    'requiresManualValidation',
+  ]);
+  return Object.fromEntries(Object.entries(evidence).filter(([key]) => (
+    !blockedKeys.has(key) && !isGeneratedMonthlyCostField(key)
+  )));
+}
+
+function isGeneratedMonthlyCostField(key: string): boolean {
+  const normalized = key.replaceAll('_', '').toLowerCase();
+  return normalized.includes('monthlycost')
+    || normalized.includes('costmonthly')
+    || normalized.includes('normalizedcost');
+}
+
+function normalizeMonthlyAmount(amount: number, coveredDays: number | undefined): number {
+  return coveredDays !== undefined && Number.isFinite(coveredDays) && coveredDays > 0
+    ? amount * 30 / coveredDays
+    : amount;
+}
+
+function round(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 /**

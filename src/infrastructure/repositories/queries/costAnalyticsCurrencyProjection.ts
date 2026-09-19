@@ -70,7 +70,7 @@ export async function projectSnapshotAggregations(
     projectAggregateRows<AccountRow, CostAnalyticsAccountItem>(aggregations.accounts, periodStart, reportingCurrency, converter, (row) => `${row.cloud_account_id}:${row.provider}`, (row, amount, currency, status) => ({ cloudAccountId: row.cloud_account_id, provider: row.provider, name: row.name, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
     projectAggregateRows<ServiceRow, CostAnalyticsServiceItem>(aggregations.services, periodStart, reportingCurrency, converter, (row) => `${row.service_name}:${row.provider}`, (row, amount, currency, status) => ({ serviceName: row.service_name, provider: row.provider, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
     projectAggregateRows<EnvironmentRow, CostAnalyticsEnvironmentItem>(aggregations.environments, periodStart, reportingCurrency, converter, (row) => row.environment, (row, amount, currency, status) => ({ environment: row.environment, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
-    projectAggregateRows<ResourceRow, CostAnalyticsResourceItem>(aggregations.topResources, periodStart, reportingCurrency, converter, (row) => `${row.resource_id}:${row.service_name}:${row.provider}`, (row, amount, currency, status) => ({ resourceId: row.resource_id, serviceName: row.service_name, provider: row.provider, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
+    projectAggregateRows<ResourceRow, CostAnalyticsResourceItem>(aggregations.topResources, periodStart, reportingCurrency, converter, (row) => `${row.resource_id}:${row.cloud_account_id}:${row.service_name}:${row.provider}`, (row, amount, currency, status) => ({ resourceId: row.resource_id, cloudAccountId: row.cloud_account_id, ...(row.cloud_connection_id === null ? {} : { cloudConnectionId: row.cloud_connection_id }), ...(row.cloud_resource_id === null ? {} : { cloudResourceId: row.cloud_resource_id }), ...(row.resource_name === null ? {} : { resourceName: row.resource_name }), serviceName: row.service_name, provider: row.provider, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
     projectUsageRows(aggregations.topUsage, periodStart, reportingCurrency, converter),
   ]);
 
@@ -140,6 +140,15 @@ export async function projectMonthlyUsageRows(
     });
   });
   return [...values.values()].sort((left, right) => left.month.localeCompare(right.month) || right.cost - left.cost);
+}
+
+export function mergeCurrencyStatus(
+  ...statuses: readonly CurrencyConversionStatus[]
+): CurrencyConversionStatus {
+  if (statuses.includes('MISSING_RATE')) return 'MISSING_RATE';
+  if (statuses.includes('UNSUPPORTED_CURRENCY')) return 'UNSUPPORTED_CURRENCY';
+  if (statuses.includes('CONVERTED')) return 'CONVERTED';
+  return 'NOT_REQUIRED';
 }
 
 async function projectAggregateRows<TRow extends { readonly currency: string; readonly total_cost: number; readonly metric_count: number }, TItem extends { readonly totalCost: number; readonly metricCount: number; readonly currency?: string; readonly conversionStatus?: CurrencyConversionStatus }>(

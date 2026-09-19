@@ -135,23 +135,50 @@ async function buildReport(
       readonly expected_samples: bigint;
       readonly observed_samples: bigint;
       readonly missing_samples: bigint;
+      readonly stream_sample_count: number;
+      readonly first_sampled_at: Date | null;
+      readonly last_sampled_at: Date | null;
+      readonly classification: string;
     }[]>(Prisma.sql`
-      SELECT status::text, stream_key, provider_namespace, region_id, external_resource_id,
-        metric_name, statistic::text, granularity_seconds,
-        COUNT(*)::bigint AS windows,
-        COALESCE(SUM(expected_samples), 0)::bigint AS expected_samples,
-        COALESCE(SUM(observed_samples), 0)::bigint AS observed_samples,
-        COALESCE(SUM(missing_samples), 0)::bigint AS missing_samples
-      FROM resource_metric_coverage_windows
-      WHERE tenant_id = ${args.tenantId}
-        AND cloud_connection_id = ${args.connectionId}
-        AND window_start < ${args.end}
-        AND window_end > ${args.start}
-        AND status IN ('PARTIAL'::"MetricCoverageStatus", 'NO_DATA'::"MetricCoverageStatus")
-      GROUP BY status, stream_key, provider_namespace, region_id, external_resource_id,
-        metric_name, statistic, granularity_seconds
-      ORDER BY SUM(missing_samples) DESC, metric_name, external_resource_id
-      LIMIT 500
+      WITH gap_groups AS (
+        SELECT status::text, stream_key, provider_namespace, region_id, external_resource_id,
+          metric_name, statistic::text, granularity_seconds,
+          COUNT(*)::bigint AS windows,
+          COALESCE(SUM(expected_samples), 0)::bigint AS expected_samples,
+          COALESCE(SUM(observed_samples), 0)::bigint AS observed_samples,
+          COALESCE(SUM(missing_samples), 0)::bigint AS missing_samples
+        FROM resource_metric_coverage_windows
+        WHERE tenant_id = ${args.tenantId}
+          AND cloud_connection_id = ${args.connectionId}
+          AND window_start < ${args.end}
+          AND window_end > ${args.start}
+          AND status IN ('PARTIAL'::"MetricCoverageStatus", 'NO_DATA'::"MetricCoverageStatus")
+        GROUP BY status, stream_key, provider_namespace, region_id, external_resource_id,
+          metric_name, statistic, granularity_seconds
+        ORDER BY SUM(missing_samples) DESC, metric_name, external_resource_id
+        LIMIT 500
+      ), stream_summaries AS (
+        SELECT md5(concat_ws('|', provider_namespace, region_id, external_resource_id,
+          metric_name, statistic::text, granularity_seconds::text, dimensions_hash)) AS stream_key,
+          sample_count AS stream_sample_count, first_sampled_at, last_sampled_at
+        FROM resource_metric_stream_summaries
+        WHERE tenant_id = ${args.tenantId}
+          AND cloud_connection_id = ${args.connectionId}
+          AND sample_count > 0
+          AND first_sampled_at < ${args.end}
+          AND last_sampled_at >= ${args.start}
+      )
+      SELECT gap_groups.*,
+        COALESCE(stream_summaries.stream_sample_count, 0)::int AS stream_sample_count,
+        stream_summaries.first_sampled_at,
+        stream_summaries.last_sampled_at,
+        CASE WHEN stream_summaries.stream_key IS NULL
+          THEN 'NO_EMISSION_OBSERVED'
+          ELSE 'INTERMITTENT_OR_RECOVERABLE_CANDIDATE'
+        END AS classification
+      FROM gap_groups
+      LEFT JOIN stream_summaries USING (stream_key)
+      ORDER BY gap_groups.missing_samples DESC, gap_groups.metric_name, gap_groups.external_resource_id
     `),
     prisma.$queryRaw<readonly {
       readonly row_count: bigint;
@@ -271,6 +298,10 @@ async function buildReport(
         expectedSamples: toNumber(row.expected_samples),
         observedSamples: toNumber(row.observed_samples),
         missingSamples: toNumber(row.missing_samples),
+        streamSampleCount: row.stream_sample_count,
+        firstSampledAt: row.first_sampled_at?.toISOString() ?? null,
+        lastSampledAt: row.last_sampled_at?.toISOString() ?? null,
+        classification: row.classification,
       })),
     },
     focus: normalizeRow(focus[0]),
@@ -315,7 +346,7 @@ function printReport(report: Readonly<Record<string, unknown>>): void {
   if (coverageGaps.length > 0) {
     console.log('Mayores brechas por stream (máximo 10):');
     for (const row of coverageGaps.slice(0, 10)) {
-      console.log(`  ${row['status']} · ${row['metricName']} ${row['statistic']} · recurso ${row['externalResourceId']} · faltan ${row['missingSamples']}/${row['expectedSamples']}`);
+      console.log(`  ${row['classification']} · ${row['status']} · ${row['metricName']} ${row['statistic']} · recurso ${row['externalResourceId']} · faltan ${row['missingSamples']}/${row['expectedSamples']}`);
     }
   }
   console.log(`FOCUS: ${JSON.stringify(report.focus)}`);

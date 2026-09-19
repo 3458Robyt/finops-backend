@@ -255,8 +255,17 @@ const explicitPrefix = optionalString(location?.['prefix'])
 const autoDetected = connection.providerCode === 'oci'
   && explicitNamespaceName === undefined
   && explicitBucketName === undefined;
-const bucketName = explicitBucketName ?? (autoDetected ? connection.rootExternalId : undefined);
-const prefix = explicitPrefix ?? (autoDetected ? 'FOCUS Reports' : '');
+if (autoDetected) {
+return {
+capability: 'STORAGE',
+status: 'NOT_CONFIGURED',
+message: 'No hay una ubicación FOCUS configurada; se usará OCI Usage API cuando billing esté en modo AUTO.',
+checkedAt,
+metadata: { reasonCode: 'FOCUS_SOURCE_NOT_CONFIGURED' },
+};
+}
+const bucketName = explicitBucketName;
+const prefix = explicitPrefix ?? '';
 if (bucketName === undefined) {
 return {
 capability: 'STORAGE',
@@ -274,15 +283,11 @@ const namespaceName = explicitNamespaceName
 if (namespaceName === undefined) {
 throw new Error('OCI Object Storage no devolvió el namespace de la tenancy.');
 }
-await client.listObjects({
-namespaceName,
-bucketName,
-prefix,
-limit: 1,
-});
+let resolvedBucketName = bucketName;
+await client.listObjects({ namespaceName, bucketName: resolvedBucketName, prefix, limit: 1 });
 return {
 message: 'Lectura del almacenamiento FOCUS en OCI Object Storage disponible.',
- metadata: { namespaceName, bucketName, prefix, autoDetected },
+ metadata: { namespaceName, bucketName: resolvedBucketName, prefix, autoDetected },
 };
 },
 ));

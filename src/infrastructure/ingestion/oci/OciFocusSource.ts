@@ -54,16 +54,8 @@ export function readOciFocusLocations(
     return configured;
   }
 
-  // OCI-managed Cost Reports use a provider-managed Object Storage namespace,
-  // the tenancy OCID as bucket and the well-known report prefix. Keep this
-  // convention automatic; explicit metadata still overrides it completely.
-  return [{
-    namespaceName: 'bling',
-    bucketName: job.connection.rootExternalId,
-    prefix: 'FOCUS Reports',
-    focusVersion: '1.0',
-    maxObjects: OCI_FOCUS_DEFAULT_MAX_OBJECTS,
-  }];
+  const validated = readValidatedFocusLocation(job);
+  return validated === undefined ? [] : [validated];
 }
 
 export async function discoverOciFocusObjects(
@@ -196,4 +188,34 @@ function readMetadataField(
     if (item[key] !== undefined) return item[key];
   }
   return undefined;
+}
+
+function readValidatedFocusLocation(
+  job: CloudIngestionJobContext,
+): OciFocusReportLocation | undefined {
+  const validation = readRecord(job.connection.metadata?.['capabilityValidation']);
+  const capabilities = validation?.['capabilities'];
+  if (!Array.isArray(capabilities)) return undefined;
+  const storage = capabilities.find((item) => (
+    readRecord(item)?.['capability'] === 'STORAGE'
+    && readRecord(item)?.['status'] === 'AVAILABLE'
+  ));
+  const storageMetadata = readRecord(readRecord(storage)?.['metadata']);
+  const namespaceName = optionalString(storageMetadata?.['namespaceName']);
+  const bucketName = optionalString(storageMetadata?.['bucketName']);
+  const prefix = optionalString(storageMetadata?.['prefix']);
+  if (namespaceName === undefined || bucketName === undefined || prefix === undefined) return undefined;
+  return {
+    namespaceName,
+    bucketName,
+    prefix,
+    focusVersion: '1.0',
+    maxObjects: OCI_FOCUS_DEFAULT_MAX_OBJECTS,
+  };
+}
+
+function readRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : undefined;
 }

@@ -18,6 +18,34 @@ expect(result.capabilities.every((item) => item.status === 'NOT_CONFIGURED')).to
 expect(JSON.stringify(result)).not.toMatch(/privateKey|passphrase|fingerprint/i);
 });
 
+it('does not guess an Object Storage bucket when FOCUS is not configured', async () => {
+const provider = new OciSdkIngestionProvider();
+let storageClientCreated = false;
+Object.assign(provider as unknown as Record<string, unknown>, {
+createObjectStorageClient: () => {
+storageClientCreated = true;
+throw new Error('storage client should not be created');
+},
+});
+
+const result = await (provider as unknown as {
+validateStorageCapability: (
+connection: CloudIngestionJobContext['connection'],
+job: CloudIngestionJobContext,
+checkedAt: Date,
+  ) => Promise<{ status: string; message: string; metadata?: Record<string, unknown> }>;
+}).validateStorageCapability(
+buildMetricJob().connection,
+{ ...buildMetricJob(), sourceType: 'INVENTORY' },
+new Date(),
+);
+
+expect(result.status).toBe('NOT_CONFIGURED');
+expect(result.message).toContain('OCI Usage API');
+expect(result.metadata).toMatchObject({ reasonCode: 'FOCUS_SOURCE_NOT_CONFIGURED' });
+expect(storageClientCreated).toBe(false);
+});
+
 it('collects compute inventory resources through the OCI SDK', async () => {
 const provider = new OciSdkIngestionProvider();
 Object.assign(provider as unknown as { createComputeClient: () => unknown }, {

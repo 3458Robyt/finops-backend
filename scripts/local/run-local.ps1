@@ -64,8 +64,22 @@ Set-Location $repoRoot
   }
   $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
  } finally {
-  if ($null -ne $recommendationWorkerProcess -and -not $recommendationWorkerProcess.HasExited) {
-    & taskkill.exe /PID $recommendationWorkerProcess.Id /T /F | Out-Null
+  if ($null -ne $recommendationWorkerProcess) {
+    # The launcher can exit before its child worker when the API port is already
+    # occupied. Kill the recorded worker subtree even if the PowerShell parent
+    # has already disappeared, otherwise orphan workers keep polling the queue.
+    $workerRootPid = $recommendationWorkerProcess.Id
+    $workerPids = @($workerRootPid) + @(
+      Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+          $_.ParentProcessId -eq $workerRootPid -and
+          $_.CommandLine -match 'run-local\.ps1.*-Mode\s+analysis-worker'
+        } |
+        Select-Object -ExpandProperty ProcessId
+    )
+    foreach ($workerPid in ($workerPids | Select-Object -Unique)) {
+      & taskkill.exe /PID $workerPid /T /F 2>$null | Out-Null
+    }
   }
 }
  exit $exitCode

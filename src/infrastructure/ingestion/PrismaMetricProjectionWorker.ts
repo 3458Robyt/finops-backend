@@ -192,6 +192,7 @@ export class PrismaMetricProjectionWorker {
         await this.rollups.refreshForJob(tx, claimed.id);
         await this.coverage.refreshForJob(tx, claimed.id, now);
 
+        const completedAt = new Date();
         const completed = await tx.ingestionJob.updateMany({
           where: {
             id: claimed.id,
@@ -205,13 +206,13 @@ export class PrismaMetricProjectionWorker {
             projectionAvailableAt: null,
             projectionLockedAt: null,
             projectionLockedBy: null,
-            projectionCompletedAt: now,
+            projectionCompletedAt: completedAt,
             projectionErrorMessage: null,
             progress: {
               phase: 'COMPLETED',
               message: 'Ingesta raw y proyección técnica completadas correctamente.',
               projectionStatus: 'SUCCESS',
-              updatedAt: now.toISOString(),
+              updatedAt: completedAt.toISOString(),
             } as unknown as Prisma.InputJsonValue,
           },
         });

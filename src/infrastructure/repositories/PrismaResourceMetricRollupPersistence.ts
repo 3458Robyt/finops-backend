@@ -16,47 +16,38 @@ export class PrismaResourceMetricRollupPersistence {
         SELECT "tenant_id", "cloud_connection_id", "target_start", "target_end"
         FROM ingestion_jobs
         WHERE id = ${ingestionJobId}
-      ), affected AS (
+      ), affected AS MATERIALIZED (
         SELECT DISTINCT
           samples.tenant_id,
           samples.cloud_connection_id,
-          samples.cloud_resource_id,
           samples.external_resource_id,
           samples.provider_namespace,
           samples.region_id,
           samples.dimensions_hash,
           samples.metric_name,
-          samples.statistic
+          samples.statistic,
+          samples.granularity_seconds
         FROM resource_metric_samples samples
         WHERE samples.ingestion_job_id = ${ingestionJobId}
-      ), filtered_samples AS MATERIALIZED (
+      ), source AS (
         SELECT samples.id, samples.tenant_id, samples.cloud_connection_id,
           samples.cloud_resource_id, samples.provider, samples.external_resource_id,
           samples.provider_namespace, samples.region_id, samples.compartment_id,
           samples.dimensions_hash, samples.metric_name, samples.metric_unit,
           samples.statistic, samples.value, samples.sampled_at,
-          samples.granularity_seconds
+          samples.granularity_seconds, bucket.bucket_seconds, bucket.bucket_start
         FROM resource_metric_samples samples
-        CROSS JOIN job
-        WHERE samples.sampled_at >= date_trunc('day', job."target_start")
-          AND samples.sampled_at < date_trunc('day', job."target_end") + interval '1 day'
-          AND samples.tenant_id = job."tenant_id"
-          AND samples.cloud_connection_id = job."cloud_connection_id"
-          AND samples.source_type = 'TECHNICAL_METRIC'::"IngestionSourceType"
-      ), source AS (
-        SELECT samples.*, bucket.bucket_seconds, bucket.bucket_start
-        FROM filtered_samples samples
         CROSS JOIN job
         INNER JOIN affected
           ON affected.tenant_id = samples.tenant_id
          AND affected.cloud_connection_id = samples.cloud_connection_id
-         AND affected.cloud_resource_id IS NOT DISTINCT FROM samples.cloud_resource_id
          AND affected.external_resource_id = samples.external_resource_id
          AND affected.provider_namespace = samples.provider_namespace
          AND affected.region_id = samples.region_id
           AND affected.dimensions_hash = samples.dimensions_hash
           AND affected.metric_name = samples.metric_name
           AND affected.statistic = samples.statistic
+          AND affected.granularity_seconds = samples.granularity_seconds
         CROSS JOIN LATERAL (
           SELECT CASE
             WHEN samples.granularity_seconds <= 1800 THEN 1800
@@ -74,7 +65,10 @@ export class PrismaResourceMetricRollupPersistence {
           SELECT bucket_resolution.bucket_seconds,
             to_timestamp(floor(extract(epoch FROM samples.sampled_at) / bucket_resolution.bucket_seconds) * bucket_resolution.bucket_seconds) AS bucket_start
         ) bucket
-        WHERE bucket.bucket_start >= to_timestamp(
+        WHERE samples.source_type = 'TECHNICAL_METRIC'::"IngestionSourceType"
+          AND samples.sampled_at >= date_trunc('day', job."target_start")
+          AND samples.sampled_at < date_trunc('day', job."target_end") + interval '1 day'
+          AND bucket.bucket_start >= to_timestamp(
             floor(extract(epoch FROM job."target_start") / bucket.bucket_seconds)
             * bucket.bucket_seconds
           )

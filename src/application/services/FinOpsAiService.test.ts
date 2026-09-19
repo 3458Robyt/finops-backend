@@ -641,6 +641,29 @@ describe('FinOpsAiService', () => {
     }));
   });
 
+  test('records a recommendation error trace when the provider fails before producing drafts', async () => {
+    const gateway = new FakeAiGateway([]);
+    const traceRepository = { createAiContextTrace: vi.fn().mockResolvedValue(undefined) };
+    const service = new FinOpsAiService(
+      new FakeCostAnalyticsRepository(),
+      new FakeRecommendationRepository(),
+      gateway,
+      undefined,
+      undefined,
+      new AiObservabilityService(traceRepository as never),
+    );
+
+    await expect(service.generateRecommendations({
+      tenantId: 'tenant-1',
+      persist: false,
+    })).rejects.toThrow('No fake AI response configured');
+
+    expect(traceRepository.createAiContextTrace).toHaveBeenCalledWith(expect.objectContaining({
+      operation: 'RECOMMENDATION',
+      status: 'ERROR',
+    }));
+  });
+
   test('rejects an auditor-approved recommendation when deterministic evidence is insufficient', async () => {
     const gateway = new FakeAiGateway([
       JSON.stringify({

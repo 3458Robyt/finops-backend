@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
 import type { IngestionSourceType } from '../src/generated/prisma/enums.js';
 import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
+import { buildIngestionConfigurationHash } from '../src/infrastructure/ingestion/ingestionConfigurationHash.js';
 
 const allowedSourceTypes = ['BILLING_EXPORT', 'TECHNICAL_METRIC', 'INVENTORY'] as const satisfies readonly IngestionSourceType[];
 
@@ -23,7 +24,16 @@ async function main(): Promise<void> {
           ...(connectionId !== undefined ? { id: connectionId } : { providerCode: provider, status: 'ACTIVE' }),
         },
         orderBy: { createdAt: 'desc' },
-        select: { id: true, tenantId: true, providerCode: true },
+        select: { id: true, tenantId: true, providerCode: true, metadata: true },
+      });
+      const requestContext = sourceType === 'TECHNICAL_METRIC'
+        ? { interval: '30m', resolutionSeconds: 1800 }
+        : undefined;
+      const configurationHash = buildIngestionConfigurationHash({
+        providerCode: connection.providerCode,
+        sourceType,
+        metadata: connection.metadata,
+        ...(requestContext === undefined ? {} : { requestContext }),
       });
 
       const job = await prisma.ingestionJob.create({
@@ -34,6 +44,8 @@ async function main(): Promise<void> {
           targetStart: window.start,
           targetEnd: window.end,
           maxAttempts,
+          configurationHash,
+          ...(requestContext === undefined ? {} : { requestContext }),
         },
         select: {
           id: true,

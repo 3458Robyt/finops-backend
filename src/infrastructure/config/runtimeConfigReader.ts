@@ -104,7 +104,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
         intervalMs: readPositiveInteger(env['METRIC_PROJECTION_WORKER_INTERVAL_MS'], 1_000),
         leaseMs: readPositiveInteger(env['METRIC_PROJECTION_LEASE_MS'], 300_000),
         retryBackoffMs: readPositiveInteger(env['METRIC_PROJECTION_RETRY_BACKOFF_MS'], 5_000),
-        transactionTimeoutMs: readPositiveInteger(env['METRIC_PROJECTION_TRANSACTION_TIMEOUT_MS'], 120_000),
+        transactionTimeoutMs: readPositiveInteger(env['METRIC_PROJECTION_TRANSACTION_TIMEOUT_MS'], 300_000),
       },
       learning: {
         enabled: readBoolean(env['AGENT_LEARNING_WORKER_ENABLED'], false),

@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { Prisma } from '../src/generated/prisma/client.js';
 import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
+import { buildIngestionConfigurationHash } from '../src/infrastructure/ingestion/ingestionConfigurationHash.js';
 import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
 
 interface AuditArguments {
@@ -39,22 +40,36 @@ async function buildReport(
   prisma: ReturnType<typeof getPrismaClient>,
   args: AuditArguments,
 ): Promise<Readonly<Record<string, unknown>>> {
-  const [connection, raw, daily, coverage, coverageGaps, focus, costs, resources, jobs] = await Promise.all([
-    prisma.$queryRaw<readonly {
-      readonly id: string;
-      readonly name: string;
-      readonly provider_code: string;
-      readonly status: string;
-      readonly default_region: string | null;
-      readonly last_validated_at: Date | null;
-      readonly authentication_status: string | null;
-    }[]>(Prisma.sql`
-      SELECT id, name, provider_code, status, default_region, last_validated_at,
-        metadata->'capabilityValidation'->'authentication'->>'status' AS authentication_status
-      FROM cloud_connections
-      WHERE tenant_id = ${args.tenantId} AND id = ${args.connectionId}
-      LIMIT 1
-    `),
+  const connection = await prisma.$queryRaw<readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly provider_code: string;
+    readonly status: string;
+    readonly default_region: string | null;
+    readonly last_validated_at: Date | null;
+    readonly authentication_status: string | null;
+    readonly metadata: unknown;
+  }[]>(Prisma.sql`
+    SELECT id, name, provider_code, status, default_region, last_validated_at,
+      metadata,
+      metadata->'capabilityValidation'->'authentication'->>'status' AS authentication_status
+    FROM cloud_connections
+    WHERE tenant_id = ${args.tenantId} AND id = ${args.connectionId}
+    LIMIT 1
+  `);
+  const configurationHash = connection[0] === undefined
+    ? null
+    : buildIngestionConfigurationHash({
+      providerCode: connection[0].provider_code,
+      sourceType: 'TECHNICAL_METRIC',
+      metadata: connection[0].metadata,
+      requestContext: { interval: '30m', resolutionSeconds: 1800 },
+    });
+  const coverageConfigurationFilter = configurationHash === null
+    ? Prisma.sql`AND FALSE`
+    : Prisma.sql`AND configuration_hash = ${configurationHash}`;
+
+  const [raw, daily, coverage, coverageGaps, focus, costs, resources, jobs] = await Promise.all([
     prisma.$queryRaw<readonly {
       readonly sample_count: bigint;
       readonly stream_count: bigint;
@@ -119,6 +134,7 @@ async function buildReport(
         AND cloud_connection_id = ${args.connectionId}
         AND window_start < ${args.end}
         AND window_end > ${args.start}
+        ${coverageConfigurationFilter}
       GROUP BY status
       ORDER BY status
     `),
@@ -153,6 +169,7 @@ async function buildReport(
           AND window_start < ${args.end}
           AND window_end > ${args.start}
           AND status IN ('PARTIAL'::"MetricCoverageStatus", 'NO_DATA'::"MetricCoverageStatus")
+          ${coverageConfigurationFilter}
         GROUP BY status, stream_key, provider_namespace, region_id, external_resource_id,
           metric_name, statistic, granularity_seconds
         ORDER BY SUM(missing_samples) DESC, metric_name, external_resource_id
@@ -271,6 +288,7 @@ async function buildReport(
       lastValidatedAt: connection[0].last_validated_at?.toISOString() ?? null,
       authenticationStatus: connection[0].authentication_status,
     },
+    coverageConfigurationHash: configurationHash,
     technicalMetrics: {
       totals: normalizeRow(raw[0]),
       daily: daily.map((row) => ({

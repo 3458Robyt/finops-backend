@@ -9,7 +9,7 @@ async function main(): Promise<void> {
   const worker = new PrismaMetricProjectionWorker(prisma, new MetricsRegistry(), {
     leaseMs: readPositiveInteger('METRIC_PROJECTION_LEASE_MS', 300_000),
     retryBackoffMs: readPositiveInteger('METRIC_PROJECTION_RETRY_BACKOFF_MS', 5_000),
-    transactionTimeoutMs: readPositiveInteger('METRIC_PROJECTION_TRANSACTION_TIMEOUT_MS', 120_000),
+    transactionTimeoutMs: readPositiveInteger('METRIC_PROJECTION_TRANSACTION_TIMEOUT_MS', 300_000),
   });
 
   try {

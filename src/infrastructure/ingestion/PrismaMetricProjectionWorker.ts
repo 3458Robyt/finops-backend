@@ -186,38 +186,47 @@ export class PrismaMetricProjectionWorker {
   private async project(claimed: ClaimedProjection, workerId: string): Promise<MetricProjectionWorkerRunResult> {
     const startedAt = Date.now();
     try {
-      await this.prisma.$transaction(async (tx) => {
-        const now = new Date();
-        await this.streamSummaries.refreshMetricStreamSummariesForJob(tx, claimed.id, now);
-        await this.rollups.refreshForJob(tx, claimed.id);
-        await this.coverage.refreshForJob(tx, claimed.id, now);
+      // Each projection is idempotent and can scan a different amount of history.
+      // Keep them in separate transactions so a slow rollup cannot expire the
+      // transaction that already built the stream summary.
+      await this.prisma.$transaction(
+        (tx) => this.streamSummaries.refreshMetricStreamSummariesForJob(tx, claimed.id, new Date()),
+        { maxWait: 10_000, timeout: this.transactionTimeoutMs },
+      );
+      await this.prisma.$transaction(
+        (tx) => this.rollups.refreshForJob(tx, claimed.id),
+        { maxWait: 10_000, timeout: this.transactionTimeoutMs },
+      );
+      await this.prisma.$transaction(
+        (tx) => this.coverage.refreshForJob(tx, claimed.id, new Date()),
+        { maxWait: 10_000, timeout: this.transactionTimeoutMs },
+      );
 
-        const completedAt = new Date();
-        const completed = await tx.ingestionJob.updateMany({
-          where: {
-            id: claimed.id,
-            status: 'SUCCESS',
-            projectionStatus: 'RUNNING',
-            projectionLockedBy: workerId,
-            projectionAttempts: claimed.attempt,
-          },
-          data: {
+      const completedAt = new Date();
+      const completed = await this.prisma.ingestionJob.updateMany({
+        where: {
+          id: claimed.id,
+          status: 'SUCCESS',
+          projectionStatus: 'RUNNING',
+          projectionLockedBy: workerId,
+          projectionAttempts: claimed.attempt,
+        },
+        data: {
+          projectionStatus: 'SUCCESS',
+          projectionAvailableAt: null,
+          projectionLockedAt: null,
+          projectionLockedBy: null,
+          projectionCompletedAt: completedAt,
+          projectionErrorMessage: null,
+          progress: {
+            phase: 'COMPLETED',
+            message: 'Ingesta raw y proyección técnica completadas correctamente.',
             projectionStatus: 'SUCCESS',
-            projectionAvailableAt: null,
-            projectionLockedAt: null,
-            projectionLockedBy: null,
-            projectionCompletedAt: completedAt,
-            projectionErrorMessage: null,
-            progress: {
-              phase: 'COMPLETED',
-              message: 'Ingesta raw y proyección técnica completadas correctamente.',
-              projectionStatus: 'SUCCESS',
-              updatedAt: completedAt.toISOString(),
-            } as unknown as Prisma.InputJsonValue,
-          },
-        });
-        if (completed.count !== 1) throw new Error('La proyección perdió el lease antes de completar.');
-      }, { maxWait: 10_000, timeout: this.transactionTimeoutMs });
+            updatedAt: completedAt.toISOString(),
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+      if (completed.count !== 1) throw new Error('La proyección perdió el lease antes de completar.');
 
       this.metrics?.increment('metric_projection_runs_total', { outcome: 'success' });
       this.metrics?.observe('metric_projection_duration_ms', Date.now() - startedAt, { outcome: 'success' });

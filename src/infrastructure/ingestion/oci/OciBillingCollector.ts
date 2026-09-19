@@ -219,6 +219,13 @@ export class OciBillingCollector {
       const result = await this.collectProviderApiCosts(job, options);
       return {
         ...result,
+        // A missing FOCUS object is a source warning, not a failed billing
+        // execution. Mark successful Usage API rows as written so the
+        // scheduler advances the watermark instead of requeueing the same
+        // window forever.
+        dataOutcome: result.providerCostRows !== undefined && result.providerCostRows.length > 0
+          ? 'DATA_WRITTEN'
+          : 'NO_DATA',
         warnings: [warning, ...result.warnings],
         coverage: {
           ...result.coverage,

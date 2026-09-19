@@ -493,6 +493,7 @@ compartmentCount: 3,
     });
 
     expect(result.providerCostRows).toHaveLength(1);
+    expect(result.dataOutcome).toBe('DATA_WRITTEN');
     expect(result.coverage).toMatchObject({
       billingSource: 'PROVIDER_API',
       billingSourceFallback: 'FOCUS_TO_PROVIDER_API',

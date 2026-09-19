@@ -58,6 +58,27 @@ describe('PrismaCloudResourceCatalog', () => {
     }));
     expect(update.mock.calls[0]?.[0].data).toEqual({ lastSeenAt: expect.any(Date) });
   });
+
+  test('indexes provider aliases without creating a second cloud resource', async () => {
+    const findUnique = vi.fn().mockResolvedValue(null);
+    const create = vi.fn().mockResolvedValue({
+      id: 'resource-bucket',
+      externalResourceId: 'namespace-1/cost-reports',
+    });
+    const resource = {
+      ...historicalResource(),
+      externalResourceId: 'namespace-1/cost-reports',
+      resourceType: 'OBJECT_STORAGE_BUCKET',
+      serviceName: 'Oracle Object Storage',
+      rawResource: { source: 'OCI_OBJECT_STORAGE_SDK', aliases: ['cost-reports'] },
+    };
+
+    const ids = await upsertNormalizedCloudResources({ cloudResource: { findUnique, create } } as never, [resource]);
+
+    expect(ids.get('namespace-1/cost-reports')).toBe('resource-bucket');
+    expect(ids.get('cost-reports')).toBe('resource-bucket');
+    expect(create).toHaveBeenCalledOnce();
+  });
 });
 
 function historicalResource(): NormalizedCloudResource {

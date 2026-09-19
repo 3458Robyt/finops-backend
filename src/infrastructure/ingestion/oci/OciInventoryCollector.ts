@@ -6,10 +6,11 @@ import { optionalString, readObjectArray, requireString } from '../providerConfi
 import type { OciCompartmentDiscoveryResult } from './OciCompartmentDiscovery.js';
 import type { OciRegionDiscoveryResult } from './OciRegionDiscovery.js';
 import { readOciMetricDefinitions } from './OciMonitoringCollector.js';
-import type { OciComputeClient, OciResourceSearchClient } from './OciSdkContracts.js';
+import type { OciComputeClient, OciObjectStorageClient, OciResourceSearchClient } from './OciSdkContracts.js';
 import { collectOciResourceSearchInventory } from './OciResourceSearchCollector.js';
 import { mergeOciTags, normalizeOciResourceStatus, ociInventorySourcePriority } from './OciResourceNormalizer.js';
 import { safeErrorMessage } from '../../../application/observability/safeError.js';
+import { collectOciObjectStorageInventory } from './OciObjectStorageInventoryCollector.js';
 
 export interface OciInventoryCollectionResult {
   readonly apiCallCount: number;
@@ -21,6 +22,7 @@ export interface OciInventoryCollectionResult {
 
 export interface OciInventoryDependencies {
   readonly createComputeClient: (job: CloudIngestionJobContext) => OciComputeClient;
+  readonly createObjectStorageClient?: (job: CloudIngestionJobContext) => OciObjectStorageClient;
   readonly createResourceSearchClient?: (job: CloudIngestionJobContext) => OciResourceSearchClient;
   readonly discoverCompartments: (
     job: CloudIngestionJobContext,
@@ -29,7 +31,7 @@ export interface OciInventoryDependencies {
     job: CloudIngestionJobContext,
   ) => Promise<OciRegionDiscoveryResult>;
   readonly withRetry: <T>(operation: () => Promise<T>) => Promise<T>;
-  readonly withRateLimit?: <T>(job: CloudIngestionJobContext, api: 'resourceSearch' | 'compute', operation: () => Promise<T>) => Promise<T>;
+  readonly withRateLimit?: <T>(job: CloudIngestionJobContext, api: 'resourceSearch' | 'compute' | 'objectStorage', operation: () => Promise<T>) => Promise<T>;
 }
 
 export async function collectOciInventory(
@@ -43,6 +45,8 @@ export async function collectOciInventory(
   let resourceSearchStatus: 'COMPLETE' | 'FAILED' | 'NOT_CONFIGURED' = 'NOT_CONFIGURED';
   let resourceSearchFilteredCount = 0;
   let resourceSearchTypes: readonly string[] = [];
+  let objectStorageResources: readonly NormalizedCloudResource[] = [];
+  let objectStorageStatus: 'COMPLETE' | 'FAILED' | 'NOT_CONFIGURED' = 'NOT_CONFIGURED';
   let apiCallCount = 0;
   const warnings: string[] = [];
 
@@ -70,8 +74,10 @@ export async function collectOciInventory(
     inventoryCompartmentDiscovery: 'NOT_ATTEMPTED',
   };
 
+  let computeInventory: Awaited<ReturnType<typeof collectComputeInventory>> | undefined;
   try {
     const inventory = await collectComputeInventory(job, dependencies);
+    computeInventory = inventory;
     sdkResources = inventory.resources;
     apiCallCount += inventory.apiCallCount;
     coverage = inventory.coverage;
@@ -81,7 +87,46 @@ export async function collectOciInventory(
     coverage = { inventoryCompartmentDiscovery: 'FAILED' };
   }
 
-  const resources = mergeInventoryResources([...inferred, ...searchResources, ...sdkResources, ...explicit]);
+  if (dependencies.createObjectStorageClient !== undefined && computeInventory !== undefined) {
+    let namespaceName = readConfiguredObjectStorageNamespace(job);
+    try {
+      if (namespaceName === undefined) {
+        apiCallCount += 1;
+        namespaceName = await discoverObjectStorageNamespace(
+          job,
+          computeInventory.regionIds[0],
+          dependencies,
+        );
+      }
+      if (namespaceName === undefined) {
+        objectStorageStatus = 'FAILED';
+        warnings.push('OCI Object Storage inventory skipped: OCI no devolvió el namespace de Object Storage.');
+      } else {
+        const storage = await collectOciObjectStorageInventory(
+          job,
+          namespaceName,
+          computeInventory.compartmentIds,
+          computeInventory.regionIds,
+          {
+            createClient: dependencies.createObjectStorageClient,
+            withRetry: dependencies.withRetry,
+            ...(dependencies.withRateLimit === undefined ? {} : {
+              withRateLimit: (context, operation) => dependencies.withRateLimit!(context, 'objectStorage', operation),
+            }),
+          },
+        );
+        objectStorageResources = storage.resources;
+        objectStorageStatus = 'COMPLETE';
+        apiCallCount += storage.apiCallCount;
+        warnings.push(...storage.warnings);
+      }
+    } catch (error) {
+      objectStorageStatus = 'FAILED';
+      warnings.push(`OCI Object Storage inventory skipped: ${safeErrorMessage(error)}`);
+    }
+  }
+
+  const resources = mergeInventoryResources([...inferred, ...searchResources, ...sdkResources, ...objectStorageResources, ...explicit]);
   if (resources.length === 0) {
     warnings.push('No OCI inventory resources found from Resource Search, Compute SDK, metadata or metric definitions.');
   }
@@ -102,6 +147,8 @@ export async function collectOciInventory(
       resourceSearchFilteredCount,
       resourceSearchResourceCount: searchResources.length,
       sdkResourceCount: sdkResources.length,
+      objectStorageStatus,
+      objectStorageResourceCount: objectStorageResources.length,
       mergedResourceCount: resources.length,
     },
   };
@@ -115,6 +162,8 @@ async function collectComputeInventory(
   readonly resources: readonly NormalizedCloudResource[];
   readonly coverage: Readonly<Record<string, unknown>>;
   readonly warnings: readonly string[];
+  readonly compartmentIds: readonly string[];
+  readonly regionIds: readonly string[];
 }> {
   const discovery = await dependencies.discoverCompartments(job);
   const regions = dependencies.discoverRegions === undefined
@@ -189,6 +238,8 @@ async function collectComputeInventory(
       regions: regions.regionIds,
     },
     warnings,
+    compartmentIds: discovery.compartmentIds,
+    regionIds: regions.regionIds,
   };
 }
 
@@ -244,6 +295,38 @@ function readMetricResources(job: CloudIngestionJobContext): readonly Normalized
       metricName: definition.metricName,
     },
   }));
+}
+
+async function discoverObjectStorageNamespace(
+  job: CloudIngestionJobContext,
+  regionId: string | undefined,
+  dependencies: OciInventoryDependencies,
+): Promise<string | undefined> {
+  const clientJob = regionId === undefined ? job : withRegion(job, regionId);
+  const client = dependencies.createObjectStorageClient!(clientJob);
+  try {
+    const request = () => dependencies.withRetry(() => client.getNamespace({
+      compartmentId: job.connection.rootExternalId,
+    }));
+    const response = dependencies.withRateLimit === undefined
+      ? await request()
+      : await dependencies.withRateLimit(clientJob, 'objectStorage', request);
+    return optionalString(response.value);
+  } finally {
+    client.close?.();
+  }
+}
+
+function readConfiguredObjectStorageNamespace(job: CloudIngestionJobContext): string | undefined {
+  const location = readObjectArray(job.connection.metadata, 'ociFocusReportLocations')[0];
+  const object = readObjectArray(job.connection.metadata, 'ociFocusReportObjects')[0];
+  const explicit = optionalString(location?.['namespaceName'])
+    ?? optionalString(location?.['namespace-name'])
+    ?? optionalString(object?.['namespaceName'])
+    ?? optionalString(object?.['namespace-name']);
+  if (explicit !== undefined) return explicit;
+
+  return undefined;
 }
 
 function mergeInventoryResources(

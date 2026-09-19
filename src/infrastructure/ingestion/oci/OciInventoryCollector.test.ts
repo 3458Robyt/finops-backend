@@ -140,6 +140,74 @@ describe('OCI inventory modules', () => {
       expect.objectContaining({ externalResourceId: 'instance-1', regionId: 'us-phoenix-1' }),
     ]);
   });
+
+  test('collects Object Storage buckets with a canonical id and a safe bucket alias', async () => {
+    const listBuckets = vi.fn().mockResolvedValue({
+      items: [{
+        name: 'cost-reports',
+        timeCreated: '2026-08-01T00:00:00.000Z',
+        freeformTags: { owner: 'finops' },
+      }],
+    });
+    const result = await collectOciInventory(buildJob({
+      metadata: {
+        ociFocusReportLocations: [{ namespaceName: 'namespace-1', bucketName: 'focus-bucket', prefix: 'FOCUS Reports' }],
+        capabilityValidation: {
+          capabilities: [{ capability: 'STORAGE', metadata: { namespaceName: 'namespace-1' } }],
+        },
+      },
+    }), {
+      discoverCompartments: async () => ({
+        compartmentIds: ['tenancy-1'], apiCallCount: 0, status: 'CONFIGURED_ONLY',
+        configuredCompartmentCount: 1, discoveredCompartmentCount: 0,
+      }),
+      discoverRegions: async () => ({
+        regionIds: ['us-ashburn-1'], apiCallCount: 0, status: 'COMPLETE', warnings: [],
+      }),
+      createComputeClient: () => ({ listInstances: async () => ({ items: [] }) }),
+      createObjectStorageClient: () => ({ listBuckets, close: vi.fn() }),
+      withRetry: (operation) => operation(),
+    });
+
+    expect(listBuckets).toHaveBeenCalledWith({
+      namespaceName: 'namespace-1',
+      compartmentId: 'tenancy-1',
+      limit: 1000,
+    });
+    expect(result.resources).toEqual([
+      expect.objectContaining({
+        externalResourceId: 'namespace-1/cost-reports',
+        name: 'cost-reports',
+        resourceType: 'OBJECT_STORAGE_BUCKET',
+        serviceName: 'Oracle Object Storage',
+        rawResource: expect.objectContaining({ aliases: ['cost-reports'] }),
+      }),
+    ]);
+    expect(result.coverage).toMatchObject({ objectStorageStatus: 'COMPLETE', objectStorageResourceCount: 1 });
+  });
+
+  test('discovers the Object Storage namespace from OCI instead of trusting a stale validation value', async () => {
+    const getNamespace = vi.fn().mockResolvedValue({ value: 'live-namespace' });
+    const listBuckets = vi.fn().mockResolvedValue({ items: [] });
+    const result = await collectOciInventory(buildJob({}), {
+      discoverCompartments: async () => ({
+        compartmentIds: ['tenancy-1'], apiCallCount: 0, status: 'CONFIGURED_ONLY',
+        configuredCompartmentCount: 1, discoveredCompartmentCount: 0,
+      }),
+      discoverRegions: async () => ({
+        regionIds: ['us-ashburn-1'], apiCallCount: 0, status: 'COMPLETE', warnings: [],
+      }),
+      createComputeClient: () => ({ listInstances: async () => ({ items: [] }) }),
+      createObjectStorageClient: () => ({ getNamespace, listBuckets }),
+      withRetry: (operation) => operation(),
+    });
+
+    expect(getNamespace).toHaveBeenCalledWith({ compartmentId: 'tenancy-1' });
+    expect(listBuckets).toHaveBeenCalledWith({
+      namespaceName: 'live-namespace', compartmentId: 'tenancy-1', limit: 1000,
+    });
+    expect(result.coverage).toMatchObject({ objectStorageStatus: 'COMPLETE' });
+  });
 });
 
 function buildJob(overrides: {

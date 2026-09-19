@@ -161,6 +161,7 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     if (job.sourceType === 'INVENTORY') {
       const inventory = await collectOciInventory(job, {
         createComputeClient: (context) => this.createComputeClient(context),
+        createObjectStorageClient: (context) => this.createObjectStorageClient(context),
         createResourceSearchClient: (context) => createOciResourceSearchClient(this.createAuthProvider(context)),
         discoverCompartments: (context) => discoverOciInventoryCompartments(context, {
           createIdentityClient: (target) => this.createIdentityClient(this.createAuthProvider(target)),
@@ -254,10 +255,9 @@ const explicitPrefix = optionalString(location?.['prefix'])
 const autoDetected = connection.providerCode === 'oci'
   && explicitNamespaceName === undefined
   && explicitBucketName === undefined;
-const namespaceName = explicitNamespaceName ?? (autoDetected ? 'bling' : undefined);
 const bucketName = explicitBucketName ?? (autoDetected ? connection.rootExternalId : undefined);
 const prefix = explicitPrefix ?? (autoDetected ? 'FOCUS Reports' : '');
-if (namespaceName === undefined || bucketName === undefined) {
+if (bucketName === undefined) {
 return {
 capability: 'STORAGE',
 status: 'NOT_CONFIGURED',
@@ -269,6 +269,11 @@ checkedAt,
 return validateOciCall('STORAGE', checkedAt, () => withOciClient(
 this.createObjectStorageClient(job, signal),
 async (client) => {
+const namespaceName = explicitNamespaceName
+  ?? optionalString((await client.getNamespace({ compartmentId: connection.rootExternalId })).value);
+if (namespaceName === undefined) {
+throw new Error('OCI Object Storage no devolvió el namespace de la tenancy.');
+}
 await client.listObjects({
 namespaceName,
 bucketName,

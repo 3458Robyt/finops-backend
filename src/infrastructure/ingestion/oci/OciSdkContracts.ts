@@ -59,6 +59,11 @@ export interface OciSummarizedMetric {
 
 export interface OciObjectStorageClient {
   close?(): void;
+  getNamespace(request: unknown): Promise<{ readonly value?: string }>;
+  listBuckets(request: unknown): Promise<{
+    readonly items?: readonly OciBucket[];
+    readonly opcNextPage?: string;
+  }>;
   getObject(request: unknown): Promise<{
     readonly getObjectBody?: unknown;
     readonly value?: unknown;
@@ -73,6 +78,15 @@ export interface OciObjectStorageClient {
       readonly nextStartWith?: string;
     };
   }>;
+}
+
+export interface OciBucket {
+  readonly name?: string;
+  readonly namespace?: string;
+  readonly compartmentId?: string;
+  readonly timeCreated?: Date | string;
+  readonly freeformTags?: Readonly<Record<string, unknown>>;
+  readonly definedTags?: Readonly<Record<string, unknown>>;
 }
 
 export interface OciComputeClient {

@@ -1,6 +1,9 @@
 import type { NormalizedCloudResource } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import type { Prisma } from '../../generated/prisma/client.js';
-import { normalizeExternalResourceId } from '../../domain/models/ResourceLinkage.js';
+import {
+  normalizeExternalResourceId,
+  resourceExternalIdAliases,
+} from '../../domain/models/ResourceLinkage.js';
 
 export type PrismaCloudResourceClient = Pick<Prisma.TransactionClient, 'cloudResource'>;
 
@@ -9,6 +12,7 @@ export async function upsertNormalizedCloudResources(
   resources: readonly NormalizedCloudResource[],
 ): Promise<ReadonlyMap<string, string>> {
   const resourceIdsByExternalId = new Map<string, string>();
+  const ambiguousAliases = new Set<string>();
   await mapWithConcurrency(resources, 8, async (resource) => {
     const externalResourceId = normalizeExternalResourceId(resource.externalResourceId);
     if (externalResourceId === undefined) return;
@@ -55,9 +59,32 @@ export async function upsertNormalizedCloudResources(
           },
           select: { id: true, externalResourceId: true },
         });
-    resourceIdsByExternalId.set(persisted.externalResourceId, persisted.id);
+    addResourceIdentifiers(
+      resourceIdsByExternalId,
+      ambiguousAliases,
+      persisted.id,
+      resourceExternalIdAliases(resource.rawResource, persisted.externalResourceId),
+    );
   });
   return resourceIdsByExternalId;
+}
+
+function addResourceIdentifiers(
+  index: Map<string, string>,
+  ambiguousAliases: Set<string>,
+  resourceId: string,
+  identifiers: readonly string[],
+): void {
+  for (const identifier of identifiers) {
+    if (ambiguousAliases.has(identifier)) continue;
+    const existing = index.get(identifier);
+    if (existing !== undefined && existing !== resourceId) {
+      index.delete(identifier);
+      ambiguousAliases.add(identifier);
+      continue;
+    }
+    index.set(identifier, resourceId);
+  }
 }
 
 export async function insertHistoricalCloudResources(

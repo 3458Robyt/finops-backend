@@ -5,6 +5,7 @@ import type {
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import {
   normalizeExternalResourceId,
+  resourceExternalIdAliases,
   resolveExactResourceLink,
 } from '../../domain/models/ResourceLinkage.js';
 import { CostBillingSource, Prisma } from '../../generated/prisma/client.js';
@@ -113,11 +114,29 @@ export class PrismaIngestionCostProjector {
     const externalResourceIds = [...new Set(rows.map((row) => normalizeExternalResourceId(row.resourceId)).filter((value): value is string => value !== undefined))];
     if (externalResourceIds.length === 0) return base;
     const persisted = await tx.cloudResource.findMany({
-      where: { cloudConnectionId: job.cloudConnectionId, externalResourceId: { in: externalResourceIds } },
-      select: { id: true, externalResourceId: true },
+      where: {
+        cloudConnectionId: job.cloudConnectionId,
+        OR: [
+          { externalResourceId: { in: externalResourceIds } },
+          { resourceType: 'OBJECT_STORAGE_BUCKET' },
+        ],
+      },
+      select: { id: true, externalResourceId: true, rawResource: true },
     });
     const resolved = new Map(base);
-    for (const resource of persisted) resolved.set(resource.externalResourceId, resource.id);
+    const ambiguousAliases = new Set<string>();
+    for (const resource of persisted) {
+      for (const identifier of resourceExternalIdAliases(resource.rawResource as Readonly<Record<string, unknown>> | null, resource.externalResourceId)) {
+        if (ambiguousAliases.has(identifier)) continue;
+        const existing = resolved.get(identifier);
+        if (existing !== undefined && existing !== resource.id) {
+          resolved.delete(identifier);
+          ambiguousAliases.add(identifier);
+          continue;
+        }
+        resolved.set(identifier, resource.id);
+      }
+    }
     return resolved;
   }
 

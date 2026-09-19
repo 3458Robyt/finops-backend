@@ -106,6 +106,24 @@ export function resourceLookupKey(cloudConnectionId: string, externalResourceId:
   return `${cloudConnectionId}\u0000${externalResourceId}`;
 }
 
+/**
+ * Returns the canonical identifier and provider aliases persisted with a resource.
+ * Aliases are only useful when a provider emits a non-canonical identifier (for
+ * example an Object Storage bucket name instead of namespace/name).
+ */
+export function resourceExternalIdAliases(
+  rawResource: Readonly<Record<string, unknown>> | null | undefined,
+  canonicalExternalResourceId: unknown,
+): readonly string[] {
+  const aliases = Array.isArray(rawResource?.['aliases'])
+    ? rawResource['aliases'].filter((value): value is string => typeof value === 'string')
+    : [];
+  return [...new Set([
+    normalizeExternalResourceId(canonicalExternalResourceId),
+    ...aliases.map((alias) => normalizeExternalResourceId(alias)),
+  ].filter((value): value is string => value !== undefined))];
+}
+
 export function resolveExactResourceLink(input: {
   readonly cloudConnectionId?: string;
   readonly externalResourceId?: unknown;

@@ -120,7 +120,7 @@ export class PrismaCloudResourceInventoryReader {
       ), metrics AS (
         SELECT rms.cloud_resource_id,
                sum(rms.sample_count)::bigint AS metric_count,
-               max(rms.latest_sampled_at) AS latest_metric_at
+               max(rms.last_sampled_at) AS latest_metric_at
           FROM resource_metric_stream_summaries rms
           INNER JOIN base_resources br ON br.id = rms.cloud_resource_id
          WHERE rms.tenant_id = ${tenantId}

@@ -152,6 +152,10 @@ export class AiController {
         tenantId: req.auth.tenantId,
         userId: req.auth.userId,
         persist: parsed.data.persist === true,
+        // The HTTP path must stay within the recommendation SLO. A second
+        // generation/audit cycle is reserved for explicit internal flows;
+        // otherwise a NEEDS_REVISION result is rejected with its audit details.
+        allowRepair: false,
         ...(parsed.data.externalResourceId !== undefined ? { externalResourceId: parsed.data.externalResourceId } : {}),
         ...(parsed.data.cloudResourceId !== undefined ? { cloudResourceId: parsed.data.cloudResourceId } : {}),
       });

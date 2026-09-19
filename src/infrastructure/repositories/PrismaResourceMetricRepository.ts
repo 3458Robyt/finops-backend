@@ -144,7 +144,7 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
         SELECT DISTINCT metric_name, statistic::text AS statistic
         FROM resource_metric_stream_summaries
         WHERE tenant_id = ${tenantId}
-          AND (${filters.startDate === undefined ? Prisma.sql`TRUE` : Prisma.sql`latest_sampled_at >= ${filters.startDate}`})
+          AND (${filters.startDate === undefined ? Prisma.sql`TRUE` : Prisma.sql`last_sampled_at >= ${filters.startDate}`})
           AND (${filters.endDate === undefined ? Prisma.sql`TRUE` : Prisma.sql`first_sampled_at <= ${filters.endDate}`})
           AND (${filters.externalResourceId === undefined ? Prisma.sql`TRUE` : Prisma.sql`external_resource_id = ${filters.externalResourceId}`})
           AND (${filters.cloudResourceId === undefined ? Prisma.sql`TRUE` : Prisma.sql`cloud_resource_id = ${filters.cloudResourceId}`})

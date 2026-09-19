@@ -39,7 +39,7 @@ async function buildReport(
   prisma: ReturnType<typeof getPrismaClient>,
   args: AuditArguments,
 ): Promise<Readonly<Record<string, unknown>>> {
-  const [connection, raw, daily, coverage, focus, costs, resources, jobs] = await Promise.all([
+  const [connection, raw, daily, coverage, coverageGaps, focus, costs, resources, jobs] = await Promise.all([
     prisma.$queryRaw<readonly {
       readonly id: string;
       readonly name: string;
@@ -121,6 +121,37 @@ async function buildReport(
         AND window_end > ${args.start}
       GROUP BY status
       ORDER BY status
+    `),
+    prisma.$queryRaw<readonly {
+      readonly status: string;
+      readonly stream_key: string;
+      readonly provider_namespace: string;
+      readonly region_id: string;
+      readonly external_resource_id: string;
+      readonly metric_name: string;
+      readonly statistic: string;
+      readonly granularity_seconds: number;
+      readonly windows: bigint;
+      readonly expected_samples: bigint;
+      readonly observed_samples: bigint;
+      readonly missing_samples: bigint;
+    }[]>(Prisma.sql`
+      SELECT status::text, stream_key, provider_namespace, region_id, external_resource_id,
+        metric_name, statistic::text, granularity_seconds,
+        COUNT(*)::bigint AS windows,
+        COALESCE(SUM(expected_samples), 0)::bigint AS expected_samples,
+        COALESCE(SUM(observed_samples), 0)::bigint AS observed_samples,
+        COALESCE(SUM(missing_samples), 0)::bigint AS missing_samples
+      FROM resource_metric_coverage_windows
+      WHERE tenant_id = ${args.tenantId}
+        AND cloud_connection_id = ${args.connectionId}
+        AND window_start < ${args.end}
+        AND window_end > ${args.start}
+        AND status IN ('PARTIAL'::"MetricCoverageStatus", 'NO_DATA'::"MetricCoverageStatus")
+      GROUP BY status, stream_key, provider_namespace, region_id, external_resource_id,
+        metric_name, statistic, granularity_seconds
+      ORDER BY SUM(missing_samples) DESC, metric_name, external_resource_id
+      LIMIT 500
     `),
     prisma.$queryRaw<readonly {
       readonly row_count: bigint;
@@ -227,6 +258,20 @@ async function buildReport(
         observedSamples: toNumber(row.observed_samples),
         missingSamples: toNumber(row.missing_samples),
       })),
+      coverageGaps: coverageGaps.map((row) => ({
+        status: row.status,
+        streamKey: row.stream_key,
+        providerNamespace: row.provider_namespace,
+        regionId: row.region_id,
+        externalResourceId: row.external_resource_id,
+        metricName: row.metric_name,
+        statistic: row.statistic,
+        granularitySeconds: row.granularity_seconds,
+        windows: toNumber(row.windows),
+        expectedSamples: toNumber(row.expected_samples),
+        observedSamples: toNumber(row.observed_samples),
+        missingSamples: toNumber(row.missing_samples),
+      })),
     },
     focus: normalizeRow(focus[0]),
     costMetrics: normalizeRow(costs[0]),
@@ -263,6 +308,15 @@ function printReport(report: Readonly<Record<string, unknown>>): void {
   console.log('Cobertura:');
   for (const row of metrics.coverage as readonly Readonly<Record<string, unknown>>[]) {
     console.log(`  ${row['status']}: ${row['windows']} ventanas · ${row['observedSamples']}/${row['expectedSamples']} muestras · faltan ${row['missingSamples']}`);
+  }
+  const coverageGaps = report.technicalMetrics === undefined
+    ? []
+    : (report.technicalMetrics as Readonly<Record<string, unknown>>)['coverageGaps'] as readonly Readonly<Record<string, unknown>>[];
+  if (coverageGaps.length > 0) {
+    console.log('Mayores brechas por stream (máximo 10):');
+    for (const row of coverageGaps.slice(0, 10)) {
+      console.log(`  ${row['status']} · ${row['metricName']} ${row['statistic']} · recurso ${row['externalResourceId']} · faltan ${row['missingSamples']}/${row['expectedSamples']}`);
+    }
   }
   console.log(`FOCUS: ${JSON.stringify(report.focus)}`);
   console.log(`Cost metrics: ${JSON.stringify(report.costMetrics)}`);

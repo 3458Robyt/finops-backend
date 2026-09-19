@@ -68,15 +68,16 @@ export function normalizeRecommendationDrafts(
       || technicalResource !== undefined
       || technicalValidationOnly;
     const resourceIdentifier = technicalResource?.externalResourceId ?? candidate.resourceId;
+    const displayResourceIdentifier = displayResourceName(candidate, technicalResource);
     const safeType = technicalReviewOnly
       ? 'PERFORMANCE_CAPACITY_REVIEW'
       : technicalValidationOnly
         ? 'TECHNICAL_VALIDATION_REQUIRED'
       : candidate.opportunityType;
-    const safeTitle = technicalReviewOnly && resourceIdentifier !== undefined
-      ? `Revisar capacidad y rendimiento de ${resourceIdentifier}`
-      : technicalValidationOnly && resourceIdentifier !== undefined
-        ? `Validar señales técnicas de ${resourceIdentifier}`
+    const safeTitle = technicalReviewOnly && displayResourceIdentifier !== undefined
+      ? `Revisar capacidad y rendimiento de ${displayResourceIdentifier}`
+      : technicalValidationOnly && displayResourceIdentifier !== undefined
+        ? `Validar señales técnicas de ${displayResourceIdentifier}`
       : technicalResource !== undefined
         ? [
             draft.description,
@@ -85,14 +86,14 @@ export function normalizeRecommendationDrafts(
         : candidate.resourceId === undefined
           ? `Revisar costo y consumo de ${candidate.serviceName}`
         : draft.title;
-    const safeDescription = technicalReviewOnly && resourceIdentifier !== undefined
+    const safeDescription = technicalReviewOnly && displayResourceIdentifier !== undefined
       ? [
-          `Revisar la capacidad y el rendimiento del recurso ${resourceIdentifier}.`,
+          `Revisar la capacidad y el rendimiento del recurso ${displayResourceIdentifier}.`,
           'La evidencia permite priorizar una revisión previa. Esta salida es informativa, no es una autorización ni un plan de ejecución. La validación y aprobación manual son obligatorias antes de cualquier cambio operativo.',
         ].join(' ')
-      : technicalValidationOnly && resourceIdentifier !== undefined
+      : technicalValidationOnly && displayResourceIdentifier !== undefined
         ? [
-            `Validar las señales técnicas y el enlace de inventario del recurso ${resourceIdentifier}.`,
+            `Validar las señales técnicas y el enlace de inventario del recurso ${displayResourceIdentifier}.`,
             technicalResource === undefined
               ? 'No hay evidencia técnica enlazada y reciente suficiente para afirmar utilización o recomendar un cambio operativo; confirma el recurso y sus métricas en Monitoring antes de actuar.'
               : 'La evidencia técnica disponible requiere validación adicional antes de cualquier cambio operativo.',
@@ -307,6 +308,20 @@ function normalizeMonthlyAmount(amount: number, coveredDays: number | undefined)
 
 function round(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function displayResourceName(
+  candidate: RecommendationOpportunityCandidate,
+  technicalResource: RecommendationEvidenceSnapshot['resources'][number] | undefined,
+): string | undefined {
+  const name = technicalResource?.resourceName ?? candidate.resourceName;
+  if (name !== undefined && name.trim() !== '') return name.trim();
+  const resourceId = technicalResource?.externalResourceId ?? candidate.resourceId;
+  if (resourceId === undefined || resourceId.trim() === '') return undefined;
+  const compactId = resourceId.length > 18
+    ? `${resourceId.slice(0, 8)}…${resourceId.slice(-6)}`
+    : resourceId;
+  return `${candidate.serviceName} (${compactId})`;
 }
 
 /**

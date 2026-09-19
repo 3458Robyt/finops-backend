@@ -353,7 +353,7 @@ describe('FinOpsAiService', () => {
     });
 
     expect(response.recommendations).toHaveLength(1);
-    expect(response.recommendations[0]?.title).toBe('Validar señales técnicas de i-prod-001');
+    expect(response.recommendations[0]?.title).toBe('Validar señales técnicas de Amazon Elastic Compute Cloud (i-prod-001)');
     expect(recommendations.created).toHaveLength(1);
     expect(recommendations.created[0]?.tenantId).toBe('tenant-1');
     expect(recommendations.created[0]?.deduplicationKey).toMatch(/^[a-f0-9]{64}$/);
@@ -823,7 +823,7 @@ describe('FinOpsAiService', () => {
       persist: true,
     });
 
-    expect(response.recommendations[0]?.title).toBe('Validar señales técnicas de i-prod-001');
+    expect(response.recommendations[0]?.title).toBe('Validar señales técnicas de Amazon Elastic Compute Cloud (i-prod-001)');
     expect(gateway.requests).toHaveLength(4);
     expect(gateway.requests[2]?.messages.at(-1)?.content).toContain('Agregar validaciones previas y rollback');
   });

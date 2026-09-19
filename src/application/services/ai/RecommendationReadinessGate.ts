@@ -13,6 +13,7 @@ export interface RecommendationOpportunityCandidate {
   readonly provider: string;
   readonly serviceName: string;
   readonly resourceId?: string;
+  readonly resourceName?: string;
   readonly cloudResourceId?: string;
   readonly cloudConnectionId?: string;
   readonly opportunityType: string;
@@ -199,6 +200,9 @@ function buildResourceCandidates(
       provider: resource.provider,
       serviceName: resource.serviceName,
       resourceId: resource.resourceId,
+      ...(resource.resourceName !== undefined && resource.resourceName.trim() !== ''
+        ? { resourceName: resource.resourceName }
+        : {}),
       ...(linkedCloudResourceId === undefined ? {} : { cloudResourceId: linkedCloudResourceId }),
       ...(linkedCloudConnectionId === undefined ? {} : { cloudConnectionId: linkedCloudConnectionId }),
       opportunityType: ruleEvaluation?.recommendedActionType ?? (hasResourceTechnicalEvidence ? 'TECHNICAL_OPTIMIZATION' : 'TECHNICAL_VALIDATION_REQUIRED'),

@@ -36,6 +36,7 @@ export interface RawMetricSummaryRow {
   readonly external_resource_id: string;
   readonly cloud_resource_id: string | null;
   readonly cloud_connection_id: string | null;
+  readonly resource_name: string | null;
   readonly provider_namespace?: string;
   readonly region_id?: string;
   readonly dimensions_hash?: string;

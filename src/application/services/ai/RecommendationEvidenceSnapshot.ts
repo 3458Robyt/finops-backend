@@ -31,6 +31,7 @@ export interface RecommendationEvidenceResource {
   readonly externalResourceId: string;
   readonly cloudResourceId?: string;
   readonly cloudConnectionId?: string;
+  readonly resourceName?: string;
   readonly provider: string;
   readonly resourceType?: string;
   readonly serviceName?: string;

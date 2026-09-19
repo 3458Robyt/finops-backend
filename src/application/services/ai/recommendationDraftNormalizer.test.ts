@@ -23,7 +23,7 @@ describe('normalizeRecommendationDrafts', () => {
 
     const draft = result[0]!;
     expect(draft.type).toBe('PERFORMANCE_CAPACITY_REVIEW');
-    expect(draft.title).toBe('Revisar capacidad y rendimiento de i-resource-1');
+    expect(draft.title).toBe('Revisar capacidad y rendimiento de worker-1');
     expect(draft.description.toLowerCase()).not.toContain('rightsizing');
     expect(draft.description.toLowerCase()).not.toContain('reducir el costo');
     expect(draft.estimatedMonthlySavings).toBeUndefined();
@@ -138,7 +138,7 @@ describe('normalizeRecommendationDrafts', () => {
     const draft = result[0]!;
     const evidence = draft.evidence as Record<string, unknown>;
     expect(draft.type).toBe('TECHNICAL_VALIDATION_REQUIRED');
-    expect(draft.title).toBe('Validar señales técnicas de ocid1.postgresql.oc1.example');
+    expect(draft.title).toBe('Validar señales técnicas de PostgreSQL (ocid1.po…xample)');
     expect(draft.description).toContain('No hay evidencia técnica enlazada y reciente suficiente');
     expect(draft.description.toLowerCase()).not.toContain('reducir capacidad');
     expect(draft.estimatedMonthlySavings).toBeUndefined();
@@ -267,6 +267,7 @@ function buildReadiness(): RecommendationReadinessReport {
       provider: 'OCI',
       serviceName: 'Compute',
       resourceId: 'i-resource-1',
+      resourceName: 'worker-1',
       cloudResourceId: 'cloud-resource-1',
       opportunityType: 'RIGHTSIZING',
       evidenceLevelAllowed: 'COST_USAGE_AND_TECHNICAL',

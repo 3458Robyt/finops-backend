@@ -11,6 +11,7 @@ interface RawFastSummaryRow {
   readonly external_resource_id: string;
   readonly cloud_resource_id: string | null;
   readonly cloud_connection_id: string | null;
+  readonly resource_name: string | null;
   readonly provider_namespace: string | null;
   readonly region_id: string | null;
   readonly dimensions_hash: string | null;
@@ -83,6 +84,7 @@ export class PrismaResourceMetricSummaryReader {
         r.provider_namespace,
         r.region_id,
         r.dimensions_hash,
+        max(cr.name) AS resource_name,
         max(cr.resource_type) AS resource_type,
         max(cr.service_name) AS service_name,
         r.metric_name,
@@ -154,6 +156,7 @@ function toSummaryItem(row: RawFastSummaryRow): TechnicalMetricSummaryItem {
     externalResourceId: row.external_resource_id,
     ...(row.cloud_resource_id !== null ? { cloudResourceId: row.cloud_resource_id } : {}),
     ...(row.cloud_connection_id !== null ? { cloudConnectionId: row.cloud_connection_id } : {}),
+    ...(row.resource_name !== null ? { resourceName: row.resource_name } : {}),
     ...(row.provider_namespace !== null && row.provider_namespace !== ''
       ? { providerNamespace: row.provider_namespace }
       : {}),

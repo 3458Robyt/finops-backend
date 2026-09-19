@@ -209,6 +209,7 @@ export interface TechnicalMetricSummaryItem {
   readonly externalResourceId: string;
   readonly cloudResourceId?: string;
   readonly cloudConnectionId?: string;
+  readonly resourceName?: string;
   readonly providerNamespace?: string;
   readonly regionId?: string;
   readonly dimensionsHash?: string;

@@ -112,6 +112,9 @@ function buildResources(
         externalResourceId,
         ...(first.cloudResourceId !== undefined ? { cloudResourceId: first.cloudResourceId } : {}),
         ...(first.cloudConnectionId !== undefined ? { cloudConnectionId: first.cloudConnectionId } : {}),
+        ...(first.resourceName !== undefined && first.resourceName.trim() !== ''
+          ? { resourceName: first.resourceName }
+          : {}),
         provider: first.provider,
         ...(first.resourceType !== undefined ? { resourceType: first.resourceType } : {}),
         ...(first.serviceName !== undefined ? { serviceName: first.serviceName } : {}),

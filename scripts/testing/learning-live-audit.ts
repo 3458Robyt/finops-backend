@@ -10,6 +10,8 @@ import {
 } from '../../src/testing/e2eFixtures.js';
 import { evaluateGlobalLearningCanary } from '../../src/application/services/learning/learningPromotionEvaluator.js';
 import { GlobalLearningPromotionService } from '../../src/application/services/learning/GlobalLearningPromotionService.js';
+import { buildGlobalMemoryContent } from '../../src/application/services/learning/learningMemoryContent.js';
+import { ContextBudgeter } from '../../src/application/services/ContextBudgeter.js';
 import { PrismaAgentLearningRepository } from '../../src/infrastructure/repositories/PrismaAgentLearningRepository.js';
 import { queryRecommendationLearningContext } from '../../src/infrastructure/repositories/queries/agentLearningSearchQueries.js';
 import type {
@@ -173,6 +175,8 @@ async function createShadowCandidate(
   const user = await db.user.findUnique({ where: { email: fixtureManifest.admin.email } });
   const recommendation = await db.recommendation.findUnique({ where: { id: recommendationId } });
   if (user === null || recommendation === null) throw new Error('AI fixtures are incomplete for the learning canary.');
+  const contextBudgeter = new ContextBudgeter();
+  const truncate = (value: string, maxChars: number): string => contextBudgeter.truncate(value, maxChars);
 
   const decision = await db.recommendationDecision.create({
     data: {
@@ -208,7 +212,13 @@ async function createShadowCandidate(
     data: {
       scope: 'GLOBAL',
       memoryType: 'APPROVAL_PATTERN',
-      content: 'Patrón global FinOps: priorizar acciones reversibles con evidencia técnica suficiente.',
+      // Keep the live canary representative of the production shadow-memory
+      // builder; a hand-written fixture can hide regressions in the real path.
+      content: buildGlobalMemoryContent(
+        'APPROVED_HIGH_CONFIDENCE',
+        recommendation.type,
+        truncate,
+      ),
       confidence: 0.95,
       active: false,
       sourceLearningEventId: event.id,

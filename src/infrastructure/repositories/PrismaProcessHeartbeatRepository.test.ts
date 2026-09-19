@@ -37,4 +37,19 @@ describe('PrismaProcessHeartbeatRepository', () => {
       data: { status: 'STOPPED', stoppedAt, lastHeartbeatAt: stoppedAt },
     });
   });
+
+  it('marks stale running processes without changing their last heartbeat timestamp', async () => {
+    const prisma = { runtimeProcessHeartbeat: {
+      updateMany: vi.fn().mockResolvedValue({ count: 4 }),
+    }, $transaction: vi.fn().mockImplementation(async (callback: (transaction: unknown) => Promise<unknown>) => callback(prisma)) };
+    const repository = new PrismaProcessHeartbeatRepository(prisma as never);
+    const staleBefore = new Date('2026-08-12T13:59:00.000Z');
+    const stoppedAt = new Date('2026-08-12T14:00:00.000Z');
+
+    await expect(repository.markStale(staleBefore, stoppedAt)).resolves.toBe(4);
+    expect(prisma.runtimeProcessHeartbeat.updateMany).toHaveBeenCalledWith({
+      where: { status: 'RUNNING', lastHeartbeatAt: { lt: staleBefore } },
+      data: { status: 'STOPPED', stoppedAt },
+    });
+  });
 });

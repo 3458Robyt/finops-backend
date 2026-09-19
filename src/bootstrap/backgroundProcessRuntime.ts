@@ -20,12 +20,12 @@ export interface BackgroundProcessRuntimeInput {
 }
 
 /** Arranca únicamente los procesos permitidos por el rol actual. */
-export function startBackgroundProcesses(input: BackgroundProcessRuntimeInput): void {
+export async function startBackgroundProcesses(input: BackgroundProcessRuntimeInput): Promise<void> {
   const { config, composition } = input;
   const { prisma, recommendationAnalysisRepository, recommendationAnalysisService, valueRealizationService, learningService, ingestionWorker, metricProjectionWorker } = composition;
   const { outboundMessageService, budgetService } = composition.serverDependencies;
 
-  startProcessHeartbeat(input, composition.processHeartbeatService);
+  await startProcessHeartbeat(input, composition.processHeartbeatService);
   startMessageScheduler(input, outboundMessageService);
   startTelegramInboundWorker(input, composition.serverDependencies.telegramBotService);
   startIngestionWorker(input, ingestionWorker);

@@ -42,6 +42,19 @@ export class PrismaProcessHeartbeatRepository implements IProcessHeartbeatReposi
     return result.count === 1;
   }
 
+  public async markStale(staleBefore: Date, stoppedAt: Date): Promise<number> {
+    const result = await this.prisma.$transaction((transaction) =>
+      transaction.runtimeProcessHeartbeat.updateMany({
+        where: {
+          status: 'RUNNING',
+          lastHeartbeatAt: { lt: staleBefore },
+        },
+        data: { status: 'STOPPED', stoppedAt },
+      }),
+    );
+    return result.count;
+  }
+
   public async findById(processId: string): Promise<ProcessHeartbeatRecord | null> {
     const row = await this.prisma.$transaction((transaction) =>
       transaction.runtimeProcessHeartbeat.findUnique({ where: { processId } }),

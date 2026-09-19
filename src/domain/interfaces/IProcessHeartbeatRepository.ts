@@ -21,6 +21,7 @@ export interface UpsertProcessHeartbeatInput {
 export interface IProcessHeartbeatRepository {
   upsert(input: UpsertProcessHeartbeatInput): Promise<void>;
   markStopped(processId: string, stoppedAt: Date): Promise<boolean>;
+  markStale(staleBefore: Date, stoppedAt: Date): Promise<number>;
   findById(processId: string): Promise<ProcessHeartbeatRecord | null>;
   findFreshByRoles(input: {
     readonly processRoles: readonly string[];

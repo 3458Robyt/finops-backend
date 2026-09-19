@@ -23,6 +23,10 @@ class FakeHeartbeatRepository implements IProcessHeartbeatRepository {
     return true;
   }
 
+  public async markStale(): Promise<number> {
+    return 0;
+  }
+
   public async findById(processId: string): Promise<ProcessHeartbeatRecord | null> {
     return this.record?.processId === processId ? this.record : null;
   }
@@ -50,5 +54,14 @@ describe('ProcessHeartbeatService', () => {
 
     await expect(service.isFresh('unknown', startedAt)).resolves.toBe(false);
     await expect(service.isFresh('scheduler-1', new Date(startedAt.getTime() + 30_001))).resolves.toBe(false);
+  });
+
+  it('reconciles running rows older than the freshness window', async () => {
+    const repository = new FakeHeartbeatRepository();
+    repository.markStale = async () => 3;
+    const service = new ProcessHeartbeatService(repository, 30_000);
+    const now = new Date('2026-08-12T14:00:00.000Z');
+
+    await expect(service.reconcileStale(now)).resolves.toBe(3);
   });
 });

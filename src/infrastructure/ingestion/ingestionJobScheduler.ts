@@ -222,7 +222,8 @@ function evaluateSource(
   const latestCoveredSegment = connection.ingestionCoverageSegments
     ?.filter((segment) => (
       segment.sourceType === sourceType
-      && (segment.status === 'COVERED' || segment.status === 'PARTIAL')
+      // A partial segment must not move the cursor past its own gap.
+      && segment.status === 'COVERED'
       && (segment.configurationHash === configurationHash || segment.configurationHash === undefined || segment.configurationHash === null)
     ))
     .sort((left, right) => right.targetEnd.getTime() - left.targetEnd.getTime())[0];

@@ -40,8 +40,10 @@ export function buildMissingTechnicalMetricJobs(
     const targetStart = new Date(cursorMs);
     const targetEnd = new Date(Math.min(cursorMs + windowMs, now.getTime()));
     const hasSamples = covered.has(cursorMs);
+    // A PARTIAL segment is evidence of a gap, not evidence that the window is
+    // complete. Only COVERED segments suppress a recovery job.
     const hasSegment = !usingCoverageWindows && segments.some((segment) => segment.sourceType === 'TECHNICAL_METRIC'
-      && (segment.status === 'COVERED' || segment.status === 'PARTIAL')
+      && segment.status === 'COVERED'
       && segment.targetStart.getTime() <= targetStart.getTime()
       && segment.targetEnd.getTime() >= targetEnd.getTime());
     const hasActiveJob = activeJobs.some((job) => job.targetStart !== undefined && overlaps(job.targetStart, job.targetEnd, targetStart, targetEnd));

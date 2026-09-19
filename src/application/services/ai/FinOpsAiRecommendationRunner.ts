@@ -2,7 +2,7 @@ import { AiAuditRejectedError, FinOpsBaseError } from '../../../domain/errors/er
 import type { IRecommendationRepository } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { AiTraceRecorder } from './aiTraceRecorder.js';
 import { applyAuditEvidence, buildRecommendationDeduplicationKey } from './recommendationEvidence.js';
-import { FinOpsArtifactGenerator } from './finOpsArtifactGenerator.js';
+import { FinOpsArtifactGenerator, type AuditedDraftsResult } from './finOpsArtifactGenerator.js';
 import type { FinOpsContextAssembler } from './finOpsContextAssembler.js';
 import type { FinOpsAiRecommendationPreparer } from './FinOpsAiRecommendationPreparer.js';
 import { readCandidateId } from '../recommendationAnalysisSupport.js';
@@ -65,23 +65,31 @@ export class FinOpsAiRecommendationRunner {
     ].join('\n\n');
     const startedAt = Date.now();
 
-    await input.onStage?.('AI_GENERATION');
-    const { drafts, approvedDrafts, auditReport, candidateAudits, firstRawResponse } = await this.artifactGenerator.generateAuditedDrafts(
-      input.tenantId,
-      input.userId,
-      snapshot,
-      governedSystemPrompt,
-      input.externalResourceId,
-      input.cloudResourceId,
-      technicalEvidenceSnapshot,
-      prepared.deterministicAnalysis,
-      readinessReport,
-      () => input.onStage?.('AI_AUDIT'),
-      { allowRepair: input.allowRepair ?? true },
-    );
+    let generated: AuditedDraftsResult;
+    try {
+      await input.onStage?.('AI_GENERATION');
+      generated = await this.artifactGenerator.generateAuditedDrafts(
+        input.tenantId,
+        input.userId,
+        snapshot,
+        governedSystemPrompt,
+        input.externalResourceId,
+        input.cloudResourceId,
+        technicalEvidenceSnapshot,
+        prepared.deterministicAnalysis,
+        readinessReport,
+        () => input.onStage?.('AI_AUDIT'),
+        { allowRepair: input.allowRepair ?? true },
+      );
+    } catch (error) {
+      await this.recordFailure(input.tenantId, input.userId, assembled.builtContext, startedAt, error);
+      throw error;
+    }
+
+    const { drafts, approvedDrafts, auditReport, candidateAudits, firstRawResponse } = generated;
 
     if (drafts.length > 0 && approvedDrafts.length === 0) {
-      throw new AiAuditRejectedError('AI audit rejected recommendation output', {
+      const rejection = new AiAuditRejectedError('AI audit rejected recommendation output', {
         diagnosticId: `audit-${input.tenantId}-${Date.now().toString(36)}`,
         audit: {
           ...auditReport,
@@ -108,6 +116,8 @@ export class FinOpsAiRecommendationRunner {
           })),
         },
       });
+      await this.recordFailure(input.tenantId, input.userId, assembled.builtContext, startedAt, rejection);
+      throw rejection;
     }
 
     const auditedDrafts = approvedDrafts.map((draft) => {
@@ -170,6 +180,28 @@ export class FinOpsAiRecommendationRunner {
         auditorModel: this.auditorModel,
       },
     };
+  }
+
+  private async recordFailure(
+    tenantId: string,
+    userId: string | undefined,
+    builtContext: Parameters<AiTraceRecorder['record']>[0]['builtContext'],
+    startedAt: number,
+    error: unknown,
+  ): Promise<void> {
+    try {
+      await this.traceRecorder.record({
+        tenantId,
+        ...(userId === undefined ? {} : { userId }),
+        operation: 'RECOMMENDATION',
+        model: this.mainModel,
+        ...(builtContext === undefined ? {} : { builtContext }),
+        startedAt,
+        error,
+      });
+    } catch {
+      // Telemetry must not replace the provider/audit error returned to the caller.
+    }
   }
 }
 

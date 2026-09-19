@@ -1,5 +1,6 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { FinOpsAiService, type AiChatMessage } from './FinOpsAiService.js';
+import { AiObservabilityService } from './AiObservabilityService.js';
 import type { IAiGateway, AiGatewayRequest } from '../../domain/interfaces/IAiGateway.js';
 import type {
   CostAnalyticsSnapshot,
@@ -617,10 +618,14 @@ describe('FinOpsAiService', () => {
       }),
     ]);
     const recommendations = new FakeRecommendationRepository();
+    const traceRepository = { createAiContextTrace: vi.fn().mockResolvedValue(undefined) };
     const service = new FinOpsAiService(
       new FakeCostAnalyticsRepository(),
       recommendations,
       gateway,
+      undefined,
+      undefined,
+      new AiObservabilityService(traceRepository as never),
     );
 
     await expect(service.generateRecommendations({
@@ -629,6 +634,11 @@ describe('FinOpsAiService', () => {
     })).rejects.toThrow('AI audit rejected recommendation output');
 
     expect(recommendations.created).toHaveLength(0);
+    expect(traceRepository.createAiContextTrace).toHaveBeenCalledWith(expect.objectContaining({
+      operation: 'RECOMMENDATION',
+      status: 'ERROR',
+      errorMessage: 'AI audit rejected recommendation output',
+    }));
   });
 
   test('rejects an auditor-approved recommendation when deterministic evidence is insufficient', async () => {

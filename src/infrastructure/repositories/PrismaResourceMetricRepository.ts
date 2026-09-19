@@ -135,40 +135,50 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
       readonly metricNames?: readonly string[];
     },
   ): Promise<readonly { readonly metricName: string; readonly statistic: MetricStatistic }[]> {
-    const rollupRows = await this.prisma.$queryRaw<Array<{
+    const summaryRows = await this.prisma.$queryRaw<Array<{
       readonly metric_name: string;
       readonly statistic: string;
     }>>(Prisma.sql`
-      SELECT metric_name, statistic
-      FROM (
-        SELECT DISTINCT metric_name, statistic::text AS statistic
-        FROM resource_metric_stream_summaries
-        WHERE tenant_id = ${tenantId}
-          AND (${filters.startDate === undefined ? Prisma.sql`TRUE` : Prisma.sql`last_sampled_at >= ${filters.startDate}`})
-          AND (${filters.endDate === undefined ? Prisma.sql`TRUE` : Prisma.sql`first_sampled_at <= ${filters.endDate}`})
-          AND (${filters.externalResourceId === undefined ? Prisma.sql`TRUE` : Prisma.sql`external_resource_id = ${filters.externalResourceId}`})
-          AND (${filters.cloudResourceId === undefined ? Prisma.sql`TRUE` : Prisma.sql`cloud_resource_id = ${filters.cloudResourceId}`})
-          AND (${filters.metricNames === undefined || filters.metricNames.length === 0
-            ? Prisma.sql`TRUE`
-            : Prisma.sql`metric_name IN (${Prisma.join([...filters.metricNames])})`})
-        UNION
-        SELECT DISTINCT metric_name, statistic::text AS statistic
-        FROM resource_metric_samples
-        WHERE tenant_id = ${tenantId}
-          AND (${filters.startDate === undefined ? Prisma.sql`TRUE` : Prisma.sql`sampled_at >= ${filters.startDate}`})
-          AND (${filters.endDate === undefined ? Prisma.sql`TRUE` : Prisma.sql`sampled_at <= ${filters.endDate}`})
-          AND (${filters.externalResourceId === undefined ? Prisma.sql`TRUE` : Prisma.sql`external_resource_id = ${filters.externalResourceId}`})
-          AND (${filters.cloudResourceId === undefined ? Prisma.sql`TRUE` : Prisma.sql`cloud_resource_id = ${filters.cloudResourceId}`})
-          AND (${filters.metricNames === undefined || filters.metricNames.length === 0
-            ? Prisma.sql`TRUE`
-            : Prisma.sql`metric_name IN (${Prisma.join([...filters.metricNames])})`})
-      ) available_statistics
+      SELECT DISTINCT metric_name, statistic::text AS statistic
+      FROM resource_metric_stream_summaries
+      WHERE tenant_id = ${tenantId}
+        AND (${filters.startDate === undefined ? Prisma.sql`TRUE` : Prisma.sql`last_sampled_at >= ${filters.startDate}`})
+        AND (${filters.endDate === undefined ? Prisma.sql`TRUE` : Prisma.sql`first_sampled_at <= ${filters.endDate}`})
+        AND (${filters.externalResourceId === undefined ? Prisma.sql`TRUE` : Prisma.sql`external_resource_id = ${filters.externalResourceId}`})
+        AND (${filters.cloudResourceId === undefined ? Prisma.sql`TRUE` : Prisma.sql`cloud_resource_id = ${filters.cloudResourceId}`})
+        AND (${filters.metricNames === undefined || filters.metricNames.length === 0
+          ? Prisma.sql`TRUE`
+          : Prisma.sql`metric_name IN (${Prisma.join([...filters.metricNames])})`})
       ORDER BY metric_name ASC, statistic ASC
     `);
-    // Include raw rows even when the daily projection is only partially
-    // rebuilt. Returning only rollup rows hides metrics/statistics that exist
-    // in the canonical table and makes the selector look empty.
-    return rollupRows.map((row) => ({
+    // The stream summary is the bounded catalog projection. Scanning millions
+    // of raw samples on every default overview made the UI block for seconds.
+    // Raw is retained as a compatibility fallback for a fresh/legacy tenant
+    // whose summary projection has not been built yet.
+    if (summaryRows.length > 0) {
+      return summaryRows.map((row) => ({
+        metricName: row.metric_name,
+        statistic: row.statistic as MetricStatistic,
+      }));
+    }
+
+    const rawRows = await this.prisma.$queryRaw<Array<{
+      readonly metric_name: string;
+      readonly statistic: string;
+    }>>(Prisma.sql`
+      SELECT DISTINCT metric_name, statistic::text AS statistic
+      FROM resource_metric_samples
+      WHERE tenant_id = ${tenantId}
+        AND (${filters.startDate === undefined ? Prisma.sql`TRUE` : Prisma.sql`sampled_at >= ${filters.startDate}`})
+        AND (${filters.endDate === undefined ? Prisma.sql`TRUE` : Prisma.sql`sampled_at <= ${filters.endDate}`})
+        AND (${filters.externalResourceId === undefined ? Prisma.sql`TRUE` : Prisma.sql`external_resource_id = ${filters.externalResourceId}`})
+        AND (${filters.cloudResourceId === undefined ? Prisma.sql`TRUE` : Prisma.sql`cloud_resource_id = ${filters.cloudResourceId}`})
+        AND (${filters.metricNames === undefined || filters.metricNames.length === 0
+          ? Prisma.sql`TRUE`
+          : Prisma.sql`metric_name IN (${Prisma.join([...filters.metricNames])})`})
+      ORDER BY metric_name ASC, statistic ASC
+    `);
+    return rawRows.map((row) => ({
       metricName: row.metric_name,
       statistic: row.statistic as MetricStatistic,
     }));

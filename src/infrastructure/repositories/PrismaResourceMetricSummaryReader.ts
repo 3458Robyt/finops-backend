@@ -46,10 +46,14 @@ export class PrismaResourceMetricSummaryReader {
     tenantId: string,
     filters: TechnicalMetricSummaryFilters,
   ): Promise<readonly TechnicalMetricSummaryItem[]> {
-    // Daily rows are the bounded overview projection. Prefer them per stream,
-    // while falling back to the finest available source-resolution rollup for
-    // streams whose daily projection has not been rebuilt yet.
-    const rows = await this.listRollupSummaries(tenantId, filters, Prisma.sql`r.bucket_seconds <= 86400`);
+    // The daily projection is the bounded overview source. Reading all source
+    // resolutions first made a large tenant scan millions of rollup rows even
+    // though the query later selected daily rows. If the projection is absent
+    // (fresh database/fixture), retain the compatibility fallback.
+    let rows = await this.listRollupSummaries(tenantId, filters, Prisma.sql`r.bucket_seconds = 86400`);
+    if (rows.length === 0) {
+      rows = await this.listRollupSummaries(tenantId, filters, Prisma.sql`r.bucket_seconds <= 86400`);
+    }
     return rows.map(toSummaryItem);
   }
 

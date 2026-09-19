@@ -109,7 +109,11 @@ export class FinOpsAiService {
       this.traceRecorder,
       this.mainModel,
       this.auditorModel,
-      { timeoutMs: aiConfig.timeoutMs, maxRetries: aiConfig.maxRetries },
+      {
+        timeoutMs: aiConfig.timeoutMs,
+        maxRetries: aiConfig.maxRetries,
+        reasoningEffort: aiConfig.reasoningEffort,
+      },
     );
     this.contextAssembler = new FinOpsContextAssembler(
       this.mainModel,

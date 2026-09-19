@@ -1,4 +1,4 @@
-import type { AiGatewayRequest, IAiGateway } from '../../../domain/interfaces/IAiGateway.js';
+import type { AiGatewayRequest, AiReasoningEffort, IAiGateway } from '../../../domain/interfaces/IAiGateway.js';
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
 import type { AiAuditReport } from '../../../domain/models/RecommendationExecutionPlan.js';
@@ -25,6 +25,7 @@ export interface ArtifactAuditInput {
 export interface AiArtifactRequestPolicy {
   readonly timeoutMs: number;
   readonly maxRetries: number;
+  readonly reasoningEffort?: AiReasoningEffort;
 }
 
 /**
@@ -38,7 +39,7 @@ export class FinOpsArtifactAiRunner {
     private readonly traceRecorder: AiTraceRecorder,
     private readonly mainModel: string,
     private readonly auditorModel: string,
-    private readonly requestPolicy: AiArtifactRequestPolicy = { timeoutMs: 60_000, maxRetries: 1 },
+    private readonly requestPolicy: AiArtifactRequestPolicy = { timeoutMs: 60_000, maxRetries: 1, reasoningEffort: 'low' },
   ) {}
 
   public generateRecommendations(systemPrompt: string): Promise<string> {
@@ -47,6 +48,7 @@ export class FinOpsArtifactAiRunner {
       responseFormat: 'json',
       timeoutMs: Math.min(this.requestPolicy.timeoutMs, 45_000),
       maxRetries: 0,
+      ...(this.requestPolicy.reasoningEffort === undefined ? {} : { reasoningEffort: this.requestPolicy.reasoningEffort }),
       // Las recomendaciones deben ser reproducibles: el contenido creativo
       // está acotado por candidatos/evidencia y no necesita aleatoriedad.
       temperature: 0,
@@ -68,6 +70,7 @@ export class FinOpsArtifactAiRunner {
       responseFormat: 'json',
       timeoutMs: Math.min(this.requestPolicy.timeoutMs, 45_000),
       maxRetries: 0,
+      ...(this.requestPolicy.reasoningEffort === undefined ? {} : { reasoningEffort: this.requestPolicy.reasoningEffort }),
       temperature: 0,
       maxTokens: 900,
       messages: [
@@ -91,6 +94,7 @@ export class FinOpsArtifactAiRunner {
       responseFormat: 'json',
       timeoutMs: Math.min(this.requestPolicy.timeoutMs, 45_000),
       maxRetries: 0,
+      ...(this.requestPolicy.reasoningEffort === undefined ? {} : { reasoningEffort: this.requestPolicy.reasoningEffort }),
       temperature: 0,
       maxTokens: 1200,
       messages: [
@@ -109,6 +113,7 @@ export class FinOpsArtifactAiRunner {
       responseFormat: 'json',
       timeoutMs: Math.min(this.requestPolicy.timeoutMs, 45_000),
       maxRetries: 0,
+      ...(this.requestPolicy.reasoningEffort === undefined ? {} : { reasoningEffort: this.requestPolicy.reasoningEffort }),
       temperature: 0,
       maxTokens: 1200,
       messages: [

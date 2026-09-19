@@ -47,6 +47,7 @@ const booleanConfigKeys = [
 export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): void {
   const issues: RuntimeValidationIssue[] = [];
   validateBooleanVariables(env, issues);
+  validateAiReasoningEffort(env['AI_REASONING_EFFORT'], issues);
   const isProduction = env['NODE_ENV'] === 'production';
 
   // An omitted role is a valid development shorthand for `all`, but an
@@ -215,6 +216,14 @@ function validateProcessRole(value: string | undefined, issues: RuntimeValidatio
   ]);
   if (role === undefined || !validRoles.has(role)) {
     issues.push({ key: 'APP_PROCESS_ROLE', message: 'Debe ser api, worker, scheduler, un rol granular o all.' });
+  }
+}
+
+function validateAiReasoningEffort(value: string | undefined, issues: RuntimeValidationIssue[]): void {
+  if (isBlank(value)) return;
+  const normalized = value!.trim().toLowerCase();
+  if (!['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(normalized)) {
+    issues.push({ key: 'AI_REASONING_EFFORT', message: 'Debe ser none, minimal, low, medium, high o xhigh.' });
   }
 }
 

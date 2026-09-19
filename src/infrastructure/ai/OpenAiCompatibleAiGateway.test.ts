@@ -101,4 +101,21 @@ describe('OpenAiCompatibleAiGateway', () => {
       response_format: { type: 'json_object' },
     });
   });
+
+  test('forwards the optional reasoning effort without changing standard requests', async () => {
+    process.env['AI_API_KEY'] = 'test-ai-key';
+    process.env['AI_BASE_URL'] = 'https://api.example.test/v1';
+    completionCreate.mockResolvedValue((async function* () {
+      yield { choices: [{ delta: { content: '{}' } }] };
+    })());
+
+    const { OpenAiCompatibleAiGateway } = await import('./OpenAiCompatibleAiGateway.js');
+    const gateway = new OpenAiCompatibleAiGateway();
+    await gateway.generateText({
+      reasoningEffort: 'low',
+      messages: [{ role: 'user', content: 'responde' }],
+    });
+
+    expect(completionCreate.mock.calls[0]?.[0]).toMatchObject({ reasoning_effort: 'low' });
+  });
 });

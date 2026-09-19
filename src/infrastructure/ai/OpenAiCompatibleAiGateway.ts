@@ -64,6 +64,7 @@ export class OpenAiCompatibleAiGateway implements IAiGateway {
           ...(request.responseFormat === 'json'
             ? { response_format: { type: 'json_object' as const } }
             : {}),
+          ...(request.reasoningEffort === undefined ? {} : { reasoning_effort: request.reasoningEffort }),
           stream: true,
         },
         {

@@ -47,6 +47,13 @@ describe('validateRuntimeConfig', () => {
     warning.mockRestore();
   });
 
+  it('rejects an unsupported AI reasoning effort during development', () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(() => validateRuntimeConfig({ NODE_ENV: 'development', AI_REASONING_EFFORT: 'extreme' }))
+      .toThrow('AI_REASONING_EFFORT');
+    warning.mockRestore();
+  });
+
   it.each(['yes', '1', 'enabled', ''])('rejects an invalid boolean configuration value: %s', (value) => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(() => validateRuntimeConfig({ NODE_ENV: 'development', EMAIL_ENABLED: value }))

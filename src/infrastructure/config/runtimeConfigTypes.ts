@@ -14,6 +14,7 @@ export type ProcessRole =
   | 'all';
 export type TrustProxy = boolean | number | string;
 export type SameSitePolicy = 'strict' | 'lax' | 'none';
+export type AiReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
 export interface RuntimeConfig {
   readonly environment: {
@@ -60,6 +61,7 @@ export interface RuntimeConfig {
     readonly auditorModel: string;
     readonly timeoutMs: number;
     readonly maxRetries: number;
+    readonly reasoningEffort: AiReasoningEffort;
     readonly learningAuditTimeoutMs: number;
     readonly inputCostPerMillionTokensUsd?: number;
     readonly outputCostPerMillionTokensUsd?: number;

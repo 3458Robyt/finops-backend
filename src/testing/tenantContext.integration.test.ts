@@ -70,6 +70,48 @@ describe.skipIf(!integrationEnabled)('runtime tenant context', () => {
     expect(unscopedRows.rows[0]?.visible_rows).toBe(0);
   });
 
+  it('lets master admins inspect jobs and their connections across tenants', async () => {
+    const [tenantA, tenantB] = fixtures.tenants as [{ id: string }, { id: string }];
+    const connections = await fixturePrisma.cloudConnection.findMany({
+      where: { tenantId: { in: [tenantA.id, tenantB.id] } },
+      select: { id: true, tenantId: true },
+    });
+    expect(connections).toHaveLength(2);
+
+    const now = new Date();
+    await fixturePrisma.ingestionJob.createMany({
+      data: connections.map((connection) => ({
+        tenantId: connection.tenantId,
+        cloudConnectionId: connection.id,
+        sourceType: 'INVENTORY' as const,
+        status: 'PENDING' as const,
+        targetStart: now,
+        targetEnd: now,
+      })),
+    });
+
+    const masterRows = await runWithDatabaseContext(
+      { tenantId: tenantA.id, userId: 'runtime-master-admin', role: 'MASTER_ADMIN' },
+      () => pool.query(
+        `select j.tenant_id, c.tenant_id as connection_tenant_id
+         from ingestion_jobs j
+         join cloud_connections c on c.id = j.cloud_connection_id
+         where j.tenant_id = any($1::text[])
+         order by j.tenant_id`,
+        [[tenantA.id, tenantB.id]],
+      ),
+    );
+    expect(masterRows.rows).toHaveLength(2);
+    expect(masterRows.rows.map((row) => row.tenant_id)).toEqual([tenantA.id, tenantB.id].sort());
+    expect(masterRows.rows.every((row) => row.tenant_id === row.connection_tenant_id)).toBe(true);
+
+    const regularRows = await runWithDatabaseContext(
+      { tenantId: tenantA.id, userId: 'runtime-tenant-admin', role: 'ADMIN' },
+      () => pool.query('select count(*)::int as visible_rows from ingestion_jobs where tenant_id = $1', [tenantB.id]),
+    );
+    expect(regularRows.rows[0]?.visible_rows).toBe(0);
+  });
+
   it('allows runtime transactions to write on read-only-by-default pooler sessions', async () => {
     const client = await pool.connect();
     try {

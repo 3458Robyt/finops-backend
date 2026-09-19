@@ -33,6 +33,16 @@ export class PrismaOperationalReadinessRepository implements IOperationalReadine
         ORDER BY finished_at DESC
         LIMIT 1
       `;
+      const expectedMigrationRows = expectedMigration === undefined
+        ? []
+        : await transaction.$queryRaw<MigrationRow[]>`
+          SELECT migration_name
+          FROM "_prisma_migrations"
+          WHERE migration_name = ${expectedMigration}
+            AND finished_at IS NOT NULL
+            AND rolled_back_at IS NULL
+          LIMIT 1
+        `;
       const failedRows = await transaction.$queryRaw<CountRow[]>`
         SELECT count(*)::bigint AS failed_migrations
         FROM "_prisma_migrations"
@@ -47,7 +57,7 @@ export class PrismaOperationalReadinessRepository implements IOperationalReadine
       const latestAppliedMigration = migrationRows[0]?.migration_name;
       const expectedMigrationApplied = expectedMigration === undefined
         ? undefined
-        : latestAppliedMigration === expectedMigration;
+        : expectedMigrationRows.length > 0;
 
       return {
         ...(currentUserRows[0]?.current_user === undefined ? {} : { currentUser: currentUserRows[0].current_user }),

@@ -105,42 +105,43 @@ describe.skipIf(!integrationEnabled)('shared cost allocation PostgreSQL integrat
     });
     const runId = `cost-allocation-perf-${Date.now().toString(36)}`;
     const serviceName = 'Cost Allocation Benchmark';
-    await prisma.costMetric.createMany({
-      data: Array.from({ length: 10_000 }, (_, index) => {
-        const chargePeriodStart = new Date(periodStart);
-        chargePeriodStart.setUTCDate(chargePeriodStart.getUTCDate() + (index % 28));
-        const chargePeriodEnd = new Date(chargePeriodStart);
-        chargePeriodEnd.setUTCDate(chargePeriodEnd.getUTCDate() + 1);
-        const amount = new Prisma.Decimal(String((index % 25) + 1));
-        return {
-          tenantId: actor.tenantId,
-          cloudAccountId: sample.cloudAccountId,
-          ...(sample.cloudConnectionId === null ? {} : { cloudConnectionId: sample.cloudConnectionId }),
-          ...(sample.cloudResourceId === null ? {} : { cloudResourceId: sample.cloudResourceId }),
-          provider: sample.provider,
-          serviceName,
-          resourceId: sample.resourceId,
-          ...(sample.resourceName === null ? {} : { resourceName: sample.resourceName }),
-          ...(sample.regionId === null ? {} : { regionId: sample.regionId }),
-          chargePeriodStart,
-          chargePeriodEnd,
-          billingPeriodStart: periodStart,
-          billingPeriodEnd: new Date('2025-02-01T00:00:00.000Z'),
-          billedCost: amount,
-          effectiveCost: amount,
-          billingCurrency: 'USD',
-          pricingCurrency: 'USD',
-          consumedQuantity: new Prisma.Decimal(1),
-          consumedUnit: 'Hours',
-          pricingQuantity: new Prisma.Decimal(1),
-          pricingUnit: 'Hours',
-          sourceMetric: 'E2E_PERF',
-          metricIdentityHash: `${runId}:${index}`,
-          tags: { e2eRunId: fixtures.runId, perfRunId: runId },
-          providerRaw: { fixture: true, benchmark: true },
-        };
-      }),
+    const costRows = Array.from({ length: 10_000 }, (_, index) => {
+      const chargePeriodStart = new Date(periodStart);
+      chargePeriodStart.setUTCDate(chargePeriodStart.getUTCDate() + (index % 28));
+      const chargePeriodEnd = new Date(chargePeriodStart);
+      chargePeriodEnd.setUTCDate(chargePeriodEnd.getUTCDate() + 1);
+      const amount = new Prisma.Decimal(String((index % 25) + 1));
+      return {
+        tenantId: actor.tenantId,
+        cloudAccountId: sample.cloudAccountId,
+        ...(sample.cloudConnectionId === null ? {} : { cloudConnectionId: sample.cloudConnectionId }),
+        ...(sample.cloudResourceId === null ? {} : { cloudResourceId: sample.cloudResourceId }),
+        provider: sample.provider,
+        serviceName,
+        resourceId: sample.resourceId,
+        ...(sample.resourceName === null ? {} : { resourceName: sample.resourceName }),
+        ...(sample.regionId === null ? {} : { regionId: sample.regionId }),
+        chargePeriodStart,
+        chargePeriodEnd,
+        billingPeriodStart: periodStart,
+        billingPeriodEnd: new Date('2025-02-01T00:00:00.000Z'),
+        billedCost: amount,
+        effectiveCost: amount,
+        billingCurrency: 'USD',
+        pricingCurrency: 'USD',
+        consumedQuantity: new Prisma.Decimal(1),
+        consumedUnit: 'Hours',
+        pricingQuantity: new Prisma.Decimal(1),
+        pricingUnit: 'Hours',
+        sourceMetric: 'E2E_PERF',
+        metricIdentityHash: `${runId}:${index}`,
+        tags: { e2eRunId: fixtures.runId, perfRunId: runId },
+        providerRaw: { fixture: true, benchmark: true },
+      };
     });
+    for (let index = 0; index < costRows.length; index += 500) {
+      await prisma.costMetric.createMany({ data: costRows.slice(index, index + 500) });
+    }
     const explainRows = await prisma.$queryRaw<readonly { readonly ['QUERY PLAN']: unknown }[]>`
       EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
       SELECT "metric_identity_hash"

@@ -54,6 +54,26 @@ describe('OCI monitoring collector', () => {
     expect(result.coverage).toMatchObject({ samples: 1, metricDefinitions: 1 });
   });
 
+  test('reports bounded progress while a streaming collection is active', async () => {
+    const progress: Array<{ readonly activeTasks?: number; readonly completedTasks?: number; readonly totalTasks?: number }> = [];
+    const result = await collectOciTechnicalMetrics(buildJob({
+      ociMetricDefinitions: [
+        metricDefinition('instance-1'),
+        { ...metricDefinition('instance-2'), metricName: 'MemoryUtilization' },
+      ],
+    }), {
+      createClient: asyncClient(() => ({ items: [metricStream('instance-1', 42)] })),
+      withRetry: (operation) => operation(),
+    }, {
+      onProgress: (next) => { progress.push(next); },
+    });
+
+    await materializeSamples(result);
+
+    expect(progress.length).toBeGreaterThan(0);
+    expect(progress.at(-1)).toMatchObject({ completedTasks: 2, totalTasks: 2, activeTasks: 0 });
+  });
+
   test('uses the provider-native statistic in each OCI query', async () => {
     const queries: string[] = [];
     const result = await collectOciTechnicalMetrics(buildJob({
@@ -231,6 +251,12 @@ function metricStream(resourceId: string, value: number): {
     dimensions: { resourceId },
     aggregatedDatapoints: [{ timestamp: '2026-08-10T00:30:00Z', value }],
   };
+}
+
+function asyncClient(response: () => { readonly items: readonly ReturnType<typeof metricStream>[] }) {
+  return () => ({
+    summarizeMetricsData: async () => response(),
+  });
 }
 
 async function materializeSamples(result: Awaited<ReturnType<typeof collectOciTechnicalMetrics>>) {

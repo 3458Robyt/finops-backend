@@ -60,6 +60,17 @@ export function assertIntegrationSchema(schemaName: string): void {
   }
 }
 
+export function assertLocalIntegrationDatabase(connectionString: string): void {
+  const host = new URL(connectionString).hostname.toLowerCase();
+  const localHosts = new Set(['127.0.0.1', 'localhost', '::1']);
+  if (!localHosts.has(host) && process.env['ALLOW_REMOTE_INTEGRATION_TESTS'] !== 'true') {
+    throw new Error(
+      `Refusing destructive integration tests against remote database host ${host}. `
+      + 'Set ALLOW_REMOTE_INTEGRATION_TESTS=true only for an explicitly isolated target.',
+    );
+  }
+}
+
 function integrationTimeoutMs(): number {
   const raw = process.env['TEST_COMMAND_TIMEOUT_MS'];
   if (raw === undefined || raw.trim() === '') return DEFAULT_TIMEOUT_MS;

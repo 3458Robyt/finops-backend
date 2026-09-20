@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { Pool } from 'pg';
 import {
   assertIntegrationSchema,
+  assertLocalIntegrationDatabase,
   runIntegrationCommand,
 } from './integrationRuntime.js';
 
@@ -25,6 +26,7 @@ if (sourceUrl === undefined || sourceUrl.trim() === '') {
   }, null, 2));
   process.exit(0);
 }
+assertLocalIntegrationDatabase(sourceUrl);
 
 const schema = `finops_e2e_api_${Date.now().toString(36)}`;
 const isolatedUrl = withSchema(sourceUrl, schema);

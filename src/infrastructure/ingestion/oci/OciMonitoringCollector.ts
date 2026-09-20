@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import type {
+  CloudIngestionCollectOptions,
   CloudIngestionJobContext,
+  CloudIngestionProviderProgress,
   CloudIngestionResult,
   NormalizedResourceMetricSample,
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
@@ -11,22 +13,19 @@ import type { OciMetricDefinition, OciMonitoringClient } from './OciSdkContracts
 import { buildOciCollectionTasks, type OciCollectionTask } from './OciMonitoringQueryBuilder.js';
 import { getOrCreateRegionalClient, mapWithConcurrency, regionKey } from './OciMonitoringCollectionSupport.js';
 export { buildOciGroupedMetricQuery, buildOciResourceMetricQuery } from './OciMonitoringQueryBuilder.js';
-
 const MAX_PERSIST_BATCH_SIZE = 5_000;
 // Keep long-running backfills away from the moving 90-day boundary. A small
 // margin is not enough when a job spends several minutes in provider calls.
 const OCI_RETENTION_SAFETY_MARGIN_MS = 6 * 60 * 60 * 1000;
-
 export interface OciMonitoringDependencies {
   readonly createClient: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciMonitoringClient;
   readonly withRetry: <T>(operation: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
   readonly withRateLimit?: <T>(job: CloudIngestionJobContext, operation: () => Promise<T>) => Promise<T>;
 }
-
 export async function collectOciTechnicalMetrics(
   job: CloudIngestionJobContext,
   dependencies: OciMonitoringDependencies,
-  options: { readonly signal?: AbortSignal; readonly isCancellationRequested?: () => Promise<boolean> } = {},
+  options: CloudIngestionCollectOptions = {},
 ): Promise<CloudIngestionResult> {
   const definitions = readOciMetricDefinitions(job);
   if (definitions.length === 0) {
@@ -58,7 +57,6 @@ export async function collectOciTechnicalMetrics(
   };
   const warnings: string[] = [];
   const metricBatches = streamOciMetricBatches(job, dependencies, tasks, collection, requestRange, stats, coverage, warnings, options);
-
   return {
     get apiCallCount() { return stats.apiCallCount; },
     objectsProcessed: 0,
@@ -80,7 +78,7 @@ async function* streamOciMetricBatches(
   stats: { apiCallCount: number; sampleCount: number; statistics: Record<string, number> },
   coverage: Record<string, unknown>,
   warnings: string[],
-  options: { readonly signal?: AbortSignal; readonly isCancellationRequested?: () => Promise<boolean> },
+  options: CloudIngestionCollectOptions,
 ): AsyncGenerator<readonly NormalizedResourceMetricSample[]> {
   const clientsByRegion = new Map<string, OciMonitoringClient>();
   const queue: NormalizedResourceMetricSample[][] = [];
@@ -98,6 +96,15 @@ async function* streamOciMetricBatches(
     wakeConsumer = undefined;
   };
   let pendingBatch: NormalizedResourceMetricSample[] = [];
+  let activeTasks = 0;
+  let completedTasks = 0;
+  const reportProgress = (): Promise<void> => Promise.resolve(options.onProgress?.({
+    providerCalls: stats.apiCallCount,
+    samples: stats.sampleCount,
+    activeTasks,
+    completedTasks,
+    totalTasks: tasks.length,
+  } satisfies CloudIngestionProviderProgress));
   const enqueue = async (batch: NormalizedResourceMetricSample[]): Promise<void> => {
     for (const sample of batch) {
       pendingBatch.push(sample);
@@ -109,7 +116,15 @@ async function* streamOciMetricBatches(
     }
   };
   const producer = mapWithConcurrency(tasks, 4, async (task) => {
-    await collectOciTask(task, job, dependencies, collection, requestRange, clientsByRegion, stats, enqueue, options);
+    activeTasks += 1;
+    await reportProgress();
+    try {
+      await collectOciTask(task, job, dependencies, collection, requestRange, clientsByRegion, stats, enqueue, options);
+      completedTasks += 1;
+    } finally {
+      activeTasks = Math.max(0, activeTasks - 1);
+      await reportProgress();
+    }
   }).then(() => {
     return enqueueQueue(pendingBatch).then(() => {
       pendingBatch = [];

@@ -241,6 +241,16 @@ export interface CloudIngestionCollectOptions {
   readonly signal?: AbortSignal;
   /** Allows streaming collectors to stop before scheduling the next request. */
   readonly isCancellationRequested?: () => Promise<boolean>;
+  /** Reports bounded provider progress while a streaming collection is active. */
+  readonly onProgress?: (progress: CloudIngestionProviderProgress) => Promise<void> | void;
+}
+
+export interface CloudIngestionProviderProgress {
+  readonly providerCalls: number;
+  readonly samples: number;
+  readonly activeTasks?: number;
+  readonly completedTasks?: number;
+  readonly totalTasks?: number;
 }
 
 export interface CloudIngestionProvider {

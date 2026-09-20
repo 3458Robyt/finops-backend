@@ -4,6 +4,7 @@ import type {
   PrismaCloudIngestionJobRepository,
 } from '../../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
 import type { IngestionJobProgress } from '../../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
+import type { CloudIngestionProviderProgress } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 import { safeErrorMessage } from '../observability/safeError.js';
 import type { MetricsRegistry } from '../observability/MetricsRegistry.js';
@@ -160,10 +161,30 @@ export class CloudIngestionWorkerService {
         .finally(() => { cancellationPollInFlight = false; });
     }, Math.min(this.progressUpdateMs, 1_000));
 
+    let lastProviderProgressWriteAt = 0;
+    let providerProgressWrite = Promise.resolve();
+    const reportProviderProgress = (next: CloudIngestionProviderProgress): Promise<void> => {
+      progress = {
+        phase: 'FETCHING',
+        message: formatProviderProgress(next),
+        providerCalls: next.providerCalls,
+        samples: next.samples,
+        updatedAt: new Date().toISOString(),
+      };
+      const now = Date.now();
+      if (now - lastProviderProgressWriteAt < this.progressUpdateMs) return providerProgressWrite;
+      lastProviderProgressWriteAt = now;
+      providerProgressWrite = providerProgressWrite.then(async () => {
+        if (!await this.writeProgress(job.id, workerId, job.attempt, progress)) markLeaseLost();
+      });
+      return providerProgressWrite;
+    };
+
     try {
       const result = await provider.collect(job, {
         signal: abortController.signal,
         isCancellationRequested: () => this.cancellationRequested(job.id, workerId, job.attempt),
+        onProgress: reportProviderProgress,
       });
       if (await this.cancellationRequested(job.id, workerId, job.attempt)) {
         await this.cancel(job, workerId);
@@ -177,9 +198,12 @@ export class CloudIngestionWorkerService {
           errorMessage: 'Ingestion job lease was lost while collecting provider data',
         };
       }
+      const streamingCollection = result.metricBatches !== undefined;
       progress = {
-          phase: 'PERSISTING_RAW',
-        message: 'Persistiendo datos normalizados y controles de calidad.',
+        phase: streamingCollection ? 'FETCHING' : 'PERSISTING_RAW',
+        message: streamingCollection
+          ? 'Recibiendo métricas del proveedor; la persistencia comenzará con el primer lote.'
+          : 'Persistiendo datos normalizados y controles de calidad.',
         providerCalls: result.apiCallCount,
         rowsRead: result.focusRows.length,
         resources: result.resources.length,
@@ -282,4 +306,12 @@ export class CloudIngestionWorkerService {
   private async cancel(job: Parameters<PrismaCloudIngestionJobRepository['markCancelled']>[0], workerId: string): Promise<void> {
     if (typeof this.jobs.markCancelled === 'function') await this.jobs.markCancelled(job, workerId);
   }
+}
+
+function formatProviderProgress(progress: CloudIngestionProviderProgress): string {
+  const taskProgress = progress.totalTasks === undefined
+    ? ''
+    : ` ${progress.completedTasks ?? 0}/${progress.totalTasks} tareas.`;
+  const activeTasks = progress.activeTasks === undefined ? '' : ` Activas: ${progress.activeTasks}.`;
+  return `Consultando proveedor: ${progress.providerCalls} llamadas, ${progress.samples} muestras.${taskProgress}${activeTasks}`;
 }

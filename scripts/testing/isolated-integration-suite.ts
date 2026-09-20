@@ -3,6 +3,7 @@ import 'dotenv/config';
 import { resolve } from 'node:path';
 import {
   assertIntegrationSchema,
+  assertLocalIntegrationDatabase,
   createIntegrationPool,
   runIntegrationCommand,
 } from './integrationRuntime.js';
@@ -21,6 +22,7 @@ if (sourceUrl === undefined || sourceUrl.trim() === '') {
   }, null, 2));
   process.exit(0);
 }
+assertLocalIntegrationDatabase(sourceUrl);
 
 const schema = `finops_e2e_suite_${Date.now().toString(36)}`;
 const isolatedUrl = withSchema(sourceUrl, schema);

@@ -11,7 +11,7 @@ import { normalizeExternalResourceId } from '../../../domain/models/ResourceLink
 import { optionalString, readObjectArray, readStringArray, requireString } from '../providerConfig.js';
 import type { OciMetricDefinition, OciMonitoringClient } from './OciSdkContracts.js';
 import { buildOciCollectionTasks, type OciCollectionTask } from './OciMonitoringQueryBuilder.js';
-import { getOrCreateRegionalClient, mapWithConcurrency, regionKey } from './OciMonitoringCollectionSupport.js';
+import { mapWithConcurrency, regionKey } from './OciMonitoringCollectionSupport.js';
 export { buildOciGroupedMetricQuery, buildOciResourceMetricQuery } from './OciMonitoringQueryBuilder.js';
 const MAX_PERSIST_BATCH_SIZE = 5_000;
 // Keep long-running backfills away from the moving 90-day boundary. A small
@@ -19,7 +19,7 @@ const MAX_PERSIST_BATCH_SIZE = 5_000;
 const OCI_RETENTION_SAFETY_MARGIN_MS = 6 * 60 * 60 * 1000;
 export interface OciMonitoringDependencies {
   readonly createClient: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciMonitoringClient;
-  readonly withRetry: <T>(operation: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
+  readonly withRetry: <T>(operation: (signal?: AbortSignal) => Promise<T>, signal?: AbortSignal) => Promise<T>;
   readonly withRateLimit?: <T>(job: CloudIngestionJobContext, operation: () => Promise<T>) => Promise<T>;
 }
 export async function collectOciTechnicalMetrics(
@@ -36,7 +36,6 @@ export async function collectOciTechnicalMetrics(
       supportedNamespaces: ['oci_computeagent', 'oci_vmi_resource_utilization'],
     });
   }
-
   const collection = resolveOciCollectionWindow(job);
   const requestRange = resolveOciRequestRange(job);
   const tasks = buildOciCollectionTasks(definitions, collection.interval, {
@@ -68,7 +67,6 @@ export async function collectOciTechnicalMetrics(
     coverage,
   };
 }
-
 async function* streamOciMetricBatches(
   job: CloudIngestionJobContext,
   dependencies: OciMonitoringDependencies,
@@ -80,7 +78,6 @@ async function* streamOciMetricBatches(
   warnings: string[],
   options: CloudIngestionCollectOptions,
 ): AsyncGenerator<readonly NormalizedResourceMetricSample[]> {
-  const clientsByRegion = new Map<string, OciMonitoringClient>();
   const queue: NormalizedResourceMetricSample[][] = [];
   let done = false;
   let cancelled = false;
@@ -119,7 +116,7 @@ async function* streamOciMetricBatches(
     activeTasks += 1;
     await reportProgress();
     try {
-      await collectOciTask(task, job, dependencies, collection, requestRange, clientsByRegion, stats, enqueue, options);
+      await collectOciTask(task, job, dependencies, collection, requestRange, stats, enqueue, options);
       completedTasks += 1;
     } finally {
       activeTasks = Math.max(0, activeTasks - 1);
@@ -138,7 +135,6 @@ async function* streamOciMetricBatches(
     wakeConsumer?.();
     wakeConsumer = undefined;
   });
-
   try {
     while (!done || queue.length > 0) {
       await assertCollectorActive(options);
@@ -161,7 +157,6 @@ async function* streamOciMetricBatches(
     for (const wakeProducer of producerWaiters.splice(0)) wakeProducer();
     wakeConsumer?.();
     await producer.catch(() => undefined);
-    for (const regionalClient of clientsByRegion.values()) regionalClient.close?.();
   }
 }
 
@@ -171,7 +166,6 @@ async function collectOciTask(
   dependencies: OciMonitoringDependencies,
   collection: { readonly interval: '1m' | '5m' | '30m' | '1h'; readonly granularitySeconds: 60 | 300 | 1800 | 3600 },
   requestRange: { readonly startTime: Date; readonly endTime: Date },
-  clientsByRegion: Map<string, OciMonitoringClient>,
   stats: { apiCallCount: number; sampleCount: number; statistics: Record<string, number> },
   enqueue: (batch: NormalizedResourceMetricSample[]) => Promise<void>,
   options: { readonly signal?: AbortSignal; readonly isCancellationRequested?: () => Promise<boolean> },
@@ -183,19 +177,25 @@ async function collectOciTask(
   const taskJob = taskRegion === regionKey(job)
     ? job
     : { ...job, requestContext: { ...(job.requestContext ?? {}), regionId: taskRegion } };
-  const taskClient = getOrCreateRegionalClient(taskJob, taskRegion, dependencies.createClient, clientsByRegion, options.signal);
   const query = task.query;
-  const request = (compartmentId: string, compartmentIdInSubtree = false) => dependencies.withRetry(() => taskClient.summarizeMetricsData({
-    compartmentId,
-    ...(compartmentIdInSubtree ? { compartmentIdInSubtree: true } : {}),
-    summarizeMetricsDataDetails: {
-      namespace: definition.namespace,
-      query,
-      startTime: requestRange.startTime,
-      endTime: requestRange.endTime,
-      resolution: collection.interval,
-    },
-  }), options.signal);
+  const request = (compartmentId: string, compartmentIdInSubtree = false) => dependencies.withRetry(async (attemptSignal) => {
+    const taskClient = dependencies.createClient(taskJob, attemptSignal);
+    try {
+      return await taskClient.summarizeMetricsData({
+        compartmentId,
+        ...(compartmentIdInSubtree ? { compartmentIdInSubtree: true } : {}),
+        summarizeMetricsDataDetails: {
+          namespace: definition.namespace,
+          query,
+          startTime: requestRange.startTime,
+          endTime: requestRange.endTime,
+          resolution: collection.interval,
+        },
+      });
+    } finally {
+      taskClient.close?.();
+    }
+  }, options.signal);
   const execute = async (compartmentId: string, compartmentIdInSubtree = false) => {
     stats.apiCallCount += 1;
     const operation = () => request(compartmentId, compartmentIdInSubtree);

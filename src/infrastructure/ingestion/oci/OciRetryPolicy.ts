@@ -1,5 +1,5 @@
 export async function withOciProviderRetry<T>(
-  operation: () => Promise<T>,
+  operation: (signal?: AbortSignal) => Promise<T>,
   delaysMs: readonly number[] = [1000, 2500, 5000],
   sleep: (delayMs: number) => Promise<void> = defaultSleep,
   timeoutMs = 30_000,
@@ -9,7 +9,7 @@ export async function withOciProviderRetry<T>(
   for (let attempt = 0; attempt <= delaysMs.length; attempt += 1) {
     try {
       throwIfAborted(signal);
-      return await withTimeout(operation(), timeoutMs, signal);
+      return await withTimeout(operation, timeoutMs, signal);
     } catch (error) {
       lastError = error;
       if (!isRetryableError(error) || attempt === delaysMs.length) throw error;
@@ -40,24 +40,51 @@ function isStatus(error: unknown, status: number): boolean {
   return value === status;
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+async function withTimeout<T>(
+  operation: (signal?: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<T> {
+  const attemptController = new AbortController();
+  let timeoutTriggered = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const abortAttempt = (): void => attemptController.abort();
+  signal?.addEventListener('abort', abortAttempt, { once: true });
+  let cancellationListener: (() => void) | undefined;
   try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`OCI provider request timed out after ${timeoutMs}ms`)), timeoutMs);
-      }),
-      ...(signal === undefined ? [] : [new Promise<never>((_, reject) => {
+    const operationPromise = operation(attemptController.signal);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        timeoutTriggered = true;
+        attemptController.abort();
+        reject(new Error(`OCI provider request timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+    const cancellationPromise = signal === undefined
+      ? undefined
+      : new Promise<never>((_, reject) => {
+        cancellationListener = () => reject(new Error('OCI provider request cancelled'));
         if (signal.aborted) {
-          reject(new Error('OCI provider request cancelled'));
+          cancellationListener();
           return;
         }
-        signal.addEventListener('abort', () => reject(new Error('OCI provider request cancelled')), { once: true });
-      })]),
+        signal.addEventListener('abort', cancellationListener, { once: true });
+      });
+    return await Promise.race([
+      operationPromise,
+      timeoutPromise,
+      ...(cancellationPromise === undefined ? [] : [cancellationPromise]),
     ]);
+  } catch (error) {
+    if (timeoutTriggered) throw new Error(`OCI provider request timed out after ${timeoutMs}ms`);
+    if (signal?.aborted === true) throw new Error('OCI provider request cancelled');
+    throw error;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    signal?.removeEventListener('abort', abortAttempt);
+    if (signal !== undefined && cancellationListener !== undefined) {
+      signal.removeEventListener('abort', cancellationListener);
+    }
   }
 }
 

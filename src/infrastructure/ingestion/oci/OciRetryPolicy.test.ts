@@ -33,4 +33,17 @@ describe('OCI retry policy', () => {
     expect(operation).toHaveBeenCalledOnce();
     expect(sleep).not.toHaveBeenCalled();
   });
+
+  test('aborts the provider attempt when its timeout expires', async () => {
+    let aborted = false;
+    const operation = (signal?: AbortSignal) => new Promise<string>((_, reject) => {
+      signal?.addEventListener('abort', () => {
+        aborted = true;
+        reject(new Error('aborted'));
+      }, { once: true });
+    });
+
+    await expect(withOciProviderRetry(operation, [], undefined, 5)).rejects.toThrow('timed out');
+    expect(aborted).toBe(true);
+  });
 });

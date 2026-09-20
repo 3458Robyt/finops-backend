@@ -114,9 +114,10 @@ class FakeCostAnalyticsRepository implements ICostAnalyticsRepository {
 class FakeRecommendationRepository implements IRecommendationRepository {
   public created: readonly CreateRecommendationInput[] = [];
   public executionPlans: unknown[] = [];
+  public listedRecommendations: FinOpsRecommendation[] = [];
 
   public async findByTenant(_query: RecommendationQuery): Promise<FinOpsRecommendation[]> {
-    return [];
+    return this.listedRecommendations;
   }
 
   public async findById(_tenantId: string, _recommendationId: string): Promise<FinOpsRecommendation | null> {
@@ -249,6 +250,43 @@ class FakeTechnicalEvidenceProvider implements TechnicalRecommendationEvidencePr
 }
 
 describe('FinOpsAiService', () => {
+  test('answers technical and recommendation questions with tenant evidence', async () => {
+    const gateway = new FakeAiGateway('Hay evidencia tecnica y una oportunidad pendiente en el tenant.');
+    const recommendations = new FakeRecommendationRepository();
+    recommendations.listedRecommendations = [{
+      id: 'rec-chat-1',
+      cloudAccountId: 'account-focus-aws-prod',
+      type: 'USAGE_OPTIMIZATION',
+      origin: 'AI_GENERATED',
+      status: 'PENDING',
+      severity: 'MEDIUM',
+      title: 'Revisar consumo de EC2',
+      description: 'Validar horas facturadas y costo unitario.',
+      evidence: {},
+      estimatedMonthlySavings: 25,
+      currency: 'USD',
+      createdAt: new Date('2026-05-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-01T00:00:00.000Z'),
+    }];
+    const service = new FinOpsAiService(
+      new FakeCostAnalyticsRepository(),
+      recommendations,
+      gateway,
+      undefined,
+      undefined,
+      undefined,
+      new FakeTechnicalEvidenceProvider(),
+    );
+
+    await service.answerChat({
+      tenantId: 'tenant-1',
+      message: 'Que metricas tecnicas y recomendaciones existen?',
+    });
+
+    expect(gateway.lastRequest?.messages[0]?.content).toContain('CpuUtilization');
+    expect(gateway.lastRequest?.messages[0]?.content).toContain('rec-chat-1');
+  });
+
   test('answers chat using a compact FinOps cost snapshot', async () => {
     const gateway = new FakeAiGateway('EC2 concentra el mayor gasto del periodo.');
     const service = new FinOpsAiService(

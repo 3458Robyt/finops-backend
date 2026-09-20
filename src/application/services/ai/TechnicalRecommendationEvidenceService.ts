@@ -21,6 +21,11 @@ export interface TechnicalRecommendationEvidenceProvider {
     readonly externalResourceId?: string;
     readonly cloudResourceId?: string;
   }): Promise<RecommendationEvidenceSnapshot>;
+  /** Bounded overview evidence for interactive chat; recommendations stay exact. */
+  buildChatTechnicalEvidenceSnapshot?(input: {
+    readonly tenantId: string;
+    readonly snapshot: CostAnalyticsSnapshot;
+  }): Promise<RecommendationEvidenceSnapshot>;
 }
 
 const maxResources = 12;
@@ -36,6 +41,22 @@ export class TechnicalRecommendationEvidenceService implements TechnicalRecommen
     readonly externalResourceId?: string;
     readonly cloudResourceId?: string;
   }): Promise<RecommendationEvidenceSnapshot> {
+    return this.buildEvidenceSnapshot(input, false);
+  }
+
+  public async buildChatTechnicalEvidenceSnapshot(input: {
+    readonly tenantId: string;
+    readonly snapshot: CostAnalyticsSnapshot;
+  }): Promise<RecommendationEvidenceSnapshot> {
+    return this.buildEvidenceSnapshot(input, true);
+  }
+
+  private async buildEvidenceSnapshot(input: {
+    readonly tenantId: string;
+    readonly snapshot: CostAnalyticsSnapshot;
+    readonly externalResourceId?: string;
+    readonly cloudResourceId?: string;
+  }, preferBoundedRollups: boolean): Promise<RecommendationEvidenceSnapshot> {
     const startDate = parseDate(input.snapshot.periodStart);
     const endDate = parseDate(input.snapshot.periodEnd);
     const now = new Date();
@@ -47,7 +68,10 @@ export class TechnicalRecommendationEvidenceService implements TechnicalRecommen
     const candidateResourceIds: string[] = input.externalResourceId === undefined
       ? [...new Set(input.snapshot.topResources.map((resource) => resource.resourceId).filter((id) => id.trim() !== ''))]
       : [input.externalResourceId];
-    const summaries = await this.repository.listMetricSummariesForTenant(input.tenantId, {
+    const summaryReader = preferBoundedRollups && this.repository.listMetricSummariesForTenantFast !== undefined
+      ? this.repository.listMetricSummariesForTenantFast.bind(this.repository)
+      : this.repository.listMetricSummariesForTenant.bind(this.repository);
+    const summaries = await summaryReader(input.tenantId, {
       ...(evidenceStartDate !== undefined ? { startDate: evidenceStartDate } : {}),
       ...(evidenceEndDate !== undefined ? { endDate: evidenceEndDate } : {}),
       ...(candidateResourceIds.length > 0 ? { externalResourceIds: candidateResourceIds } : {}),

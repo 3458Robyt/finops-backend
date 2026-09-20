@@ -120,6 +120,7 @@ export class FinOpsAiService {
       learningContextProvider,
       contextEngine,
       technicalEvidenceProvider,
+      recommendationRepository,
     );
     this.chatRunner = new FinOpsAiChatRunner(
       analyticsRepository,

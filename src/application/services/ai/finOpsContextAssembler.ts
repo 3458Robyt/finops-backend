@@ -7,6 +7,7 @@ import type {
   IContextEngineService,
 } from '../../../domain/interfaces/IContextEngineService.js';
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
+import type { IRecommendationCoreRepository } from '../../../domain/interfaces/recommendationRepositoryCapabilities.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
 import type { AiContextOperation } from '../../../domain/models/AgentContext.js';
 import {
@@ -82,6 +83,7 @@ private readonly mainModel: string,
 private readonly learningContextProvider?: IAgentLearningContextProvider,
 private readonly contextEngine?: IContextEngineService,
 private readonly technicalEvidenceProvider?: TechnicalRecommendationEvidenceProvider,
+private readonly recommendationRepository?: Pick<IRecommendationCoreRepository, 'findByTenant'>,
 ) {}
 
   /**
@@ -104,11 +106,24 @@ private readonly technicalEvidenceProvider?: TechnicalRecommendationEvidenceProv
       snapshot: input.snapshot,
       model: this.mainModel,
     });
+    const technicalEvidenceSnapshot = isTechnicalEvidenceQuestion(input.message)
+      ? await this.getChatTechnicalEvidenceSnapshot(input.tenantId, input.snapshot)
+      : undefined;
+    const persistedRecommendations = isRecommendationQuestion(input.message)
+      ? await this.getChatRecommendationContext(input.tenantId)
+      : undefined;
 
     return {
       builtContext,
       systemPrompt: withBuiltContext(
-        buildChatSystemPrompt(input.snapshot, input.outputFormat ?? 'MARKDOWN'),
+        buildChatSystemPrompt(
+          input.snapshot,
+          input.outputFormat ?? 'MARKDOWN',
+          technicalEvidenceSnapshot === undefined
+            ? undefined
+            : formatRecommendationEvidenceSnapshot(technicalEvidenceSnapshot),
+          persistedRecommendations,
+        ),
         builtContext,
       ),
     };
@@ -295,4 +310,55 @@ return this.technicalEvidenceProvider.buildRecommendationEvidenceSnapshot({
   ...(cloudResourceId !== undefined ? { cloudResourceId } : {}),
 });
 }
+
+private async getChatTechnicalEvidenceSnapshot(
+tenantId: string,
+snapshot: CostAnalyticsSnapshot,
+): Promise<RecommendationEvidenceSnapshot | undefined> {
+if (this.technicalEvidenceProvider?.buildChatTechnicalEvidenceSnapshot !== undefined) {
+return this.technicalEvidenceProvider.buildChatTechnicalEvidenceSnapshot({ tenantId, snapshot });
+}
+
+return this.getRecommendationTechnicalEvidenceSnapshot(tenantId, snapshot);
+}
+
+private async getChatRecommendationContext(tenantId: string): Promise<string | undefined> {
+  if (this.recommendationRepository === undefined) {
+    return undefined;
+  }
+
+  const recommendations = await this.recommendationRepository.findByTenant({ tenantId });
+  return JSON.stringify(
+    recommendations.slice(0, 8).map((recommendation) => ({
+      id: recommendation.id,
+      status: recommendation.status,
+      type: recommendation.type,
+      severity: recommendation.severity,
+      title: recommendation.title,
+      description: recommendation.description,
+      cloudAccountId: recommendation.cloudAccountId,
+      ...(recommendation.cloudResourceId !== undefined
+        ? { cloudResourceId: recommendation.cloudResourceId }
+        : {}),
+      ...(recommendation.resourceLinkReason !== undefined
+        ? { resourceLinkReason: recommendation.resourceLinkReason }
+        : {}),
+      ...(recommendation.estimatedMonthlySavings !== undefined
+        ? { estimatedMonthlySavings: recommendation.estimatedMonthlySavings }
+        : {}),
+      currency: recommendation.currency,
+      createdAt: recommendation.createdAt.toISOString(),
+    })),
+    null,
+    2,
+  );
+}
+}
+
+function isTechnicalEvidenceQuestion(message: string): boolean {
+  return /m[eé]tric|cpu|memoria|ram|disco|iops|throughput|red|utilizaci[oó]n|p95|p99|latencia|disponibilidad|uso t[eé]cnico/i.test(message);
+}
+
+function isRecommendationQuestion(message: string): boolean {
+  return /recomendaci[oó]n|oportunidad|ahorro|plan de ejecuci[oó]n|aprobada|rechazada|ejecutada/i.test(message);
 }

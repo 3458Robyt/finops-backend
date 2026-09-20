@@ -22,6 +22,7 @@ class FakeResourceMetricRepository implements IResourceMetricRepository {
   public summaries: readonly TechnicalMetricSummaryItem[] = [];
   public sampleFilters: TechnicalMetricSampleFilters | undefined;
   public summaryFilters: TechnicalMetricSummaryFilters | undefined;
+  public fastSummaryFilters: TechnicalMetricSummaryFilters | undefined;
 
   public async listResourcesForTenant(): Promise<readonly CloudResourceItem[]> {
     return [];
@@ -70,6 +71,14 @@ class FakeResourceMetricRepository implements IResourceMetricRepository {
     return this.summaries.filter((summary) => (
       filters.externalResourceIds === undefined || filters.externalResourceIds.includes(summary.externalResourceId)
     ));
+  }
+
+  public async listMetricSummariesForTenantFast(
+    _tenantId: string,
+    filters: TechnicalMetricSummaryFilters,
+  ): Promise<readonly TechnicalMetricSummaryItem[]> {
+    this.fastSummaryFilters = filters;
+    return this.summaries;
   }
 }
 
@@ -185,6 +194,21 @@ describe('TechnicalRecommendationEvidenceService', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  test('uses bounded rollups for interactive chat evidence without changing exact recommendation evidence', async () => {
+    const repository = new FakeResourceMetricRepository();
+    repository.summaries = [metricSummary('CpuUtilization', 8, 25)];
+    const service = new TechnicalRecommendationEvidenceService(repository);
+
+    await service.buildChatTechnicalEvidenceSnapshot({ tenantId: 'tenant-1', snapshot });
+
+    expect(repository.fastSummaryFilters).toBeDefined();
+    expect(repository.summaryFilters).toBeUndefined();
+
+    await service.buildRecommendationEvidenceSnapshot({ tenantId: 'tenant-1', snapshot });
+
+    expect(repository.summaryFilters).toBeDefined();
   });
 });
 

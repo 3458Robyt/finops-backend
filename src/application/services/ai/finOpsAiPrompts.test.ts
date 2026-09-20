@@ -80,4 +80,18 @@ describe('FinOps AI prompt boundaries', () => {
     expect(plainTextPrompt).toContain('texto plano');
     expect(plainTextPrompt).toContain('dos asteriscos');
   });
+
+  test('adds optional technical and persisted recommendation evidence to chat', () => {
+    const prompt = buildChatSystemPrompt(
+      snapshot,
+      'MARKDOWN',
+      'Evidencia tecnica canonica: CpuUtilization p95=18',
+      '[{"id":"rec-1","status":"PENDING","estimatedMonthlySavings":25,"currency":"COP"}]',
+    );
+
+    expect(prompt).toContain('Evidencia técnica real del tenant');
+    expect(prompt).toContain('CpuUtilization p95=18');
+    expect(prompt).toContain('Recomendaciones persistidas del tenant actual');
+    expect(prompt).toContain('rec-1');
+  });
 });

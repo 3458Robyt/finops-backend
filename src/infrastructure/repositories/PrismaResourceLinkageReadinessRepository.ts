@@ -39,6 +39,7 @@ interface ResourceRow {
   readonly id: string;
   readonly cloud_connection_id: string;
   readonly external_resource_id: string;
+  readonly name: string | null;
   readonly provider: string;
   readonly service_name: string;
   readonly resource_type: string;
@@ -235,6 +236,7 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
         SELECT id,
                cloud_connection_id,
                external_resource_id,
+               name,
                provider::text AS provider,
                service_name,
                resource_type,
@@ -267,6 +269,7 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
         br.id,
         br.cloud_connection_id,
         br.external_resource_id,
+        br.name,
         br.provider,
         br.service_name,
         br.resource_type,
@@ -296,6 +299,9 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
         id: row.id,
         cloudConnectionId: row.cloud_connection_id,
         externalResourceId: row.external_resource_id,
+        ...(row.name?.trim() !== undefined && row.name.trim() !== '' && row.name !== row.external_resource_id
+          ? { name: row.name.trim() }
+          : {}),
         provider: row.provider,
         serviceName: row.service_name,
         resourceType: row.resource_type,

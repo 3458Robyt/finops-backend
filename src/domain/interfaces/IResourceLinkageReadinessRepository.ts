@@ -48,6 +48,7 @@ export interface ResourceLinkageResourceCoverage {
   readonly id: string;
   readonly cloudConnectionId: string;
   readonly externalResourceId: string;
+  readonly name?: string;
   readonly provider: string;
   readonly serviceName: string;
   readonly resourceType: string;

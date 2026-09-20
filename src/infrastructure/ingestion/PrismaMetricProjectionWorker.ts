@@ -203,7 +203,13 @@ export class PrismaMetricProjectionWorker {
 
       stageStartedAt = Date.now();
       await this.prisma.$transaction(
-        (tx) => this.rollups.refreshForJob(tx, claimed.id),
+        async (tx) => {
+          // The affected-stream sort spills at the default 32 MB work_mem on
+          // large connections. Keep this transaction-local so other API work
+          // does not inherit a high per-query memory budget.
+          await tx.$executeRaw`SET LOCAL work_mem = '64MB'`;
+          return this.rollups.refreshForJob(tx, claimed.id);
+        },
         { maxWait: 10_000, timeout: this.transactionTimeoutMs },
       );
       stageDurationsMs.rollups = Date.now() - stageStartedAt;

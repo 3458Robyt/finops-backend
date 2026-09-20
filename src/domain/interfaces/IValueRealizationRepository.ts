@@ -24,6 +24,7 @@ export interface ValueRealizationCurrencySummary {
   readonly currency: string;
   readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
   readonly estimatedMonthlySavings: number;
+  readonly approvedMonthlySavings: number;
   readonly reportedMonthlySavings: number;
   readonly observedSavings: number;
   readonly projectedMonthlySavings: number;

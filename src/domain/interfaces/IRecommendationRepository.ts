@@ -171,8 +171,10 @@ export interface RecommendationTimelineEvent {
  * Indicadores (KPIs) de ahorro derivados de las recomendaciones de un tenant.
  */
 export interface SavingsKpis {
-  /** Ahorro mensual estimado agregado de las recomendaciones. */
+  /** Potencial mensual de recomendaciones activas con evidencia accionable. */
   readonly estimatedMonthlySavings: number;
+  /** Potencial mensual de recomendaciones aprobadas por una persona. */
+  readonly approvedMonthlySavings: number;
   /** Ahorro mensual observado agregado tras ejecuciones. */
   readonly observedMonthlySavings: number;
   /** Importe que el usuario declaró al registrar una ejecución. */

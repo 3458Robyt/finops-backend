@@ -39,6 +39,7 @@ export class PrismaValueRealizationPortfolioRepository {
         currency,
         COUNT(*)::int AS identified,
         COALESCE(SUM(estimated_monthly_savings), 0)::float8 AS estimated_monthly_savings,
+        COALESCE(SUM(approved_monthly_savings), 0)::float8 AS approved_monthly_savings,
         COALESCE(SUM(reported_monthly_savings), 0)::float8 AS reported_monthly_savings,
         COALESCE(SUM(CASE WHEN measurement_status <> 'REJECTED' THEN observed_savings ELSE 0 END), 0)::float8 AS observed_savings,
         COALESCE(SUM(CASE WHEN measurement_status <> 'REJECTED' THEN projected_monthly_savings ELSE 0 END), 0)::float8 AS projected_monthly_savings,
@@ -163,6 +164,7 @@ export class PrismaValueRealizationPortfolioRepository {
       const sourceCurrency = stringValue(row['currency']) ?? 'USD';
       const raw = [
         { amount: numberValue(row['estimated_monthly_savings']), currency: sourceCurrency, at: new Date() },
+        { amount: numberValue(row['approved_monthly_savings']), currency: sourceCurrency, at: new Date() },
         { amount: numberValue(row['reported_monthly_savings']), currency: sourceCurrency, at: new Date() },
         { amount: numberValue(row['observed_savings']), currency: sourceCurrency, at: new Date() },
         { amount: numberValue(row['projected_monthly_savings']), currency: sourceCurrency, at: new Date() },
@@ -174,16 +176,18 @@ export class PrismaValueRealizationPortfolioRepository {
       const values = projection.hasIssue ? raw.map((item) => item.amount) : projection.values;
       const currency = projection.hasIssue ? sourceCurrency : projection.currency;
       const estimated = values[0]!;
-      const verified = values[4]!;
+      const approved = values[1]!;
+      const verified = values[5]!;
       const current = summaries.get(currency);
       summaries.set(currency, {
         currency,
         estimatedMonthlySavings: (current?.estimatedMonthlySavings ?? 0) + estimated,
-        reportedMonthlySavings: (current?.reportedMonthlySavings ?? 0) + values[1]!,
-        observedSavings: (current?.observedSavings ?? 0) + values[2]!,
-        projectedMonthlySavings: (current?.projectedMonthlySavings ?? 0) + values[3]!,
+        approvedMonthlySavings: (current?.approvedMonthlySavings ?? 0) + approved,
+        reportedMonthlySavings: (current?.reportedMonthlySavings ?? 0) + values[2]!,
+        observedSavings: (current?.observedSavings ?? 0) + values[3]!,
+        projectedMonthlySavings: (current?.projectedMonthlySavings ?? 0) + values[4]!,
         verifiedMonthlySavings: (current?.verifiedMonthlySavings ?? 0) + verified,
-        costIncreaseMonthlyAmount: (current?.costIncreaseMonthlyAmount ?? 0) + values[5]!,
+        costIncreaseMonthlyAmount: (current?.costIncreaseMonthlyAmount ?? 0) + values[6]!,
         realizationRate: 0,
         varianceAgainstEstimate: 0,
         ...(this.currencyConverter === undefined ? {} : { conversionStatus: mergeStatus(current?.conversionStatus, projection.status) }),

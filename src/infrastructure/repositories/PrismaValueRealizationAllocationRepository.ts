@@ -34,8 +34,16 @@ export class PrismaValueRealizationAllocationRepository {
         FROM recommendation_savings_measurements m WHERE m.tenant_id = ${input.tenantId}
       ), attributed AS (
         SELECT r.id AS recommendation_id, r.currency, l.allocation_key,
-               CASE WHEN r.status <> 'REJECTED' THEN COALESCE(r.estimated_monthly_savings, 0) * l.allocation_amount / NULLIF(l.source_amount, 0) ELSE 0 END AS potential_savings,
-               CASE WHEN r.status IN ('APPROVED', 'MANUAL_COMPLETED') THEN COALESCE(r.estimated_monthly_savings, 0) * l.allocation_amount / NULLIF(l.source_amount, 0) ELSE 0 END AS approved_savings,
+               CASE WHEN r.status <> 'REJECTED'
+                      AND COALESCE(r.evidence ->> 'reviewScope', '') <> 'FINANCIAL'
+                      AND COALESCE(r.evidence ->> 'financialReviewOnly', '') <> 'true'
+                    THEN COALESCE(r.estimated_monthly_savings, 0) * l.allocation_amount / NULLIF(l.source_amount, 0)
+                    ELSE 0 END AS potential_savings,
+               CASE WHEN r.status IN ('APPROVED', 'MANUAL_COMPLETED')
+                      AND COALESCE(r.evidence ->> 'reviewScope', '') <> 'FINANCIAL'
+                      AND COALESCE(r.evidence ->> 'financialReviewOnly', '') <> 'true'
+                    THEN COALESCE(r.estimated_monthly_savings, 0) * l.allocation_amount / NULLIF(l.source_amount, 0)
+                    ELSE 0 END AS approved_savings,
                CASE WHEN lm.status = 'VERIFIED' THEN COALESCE(lm.projected_monthly_savings, 0) * l.allocation_amount / NULLIF(l.source_amount, 0) ELSE 0 END AS verified_savings,
                CASE WHEN lm.status <> 'REJECTED' THEN COALESCE(lm.observed_savings, 0) * l.allocation_amount / NULLIF(l.source_amount, 0) ELSE 0 END AS observed_savings
         FROM recommendations r

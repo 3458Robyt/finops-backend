@@ -1,5 +1,6 @@
 import type { SavingsKpis } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { PrismaClient } from '../../../generated/prisma/client.js';
+import { hasApprovedSavings, hasPotentialSavings } from '../../../domain/models/recommendationEconomics.js';
 import {
   CurrencyConverter,
   type CurrencyAmountProjection,
@@ -38,7 +39,12 @@ export async function computeProjectedSavingsKpis(
   ]);
 
   const target = normalizeCurrencyCode(reportingCurrency);
-  const estimateRows = recommendations.flatMap((row) => row.estimatedMonthlySavings === null
+  const potentialRecommendations = recommendations.filter(hasPotentialSavings);
+  const approvedRecommendations = recommendations.filter(hasApprovedSavings);
+  const estimateRows = potentialRecommendations.flatMap((row) => row.estimatedMonthlySavings === null
+    ? []
+    : [{ row, amount: Number(row.estimatedMonthlySavings), currency: row.currency, at: row.createdAt }]);
+  const approvedRows = approvedRecommendations.flatMap((row) => row.estimatedMonthlySavings === null
     ? []
     : [{ row, amount: Number(row.estimatedMonthlySavings), currency: row.currency, at: row.createdAt }]);
   const reportedRows = executions.flatMap((row) => row.observedMonthlySavings === null
@@ -54,8 +60,9 @@ export async function computeProjectedSavingsKpis(
     ? []
     : [{ row, amount: Number(row.costIncreaseMonthlyAmount), currency: row.currency, at: row.createdAt }]);
 
-  const [estimates, reported, observed, verified, increases] = await Promise.all([
+  const [estimates, approved, reported, observed, verified, increases] = await Promise.all([
     projectRows(estimateRows, target, converter),
+    projectRows(approvedRows, target, converter),
     projectRows(reportedRows, target, converter),
     projectRows(observedRows, target, converter),
     projectRows(verifiedRows, target, converter),
@@ -64,10 +71,7 @@ export async function computeProjectedSavingsKpis(
   const conversionIssueCount = [estimates, reported, observed, verified, increases]
     .reduce((total, rows) => total + rows.filter((item) => item.projection.amount === null).length, 0);
 
-  const pendingRows = recommendations.filter((row) =>
-    (row.status === 'PENDING' || row.status === 'APPROVED') &&
-    row.estimatedMonthlySavings !== null && Number(row.estimatedMonthlySavings) > 0,
-  );
+  const pendingRows = potentialRecommendations;
   const pendingProjected = await projectRows(
     pendingRows.map((row) => ({ row, amount: Number(row.estimatedMonthlySavings), currency: row.currency, at: row.createdAt })),
     target,
@@ -83,6 +87,7 @@ export async function computeProjectedSavingsKpis(
 
   return {
     estimatedMonthlySavings: sumProjections(estimates),
+    approvedMonthlySavings: sumProjections(approved),
     observedMonthlySavings: sumProjections(observed),
     userReportedMonthlySavings: sumProjections(reported),
     verifiedMonthlySavings: sumProjections(verified),

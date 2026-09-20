@@ -14,6 +14,7 @@ import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommen
 import type { RecommendationExecutionPlan } from '../../../domain/models/RecommendationExecutionPlan.js';
 import type { RecommendationManualExecution } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { PrismaClient } from '../../../generated/prisma/client.js';
+import { isFinancialReviewEvidence } from '../../../domain/models/recommendationEconomics.js';
 
 /**
  * Mapea una fila de `recommendations` (Prisma) al modelo de dominio
@@ -39,7 +40,7 @@ export function toDomain(row: Awaited<ReturnType<PrismaClient['recommendation'][
     title: row.title,
     description: row.description,
     evidence: row.evidence,
-    ...(row.estimatedMonthlySavings !== null
+    ...(row.estimatedMonthlySavings !== null && !isFinancialReviewEvidence(row.evidence)
       ? { estimatedMonthlySavings: Number(row.estimatedMonthlySavings) }
       : {}),
     currency: row.currency,

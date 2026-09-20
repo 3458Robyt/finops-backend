@@ -17,6 +17,7 @@ import { generateForecasts } from './analytics/costForecaster.js';
 import { buildForecastScenarios, type ForecastScenarioSavings } from './analytics/forecastScenarioBuilder.js';
 import { buildTrends } from './analytics/costTrendBuilder.js';
 import { buildUsageInsights } from './analytics/usageInsightBuilder.js';
+import { hasApprovedSavings } from '../../domain/models/recommendationEconomics.js';
 
 /**
  * Consulta de analítica de costos.
@@ -292,7 +293,7 @@ export class CostAnalyticsService {
     ]);
 
     const approved = new Map<string, number>();
-    for (const recommendation of recommendations) {
+    for (const recommendation of recommendations.filter(hasApprovedSavings)) {
       const amount = recommendation.estimatedMonthlySavings ?? 0;
       if (amount > 0) approved.set(recommendation.currency, (approved.get(recommendation.currency) ?? 0) + amount);
     }

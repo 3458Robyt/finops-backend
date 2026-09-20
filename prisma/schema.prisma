@@ -1269,6 +1269,7 @@ model ResourceMetricSample {
   @@index([tenantId, externalResourceId, metricName, statistic, sampledAt])
   @@index([tenantId, providerNamespace, regionId, metricName, statistic, sampledAt], map: "resource_metric_samples_tenant_provider_region_metric_idx")
   @@index([cloudResourceId, sampledAt])
+  @@index([tenantId, cloudResourceId, externalResourceId, metricName, statistic, sampledAt], map: "resource_metric_samples_tenant_cloud_resource_external_idx")
   @@index([ingestionJobId], map: "resource_metric_samples_ingestion_job_id_idx")
   @@map("resource_metric_samples")
 }

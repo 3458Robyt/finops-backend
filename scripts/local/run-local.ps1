@@ -23,6 +23,21 @@ $isApi = $Mode -eq 'dev'
 $isWorker = $Mode -eq 'worker'
 $isAnalysisWorker = $Mode -eq 'analysis-worker'
 $isScheduler = $Mode -eq 'scheduler'
+
+# Fail before spawning the hidden recommendation worker when the API port is
+# already occupied. Otherwise a failed API start can leave an orphan worker
+# polling the database after this launcher exits.
+if ($isApi) {
+  $configuredPort = 3000
+  if ($env:PORT -match '^\d+$') {
+    $configuredPort = [int]$env:PORT
+  }
+  $listener = Get-NetTCPConnection -LocalPort $configuredPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($null -ne $listener) {
+    throw "El puerto $configuredPort ya está ocupado (PID $($listener.OwningProcess)). Cierra el backend existente antes de iniciar otro proceso local."
+  }
+}
+
 $env:APP_PROCESS_ROLE = if ($isApi) { 'api' } elseif ($isWorker) { 'worker' } elseif ($isAnalysisWorker) { 'recommendation-analysis-worker' } else { 'scheduler' }
 $env:INGESTION_WORKER_ENABLED = if ($isWorker) { 'true' } else { 'false' }
 $env:INGESTION_SCHEDULER_ENABLED = if ($Mode -eq 'scheduler') { 'true' } else { 'false' }

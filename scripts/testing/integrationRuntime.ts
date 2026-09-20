@@ -11,6 +11,9 @@ export interface IntegrationCommandResult {
 }
 
 export function createIntegrationPool(connectionString: string, schema?: string): Pool {
+  // Guard every destructive runner at the shared pool boundary, including
+  // cleanup paths that may execute before a script's own preflight.
+  assertLocalIntegrationDatabase(connectionString);
   return new Pool({
     connectionString,
     options: [

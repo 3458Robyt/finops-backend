@@ -5,6 +5,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 import { Pool } from 'pg';
+import { assertLocalIntegrationDatabase } from './integrationRuntime.js';
 
 const execFileAsync = promisify(execFile);
 const liveEnabled = process.env['AI_LIVE_TESTS'] === 'true';
@@ -22,6 +23,7 @@ const sourceUrl = process.env['DATABASE_URL'];
 if (sourceUrl === undefined || sourceUrl.trim() === '') {
   throw new Error('DATABASE_URL is required for the isolated AI canary.');
 }
+assertLocalIntegrationDatabase(sourceUrl);
 
 const schema = `finops_e2e_ai_${Date.now().toString(36)}`;
 const runId = process.env['E2E_RUN_ID'] ?? `ai-canary-${Date.now()}`;

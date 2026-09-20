@@ -25,7 +25,7 @@ if (!liveEnabled) {
 }
 
 const manifest = JSON.parse(await readFile(resolve(process.env['E2E_FIXTURE_FILE'] ?? '.test-artifacts/e2e-fixtures.json'), 'utf8')) as E2eFixtureManifest;
-const token = await login(manifest.admin.email, manifest.password);
+let token = await login(manifest.admin.email, manifest.password);
 const checks: AuditCheck[] = [];
 const expectedModel = process.env['AI_EXPECTED_MODEL'] ?? 'gpt-5.6-luna';
 const persistedRecommendationsBefore = countRecommendations(await get('/recommendations'));
@@ -113,6 +113,8 @@ checks.push({
   }),
   detail: JSON.stringify(recommendations.map((recommendation) => recommendation['estimatedMonthlySavings'])),
 });
+// A long live run can outlast the short-lived access token; refresh before the final persistence check.
+token = await login(manifest.admin.email, manifest.password);
 const persistedRecommendationsAfter = countRecommendations(await get('/recommendations'));
 checks.push({
   name: 'conteo_persistido_inalterado',

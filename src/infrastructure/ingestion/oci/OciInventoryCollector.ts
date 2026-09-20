@@ -21,22 +21,25 @@ export interface OciInventoryCollectionResult {
 }
 
 export interface OciInventoryDependencies {
-  readonly createComputeClient: (job: CloudIngestionJobContext) => OciComputeClient;
-  readonly createObjectStorageClient?: (job: CloudIngestionJobContext) => OciObjectStorageClient;
-  readonly createResourceSearchClient?: (job: CloudIngestionJobContext) => OciResourceSearchClient;
+  readonly createComputeClient: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciComputeClient;
+  readonly createObjectStorageClient?: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciObjectStorageClient;
+  readonly createResourceSearchClient?: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciResourceSearchClient;
   readonly discoverCompartments: (
     job: CloudIngestionJobContext,
+    signal?: AbortSignal,
   ) => Promise<OciCompartmentDiscoveryResult>;
   readonly discoverRegions?: (
     job: CloudIngestionJobContext,
+    signal?: AbortSignal,
   ) => Promise<OciRegionDiscoveryResult>;
-  readonly withRetry: <T>(operation: () => Promise<T>) => Promise<T>;
-  readonly withRateLimit?: <T>(job: CloudIngestionJobContext, api: 'resourceSearch' | 'compute' | 'objectStorage', operation: () => Promise<T>) => Promise<T>;
+  readonly withRetry: <T>(operation: (signal?: AbortSignal) => Promise<T>, signal?: AbortSignal) => Promise<T>;
+  readonly withRateLimit?: <T>(job: CloudIngestionJobContext, api: 'resourceSearch' | 'compute' | 'objectStorage', operation: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
 }
 
 export async function collectOciInventory(
   job: CloudIngestionJobContext,
   dependencies: OciInventoryDependencies,
+  signal?: AbortSignal,
 ): Promise<OciInventoryCollectionResult> {
   const explicit = readExplicitResources(job);
   const inferred = readMetricResources(job);
@@ -55,10 +58,10 @@ export async function collectOciInventory(
       const searchOperation = () => collectOciResourceSearchInventory(job, {
         createClient: dependencies.createResourceSearchClient!,
         withRetry: dependencies.withRetry,
-      });
+      }, signal);
       const search = dependencies.withRateLimit === undefined
         ? await searchOperation()
-        : await dependencies.withRateLimit(job, 'resourceSearch', searchOperation);
+        : await dependencies.withRateLimit(job, 'resourceSearch', searchOperation, signal);
       searchResources = search.resources;
       resourceSearchStatus = 'COMPLETE';
       resourceSearchFilteredCount = search.filteredResourceCount;
@@ -66,6 +69,7 @@ export async function collectOciInventory(
       apiCallCount += search.apiCallCount;
       warnings.push(...search.warnings);
     } catch (error) {
+      if (signal?.aborted === true) throw error;
       resourceSearchStatus = 'FAILED';
       warnings.push(`OCI Resource Search skipped: ${safeErrorMessage(error)}`);
     }
@@ -76,13 +80,14 @@ export async function collectOciInventory(
 
   let computeInventory: Awaited<ReturnType<typeof collectComputeInventory>> | undefined;
   try {
-    const inventory = await collectComputeInventory(job, dependencies);
+    const inventory = await collectComputeInventory(job, dependencies, signal);
     computeInventory = inventory;
     sdkResources = inventory.resources;
     apiCallCount += inventory.apiCallCount;
     coverage = inventory.coverage;
     warnings.push(...inventory.warnings);
   } catch (error) {
+    if (signal?.aborted === true) throw error;
     warnings.push(`OCI inventory SDK skipped: ${safeErrorMessage(error)}`);
     coverage = { inventoryCompartmentDiscovery: 'FAILED' };
   }
@@ -96,6 +101,7 @@ export async function collectOciInventory(
           job,
           computeInventory.regionIds[0],
           dependencies,
+          signal,
         );
       }
       if (namespaceName === undefined) {
@@ -121,6 +127,7 @@ export async function collectOciInventory(
         warnings.push(...storage.warnings);
       }
     } catch (error) {
+      if (signal?.aborted === true) throw error;
       objectStorageStatus = 'FAILED';
       warnings.push(`OCI Object Storage inventory skipped: ${safeErrorMessage(error)}`);
     }
@@ -157,6 +164,7 @@ export async function collectOciInventory(
 async function collectComputeInventory(
   job: CloudIngestionJobContext,
   dependencies: OciInventoryDependencies,
+  signal?: AbortSignal,
 ): Promise<{
   readonly apiCallCount: number;
   readonly resources: readonly NormalizedCloudResource[];
@@ -165,29 +173,36 @@ async function collectComputeInventory(
   readonly compartmentIds: readonly string[];
   readonly regionIds: readonly string[];
 }> {
-  const discovery = await dependencies.discoverCompartments(job);
+  const discovery = await dependencies.discoverCompartments(job, signal);
   const regions = dependencies.discoverRegions === undefined
     ? { regionIds: job.connection.defaultRegion === undefined ? [] : [job.connection.defaultRegion], apiCallCount: 0, status: 'FALLBACK' as const, warnings: [] }
-    : await dependencies.discoverRegions(job);
+    : await dependencies.discoverRegions(job, signal);
   const resources: NormalizedCloudResource[] = [];
   let apiCallCount = discovery.apiCallCount + regions.apiCallCount;
   const warnings = [...regions.warnings];
 
   for (const regionId of regions.regionIds) {
+    throwIfAborted(signal);
     const regionalJob = withRegion(job, regionId);
-    const client = dependencies.createComputeClient(regionalJob);
-    try {
-      for (const compartmentId of discovery.compartmentIds) {
-        let page: string | undefined;
-        do {
-          apiCallCount += 1;
-          const request = () => dependencies.withRetry(() => client.listInstances({
-            compartmentId,
-            ...(page !== undefined ? { page } : {}),
-          }));
-          const response = dependencies.withRateLimit === undefined
-            ? await request()
-            : await dependencies.withRateLimit(regionalJob, 'compute', request);
+    for (const compartmentId of discovery.compartmentIds) {
+      let page: string | undefined;
+      do {
+        throwIfAborted(signal);
+        apiCallCount += 1;
+        const request = () => dependencies.withRetry(async (attemptSignal) => {
+          const client = dependencies.createComputeClient(regionalJob, attemptSignal);
+          try {
+            return await client.listInstances({
+              compartmentId,
+              ...(page !== undefined ? { page } : {}),
+            });
+          } finally {
+            client.close?.();
+          }
+        }, signal);
+        const response = dependencies.withRateLimit === undefined
+          ? await request()
+          : await dependencies.withRateLimit(regionalJob, 'compute', request, signal);
           for (const instance of response.items ?? []) {
             if (instance.id === undefined) continue;
             resources.push({
@@ -215,11 +230,8 @@ async function collectComputeInventory(
               },
             });
           }
-          page = response.opcNextPage;
-        } while (page !== undefined);
-      }
-    } finally {
-      client.close?.();
+        page = response.opcNextPage;
+      } while (page !== undefined);
     }
   }
 
@@ -301,20 +313,25 @@ async function discoverObjectStorageNamespace(
   job: CloudIngestionJobContext,
   regionId: string | undefined,
   dependencies: OciInventoryDependencies,
+  signal?: AbortSignal,
 ): Promise<string | undefined> {
   const clientJob = regionId === undefined ? job : withRegion(job, regionId);
-  const client = dependencies.createObjectStorageClient!(clientJob);
-  try {
-    const request = () => dependencies.withRetry(() => client.getNamespace({
-      compartmentId: job.connection.rootExternalId,
-    }));
+  const request = () => dependencies.withRetry(async (attemptSignal) => {
+    const client = dependencies.createObjectStorageClient!(clientJob, attemptSignal);
+    try {
+      return await client.getNamespace({ compartmentId: job.connection.rootExternalId });
+    } finally {
+      client.close?.();
+    }
+  }, signal);
     const response = dependencies.withRateLimit === undefined
       ? await request()
-      : await dependencies.withRateLimit(clientJob, 'objectStorage', request);
+      : await dependencies.withRateLimit(clientJob, 'objectStorage', request, signal);
     return optionalString(response.value);
-  } finally {
-    client.close?.();
-  }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted === true) throw new Error('OCI inventory operation cancelled');
 }
 
 function readConfiguredObjectStorageNamespace(job: CloudIngestionJobContext): string | undefined {

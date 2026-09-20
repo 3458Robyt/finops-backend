@@ -131,13 +131,13 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
       discoverRegions: async (context) => {
         const result = await discoverOciRegions(context, {
           createIdentityClient: (target) => this.createIdentityClient(this.createAuthProvider(target)),
-          withRetry: withOciProviderRetry,
+          withRetry: (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
         });
         return { regions: result.regionIds, apiCallCount: result.apiCallCount, warnings: result.warnings };
       },
       discoverCompartments: (context) => discoverOciInventoryCompartments(context, {
         createIdentityClient: (target) => this.createIdentityClient(this.createAuthProvider(target)),
-        withRetry: withOciProviderRetry,
+        withRetry: (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
       }),
       withRetry: withOciProviderRetry,
       withRateLimit: (operation) => this.rateCoordinator.run(
@@ -155,26 +155,27 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
 
     if (job.sourceType === 'INVENTORY') {
       const inventory = await collectOciInventory(job, {
-        createComputeClient: (context) => this.createComputeClient(context),
-        createObjectStorageClient: (context) => this.createObjectStorageClient(context),
-        createResourceSearchClient: (context) => createOciResourceSearchClient(this.createAuthProvider(context)),
-        discoverCompartments: (context) => discoverOciInventoryCompartments(context, {
-          createIdentityClient: (target) => this.createIdentityClient(this.createAuthProvider(target)),
-          withRetry: withOciProviderRetry,
-        }),
-        discoverRegions: (context) => discoverOciRegions(context, {
-          createIdentityClient: (target) => this.createIdentityClient(this.createAuthProvider(target)),
-          withRetry: withOciProviderRetry,
-        }),
-        withRetry: withOciProviderRetry,
-        withRateLimit: (context, api, operation) => this.rateCoordinator.run(
+        createComputeClient: (context, signal) => this.createComputeClient(context, signal),
+        createObjectStorageClient: (context, signal) => this.createObjectStorageClient(context, signal),
+        createResourceSearchClient: (context, signal) => createOciResourceSearchClient(this.createAuthProvider(context), signal),
+        discoverCompartments: (context, signal) => discoverOciInventoryCompartments(context, {
+          createIdentityClient: (target, attemptSignal) => this.createIdentityClient(this.createAuthProvider(target), attemptSignal),
+          withRetry: (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
+        }, signal),
+        discoverRegions: (context, signal) => discoverOciRegions(context, {
+          createIdentityClient: (target, attemptSignal) => this.createIdentityClient(this.createAuthProvider(target), attemptSignal),
+          withRetry: (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
+        }, signal),
+        withRetry: (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
+        withRateLimit: (context, api, operation, signal) => this.rateCoordinator.run(
           `oci:${context.connection.rootExternalId}:${this.regionKey(context)}:${api}`,
           api === 'resourceSearch'
             ? { requestsPerSecond: 3, maxConcurrent: 2 }
             : { requestsPerSecond: 5, maxConcurrent: 2 },
           operation,
+          signal,
         ),
-      });
+      }, options.signal);
       return {
         apiCallCount: inventory.apiCallCount,
         objectsProcessed: inventory.resources.length,

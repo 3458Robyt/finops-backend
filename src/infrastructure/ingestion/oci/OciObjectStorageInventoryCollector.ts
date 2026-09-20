@@ -6,11 +6,12 @@ import type { OciObjectStorageClient } from './OciSdkContracts.js';
 import { mergeOciTags } from './OciResourceNormalizer.js';
 
 export interface OciObjectStorageInventoryDependencies {
-  readonly createClient: (job: CloudIngestionJobContext) => OciObjectStorageClient;
-  readonly withRetry: <T>(operation: () => Promise<T>) => Promise<T>;
+  readonly createClient: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciObjectStorageClient;
+  readonly withRetry: <T>(operation: (signal?: AbortSignal) => Promise<T>, signal?: AbortSignal) => Promise<T>;
   readonly withRateLimit?: <T>(
     job: CloudIngestionJobContext,
     operation: () => Promise<T>,
+    signal?: AbortSignal,
   ) => Promise<T>;
 }
 
@@ -26,6 +27,7 @@ export async function collectOciObjectStorageInventory(
   compartmentIds: readonly string[],
   regionIds: readonly string[],
   dependencies: OciObjectStorageInventoryDependencies,
+  signal?: AbortSignal,
 ): Promise<OciObjectStorageInventoryResult> {
   if (namespaceName === undefined || compartmentIds.length === 0 || regionIds.length === 0) {
     return { apiCallCount: 0, resources: [], warnings: [] };
@@ -36,22 +38,30 @@ export async function collectOciObjectStorageInventory(
   let apiCallCount = 0;
 
   for (const regionId of regionIds) {
+    throwIfAborted(signal);
     const regionalJob = withRegion(job, regionId);
-    const client = dependencies.createClient(regionalJob);
     try {
       for (const compartmentId of compartmentIds) {
         let page: string | undefined;
         do {
+          throwIfAborted(signal);
           apiCallCount += 1;
-          const request = () => dependencies.withRetry(() => client.listBuckets({
-            namespaceName,
-            compartmentId,
-            limit: 1000,
-            ...(page === undefined ? {} : { page }),
-          }));
+          const request = () => dependencies.withRetry(async (attemptSignal) => {
+            const client = dependencies.createClient(regionalJob, attemptSignal);
+            try {
+              return await client.listBuckets({
+                namespaceName,
+                compartmentId,
+                limit: 1000,
+                ...(page === undefined ? {} : { page }),
+              });
+            } finally {
+              client.close?.();
+            }
+          }, signal);
           const response = dependencies.withRateLimit === undefined
             ? await request()
-            : await dependencies.withRateLimit(regionalJob, request);
+            : await dependencies.withRateLimit(regionalJob, request, signal);
           for (const bucket of response.items ?? []) {
             const name = bucket.name?.trim();
             if (name === undefined || name === '') {
@@ -87,13 +97,16 @@ export async function collectOciObjectStorageInventory(
         } while (page !== undefined && page !== '');
       }
     } catch (error) {
+      if (signal?.aborted === true) throw error;
       warnings.push(`OCI Object Storage inventory skipped for ${regionId}: ${safeMessage(error)}`);
-    } finally {
-      client.close?.();
     }
   }
 
   return { apiCallCount, resources, warnings };
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted === true) throw new Error('OCI inventory operation cancelled');
 }
 
 function withRegion(job: CloudIngestionJobContext, regionId: string): CloudIngestionJobContext {

@@ -208,6 +208,36 @@ describe('OCI inventory modules', () => {
     });
     expect(result.coverage).toMatchObject({ objectStorageStatus: 'COMPLETE' });
   });
+
+  test('propagates cancellation to inventory SDK clients instead of converting it to a partial success', async () => {
+    const controller = new AbortController();
+    const close = vi.fn();
+    let clientSignal: AbortSignal | undefined;
+    const result = collectOciInventory(buildJob({}), {
+      discoverCompartments: async () => ({
+        compartmentIds: ['tenancy-1'], apiCallCount: 0, status: 'CONFIGURED_ONLY',
+        configuredCompartmentCount: 1, discoveredCompartmentCount: 0,
+      }),
+      discoverRegions: async () => ({
+        regionIds: ['us-ashburn-1'], apiCallCount: 0, status: 'COMPLETE', warnings: [],
+      }),
+      createComputeClient: (_job, signal) => {
+        clientSignal = signal;
+        return {
+          close,
+          listInstances: () => new Promise((_, reject) => {
+            signal?.addEventListener('abort', () => reject(new Error('request aborted')), { once: true });
+          }),
+        };
+      },
+      withRetry: (operation, signal) => operation(signal),
+    }, controller.signal);
+
+    setTimeout(() => controller.abort(), 0);
+    await expect(result).rejects.toThrow('request aborted');
+    expect(clientSignal?.aborted).toBe(true);
+    expect(close).toHaveBeenCalledOnce();
+  });
 });
 
 function buildJob(overrides: {

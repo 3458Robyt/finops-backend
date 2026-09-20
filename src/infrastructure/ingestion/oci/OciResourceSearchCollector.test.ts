@@ -40,7 +40,7 @@ describe('collectOciResourceSearchInventory', () => {
       limit: 1000,
     }));
     expect(searchResources).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 'page-2' }));
-    expect(close).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledTimes(2);
     expect(result.apiCallCount).toBe(2);
     expect(result.resources).toEqual([
       expect.objectContaining({

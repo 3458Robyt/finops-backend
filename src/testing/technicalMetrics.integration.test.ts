@@ -52,6 +52,49 @@ describe('technical metrics PostgreSQL integration', () => {
       expect(hourly.points.every((point) => point.min <= point.avg && point.avg <= point.max)).toBe(true);
       expect(hourly.points.every((point) => point.sampleCount > 0)).toBe(true);
 
+      const firstSample = await prisma.resourceMetricSample.findFirstOrThrow({
+        where: { tenantId: tenantA!.id, metricName: 'CPUUtilization', statistic: 'MEAN' },
+        orderBy: { sampledAt: 'asc' },
+      });
+      await prisma.$executeRaw`
+        INSERT INTO resource_metric_rollups (
+          id, tenant_id, cloud_connection_id, cloud_resource_id, provider,
+          external_resource_id, provider_namespace, region_id, compartment_id,
+          dimensions_hash, metric_name, metric_unit, statistic, bucket_seconds,
+          bucket_start, sample_count, sum_value, avg_value, min_value,
+          p50_value, p90_value, p95_value, p99_value, min_sampled_at,
+          max_value, max_sampled_at, latest_value, latest_sampled_at,
+          source_granularities, updated_at
+        )
+        SELECT md5(concat_ws('|', s.cloud_connection_id, s.provider_namespace, s.region_id,
+          s.external_resource_id, s.metric_name, s.statistic::text, '3600',
+          date_trunc('hour', s.sampled_at)::text, s.dimensions_hash)),
+          s.tenant_id, s.cloud_connection_id, s.cloud_resource_id, s.provider,
+          s.external_resource_id, s.provider_namespace, s.region_id, s.compartment_id,
+          s.dimensions_hash, s.metric_name, s.metric_unit, s.statistic, 3600,
+          date_trunc('hour', s.sampled_at), 1, s.value, s.value, s.value,
+          NULL, NULL, NULL, NULL, s.sampled_at, s.value, s.sampled_at,
+          s.value, s.sampled_at, ARRAY[1800]::int[], CURRENT_TIMESTAMP
+        FROM resource_metric_samples s
+        WHERE s.id = ${firstSample.id}
+      `;
+
+      const expectedRawSamples = await prisma.resourceMetricSample.count({
+        where: {
+          tenantId: tenantA!.id,
+          metricName: 'CPUUtilization',
+          statistic: 'MEAN',
+          sampledAt: { gte: fixturePeriod.chargePeriodStart, lt: addUtcDays(fixturePeriod.chargePeriodStart, 1) },
+        },
+      });
+      const staleRollupFallback = await repository.listMetricSeriesForTenant(tenantA!.id, {
+        ...filters,
+        endDate: new Date(addUtcDays(fixturePeriod.chargePeriodStart, 1).getTime() - 1),
+        bucket: 'hour',
+      });
+      expect(staleRollupFallback.totalSamples).toBe(expectedRawSamples);
+      expect(staleRollupFallback.points[0]?.sampleCount).toBe(2);
+
       const otherTenant = await repository.listMetricSeriesForTenant(tenantB!.id, { ...filters, bucket: 'raw' });
       expect(otherTenant.points).toHaveLength(10);
       expect(otherTenant.points.every((point) => point.externalResourceId !== fixtureResource.externalResourceId)).toBe(true);

@@ -37,11 +37,22 @@ export class PrismaResourceMetricSeriesReader {
       : exactPercentile
         ? this.listAggregatedRows(where, cursor, filters.bucket, limit)
         : this.listRollupRows(tenantId, filters, bucketSeconds!, cursor, limit));
-    let totalSamples = cursor === undefined
-      ? filters.bucket === 'raw' || exactPercentile
-        ? await this.countSamples(tenantId, filters)
-        : await this.countRollupSamples(tenantId, filters, bucketSeconds!)
-      : 0;
+    let totalSamples = 0;
+    if (filters.bucket === 'raw' || exactPercentile) {
+      totalSamples = cursor === undefined ? await this.countSamples(tenantId, filters) : 0;
+    } else {
+      // Raw samples are canonical. A backfill can finish before the rollup
+      // worker refreshes its projection, so a non-empty rollup result is not
+      // enough to trust the chart or its sample count.
+      const [rollupTotal, rawTotal] = await Promise.all([
+        this.countRollupSamples(tenantId, filters, bucketSeconds!),
+        this.countSamples(tenantId, filters),
+      ]);
+      totalSamples = cursor === undefined ? rawTotal : 0;
+      if (rollupTotal !== rawTotal) {
+        rows = await this.listAggregatedRows(where, cursor, filters.bucket, limit);
+      }
+    }
     // Fixtures and a newly migrated database may contain raw samples before
     // the projection has been rebuilt. Keep the old SQL aggregation as a safe
     // compatibility path instead of returning an unexplained empty chart.

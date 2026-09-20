@@ -28,6 +28,7 @@ const manifest = JSON.parse(await readFile(resolve(process.env['E2E_FIXTURE_FILE
 const token = await login(manifest.admin.email, manifest.password);
 const checks: AuditCheck[] = [];
 const expectedModel = process.env['AI_EXPECTED_MODEL'] ?? 'gpt-5.6-luna';
+const persistedRecommendationsBefore = countRecommendations(await get('/recommendations'));
 
 const chat = await post('/ai/chat', {
   message: 'Responde en una frase: cual es la principal oportunidad FinOps segun los datos disponibles?',
@@ -60,7 +61,7 @@ checks.push({
 });
 
 const recommendationStartedAt = Date.now();
-const generatedResult = await postMaybe('/ai/recommendations/generate', { persist: true });
+const generatedResult = await postMaybe('/ai/recommendations/generate', { persist: false });
 const recommendationLatencyMs = Date.now() - recommendationStartedAt;
 checks.push({
   name: 'endpoint_recomendaciones_responde',
@@ -72,6 +73,11 @@ checks.push({
 });
 const generated = generatedResult.ok ? generatedResult.body : {};
 const recommendations = Array.isArray(generated['recommendations']) ? generated['recommendations'] as Record<string, unknown>[] : [];
+checks.push({
+  name: 'corrida_live_no_persiste_recomendaciones',
+  passed: generatedResult.ok && generated['persisted'] === false,
+  detail: JSON.stringify({ requestedPersist: false, persisted: generated['persisted'] }),
+});
 checks.push({
   name: 'genera_recomendaciones',
   passed: recommendations.length > 0,
@@ -106,6 +112,12 @@ checks.push({
     return typeof savings !== 'number' || savings >= 0;
   }),
   detail: JSON.stringify(recommendations.map((recommendation) => recommendation['estimatedMonthlySavings'])),
+});
+const persistedRecommendationsAfter = countRecommendations(await get('/recommendations'));
+checks.push({
+  name: 'conteo_persistido_inalterado',
+  passed: persistedRecommendationsAfter === persistedRecommendationsBefore,
+  detail: JSON.stringify({ before: persistedRecommendationsBefore, after: persistedRecommendationsAfter }),
 });
 
 const generatedRecommendationId = recommendations.find((recommendation) => (
@@ -233,6 +245,8 @@ const output = {
     traceLatencyMs,
     tokenEstimate,
     recommendationCount: recommendations.length,
+    persistedRecommendationsBefore,
+    persistedRecommendationsAfter,
     expectedModel,
   },
   checks,
@@ -326,6 +340,10 @@ function readJsonPath(value: Record<string, unknown>, path: readonly string[]): 
     }
     return (current as Record<string, unknown>)[key];
   }, value);
+}
+
+function countRecommendations(value: Record<string, unknown>): number {
+  return Array.isArray(value['recommendations']) ? value['recommendations'].length : 0;
 }
 
 function containsUnsafeMarkup(text: string): boolean {

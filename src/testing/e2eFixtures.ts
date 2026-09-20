@@ -9,6 +9,7 @@ import {
   Prisma,
   PrismaClient,
 } from '../generated/prisma/client.js';
+import { buildPostgresSessionOptions } from '../infrastructure/database/tenantContext.js';
 
 export interface E2eFixtureManifest {
   readonly runId: string;
@@ -61,7 +62,7 @@ export function createTestingPrismaClient(): PrismaClient {
     adapter: new PrismaPg(
       {
         connectionString,
-        ...(schema === undefined ? {} : { options: `-c search_path=${schema}` }),
+        options: buildPostgresSessionOptions(schema),
       },
       schema === undefined ? undefined : { schema },
     ),

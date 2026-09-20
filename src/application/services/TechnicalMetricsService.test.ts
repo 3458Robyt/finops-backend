@@ -20,7 +20,12 @@ class FakeResourceMetricRepository implements IResourceMetricRepository {
   public samplesQuery: { tenantId: string; limit: number } | null = null;
   public filteredSamplesQuery: { tenantId: string; limit: number } | null = null;
   public seriesQuery: { tenantId: string; filters: TechnicalMetricSeriesFilters } | null = null;
-  public costContextQuery: { tenantId: string; externalResourceIds: readonly string[] } | null = null;
+  public costContextQuery: {
+    tenantId: string;
+    externalResourceIds: readonly string[];
+    cloudResourceIds?: readonly string[];
+  } | null = null;
+  public summaryQuery: TechnicalMetricSummaryFilters | null = null;
   public summaries: readonly TechnicalMetricSummaryItem[] = [];
   public resources: readonly CloudResourceItem[] = [
     {
@@ -167,15 +172,17 @@ class FakeResourceMetricRepository implements IResourceMetricRepository {
   public async listCostContextForResources(
     tenantId: string,
     externalResourceIds: readonly string[],
+    cloudResourceIds?: readonly string[],
   ) {
-    this.costContextQuery = { tenantId, externalResourceIds };
+    this.costContextQuery = { tenantId, externalResourceIds, ...(cloudResourceIds !== undefined ? { cloudResourceIds } : {}) };
     return this.costContext;
   }
 
   public async listMetricSummariesForTenant(
     _tenantId: string,
-    _filters: TechnicalMetricSummaryFilters,
+    filters: TechnicalMetricSummaryFilters,
   ): Promise<readonly TechnicalMetricSummaryItem[]> {
+    this.summaryQuery = filters;
     return this.summaries;
   }
 }
@@ -195,6 +202,9 @@ describe('TechnicalMetricsService', () => {
     expect(summary?.resource.externalResourceId).toBe('i-0abc');
     expect(summary?.metrics).toHaveLength(1);
     expect(summary?.cost?.totalCost).toBe(42.25);
+    expect(repository.summaryQuery?.cloudResourceIds).toEqual(['res-1']);
+    expect(repository.costContextQuery?.externalResourceIds).toEqual([]);
+    expect(repository.costContextQuery?.cloudResourceIds).toEqual(['res-1']);
     expect(summary?.evidence).toMatchObject({
       strength: 'LOW',
       readiness: 'VALIDATION_ONLY',

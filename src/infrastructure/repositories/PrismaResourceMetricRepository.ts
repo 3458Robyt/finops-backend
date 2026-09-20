@@ -220,27 +220,6 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
     const where = buildMetricSummaryWhereClause(tenantId, filters);
     const aliasedWhere = buildAliasedMetricSummaryWhereClause(tenantId, filters);
     const rows = await this.prisma.$queryRaw<RawMetricSummaryRow[]>(Prisma.sql`
-      WITH latest AS (
-        SELECT DISTINCT ON (
-          tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id,
-          provider_namespace, region_id, dimensions_hash, metric_name, statistic
-        )
-          tenant_id,
-          cloud_connection_id,
-          cloud_resource_id,
-          external_resource_id,
-          provider_namespace,
-          region_id,
-          dimensions_hash,
-          metric_name,
-          statistic,
-          value::float8 AS latest_value,
-          sampled_at AS latest_sampled_at
-        FROM resource_metric_samples
-        WHERE ${where}
-        ORDER BY tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id,
-          provider_namespace, region_id, dimensions_hash, metric_name, statistic, sampled_at DESC
-      )
       SELECT
         rms.provider::text AS provider,
         rms.external_resource_id,
@@ -283,19 +262,9 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
         ))::float8 / nullif(count(*)::float8, 0)) AS high_utilization_ratio,
         min(rms.sampled_at) AS first_sampled_at,
         max(rms.sampled_at) AS latest_sampled_at,
-        max(latest.latest_value)::float8 AS latest_value
+        (array_agg(rms.value::float8 ORDER BY rms.sampled_at DESC, rms.created_at DESC, rms.id DESC))[1]::float8 AS latest_value
       FROM resource_metric_samples rms
       LEFT JOIN cloud_resources cr ON cr.id = rms.cloud_resource_id
-      LEFT JOIN latest
-        ON latest.tenant_id = rms.tenant_id
-        AND latest.cloud_connection_id IS NOT DISTINCT FROM rms.cloud_connection_id
-        AND latest.cloud_resource_id IS NOT DISTINCT FROM rms.cloud_resource_id
-        AND latest.external_resource_id = rms.external_resource_id
-        AND latest.provider_namespace = rms.provider_namespace
-        AND latest.region_id = rms.region_id
-        AND latest.dimensions_hash = rms.dimensions_hash
-        AND latest.metric_name = rms.metric_name
-        AND latest.statistic = rms.statistic
       WHERE ${aliasedWhere}
       GROUP BY rms.provider, rms.external_resource_id, rms.cloud_resource_id, rms.cloud_connection_id,
         rms.provider_namespace, rms.region_id, rms.dimensions_hash, rms.metric_name, rms.statistic

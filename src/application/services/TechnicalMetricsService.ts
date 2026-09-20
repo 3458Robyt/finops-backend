@@ -78,20 +78,24 @@ export class TechnicalMetricsService {
       return undefined;
     }
 
+    const resolvedCloudResourceId = cloudResourceId ?? resource.id;
     const [metrics, coverage, costs] = await Promise.all([
       this.repository.listMetricSummariesForTenant(tenantId, {
         externalResourceIds: [externalResourceId],
-        ...(cloudResourceId !== undefined ? { cloudResourceIds: [cloudResourceId] } : {}),
+        cloudResourceIds: [resolvedCloudResourceId],
         limit: 100,
       }),
-      this.getCoverage(tenantId, { externalResourceId, ...(cloudResourceId !== undefined ? { cloudResourceId } : {}) }),
-      this.repository.listCostContextForResources(tenantId, [externalResourceId], cloudResourceId === undefined ? undefined : [cloudResourceId]),
+      this.getCoverage(tenantId, { externalResourceId, cloudResourceId: resolvedCloudResourceId }),
+      // The canonical inventory id is authoritative here. Avoid the broad
+      // external-id fallback, which scans unrelated cost rows for a single
+      // resource detail request and can also blur duplicate provider IDs.
+      this.repository.listCostContextForResources(tenantId, [], [resolvedCloudResourceId]),
     ]);
     const evaluation = evaluateTechnicalOptimizationRules({
       summaries: metrics,
       referenceDate: new Date(),
     }).find((item) => item.externalResourceId === externalResourceId
-      && (cloudResourceId === undefined || item.cloudResourceId === cloudResourceId));
+      && (item.cloudResourceId === undefined || item.cloudResourceId === resolvedCloudResourceId));
 
     return {
       resource,

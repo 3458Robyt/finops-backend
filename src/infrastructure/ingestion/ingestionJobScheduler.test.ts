@@ -313,6 +313,23 @@ describe('buildIngestionSchedulePlan', () => {
     }));
   });
 
+  it('does not enqueue a window already classified as no data by coverage', () => {
+    const plan = buildIngestionSchedulePlan([
+      buildOciConnection({
+        metricCoverageWindowStarts: [],
+        metricCoverageWindows: [{
+          windowStart: new Date('2026-06-04T12:00:00.000Z'),
+          status: 'NO_DATA',
+        }],
+      }),
+    ], { ...defaultOptions, metricCatchupDays: 1, metricCatchupWindowMinutes: 360, maxMetricBackfillJobsPerConnection: 1 });
+
+    expect(plan.jobs).not.toContainEqual(expect.objectContaining({
+      sourceType: 'TECHNICAL_METRIC',
+      targetStart: new Date('2026-06-04T12:00:00.000Z'),
+    }));
+  });
+
   it('retries a failed technical window with a stale configuration even when partial samples exist', () => {
     const plan = buildIngestionSchedulePlan([buildOciConnection({
       metricCoverageWindowStarts: [new Date('2026-06-04T12:00:00.000Z')],

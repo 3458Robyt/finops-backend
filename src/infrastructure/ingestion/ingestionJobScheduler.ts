@@ -24,6 +24,7 @@ export interface ScheduleableIngestionConnection {
   readonly metricDefinitions?: readonly ScheduleableMetricDefinition[];
   /** Días que tienen cobertura completa para todos los streams técnicos esperados. */
   readonly metricCoverageWindowStarts?: readonly Date[];
+  readonly metricCoverageWindows?: readonly ScheduleableMetricCoverageWindow[];
 }
 
 export interface ScheduleableCredential {
@@ -352,6 +353,10 @@ export interface ScheduleableCoverageSegment {
 
 export interface ScheduleableMetricDefinition {
   readonly enabled?: boolean;
+}
+export interface ScheduleableMetricCoverageWindow {
+  readonly windowStart: Date;
+  readonly status: 'COVERED' | 'PARTIAL' | 'NO_DATA' | string;
 }
 
 function hasRequiredCapability(

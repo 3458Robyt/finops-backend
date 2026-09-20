@@ -22,6 +22,12 @@ export function buildMissingTechnicalMetricJobs(
   );
   const floor = alignToWindow(new Date(now.getTime() - (options.metricCatchupDays ?? 90) * 24 * 60 * 60 * 1000), windowMs);
   const covered = new Set((connection.metricCoverageWindowStarts ?? []).map((value) => alignToWindow(value, windowMs).getTime()));
+  const coverageWindows = new Map(
+    (connection.metricCoverageWindows ?? []).map((window) => [
+      alignToWindow(window.windowStart, windowMs).getTime(),
+      window.status,
+    ]),
+  );
   const usingCoverageWindows = connection.metricCoverageWindowStarts !== undefined;
   const segments = connection.ingestionCoverageSegments ?? [];
   const activeJobs = connection.ingestionJobs.filter((job) => job.sourceType === 'TECHNICAL_METRIC' && activeJobStatuses.has(job.status));
@@ -39,7 +45,8 @@ export function buildMissingTechnicalMetricJobs(
   for (let cursorMs = floor.getTime(); cursorMs < now.getTime(); cursorMs += windowMs) {
     const targetStart = new Date(cursorMs);
     const targetEnd = new Date(Math.min(cursorMs + windowMs, now.getTime()));
-    const hasSamples = covered.has(cursorMs);
+    const hasSamples = covered.has(cursorMs) || coverageWindows.get(cursorMs) === 'COVERED';
+    const hasNoDataEvidence = coverageWindows.get(cursorMs) === 'NO_DATA';
     // A PARTIAL segment is evidence of a gap, not evidence that the window is
     // complete. Only COVERED segments suppress a recovery job.
     const hasSegment = !usingCoverageWindows && segments.some((segment) => segment.sourceType === 'TECHNICAL_METRIC'
@@ -74,7 +81,7 @@ export function buildMissingTechnicalMetricJobs(
       if (jobs.length >= maxJobs) break;
       continue;
     }
-    if (hasSamples || hasSegment || hasActiveJob || hasSuccessfulJob || hasExplicitNoDataJob) continue;
+    if (hasSamples || hasNoDataEvidence || hasSegment || hasActiveJob || hasSuccessfulJob || hasExplicitNoDataJob) continue;
     jobs.push({
       tenantId: connection.tenantId,
       cloudConnectionId: connection.id,

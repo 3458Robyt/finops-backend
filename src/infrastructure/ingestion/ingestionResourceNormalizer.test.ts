@@ -44,6 +44,17 @@ describe('ingestionResourceNormalizer', () => {
     expect(mergeNormalizedResources([inventory, derived])).toEqual([inventory]);
   });
 
+  test('does not rebuild metric-derived resources already seen in the same ingestion', () => {
+    const resources = buildMetricDerivedResources({
+      tenantId: 'tenant-1',
+      cloudConnectionId: 'connection-1',
+    }, [metricSample('ocid1.instance.known', 'CpuUtilization', { namespace: 'oci_computeagent' })], new Set([
+      'ocid1.instance.known',
+    ]));
+
+    expect(resources).toEqual([]);
+  });
+
   test('uses the provider regionId before the legacy region field', () => {
     const [resource] = buildMetricDerivedResources({
       tenantId: 'tenant-1',

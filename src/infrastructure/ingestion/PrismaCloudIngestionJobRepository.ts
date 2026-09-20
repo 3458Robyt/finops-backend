@@ -93,6 +93,7 @@ export class PrismaCloudIngestionJobRepository {
     }, result.metricSamples);
     const resources = mergeNormalizedResources([...result.resources, ...initialMetricDerivedResources]);
     const resourceIdsByExternalId = new Map(await upsertNormalizedCloudResources(this.prisma, resources));
+    const knownMetricExternalResourceIds = new Set(resourceIdsByExternalId.keys());
     await this.support.registerSourceObjects(job, result.sourceObjects);
     const metricDerivedResourceKeys = new Set(initialMetricDerivedResources.map((resource) => `${resource.cloudConnectionId}:${resource.externalResourceId}`));
     let metricDerivedResources = initialMetricDerivedResources.length;
@@ -123,11 +124,12 @@ export class PrismaCloudIngestionJobRepository {
           tenantId: job.tenantId,
           cloudConnectionId: job.cloudConnectionId,
           ...(job.connection.defaultRegion !== undefined ? { defaultRegion: job.connection.defaultRegion } : {}),
-        }, batch);
+        }, batch, knownMetricExternalResourceIds);
         if (derived.length > 0) {
           const persisted = await upsertNormalizedCloudResources(this.prisma, derived);
           for (const [externalResourceId, resourceId] of persisted) resourceIdsByExternalId.set(externalResourceId, resourceId);
           for (const resource of derived) {
+            knownMetricExternalResourceIds.add(resource.externalResourceId);
             const key = `${resource.cloudConnectionId}:${resource.externalResourceId}`;
             if (!metricDerivedResourceKeys.has(key)) {
               metricDerivedResourceKeys.add(key);

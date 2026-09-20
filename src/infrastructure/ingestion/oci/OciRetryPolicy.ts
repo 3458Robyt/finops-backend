@@ -53,6 +53,10 @@ async function withTimeout<T>(
   let cancellationListener: (() => void) | undefined;
   try {
     const operationPromise = operation(attemptController.signal);
+    // The provider may ignore AbortSignal and reject after the timeout. Keep
+    // that late rejection observed so a slow OCI call cannot become an
+    // unhandled rejection while the retry loop has already moved on.
+    void operationPromise.catch(() => undefined);
     const timeoutPromise = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         timeoutTriggered = true;
@@ -102,16 +106,18 @@ async function sleepWithAbort(
     await sleep(delayMs);
     return;
   }
-  await Promise.race([
-    sleep(delayMs),
-    new Promise<void>((_, reject) => {
-      if (signal.aborted) {
-        reject(new Error('OCI provider request cancelled'));
-        return;
-      }
-      signal.addEventListener('abort', () => reject(new Error('OCI provider request cancelled')), { once: true });
-    }),
-  ]);
+  let abortListener: (() => void) | undefined;
+  try {
+    await Promise.race([
+      sleep(delayMs),
+      new Promise<void>((_, reject) => {
+        abortListener = () => reject(new Error('OCI provider request cancelled'));
+        signal.addEventListener('abort', abortListener, { once: true });
+      }),
+    ]);
+  } finally {
+    if (abortListener !== undefined) signal.removeEventListener('abort', abortListener);
+  }
 }
 
 function defaultSleep(ms: number): Promise<void> {

@@ -46,4 +46,18 @@ describe('OCI retry policy', () => {
     await expect(withOciProviderRetry(operation, [], undefined, 5)).rejects.toThrow('timed out');
     expect(aborted).toBe(true);
   });
+
+  test('removes the backoff abort listener after the delay completes', async () => {
+    const operation = vi.fn().mockRejectedValue(new Error('429 Too Many Requests'));
+    const sleep = vi.fn(async () => undefined);
+    const controller = new AbortController();
+    const addListener = vi.spyOn(controller.signal, 'addEventListener');
+    const removeListener = vi.spyOn(controller.signal, 'removeEventListener');
+
+    await expect(withOciProviderRetry(operation, [25], sleep, 1000, controller.signal))
+      .rejects.toThrow('429 Too Many Requests');
+
+    expect(addListener).toHaveBeenCalled();
+    expect(removeListener).toHaveBeenCalled();
+  });
 });

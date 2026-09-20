@@ -12,6 +12,14 @@ interface AuditArguments {
   readonly json: boolean;
 }
 
+interface CoverageAggregateRow {
+  readonly status: string;
+  readonly windows: bigint;
+  readonly expected_samples: bigint;
+  readonly observed_samples: bigint;
+  readonly missing_samples: bigint;
+}
+
 /**
  * Produces a bounded, read-only audit of one connection and time range.
  *
@@ -69,7 +77,7 @@ async function buildReport(
     ? Prisma.sql`AND FALSE`
     : Prisma.sql`AND configuration_hash = ${configurationHash}`;
 
-  const [raw, daily, coverage, coverageGaps, focus, costs, resources, jobs] = await Promise.all([
+  const [raw, daily, coverage, coverageGaps, requestedRangeCoverage, focus, costs, resources, jobs] = await Promise.all([
     prisma.$queryRaw<readonly {
       readonly sample_count: bigint;
       readonly stream_count: bigint;
@@ -197,6 +205,82 @@ async function buildReport(
       LEFT JOIN stream_summaries USING (stream_key)
       ORDER BY gap_groups.missing_samples DESC, gap_groups.metric_name, gap_groups.external_resource_id
     `),
+    isPartialUtcDayRange(args)
+      ? prisma.$queryRaw<readonly CoverageAggregateRow[]>(Prisma.sql`
+          WITH scoped_windows AS MATERIALIZED (
+            SELECT
+              id,
+              stream_key,
+              granularity_seconds,
+              window_start,
+              window_end,
+              GREATEST(window_start, ${args.start}) AS effective_start,
+              LEAST(window_end, ${args.end}) AS effective_end,
+              provider_namespace,
+              region_id,
+              external_resource_id,
+              metric_name,
+              statistic::text AS statistic
+            FROM resource_metric_coverage_windows
+            WHERE tenant_id = ${args.tenantId}
+              AND cloud_connection_id = ${args.connectionId}
+              AND window_start < ${args.end}
+              AND window_end > ${args.start}
+              ${coverageConfigurationFilter}
+          ), observed_windows AS (
+            SELECT
+              scoped.id,
+              scoped.granularity_seconds,
+              scoped.effective_start,
+              scoped.effective_end,
+              COUNT(samples.id)::bigint AS observed_samples
+            FROM scoped_windows scoped
+            LEFT JOIN resource_metric_samples samples
+              ON samples.tenant_id = ${args.tenantId}
+             AND samples.cloud_connection_id = ${args.connectionId}
+             AND samples.source_type = 'TECHNICAL_METRIC'::"IngestionSourceType"
+             AND samples.provider_namespace = scoped.provider_namespace
+             AND samples.region_id = scoped.region_id
+             AND samples.external_resource_id = scoped.external_resource_id
+             AND samples.metric_name = scoped.metric_name
+             AND samples.statistic::text = scoped.statistic
+             AND samples.granularity_seconds = scoped.granularity_seconds
+             AND md5(concat_ws('|', samples.provider_namespace, samples.region_id,
+               samples.external_resource_id, samples.metric_name, samples.statistic::text,
+               samples.granularity_seconds::text, COALESCE(samples.dimensions_hash, ''))) = scoped.stream_key
+             AND samples.sampled_at >= scoped.effective_start
+             AND samples.sampled_at < scoped.effective_end
+            GROUP BY scoped.id, scoped.granularity_seconds, scoped.effective_start, scoped.effective_end
+          ), calculated AS (
+            SELECT
+              CASE
+                WHEN observed_samples = 0 THEN 'NO_DATA'
+                WHEN expected_samples = 0 OR observed_samples >= CEIL(expected_samples * 0.95)
+                  THEN 'COVERED'
+                ELSE 'PARTIAL'
+              END AS status,
+              expected_samples,
+              observed_samples,
+              GREATEST(expected_samples - observed_samples, 0) AS missing_samples
+            FROM (
+              SELECT
+                CEIL(EXTRACT(EPOCH FROM (effective_end - effective_start))
+                  / NULLIF(granularity_seconds, 0))::bigint AS expected_samples,
+                observed_samples
+              FROM observed_windows
+              WHERE effective_end > effective_start
+            ) scoped_counts
+          )
+          SELECT status,
+            COUNT(*)::bigint AS windows,
+            COALESCE(SUM(expected_samples), 0)::bigint AS expected_samples,
+            COALESCE(SUM(observed_samples), 0)::bigint AS observed_samples,
+            COALESCE(SUM(missing_samples), 0)::bigint AS missing_samples
+          FROM calculated
+          GROUP BY status
+          ORDER BY status
+        `)
+      : Promise.resolve([] as readonly CoverageAggregateRow[]),
     prisma.$queryRaw<readonly {
       readonly row_count: bigint;
       readonly resource_count: bigint;
@@ -303,6 +387,12 @@ async function buildReport(
         observedSamples: toNumber(row.observed_samples),
         missingSamples: toNumber(row.missing_samples),
       })),
+      requestedRangeCoverage: {
+        scope: 'requested_range',
+        ...(isPartialUtcDayRange(args)
+          ? { rows: requestedRangeCoverage.map(normalizeCoverageRow) }
+          : { rows: [], reason: 'requested_range_already_matches_utc_day_boundaries' }),
+      },
       coverageGaps: coverageGaps.map((row) => ({
         status: row.status,
         streamKey: row.stream_key,
@@ -344,6 +434,27 @@ function normalizeRow(row: Readonly<Record<string, unknown>> | undefined): Reado
   ]));
 }
 
+function normalizeCoverageRow(row: CoverageAggregateRow): Readonly<Record<string, unknown>> {
+  return {
+    status: row.status,
+    windows: toNumber(row.windows),
+    expectedSamples: toNumber(row.expected_samples),
+    observedSamples: toNumber(row.observed_samples),
+    missingSamples: toNumber(row.missing_samples),
+  };
+}
+
+function isPartialUtcDayRange(args: AuditArguments): boolean {
+  return !isUtcDayBoundary(args.start) || !isUtcDayBoundary(args.end);
+}
+
+function isUtcDayBoundary(value: Date): boolean {
+  return value.getUTCHours() === 0
+    && value.getUTCMinutes() === 0
+    && value.getUTCSeconds() === 0
+    && value.getUTCMilliseconds() === 0;
+}
+
 function printReport(report: Readonly<Record<string, unknown>>): void {
   const connection = report.connection as Readonly<Record<string, unknown>> | null;
   const metrics = report.technicalMetrics as Readonly<Record<string, unknown>>;
@@ -357,6 +468,14 @@ function printReport(report: Readonly<Record<string, unknown>>): void {
   console.log('Cobertura:');
   for (const row of metrics.coverage as readonly Readonly<Record<string, unknown>>[]) {
     console.log(`  ${row['status']}: ${row['windows']} ventanas · ${row['observedSamples']}/${row['expectedSamples']} muestras · faltan ${row['missingSamples']}`);
+  }
+  const requestedRangeCoverage = metrics['requestedRangeCoverage'] as Readonly<Record<string, unknown>> | undefined;
+  const requestedRows = requestedRangeCoverage?.['rows'] as readonly Readonly<Record<string, unknown>>[] | undefined;
+  if (requestedRows !== undefined && requestedRows.length > 0) {
+    console.log('Cobertura exacta del rango solicitado:');
+    for (const row of requestedRows) {
+      console.log(`  ${row['status']}: ${row['windows']} ventanas · ${row['observedSamples']}/${row['expectedSamples']} muestras · faltan ${row['missingSamples']}`);
+    }
   }
   const coverageGaps = report.technicalMetrics === undefined
     ? []

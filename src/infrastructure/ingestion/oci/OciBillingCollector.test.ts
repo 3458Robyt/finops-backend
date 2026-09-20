@@ -58,9 +58,9 @@ describe('OCI billing collector', () => {
       connection: { ...buildJob().connection, metadata: { billingSourceMode: 'PROVIDER_API' } },
     }, { signal: controller.signal })).rejects.toThrow('cancelled');
 
-    expect(receivedSignal).toBe(controller.signal);
+    expect(receivedSignal).toBeUndefined();
     expect(requestCount).toBe(0);
-    expect(closed).toBe(true);
+    expect(closed).toBe(false);
   });
 });
 

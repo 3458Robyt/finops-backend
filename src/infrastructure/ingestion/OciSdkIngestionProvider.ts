@@ -84,40 +84,35 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
 
   public async previewFocus(connection: CloudIngestionConnection, limit: number): Promise<FocusSourcePreviewResult> {
     const job = buildOciValidationJob(connection);
-    const client = this.createObjectStorageClient(job);
-    try {
-      const configured = readOciFocusObjects(job);
-      const discovery = await discoverOciFocusObjects(
-        job,
-        client,
-        (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
-        true,
-        (operation) => this.rateCoordinator.run(
-          `oci:${connection.rootExternalId}:objectstorage`,
-          { requestsPerSecond: 5, maxConcurrent: 2 },
-          operation,
-        ),
-      );
-      const objects = [
-        ...configured.map((object) => ({ object, source: 'configured' as const })),
-        ...discovery.objects.map((object) => ({ object, source: 'discovered' as const })),
-      ].slice(0, limit).map(({ object, source }) => ({
-        name: object.objectName,
-        location: `oci://${object.namespaceName}/${object.bucketName}/${object.objectName}`,
-        source,
-        ...(object.sizeBytes !== undefined ? { sizeBytes: object.sizeBytes } : {}),
-        ...(object.lastModified !== undefined ? { lastModified: object.lastModified } : {}),
-      }));
-      return buildOciFocusPreviewResult(
-        readOciFocusLocations(job).length,
-        configured.length,
-        discovery.objects.length,
-        objects,
-        discovery.errors,
-      );
-    } finally {
-      client.close?.();
-    }
+    const configured = readOciFocusObjects(job);
+    const discovery = await discoverOciFocusObjects(
+      job,
+      (signal) => this.createObjectStorageClient(job, signal),
+      (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
+      true,
+      (operation) => this.rateCoordinator.run(
+        `oci:${connection.rootExternalId}:objectstorage`,
+        { requestsPerSecond: 5, maxConcurrent: 2 },
+        operation,
+      ),
+    );
+    const objects = [
+      ...configured.map((object) => ({ object, source: 'configured' as const })),
+      ...discovery.objects.map((object) => ({ object, source: 'discovered' as const })),
+    ].slice(0, limit).map(({ object, source }) => ({
+      name: object.objectName,
+      location: `oci://${object.namespaceName}/${object.bucketName}/${object.objectName}`,
+      source,
+      ...(object.sizeBytes !== undefined ? { sizeBytes: object.sizeBytes } : {}),
+      ...(object.lastModified !== undefined ? { lastModified: object.lastModified } : {}),
+    }));
+    return buildOciFocusPreviewResult(
+      readOciFocusLocations(job).length,
+      configured.length,
+      discovery.objects.length,
+      objects,
+      discovery.errors,
+    );
   }
 
   public async collect(job: CloudIngestionJobContext, options: CloudIngestionCollectOptions = {}): Promise<CloudIngestionResult> {

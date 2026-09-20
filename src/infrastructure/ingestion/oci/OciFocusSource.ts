@@ -60,8 +60,8 @@ export function readOciFocusLocations(
 
 export async function discoverOciFocusObjects(
   job: CloudIngestionJobContext,
-  client: OciObjectStorageClient,
-  withRetry: <T>(operation: () => Promise<T>, signal?: AbortSignal) => Promise<T>,
+  createClient: (signal?: AbortSignal) => OciObjectStorageClient,
+  withRetry: <T>(operation: (signal?: AbortSignal) => Promise<T>, signal?: AbortSignal) => Promise<T>,
   tolerateErrors = false,
   withRateLimit?: <T>(operation: () => Promise<T>, signal?: AbortSignal) => Promise<T>,
   signal?: AbortSignal,
@@ -83,13 +83,20 @@ export async function discoverOciFocusObjects(
     try {
       while (discovered.length - locationStartCount < location.maxObjects) {
         apiCallCount += 1;
-        const operation = () => withRetry(() => client.listObjects({
-          namespaceName: location.namespaceName,
-          bucketName: location.bucketName,
-          prefix: location.prefix,
-          limit: Math.min(1000, location.maxObjects - (discovered.length - locationStartCount)),
-          ...(start !== undefined ? { start } : {}),
-        }), signal);
+        const operation = () => withRetry(async (attemptSignal) => {
+          const client = createClient(attemptSignal);
+          try {
+            return await client.listObjects({
+              namespaceName: location.namespaceName,
+              bucketName: location.bucketName,
+              prefix: location.prefix,
+              limit: Math.min(1000, location.maxObjects - (discovered.length - locationStartCount)),
+              ...(start !== undefined ? { start } : {}),
+            });
+          } finally {
+            client.close?.();
+          }
+        }, signal);
         const response = withRateLimit === undefined
           ? await operation()
           : await withRateLimit(operation, signal);

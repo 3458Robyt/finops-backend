@@ -9,6 +9,7 @@ interface AuditArguments {
   readonly connectionId: string;
   readonly start: Date;
   readonly end: Date;
+  readonly gapLimit: number;
   readonly json: boolean;
 }
 
@@ -181,7 +182,7 @@ async function buildReport(
         GROUP BY status, stream_key, provider_namespace, region_id, external_resource_id,
           metric_name, statistic, granularity_seconds
         ORDER BY SUM(missing_samples) DESC, metric_name, external_resource_id
-        LIMIT 500
+        LIMIT ${args.gapLimit}
       ), stream_summaries AS (
         SELECT md5(concat_ws('|', provider_namespace, region_id, external_resource_id,
           metric_name, statistic::text, granularity_seconds::text, dimensions_hash)) AS stream_key,
@@ -387,6 +388,7 @@ async function buildReport(
         observedSamples: toNumber(row.observed_samples),
         missingSamples: toNumber(row.missing_samples),
       })),
+      gapLimit: args.gapLimit,
       requestedRangeCoverage: {
         scope: 'requested_range',
         ...(isPartialUtcDayRange(args)
@@ -502,7 +504,11 @@ function readArguments(): AuditArguments {
   if (end.getTime() - start.getTime() > 91 * 24 * 60 * 60 * 1000) {
     throw new Error('El rango de auditoría no puede superar 91 días.');
   }
-  return { tenantId, connectionId, start, end, json: process.argv.includes('--json') };
+  const gapLimit = readOptionalInteger('--gap-limit', 500);
+  if (gapLimit < 1 || gapLimit > 10000) {
+    throw new Error('--gap-limit debe estar entre 1 y 10000.');
+  }
+  return { tenantId, connectionId, start, end, gapLimit, json: process.argv.includes('--json') };
 }
 
 function readRequired(name: string): string {
@@ -516,6 +522,16 @@ function parseDate(value: string, name: string): Date {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) throw new Error(`${name} debe ser una fecha ISO válida.`);
   return date;
+}
+
+function readOptionalInteger(name: string, fallback: number): number {
+  const index = process.argv.indexOf(name);
+  if (index < 0) return fallback;
+  const value = process.argv[index + 1];
+  if (value === undefined || value.startsWith('--') || !/^\d+$/.test(value)) {
+    throw new Error(`${name} debe ser un entero positivo.`);
+  }
+  return Number(value);
 }
 
 function toNumber(value: bigint | number | null | undefined): number {

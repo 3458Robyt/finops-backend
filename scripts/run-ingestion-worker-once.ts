@@ -5,8 +5,10 @@ import { AwsSdkIngestionProvider } from '../src/infrastructure/ingestion/AwsSdkI
 import { OciSdkIngestionProvider } from '../src/infrastructure/ingestion/OciSdkIngestionProvider.js';
 import { PrismaCloudIngestionJobRepository } from '../src/infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
 import { CredentialCipher } from '../src/infrastructure/security/CredentialCipher.js';
+import { assertLocalMutationTarget } from '../src/infrastructure/database/assertLocalMutationTarget.js';
 
 async function main(): Promise<void> {
+  assertLocalMutationTarget(process.env['DATABASE_URL']);
   const cloudConnectionId = readOptionalArgument('--connection-id');
   const sourceType = readSourceType();
   const concurrency = readConcurrency();

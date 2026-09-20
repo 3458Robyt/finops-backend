@@ -2,8 +2,10 @@ import 'dotenv/config';
 import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
 import { MetricsRegistry } from '../src/application/observability/MetricsRegistry.js';
 import { PrismaMetricProjectionWorker } from '../src/infrastructure/ingestion/PrismaMetricProjectionWorker.js';
+import { assertLocalMutationTarget } from '../src/infrastructure/database/assertLocalMutationTarget.js';
 
 async function main(): Promise<void> {
+  assertLocalMutationTarget(process.env['DATABASE_URL']);
   const prisma = getPrismaClient();
   const workerId = process.env['METRIC_PROJECTION_WORKER_ID'] ?? `manual-metric-projection-${process.pid}`;
   const worker = new PrismaMetricProjectionWorker(prisma, new MetricsRegistry(), {

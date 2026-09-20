@@ -185,22 +185,43 @@ export class PrismaMetricProjectionWorker {
 
   private async project(claimed: ClaimedProjection, workerId: string): Promise<MetricProjectionWorkerRunResult> {
     const startedAt = Date.now();
+    const stageDurationsMs: Record<string, number> = {};
     try {
       // Each projection is idempotent and can scan a different amount of history.
       // Keep them in separate transactions so a slow rollup cannot expire the
       // transaction that already built the stream summary.
+      let stageStartedAt = Date.now();
       await this.prisma.$transaction(
         (tx) => this.streamSummaries.refreshMetricStreamSummariesForJob(tx, claimed.id, new Date()),
         { maxWait: 10_000, timeout: this.transactionTimeoutMs },
       );
+      stageDurationsMs.streamSummaries = Date.now() - stageStartedAt;
+      this.metrics?.observe('metric_projection_stage_duration_ms', stageDurationsMs.streamSummaries, {
+        stage: 'stream_summaries',
+        outcome: 'success',
+      });
+
+      stageStartedAt = Date.now();
       await this.prisma.$transaction(
         (tx) => this.rollups.refreshForJob(tx, claimed.id),
         { maxWait: 10_000, timeout: this.transactionTimeoutMs },
       );
+      stageDurationsMs.rollups = Date.now() - stageStartedAt;
+      this.metrics?.observe('metric_projection_stage_duration_ms', stageDurationsMs.rollups, {
+        stage: 'rollups',
+        outcome: 'success',
+      });
+
+      stageStartedAt = Date.now();
       await this.prisma.$transaction(
         (tx) => this.coverage.refreshForJob(tx, claimed.id, new Date()),
         { maxWait: 10_000, timeout: this.transactionTimeoutMs },
       );
+      stageDurationsMs.coverage = Date.now() - stageStartedAt;
+      this.metrics?.observe('metric_projection_stage_duration_ms', stageDurationsMs.coverage, {
+        stage: 'coverage',
+        outcome: 'success',
+      });
 
       const completedAt = new Date();
       const completed = await this.prisma.ingestionJob.updateMany({
@@ -222,6 +243,7 @@ export class PrismaMetricProjectionWorker {
             phase: 'COMPLETED',
             message: 'Ingesta raw y proyección técnica completadas correctamente.',
             projectionStatus: 'SUCCESS',
+            projectionStageDurationsMs: stageDurationsMs,
             updatedAt: completedAt.toISOString(),
           } as unknown as Prisma.InputJsonValue,
         },
@@ -267,6 +289,7 @@ export class PrismaMetricProjectionWorker {
               : 'Datos raw disponibles, pero la proyección técnica agotó sus intentos.',
             projectionStatus: retryScheduled ? 'PENDING' : 'FAILED',
             projectionError: message,
+            projectionStageDurationsMs: stageDurationsMs,
             ...(availableAt === undefined ? {} : { nextProjectionAttemptAt: availableAt.toISOString() }),
             updatedAt: new Date().toISOString(),
           } as unknown as Prisma.InputJsonValue,

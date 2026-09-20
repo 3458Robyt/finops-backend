@@ -52,6 +52,19 @@ describe('technical metrics PostgreSQL integration', () => {
       expect(hourly.points.every((point) => point.min <= point.avg && point.avg <= point.max)).toBe(true);
       expect(hourly.points.every((point) => point.sampleCount > 0)).toBe(true);
 
+      const halfHourly = await repository.listMetricSeriesForTenant(tenantA!.id, { ...filters, bucket: '30m', pageSize: 2 });
+      expect(halfHourly.points).toHaveLength(2);
+      expect(halfHourly.points.every((point) => point.min <= point.avg && point.avg <= point.max)).toBe(true);
+      expect(halfHourly.points.every((point) => point.sampleCount > 0)).toBe(true);
+      expect(halfHourly.hasMore).toBe(true);
+      const nextHalfHourly = await repository.listMetricSeriesForTenant(tenantA!.id, {
+        ...filters,
+        bucket: '30m',
+        pageSize: 2,
+        cursor: halfHourly.nextCursor,
+      });
+      expect(nextHalfHourly.points[0]?.bucketStart.getTime()).toBeGreaterThan(halfHourly.points.at(-1)?.bucketStart.getTime() ?? 0);
+
       const firstSample = await prisma.resourceMetricSample.findFirstOrThrow({
         where: { tenantId: tenantA!.id, metricName: 'CPUUtilization', statistic: 'MEAN' },
         orderBy: { sampledAt: 'asc' },

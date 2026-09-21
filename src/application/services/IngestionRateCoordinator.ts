@@ -101,12 +101,21 @@ async function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
   }
 
   if (signal.aborted) throw new Error('Ingestion operation cancelled');
-  await Promise.race([
-    delay(ms),
-    new Promise<void>((_, reject) => {
-      signal.addEventListener('abort', () => reject(new Error('Ingestion operation cancelled')), { once: true });
-    }),
-  ]);
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      cleanup();
+      reject(new Error('Ingestion operation cancelled'));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

@@ -31,20 +31,55 @@ async function main(): Promise<void> {
     ],
   );
 
+  const memorySamples = [readProcessMemory()];
+  const memoryTimer = setInterval(() => memorySamples.push(readProcessMemory()), 250);
+  let result: unknown;
   try {
-    const result = await worker.runBatch(workerId, concurrency, cloudConnectionId, sourceType);
-    const durationMs = Date.now() - startedAt;
-
-    console.log(JSON.stringify({
-      durationMs,
-      concurrency,
-      ...(cloudConnectionId === undefined ? {} : { cloudConnectionId }),
-      ...(sourceType === undefined ? {} : { sourceType }),
-      result,
-    }, null, 2));
+    result = await worker.runBatch(workerId, concurrency, cloudConnectionId, sourceType);
   } finally {
+    clearInterval(memoryTimer);
+    memorySamples.push(readProcessMemory());
     await prisma.$disconnect();
   }
+
+  console.log(JSON.stringify({
+    durationMs: Date.now() - startedAt,
+    concurrency,
+    ...(cloudConnectionId === undefined ? {} : { cloudConnectionId }),
+    ...(sourceType === undefined ? {} : { sourceType }),
+    memory: summarizeProcessMemory(memorySamples),
+    result,
+  }, null, 2));
+}
+
+interface ProcessMemorySample {
+  readonly rssBytes: number;
+  readonly heapUsedBytes: number;
+  readonly heapTotalBytes: number;
+  readonly externalBytes: number;
+}
+
+function readProcessMemory(): ProcessMemorySample {
+  const usage = process.memoryUsage();
+  return {
+    rssBytes: usage.rss,
+    heapUsedBytes: usage.heapUsed,
+    heapTotalBytes: usage.heapTotal,
+    externalBytes: usage.external,
+  };
+}
+
+function summarizeProcessMemory(samples: readonly ProcessMemorySample[]): Record<string, unknown> {
+  const peak = (field: keyof ProcessMemorySample): number => Math.max(...samples.map((sample) => sample[field]));
+  const first = samples[0] ?? readProcessMemory();
+  const last = samples[samples.length - 1] ?? first;
+  return {
+    sampleCount: samples.length,
+    rssBytes: { first: first.rssBytes, last: last.rssBytes, peak: peak('rssBytes') },
+    heapUsedBytes: { first: first.heapUsedBytes, last: last.heapUsedBytes, peak: peak('heapUsedBytes') },
+    heapTotalBytes: { first: first.heapTotalBytes, last: last.heapTotalBytes, peak: peak('heapTotalBytes') },
+    externalBytes: { first: first.externalBytes, last: last.externalBytes, peak: peak('externalBytes') },
+  };
 }
 
 function readOptionalArgument(name: string): string | undefined {

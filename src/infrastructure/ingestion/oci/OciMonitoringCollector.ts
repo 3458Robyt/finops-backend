@@ -12,19 +12,14 @@ import { optionalString, readObjectArray, readStringArray, requireString } from 
 import type { OciMetricDefinition, OciMonitoringClient } from './OciSdkContracts.js';
 import { buildOciCollectionTasks, type OciCollectionTask } from './OciMonitoringQueryBuilder.js';
 import { mapWithConcurrency, regionKey } from './OciMonitoringCollectionSupport.js';
-import type { OciRetryEvent } from './OciRetryPolicy.js';
+import { createOciMonitoringRetryTelemetry, type OciMonitoringWithRetry } from './OciMonitoringRetryTelemetry.js';
+import { resolveOciRequestRange } from './OciMonitoringWindow.js';
 export { buildOciGroupedMetricQuery, buildOciResourceMetricQuery } from './OciMonitoringQueryBuilder.js';
+export { resolveOciRequestRange } from './OciMonitoringWindow.js';
 const MAX_PERSIST_BATCH_SIZE = 5_000;
-// Keep long-running backfills away from the moving 90-day boundary. A small
-// margin is not enough when a job spends several minutes in provider calls.
-const OCI_RETENTION_SAFETY_MARGIN_MS = 6 * 60 * 60 * 1000;
 export interface OciMonitoringDependencies {
   readonly createClient: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciMonitoringClient;
-  readonly withRetry: <T>(
-    operation: (signal?: AbortSignal) => Promise<T>,
-    signal?: AbortSignal,
-    onRetry?: (event: OciRetryEvent) => void,
-  ) => Promise<T>;
+  readonly withRetry: OciMonitoringWithRetry;
   readonly withRateLimit?: <T>(job: CloudIngestionJobContext, operation: () => Promise<T>) => Promise<T>;
 }
 export async function collectOciTechnicalMetrics(
@@ -47,7 +42,7 @@ export async function collectOciTechnicalMetrics(
     subtreeCompartmentId: job.connection.rootExternalId,
   });
   const stats = { apiCallCount: 0, sampleCount: 0, statistics: {} as Record<string, number> };
-  const retryStats = { retries: 0, rateLimitRetries: 0, timeoutRetries: 0, transientRetries: 0 };
+  const retryTelemetry = createOciMonitoringRetryTelemetry(dependencies.withRetry);
   const coverage: Record<string, unknown> = {
     requestedStart: requestRange.startTime.toISOString(),
     requestedEnd: requestRange.endTime.toISOString(),
@@ -57,46 +52,23 @@ export async function collectOciTechnicalMetrics(
     metricDefinitions: definitions.length,
     samples: 0,
     statistics: stats.statistics,
-    providerRetries: 0,
-    providerRateLimitRetries: 0,
-    providerTimeoutRetries: 0,
-    providerTransientRetries: 0,
+    ...retryTelemetry.initialCoverage,
     memoryRequiresComputeAgent: true,
     agentlessCpuNamespace: 'oci_vmi_resource_utilization',
   };
   const warnings: string[] = [];
-  const observedDependencies: OciMonitoringDependencies = {
-    ...dependencies,
-    withRetry: (operation, signal, onRetry) => dependencies.withRetry(operation, signal, (event) => {
-      retryStats.retries += 1;
-      if (event.reason === 'RATE_LIMIT') retryStats.rateLimitRetries += 1;
-      if (event.reason === 'TIMEOUT') retryStats.timeoutRetries += 1;
-      if (event.reason === 'TRANSIENT') retryStats.transientRetries += 1;
-      onRetry?.(event);
-    }),
-  };
-  const metricBatches = streamOciMetricBatches(job, observedDependencies, tasks, collection, requestRange, stats, coverage, warnings, options);
-  const updateRetryCoverage = (): void => {
-    coverage.providerRetries = retryStats.retries;
-    coverage.providerRateLimitRetries = retryStats.rateLimitRetries;
-    coverage.providerTimeoutRetries = retryStats.timeoutRetries;
-    coverage.providerTransientRetries = retryStats.transientRetries;
-  };
-  const originalMetricBatches = metricBatches;
-  const trackedMetricBatches = (async function* (): AsyncGenerator<readonly NormalizedResourceMetricSample[]> {
-    try {
-      for await (const batch of originalMetricBatches) yield batch;
-    } finally {
-      updateRetryCoverage();
-    }
-  }());
+  const observedDependencies: OciMonitoringDependencies = { ...dependencies, withRetry: retryTelemetry.withRetry };
+  const metricBatches = retryTelemetry.track(
+    streamOciMetricBatches(job, observedDependencies, tasks, collection, requestRange, stats, coverage, warnings, options),
+    coverage,
+  );
   return {
     get apiCallCount() { return stats.apiCallCount; },
     objectsProcessed: 0,
     focusRows: [],
     resources: [],
     metricSamples: [],
-    metricBatches: trackedMetricBatches,
+    metricBatches,
     warnings,
     coverage,
   };
@@ -384,21 +356,6 @@ export function resolveOciCollectionWindow(job: Pick<CloudIngestionJobContext, '
 function hashDimensions(dimensions: Readonly<Record<string, string>>): string {
   const canonical = Object.keys(dimensions).sort().map((key) => `${key}=${dimensions[key]}`).join('&');
   return createHash('sha256').update(canonical).digest('hex');
-}
-
-/** OCI rejects a request as soon as its start crosses the rolling 90-day limit. */
-export function resolveOciRequestRange(job: Pick<CloudIngestionJobContext, 'targetStart' | 'targetEnd'>, now = new Date()): {
-  readonly startTime: Date;
-  readonly endTime: Date;
-} {
-  const retentionMs = 90 * 24 * 60 * 60 * 1000;
-  const earliestAllowed = new Date(now.getTime() - retentionMs + OCI_RETENTION_SAFETY_MARGIN_MS);
-  const startTime = job.targetStart > earliestAllowed ? job.targetStart : earliestAllowed;
-  const endTime = job.targetEnd < now ? job.targetEnd : now;
-  if (endTime <= startTime) {
-    throw new Error('OCI metric job is outside the provider 90-day retention window.');
-  }
-  return { startTime, endTime };
 }
 
 function parseMetricStatistic(value: string, field: string): MetricStatistic {

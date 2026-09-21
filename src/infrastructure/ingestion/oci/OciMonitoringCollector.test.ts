@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { CloudIngestionJobContext } from '../../../domain/interfaces/ICloudIngestionProvider.js';
-import { collectOciTechnicalMetrics, resolveOciRequestRange } from './OciMonitoringCollector.js';
+import { buildOciResourceMetricQuery, collectOciTechnicalMetrics, resolveOciRequestRange } from './OciMonitoringCollector.js';
 
 describe('OCI monitoring collector', () => {
   test('returns an explicit empty result without constructing a client', async () => {
@@ -178,6 +178,20 @@ describe('OCI monitoring collector', () => {
       'CpuUtilization[30m]{resourceId = "instance-1"}.last()',
     ]);
     expect(samples.map((sample) => sample.statistic)).toEqual(['P95', 'LATEST']);
+  });
+
+  test('keeps discovered non-resource dimensions in resource queries', () => {
+    expect(buildOciResourceMetricQuery({
+      compartmentId: 'compartment-1',
+      namespace: 'oci_dynamic_routing_gateway',
+      metricName: 'BytesFromDrgAttachment',
+      resourceId: 'attachment-1',
+      dimensions: {
+        resourceId: 'attachment-1',
+        drgOcid: 'drg-1',
+        attachmentType: 'IPSEC_TUNNEL',
+      },
+    })).toBe('BytesFromDrgAttachment[30m]{resourceId = "attachment-1", attachmentType = "IPSEC_TUNNEL", drgOcid = "drg-1"}.mean()');
   });
 
   test('groups confirmed resources into one MQL request and keeps each returned stream', async () => {

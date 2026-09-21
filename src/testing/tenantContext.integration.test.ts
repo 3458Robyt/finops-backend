@@ -97,6 +97,7 @@ describe.skipIf(!integrationEnabled)('runtime tenant context', () => {
          from ingestion_jobs j
          join cloud_connections c on c.id = j.cloud_connection_id
          where j.tenant_id = any($1::text[])
+           and j.source_type = 'INVENTORY'
          order by j.tenant_id`,
         [[tenantA.id, tenantB.id]],
       ),

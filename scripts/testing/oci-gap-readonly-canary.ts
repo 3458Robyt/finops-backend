@@ -1,5 +1,6 @@
 import 'dotenv/config';
 
+import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import type { CloudIngestionJobContext, MetricStatistic } from '../../src/domain/interfaces/ICloudIngestionProvider.js';
@@ -68,6 +69,7 @@ try {
         interval: args.interval,
         start: args.start.toISOString(),
         end: args.end.toISOString(),
+        configuredDimensionsHash: hashDimensions(readOciMetricDefinitions(job)[0]?.dimensions ?? {}),
       },
       provider: {
         apiCallCount: result.apiCallCount,
@@ -131,10 +133,12 @@ async function summarizeResult(result: Awaited<ReturnType<OciSdkIngestionProvide
   let maxValue: number | undefined;
   let firstSampledAt: Date | undefined;
   let lastSampledAt: Date | undefined;
+  const dimensionHashes = new Set<string>();
   if (result.metricBatches !== undefined) {
     for await (const batch of result.metricBatches) {
       for (const sample of batch) {
         samples += 1;
+        if (sample.dimensionsHash !== undefined) dimensionHashes.add(sample.dimensionsHash);
         minValue = minValue === undefined ? sample.value : Math.min(minValue, sample.value);
         maxValue = maxValue === undefined ? sample.value : Math.max(maxValue, sample.value);
         firstSampledAt = firstSampledAt === undefined || sample.sampledAt < firstSampledAt ? sample.sampledAt : firstSampledAt;
@@ -146,7 +150,13 @@ async function summarizeResult(result: Awaited<ReturnType<OciSdkIngestionProvide
     returnedSamples: samples,
     ...(minValue === undefined ? {} : { minValue, maxValue }),
     ...(firstSampledAt === undefined ? {} : { firstSampledAt: firstSampledAt.toISOString(), lastSampledAt: lastSampledAt?.toISOString() }),
+    observedDimensionsHashes: [...dimensionHashes],
   };
+}
+
+function hashDimensions(dimensions: Readonly<Record<string, string>>): string {
+  const canonical = Object.keys(dimensions).sort().map((key) => `${key}=${dimensions[key]}`).join('&');
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 function readArguments(argv: readonly string[]): Arguments {

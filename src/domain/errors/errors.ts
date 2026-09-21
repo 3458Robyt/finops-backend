@@ -47,6 +47,12 @@ export class ProviderError extends FinOpsBaseError {
   }
 }
 
+export class ProviderTimeoutError extends FinOpsBaseError {
+  constructor(message = 'El proveedor externo excedió el tiempo máximo de respuesta') {
+    super(message, 'PROVIDER_TIMEOUT');
+  }
+}
+
 /**
  * Error lanzado cuando se solicita un proveedor que no está
  * registrado en el sistema.

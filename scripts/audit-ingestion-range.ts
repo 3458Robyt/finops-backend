@@ -28,6 +28,7 @@ interface CoverageAggregateRow {
  * missing data instead of creating synthetic jobs or changing coverage.
  */
 async function main(): Promise<void> {
+  assertAllowedAuditTarget(process.env['DATABASE_URL']);
   const args = readArguments();
   const prisma = getPrismaClient();
   try {
@@ -434,6 +435,27 @@ function normalizeRow(row: Readonly<Record<string, unknown>> | undefined): Reado
     camelCase(key),
     value instanceof Date ? value.toISOString() : typeof value === 'bigint' ? Number(value) : value,
   ]));
+}
+
+/**
+ * The bounded audit is expensive by design. Keep an accidental invocation
+ * from the development .env (which may point to Supabase) from consuming the
+ * remote database's temporary storage. Remote audits remain possible only
+ * through an explicit operator opt-in.
+ */
+function assertAllowedAuditTarget(connectionString: string | undefined): void {
+  if (connectionString === undefined || connectionString.trim() === '') {
+    throw new Error('DATABASE_URL es obligatorio para auditar la ingesta.');
+  }
+
+  const hostname = new URL(connectionString).hostname.toLowerCase();
+  const localHosts = new Set(['127.0.0.1', 'localhost', '::1']);
+  if (localHosts.has(hostname) || process.env['ALLOW_REMOTE_READ_ONLY_AUDIT'] === 'true') return;
+
+  throw new Error(
+    `Auditoría de ingesta rechazada para la base remota ${hostname}. `
+      + 'Usa scripts/local/run-local.ps1 o define ALLOW_REMOTE_READ_ONLY_AUDIT=true solo con autorización explícita.',
+  );
 }
 
 function normalizeCoverageRow(row: CoverageAggregateRow): Readonly<Record<string, unknown>> {

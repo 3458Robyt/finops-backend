@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 
-import { ConfigurationError } from '../../domain/errors/errors.js';
+import { ConfigurationError, ProviderTimeoutError } from '../../domain/errors/errors.js';
 import type { AiGatewayRequest, IAiGateway } from '../../domain/interfaces/IAiGateway.js';
 import type { MetricsRegistry } from '../../application/observability/MetricsRegistry.js';
 import { loadRuntimeConfig } from '../config/runtimeConfigReader.js';
@@ -98,7 +98,9 @@ export class OpenAiCompatibleAiGateway implements IAiGateway {
             completionPromise,
             new Promise<never>((_, reject) => {
               timeoutHandle = setTimeout(() => {
-                const timeoutError = new Error('AI request timed out');
+                const timeoutError = new ProviderTimeoutError(
+                  'La solicitud al proveedor de IA excedió el tiempo máximo configurado',
+                );
                 timeoutController?.abort(timeoutError);
                 reject(timeoutError);
               }, request.timeoutMs);

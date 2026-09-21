@@ -139,7 +139,10 @@ describe('OpenAiCompatibleAiGateway', () => {
     pending.catch(() => undefined);
 
     await vi.advanceTimersByTimeAsync(25);
-    await expect(pending).rejects.toThrow('AI request timed out');
+    await expect(pending).rejects.toMatchObject({
+      code: 'PROVIDER_TIMEOUT',
+      message: 'La solicitud al proveedor de IA excedió el tiempo máximo configurado',
+    });
     const requestOptions = completionCreate.mock.calls[0]?.[1] as { signal?: AbortSignal };
     expect(requestOptions).toEqual(expect.objectContaining({
       signal: expect.any(AbortSignal),

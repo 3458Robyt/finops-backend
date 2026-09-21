@@ -1,6 +1,6 @@
 import type { IngestionJobStatus, IngestionSourceType } from '../../domain/models/CloudConnection.js';
 import { buildIngestionConfigurationHash } from './ingestionConfigurationHash.js';
-import { buildMissingTechnicalMetricJobs } from './ingestionMetricGapPlanner.js';
+import { buildMissingTechnicalMetricJobs, resolveTechnicalMetricFloor } from './ingestionMetricGapPlanner.js';
 import { getCooldownMs, getWindowMs } from './ingestionScheduleWindows.js';
 
 type CredentialPurpose =
@@ -237,7 +237,7 @@ function evaluateSource(
     .sort((left, right) => right.targetEnd.getTime() - left.targetEnd.getTime())[0];
   const defaultStart = new Date(targetEnd.getTime() - windowMs);
   const catchupFloor = sourceType === 'TECHNICAL_METRIC'
-    ? new Date(targetEnd.getTime() - (options.metricCatchupDays ?? 90) * 24 * 60 * 60 * 1000)
+    ? resolveTechnicalMetricFloor(targetEnd, providerCode === 'oci' ? 'oci' : 'aws', options.metricCatchupDays ?? 90)
     : defaultStart;
   const latestCoveredEnd = latestCoveredSegment?.targetEnd ?? latestCoveredJob?.targetEnd;
   const targetStart = latestCoveredEnd === undefined

@@ -6,6 +6,20 @@ import type {
 } from './ingestionJobScheduler.js';
 
 const activeJobStatuses = new Set<string>(['PENDING', 'RUNNING']);
+const OCI_RETENTION_DAYS = 90;
+const OCI_RETENTION_SAFETY_MARGIN_MS = 6 * 60 * 60 * 1000;
+
+export function resolveTechnicalMetricFloor(
+  now: Date,
+  providerCode: 'aws' | 'oci',
+  catchupDays: number,
+): Date {
+  const requestedFloorMs = now.getTime() - catchupDays * 24 * 60 * 60 * 1000;
+  const providerFloorMs = providerCode === 'oci'
+    ? now.getTime() - OCI_RETENTION_DAYS * 24 * 60 * 60 * 1000 + OCI_RETENTION_SAFETY_MARGIN_MS
+    : requestedFloorMs;
+  return new Date(Math.max(requestedFloorMs, providerFloorMs));
+}
 
 /** Builds bounded, oldest-first technical backfill jobs for uncovered windows. */
 export function buildMissingTechnicalMetricJobs(
@@ -20,7 +34,11 @@ export function buildMissingTechnicalMetricJobs(
     30 * 60 * 1000,
     (options.metricCatchupWindowMinutes ?? 24 * 60) * 60 * 1000,
   );
-  const floor = alignToWindow(new Date(now.getTime() - (options.metricCatchupDays ?? 90) * 24 * 60 * 60 * 1000), windowMs);
+  const floor = alignToWindow(resolveTechnicalMetricFloor(
+    now,
+    providerCode,
+    options.metricCatchupDays ?? OCI_RETENTION_DAYS,
+  ), windowMs);
   const covered = new Set((connection.metricCoverageWindowStarts ?? []).map((value) => alignToWindow(value, windowMs).getTime()));
   const coverageWindows = new Map(
     (connection.metricCoverageWindows ?? []).map((window) => [

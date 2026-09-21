@@ -44,7 +44,7 @@ describe('buildIngestionSchedulePlan', () => {
       cloudConnectionId: 'oci_1',
       providerCode: 'oci',
       sourceType: 'TECHNICAL_METRIC',
-      targetStart: new Date('2026-03-07T12:00:00.000Z'),
+      targetStart: new Date('2026-03-07T18:00:00.000Z'),
       targetEnd: now,
       maxAttempts: 1,
     }));
@@ -248,6 +248,19 @@ describe('buildIngestionSchedulePlan', () => {
     expect(plan.jobs).toContainEqual(expect.objectContaining({
       sourceType: 'TECHNICAL_METRIC',
       targetStart: new Date('2026-06-04T12:00:00.000Z'),
+    }));
+  });
+
+  it('does not schedule an OCI metric window on the exact rolling-retention boundary', () => {
+    const schedule = buildIngestionSchedulePlan([buildOciConnection()], {
+      ...defaultOptions,
+      now: new Date('2026-06-05T23:00:00.000Z'),
+      metricCatchupDays: 90,
+    });
+
+    expect(schedule.jobs).toContainEqual(expect.objectContaining({
+      sourceType: 'TECHNICAL_METRIC',
+      targetStart: new Date('2026-03-08T05:00:00.000Z'),
     }));
   });
 

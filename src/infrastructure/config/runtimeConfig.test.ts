@@ -129,6 +129,22 @@ describe('validateRuntimeConfig', () => {
       .toThrow(`Configuracion runtime invalida.`);
   });
 
+  it('rejects an ingestion heartbeat that cannot renew a lease safely', () => {
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      INGESTION_JOB_LEASE_MS: '30000',
+      INGESTION_JOB_HEARTBEAT_MS: '15000',
+    })).toThrow('INGESTION_JOB_HEARTBEAT_MS');
+  });
+
+  it('accepts an ingestion heartbeat with a safe lease margin', () => {
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      INGESTION_JOB_LEASE_MS: '90000',
+      INGESTION_JOB_HEARTBEAT_MS: '30000',
+    })).not.toThrow();
+  });
+
   it('requires credentials for enabled outbound integrations and actor-backed scheduler targets', () => {
     expect(() => validateRuntimeConfig({
       ...productionEnv,

@@ -142,6 +142,7 @@ export class FinOpsArtifactAiRunner {
       // recommendation run into a multi-minute retry chain.
       timeoutMs: Math.min(this.requestPolicy.timeoutMs, 50_000),
       maxRetries: 0,
+      ...(this.requestPolicy.reasoningEffort === undefined ? {} : { reasoningEffort: this.requestPolicy.reasoningEffort }),
       temperature: 0,
       maxTokens: 900,
       messages: [

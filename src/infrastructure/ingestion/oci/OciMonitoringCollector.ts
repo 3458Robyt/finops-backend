@@ -20,7 +20,11 @@ const MAX_PERSIST_BATCH_SIZE = 5_000;
 export interface OciMonitoringDependencies {
   readonly createClient: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciMonitoringClient;
   readonly withRetry: OciMonitoringWithRetry;
-  readonly withRateLimit?: <T>(job: CloudIngestionJobContext, operation: () => Promise<T>) => Promise<T>;
+  readonly withRateLimit?: <T>(
+    job: CloudIngestionJobContext,
+    operation: () => Promise<T>,
+    signal?: AbortSignal,
+  ) => Promise<T>;
 }
 export async function collectOciTechnicalMetrics(
   job: CloudIngestionJobContext,
@@ -205,7 +209,9 @@ async function collectOciTask(
   const execute = async (compartmentId: string, compartmentIdInSubtree = false) => {
     stats.apiCallCount += 1;
     const operation = () => request(compartmentId, compartmentIdInSubtree);
-    return dependencies.withRateLimit === undefined ? operation() : dependencies.withRateLimit(taskJob, operation);
+    return dependencies.withRateLimit === undefined
+      ? operation()
+      : dependencies.withRateLimit(taskJob, operation, options.signal);
   };
   let response;
   try {

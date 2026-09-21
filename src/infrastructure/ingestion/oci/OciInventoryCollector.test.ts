@@ -238,6 +238,44 @@ describe('OCI inventory modules', () => {
     expect(clientSignal?.aborted).toBe(true);
     expect(close).toHaveBeenCalledOnce();
   });
+
+  test('propagates cancellation through Object Storage inventory and its rate limiter', async () => {
+    const controller = new AbortController();
+    let clientSignal: AbortSignal | undefined;
+    let limiterSignal: AbortSignal | undefined;
+    const result = collectOciInventory(buildJob({
+      metadata: { ociFocusReportLocations: [{ namespaceName: 'namespace-1' }] },
+    }), {
+      discoverCompartments: async () => ({
+        compartmentIds: ['tenancy-1'], apiCallCount: 0, status: 'CONFIGURED_ONLY',
+        configuredCompartmentCount: 1, discoveredCompartmentCount: 0,
+      }),
+      discoverRegions: async () => ({
+        regionIds: ['us-ashburn-1'], apiCallCount: 0, status: 'COMPLETE', warnings: [],
+      }),
+      createComputeClient: () => ({ listInstances: async () => ({ items: [] }) }),
+      createObjectStorageClient: (_job, signal) => {
+        clientSignal = signal;
+        return {
+          listBuckets: async () => new Promise((_, reject) => {
+            const abort = (): void => reject(new Error('request aborted'));
+            if (signal?.aborted === true) abort();
+            else signal?.addEventListener('abort', abort, { once: true });
+          }),
+        };
+      },
+      withRetry: (operation, signal) => operation(signal),
+      withRateLimit: (_job, _api, operation, signal) => {
+        limiterSignal = signal;
+        return operation();
+      },
+    }, controller.signal);
+
+    setTimeout(() => controller.abort(), 0);
+    await expect(result).rejects.toThrow('request aborted');
+    expect(clientSignal?.aborted).toBe(true);
+    expect(limiterSignal).toBe(controller.signal);
+  });
 });
 
 function buildJob(overrides: {

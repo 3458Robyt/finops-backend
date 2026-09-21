@@ -94,6 +94,24 @@ describe('OCI monitoring collector', () => {
     expect(progress.at(-1)).toMatchObject({ completedTasks: 2, totalTasks: 2, activeTasks: 0 });
   });
 
+  test('passes the cancellation signal into the monitoring rate limiter', async () => {
+    const controller = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    const result = await collectOciTechnicalMetrics(buildJob({
+      ociMetricDefinitions: [metricDefinition('instance-1')],
+    }), {
+      createClient: asyncClient(() => ({ items: [metricStream('instance-1', 42)] })),
+      withRetry: (operation) => operation(),
+      withRateLimit: (_job, operation, signal) => {
+        observedSignal = signal;
+        return operation();
+      },
+    }, { signal: controller.signal });
+
+    await materializeSamples(result);
+    expect(observedSignal).toBe(controller.signal);
+  });
+
   test('uses the provider-native statistic in each OCI query', async () => {
     const queries: string[] = [];
     const result = await collectOciTechnicalMetrics(buildJob({

@@ -117,9 +117,15 @@ export async function collectOciInventory(
             createClient: dependencies.createObjectStorageClient,
             withRetry: dependencies.withRetry,
             ...(dependencies.withRateLimit === undefined ? {} : {
-              withRateLimit: (context, operation) => dependencies.withRateLimit!(context, 'objectStorage', operation),
+              withRateLimit: (context, operation, nestedSignal) => dependencies.withRateLimit!(
+                context,
+                'objectStorage',
+                operation,
+                nestedSignal,
+              ),
             }),
           },
+          signal,
         );
         objectStorageResources = storage.resources;
         objectStorageStatus = 'COMPLETE';

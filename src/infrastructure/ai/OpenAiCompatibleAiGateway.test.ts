@@ -150,4 +150,18 @@ describe('OpenAiCompatibleAiGateway', () => {
     }));
     expect(requestOptions.signal?.aborted).toBe(true);
   });
+
+  test('normalizes raw provider failures instead of returning an internal error', async () => {
+    process.env['AI_API_KEY'] = 'test-ai-key';
+    process.env['AI_BASE_URL'] = 'https://api.example.test/v1';
+    completionCreate.mockRejectedValue(new Error('429 rate limited apiKey=super-secret'));
+
+    const { OpenAiCompatibleAiGateway } = await import('./OpenAiCompatibleAiGateway.js');
+    const gateway = new OpenAiCompatibleAiGateway();
+
+    await expect(gateway.generateText({ messages: [{ role: 'user', content: 'hola' }] }))
+      .rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
+    await expect(gateway.generateText({ messages: [{ role: 'user', content: 'hola' }] }))
+      .rejects.toMatchObject({ message: expect.not.stringContaining('super-secret') });
+  });
 });

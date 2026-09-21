@@ -1,10 +1,11 @@
 import OpenAI from 'openai';
 
-import { ConfigurationError, ProviderTimeoutError } from '../../domain/errors/errors.js';
+import { ConfigurationError, FinOpsBaseError, ProviderError, ProviderTimeoutError } from '../../domain/errors/errors.js';
 import type { AiGatewayRequest, IAiGateway } from '../../domain/interfaces/IAiGateway.js';
 import type { MetricsRegistry } from '../../application/observability/MetricsRegistry.js';
 import { loadRuntimeConfig } from '../config/runtimeConfigReader.js';
 import type { RuntimeConfig } from '../config/runtimeConfigTypes.js';
+import { safeErrorMessage } from '../../application/observability/safeError.js';
 
 /**
  * Adaptador de infraestructura para endpoints compatibles con la API de OpenAI.
@@ -115,7 +116,12 @@ export class OpenAiCompatibleAiGateway implements IAiGateway {
     } catch (error) {
       this.metrics?.increment('ai_requests_total', { model, outcome: 'error' });
       this.metrics?.observe('ai_request_duration_ms', Date.now() - startedAt, { model, outcome: 'error' });
-      throw error;
+      if (error instanceof FinOpsBaseError) throw error;
+      throw new ProviderError(
+        'AI',
+        safeErrorMessage(error),
+        error instanceof Error ? error : undefined,
+      );
     } finally {
       if (timeoutHandle !== undefined) {
         clearTimeout(timeoutHandle);

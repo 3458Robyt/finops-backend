@@ -14,11 +14,13 @@ import {
 // minutes and still validates any explicit override.
 process.env['TEST_COMMAND_TIMEOUT_MS'] ??= '600000';
 
-const sourceUrl = process.env['DATABASE_URL'];
+// Prefer the explicit test target so a developer's dotenv DATABASE_URL cannot
+// silently redirect destructive integration setup to a different environment.
+const sourceUrl = process.env['TEST_DATABASE_URL'] ?? process.env['DATABASE_URL'];
 if (sourceUrl === undefined || sourceUrl.trim() === '') {
   console.log(JSON.stringify({
     status: 'SKIPPED',
-    reason: 'DATABASE_URL is required to create the isolated PostgreSQL integration schema.',
+    reason: 'TEST_DATABASE_URL or DATABASE_URL is required to create the isolated PostgreSQL integration schema.',
   }, null, 2));
   process.exit(0);
 }

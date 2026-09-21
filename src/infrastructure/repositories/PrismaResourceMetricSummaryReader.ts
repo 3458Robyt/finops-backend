@@ -51,9 +51,9 @@ export class PrismaResourceMetricSummaryReader {
     // resolutions first made a large tenant scan millions of rollup rows even
     // though the query later selected daily rows. If the projection is absent
     // (fresh database/fixture), retain the compatibility fallback.
-    let rows = await this.listRollupSummaries(tenantId, filters, Prisma.sql`r.bucket_seconds = 86400`);
+    let rows = await this.listRollupSummaries(tenantId, filters, { exactBucketSeconds: 86400 });
     if (rows.length === 0) {
-      rows = await this.listRollupSummaries(tenantId, filters, Prisma.sql`r.bucket_seconds <= 86400`);
+      rows = await this.listRollupSummaries(tenantId, filters, { maxBucketSeconds: 86400 });
     }
     return rows.map(toSummaryItem);
   }
@@ -61,11 +61,18 @@ export class PrismaResourceMetricSummaryReader {
   private async listRollupSummaries(
     tenantId: string,
     filters: TechnicalMetricSummaryFilters,
-    bucketFilter: Prisma.Sql,
+    options: { readonly exactBucketSeconds?: number; readonly maxBucketSeconds?: number },
   ): Promise<readonly RawFastSummaryRow[]> {
     const where = buildWhere(tenantId, filters);
-    return this.prisma.$queryRaw<RawFastSummaryRow[]>(Prisma.sql`
-      WITH filtered AS (
+    const exactBucket = options.exactBucketSeconds !== undefined;
+    const bucketFilter = exactBucket
+      ? Prisma.sql`r.bucket_seconds = ${options.exactBucketSeconds}`
+      : Prisma.sql`r.bucket_seconds <= ${options.maxBucketSeconds ?? 86400}`;
+    // The normal path already fixes the daily bucket. Avoid the preferred-bucket
+    // self-join there; it is only needed by the compatibility fallback.
+    const withClause = exactBucket
+      ? Prisma.empty
+      : Prisma.sql`WITH filtered AS (
         SELECT r.*
         FROM resource_metric_rollups r
         WHERE ${where} AND ${bucketFilter}
@@ -75,7 +82,26 @@ export class PrismaResourceMetricSummaryReader {
         FROM filtered
         GROUP BY tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id, provider_namespace,
           region_id, dimensions_hash, metric_name, statistic
-      )
+      )`;
+    const sourceClause = exactBucket
+      ? Prisma.sql`FROM resource_metric_rollups r
+        LEFT JOIN cloud_resources cr ON cr.id = r.cloud_resource_id
+        WHERE ${where} AND ${bucketFilter}`
+      : Prisma.sql`FROM filtered r
+        INNER JOIN preferred p
+          ON p.tenant_id = r.tenant_id
+         AND p.cloud_connection_id = r.cloud_connection_id
+         AND p.cloud_resource_id IS NOT DISTINCT FROM r.cloud_resource_id
+         AND p.external_resource_id = r.external_resource_id
+         AND p.provider_namespace = r.provider_namespace
+         AND p.region_id = r.region_id
+         AND p.dimensions_hash = r.dimensions_hash
+         AND p.metric_name = r.metric_name
+         AND p.statistic = r.statistic
+         AND p.bucket_seconds = r.bucket_seconds
+        LEFT JOIN cloud_resources cr ON cr.id = r.cloud_resource_id`;
+    return this.prisma.$queryRaw<RawFastSummaryRow[]>(Prisma.sql`
+      ${withClause}
       SELECT
         r.provider::text AS provider,
         r.external_resource_id,
@@ -104,19 +130,7 @@ export class PrismaResourceMetricSummaryReader {
         (array_agg(r.latest_value ORDER BY r.bucket_start DESC, r.latest_sampled_at DESC))[1]::float8 AS latest_value,
         min(r.min_sampled_at) AS first_sampled_at,
         max(r.latest_sampled_at) AS latest_sampled_at
-      FROM filtered r
-      INNER JOIN preferred p
-        ON p.tenant_id = r.tenant_id
-       AND p.cloud_connection_id = r.cloud_connection_id
-       AND p.cloud_resource_id IS NOT DISTINCT FROM r.cloud_resource_id
-       AND p.external_resource_id = r.external_resource_id
-       AND p.provider_namespace = r.provider_namespace
-       AND p.region_id = r.region_id
-       AND p.dimensions_hash = r.dimensions_hash
-       AND p.metric_name = r.metric_name
-       AND p.statistic = r.statistic
-       AND p.bucket_seconds = r.bucket_seconds
-      LEFT JOIN cloud_resources cr ON cr.id = r.cloud_resource_id
+      ${sourceClause}
       GROUP BY r.provider, r.external_resource_id, r.cloud_resource_id,
         r.cloud_connection_id, r.provider_namespace, r.region_id,
         r.dimensions_hash, r.metric_name, r.statistic

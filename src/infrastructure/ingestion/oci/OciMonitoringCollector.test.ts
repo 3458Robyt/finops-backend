@@ -74,6 +74,38 @@ describe('OCI monitoring collector', () => {
     });
   });
 
+  test('rate-limits each provider retry attempt and counts actual calls', async () => {
+    let providerCalls = 0;
+    let rateLimitedAttempts = 0;
+    const result = await collectOciTechnicalMetrics(buildJob({
+      ociMetricDefinitions: [metricDefinition('instance-1')],
+    }), {
+      createClient: () => ({
+        summarizeMetricsData: async () => {
+          providerCalls += 1;
+          if (providerCalls === 1) throw new Error('429 Too Many Requests');
+          return { items: [metricStream('instance-1', 42)] };
+        },
+      }),
+      withRetry: async (operation, signal) => {
+        try {
+          return await operation(signal);
+        } catch {
+          return operation(signal);
+        }
+      },
+      withRateLimit: (_job, operation) => {
+        rateLimitedAttempts += 1;
+        return operation();
+      },
+    });
+
+    await materializeSamples(result);
+    expect(rateLimitedAttempts).toBe(2);
+    expect(result.apiCallCount).toBe(2);
+    expect(providerCalls).toBe(2);
+  });
+
   test('reports bounded progress while a streaming collection is active', async () => {
     const progress: Array<{ readonly activeTasks?: number; readonly completedTasks?: number; readonly totalTasks?: number }> = [];
     const result = await collectOciTechnicalMetrics(buildJob({
@@ -101,7 +133,7 @@ describe('OCI monitoring collector', () => {
       ociMetricDefinitions: [metricDefinition('instance-1')],
     }), {
       createClient: asyncClient(() => ({ items: [metricStream('instance-1', 42)] })),
-      withRetry: (operation) => operation(),
+      withRetry: (operation) => operation(new AbortController().signal),
       withRateLimit: (_job, operation, signal) => {
         observedSignal = signal;
         return operation();
@@ -109,7 +141,7 @@ describe('OCI monitoring collector', () => {
     }, { signal: controller.signal });
 
     await materializeSamples(result);
-    expect(observedSignal).toBe(controller.signal);
+    expect(observedSignal).toBeInstanceOf(AbortSignal);
   });
 
   test('uses the provider-native statistic in each OCI query', async () => {

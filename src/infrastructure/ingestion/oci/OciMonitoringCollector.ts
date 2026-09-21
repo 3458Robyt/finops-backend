@@ -189,29 +189,31 @@ async function collectOciTask(
     : { ...job, requestContext: { ...(job.requestContext ?? {}), regionId: taskRegion } };
   const query = task.query;
   const request = (compartmentId: string, compartmentIdInSubtree = false) => dependencies.withRetry(async (attemptSignal) => {
-    const taskClient = dependencies.createClient(taskJob, attemptSignal);
-    try {
-      return await taskClient.summarizeMetricsData({
-        compartmentId,
-        ...(compartmentIdInSubtree ? { compartmentIdInSubtree: true } : {}),
-        summarizeMetricsDataDetails: {
-          namespace: definition.namespace,
-          query,
-          startTime: requestRange.startTime,
-          endTime: requestRange.endTime,
-          resolution: collection.interval,
-        },
-      });
-    } finally {
-      taskClient.close?.();
-    }
-  }, options.signal);
-  const execute = async (compartmentId: string, compartmentIdInSubtree = false) => {
-    stats.apiCallCount += 1;
-    const operation = () => request(compartmentId, compartmentIdInSubtree);
+    const operation = async () => {
+      stats.apiCallCount += 1;
+      const taskClient = dependencies.createClient(taskJob, attemptSignal);
+      try {
+        return await taskClient.summarizeMetricsData({
+          compartmentId,
+          ...(compartmentIdInSubtree ? { compartmentIdInSubtree: true } : {}),
+          summarizeMetricsDataDetails: {
+            namespace: definition.namespace,
+            query,
+            startTime: requestRange.startTime,
+            endTime: requestRange.endTime,
+            resolution: collection.interval,
+          },
+        });
+      } finally {
+        taskClient.close?.();
+      }
+    };
     return dependencies.withRateLimit === undefined
       ? operation()
-      : dependencies.withRateLimit(taskJob, operation, options.signal);
+      : dependencies.withRateLimit(taskJob, operation, attemptSignal);
+  }, options.signal);
+  const execute = async (compartmentId: string, compartmentIdInSubtree = false) => {
+    return request(compartmentId, compartmentIdInSubtree);
   };
   let response;
   try {

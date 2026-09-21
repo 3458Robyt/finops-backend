@@ -64,4 +64,29 @@ describe('IngestionRateCoordinator', () => {
     expect(addListener).toHaveBeenCalled();
     expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function));
   });
+
+  test('backs off after an induced provider rate limit', async () => {
+    vi.useFakeTimers();
+    try {
+      const coordinator = new IngestionRateCoordinator();
+      const limit = { requestsPerSecond: 1, maxConcurrent: 1 };
+      const throttledError = Object.assign(new Error('Too many requests'), { statusCode: 429 });
+
+      await expect(coordinator.run('oci:tenancy:region:monitoring', limit, async () => {
+        throw throttledError;
+      })).rejects.toBe(throttledError);
+
+      let completed = false;
+      const next = coordinator.run('oci:tenancy:region:monitoring', limit, async () => 'ok')
+        .then(() => { completed = true; });
+
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(completed).toBe(false);
+      await vi.advanceTimersByTimeAsync(600);
+      await next;
+      expect(completed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

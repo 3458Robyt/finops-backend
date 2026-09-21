@@ -289,6 +289,7 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
     const rows = await this.prisma.costForecast.findMany({
       where: {
         tenantId,
+        ...(filters.from !== undefined || filters.to !== undefined ? { forecastMonth: { ...(filters.from !== undefined ? { gte: filters.from } : {}), ...(filters.to !== undefined ? { lt: filters.to } : {}) } } : {}),
         ...(filters.provider !== undefined ? { provider: filters.provider as never } : {}),
         ...(filters.cloudAccountId !== undefined ? { cloudAccountId: filters.cloudAccountId } : {}),
         ...(filters.serviceName !== undefined ? { serviceName: filters.serviceName } : {}),

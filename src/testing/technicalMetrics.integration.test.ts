@@ -69,6 +69,14 @@ describe('technical metrics PostgreSQL integration', () => {
         where: { tenantId: tenantA!.id, metricName: 'CPUUtilization', statistic: 'MEAN' },
         orderBy: { sampledAt: 'asc' },
       });
+      // OCI/AWS counters such as bytes and requests can exceed DECIMAL(24,9).
+      // Keep this regression in the real PostgreSQL suite so a migration that
+      // narrows either raw or rollup precision fails before production.
+      await prisma.$executeRaw`
+        UPDATE resource_metric_samples
+        SET value = 9000000000000000.123456789
+        WHERE id = ${firstSample.id}
+      `;
       await prisma.$executeRaw`
         INSERT INTO resource_metric_rollups (
           id, tenant_id, cloud_connection_id, cloud_resource_id, provider,

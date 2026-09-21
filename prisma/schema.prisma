@@ -1250,7 +1250,10 @@ model ResourceMetricSample {
   metricName         String              @map("metric_name")
   metricUnit         String?             @map("metric_unit")
   statistic          MetricStatistic     @default(MEAN)
-  value              Decimal             @db.Decimal(24, 9)
+  // Provider counters (bytes, requests, cumulative units) can exceed the
+  // precision used by cost values. Keep nine decimal places without
+  // overflowing on large real-world metric streams.
+  value              Decimal             @db.Decimal(38, 9)
   sampledAt          DateTime            @map("sampled_at") @db.Timestamptz(6)
   granularitySeconds Int                 @default(1800) @map("granularity_seconds")
   sourceType         IngestionSourceType @default(TECHNICAL_METRIC) @map("source_type")
@@ -1293,7 +1296,7 @@ model ResourceMetricStreamSummary {
   nonZeroSampleCount Int             @default(0) @map("non_zero_sample_count")
   firstSampledAt     DateTime?       @map("first_sampled_at") @db.Timestamptz(6)
   lastSampledAt      DateTime?       @map("last_sampled_at") @db.Timestamptz(6)
-  latestValue        Decimal?        @map("latest_value") @db.Decimal(24, 9)
+  latestValue        Decimal?        @map("latest_value") @db.Decimal(38, 9)
   state              String          @default("NO_SAMPLES")
   lastIngestedAt     DateTime?       @map("last_ingested_at") @db.Timestamptz(6)
   updatedAt          DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)

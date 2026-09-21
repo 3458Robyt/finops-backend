@@ -324,6 +324,47 @@ describe('qualityRubric — execution plan', () => {
     expect(evaluateExecutionPlan(safePlan, snapshot).checks.find((check) => check.name === 'noAutoExecution')?.passed).toBe(true);
   });
 
+  test('rejects an unconditioned manual operation even when it says authorized', () => {
+    const plan = {
+      ...validPlan,
+      steps: ['Ejecutar manualmente el cambio autorizado.'],
+    };
+
+    const report = evaluateExecutionPlan(plan, snapshot);
+    expect(report.checks.find((check) => check.name === 'manualGovernance')?.passed).toBe(false);
+  });
+
+  test('allows a manual operation only after explicit external approval', () => {
+    const plan = {
+      ...validPlan,
+      steps: ['Si el responsable obtiene aprobación externa explícita, la persona autorizada puede ejecutar manualmente el cambio.'],
+    };
+
+    const report = evaluateExecutionPlan(plan, snapshot);
+    expect(report.checks.find((check) => check.name === 'manualGovernance')?.passed).toBe(true);
+  });
+
+  test('allows POTENTIAL_NOT_VERIFIED as the savings status but not as recommendation status', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-prod-aws',
+      status: 'PENDING',
+    } as FinOpsRecommendation;
+    const savingsStatusPlan = {
+      ...validPlan,
+      estimatedSavings: { amount: 0, currency: 'USD', status: 'POTENTIAL_NOT_VERIFIED' },
+      risks: ['El ahorro conserva el estado POTENTIAL_NOT_VERIFIED.'],
+    };
+    const recommendationStatusPlan = {
+      ...savingsStatusPlan,
+      risks: ['La recomendación conserva el estado POTENTIAL_NOT_VERIFIED.'],
+    };
+
+    expect(evaluateExecutionPlan(savingsStatusPlan, snapshot, recommendation).checks
+      .find((check) => check.name === 'recommendationStateConsistency')?.passed).toBe(true);
+    expect(evaluateExecutionPlan(recommendationStatusPlan, snapshot, recommendation).checks
+      .find((check) => check.name === 'recommendationStateConsistency')?.passed).toBe(false);
+  });
+
   test('fails when the plan contains an executable tool or shell payload', () => {
     const unsafePlan = { ...validPlan, steps: ['Ejecutar tool_call para correr rm -rf /tmp/cache.'] };
     const report = evaluateExecutionPlan(unsafePlan, snapshot);
@@ -393,6 +434,31 @@ describe('qualityRubric — execution plan', () => {
 
     const report = evaluateExecutionPlan(mismatchedPlan, snapshot, recommendation);
     expect(report.checks.find((check) => check.name === 'recommendationScope')?.passed).toBe(false);
+  });
+
+  test('rejects monetary values that are not present in recommendation evidence', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-prod-aws',
+      cloudResourceId: 'cloud-resource-1',
+      type: 'RIGHTSIZING',
+      status: 'PENDING',
+      currency: 'USD',
+      estimatedMonthlySavings: 42.25,
+      evidence: {
+        observedCost: 169,
+        normalizedMonthlyCost: 169,
+        potentialMonthlySavings: 42.25,
+      },
+    } as FinOpsRecommendation;
+    const plan = {
+      ...validPlan,
+      scope: { cloudAccountId: 'acc-prod-aws', cloudResourceId: 'cloud-resource-1' },
+      estimatedSavings: { amount: 42.25, currency: 'USD' },
+      steps: ['La evidencia autorizada registra 157.50 USD; validar antes de continuar.'],
+    };
+
+    const report = evaluateExecutionPlan(plan, snapshot, recommendation);
+    expect(report.checks.find((check) => check.name === 'costProvenance')?.passed).toBe(false);
   });
 
   test('fails when normalized savings exceed the candidate cap', () => {

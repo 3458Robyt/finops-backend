@@ -236,6 +236,7 @@ export class FinOpsArtifactGenerator {
   ): Promise<AuditedPlanResult> {
     const firstRawResponse = await this.aiRunner.generateExecutionPlan(systemPrompt);
     let content = parseExecutionPlan(firstRawResponse, recommendation);
+    let deterministicQuality = evaluateExecutionPlan(content, snapshot, recommendation);
     let auditReport = await this.aiRunner.auditArtifact({
       artifactType: 'execution_plan',
       snapshot,
@@ -245,13 +246,19 @@ export class FinOpsArtifactGenerator {
       artifact: content,
     });
 
-    const repairInstructions = readRepairInstructions(auditReport);
+    const repairInstructions = [
+      ...readRepairInstructions(auditReport),
+      ...deterministicQuality.checks
+        .filter((check) => !check.passed)
+        .map((check) => `Control determinista ${check.name}: ${check.detail}`),
+    ];
     if (
-      (auditReport.verdict === 'NEEDS_REVISION' || auditReport.verdict === 'REJECTED')
-      && repairInstructions.length > 0
+      repairInstructions.length > 0
+      && (!deterministicQuality.passed || auditReport.verdict === 'NEEDS_REVISION' || auditReport.verdict === 'REJECTED')
     ) {
-      const revisedRaw = await this.aiRunner.reviseExecutionPlan(systemPrompt, repairInstructions);
+      const revisedRaw = await this.aiRunner.reviseExecutionPlan(systemPrompt, repairInstructions, content);
       content = parseExecutionPlan(revisedRaw, recommendation);
+      deterministicQuality = evaluateExecutionPlan(content, snapshot, recommendation);
       auditReport = await this.aiRunner.auditArtifact({
         artifactType: 'execution_plan',
         snapshot,
@@ -266,7 +273,7 @@ export class FinOpsArtifactGenerator {
       content,
       auditReport: this.combineWithDeterministicQuality(
         auditReport,
-        evaluateExecutionPlan(content, snapshot, recommendation),
+        deterministicQuality,
       ),
       firstRawResponse,
     };

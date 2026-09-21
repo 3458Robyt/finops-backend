@@ -110,7 +110,11 @@ export class FinOpsArtifactAiRunner {
     });
   }
 
-  public reviseExecutionPlan(systemPrompt: string, requiredChanges: readonly string[]): Promise<string> {
+  public reviseExecutionPlan(
+    systemPrompt: string,
+    requiredChanges: readonly string[],
+    currentPlan?: Record<string, unknown>,
+  ): Promise<string> {
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
@@ -126,7 +130,11 @@ export class FinOpsArtifactAiRunner {
           content: [
             'Corrige el plan de ejecucion usando exactamente estos cambios requeridos por auditoria.',
             'Mantiene el alcance manual y no prometas ejecucion automatica.',
+            'Conserva los hechos monetarios y el estado de gestion de la recomendacion; no inventes importes, periodos ni estados.',
+            'No copies cifras del plan actual si no aparecen en la recomendacion original. Si hay conflicto entre fuentes, elimina la cifra conflictiva y solicita reconciliacion.',
+            'La Recomendacion original tiene prioridad sobre el contexto y sobre el plan actual para cuenta, recurso, moneda, periodo e importes. Usa únicamente los importes permitidos indicados por los controles deterministas.',
             JSON.stringify(requiredChanges),
+            ...(currentPlan === undefined ? [] : ['Plan actual que debes corregir:', JSON.stringify(currentPlan)]),
           ].join('\n'),
         },
       ],

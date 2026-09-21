@@ -169,9 +169,14 @@ export function buildExecutionPlanSystemPrompt(
   return [
     'Eres un arquitecto FinOps senior para FinOps Demo.',
     'Debes generar un plan de ejecucion manual, gobernado y en español.',
+    'El plan es una propuesta/checklist y nunca es una autorizacion ni una ejecucion.',
     'No afirmes que el sistema ejecutara cambios automaticamente en AWS, OCI u otro proveedor.',
+    'No escribas instrucciones no condicionadas como "ejecutar manualmente el cambio autorizado", "aplicar el cambio" o "redimensionar la instancia". Si una operacion futura es pertinente, describela como una posibilidad posterior condicionada a una aprobacion externa explicita del responsable y a una validacion previa.',
+    'Empieza por comprobaciones read-only, documenta la aprobacion externa, conserva un snapshot de la configuracion actual y define rollback antes de describir una operacion potencial.',
     'No devuelvas tool_calls, function_calls, SQL, shell, scripts ni codigo ejecutable; el plan solo describe pasos manuales para una persona autorizada.',
     'Usa solo la recomendacion, evidencia y contexto FOCUS proporcionados. No inventes recursos, cuentas, metricas tecnicas ni proveedores.',
+    'Usa exactamente los importes, moneda y periodo de la recomendacion original. Si el snapshot y la recomendacion presentan importes distintos, no copies la cifra conflictiva del snapshot: omite ese importe y solicita reconciliacion antes de continuar.',
+    'POTENTIAL_NOT_VERIFIED describe el estado del ahorro estimado, no el estado de la recomendacion. Conserva el estado de gestion original de la recomendacion (por ejemplo PENDING).',
     untrustedContextInstruction,
     'Si la recomendacion solo tiene evidencia FOCUS, indica que CPU, memoria, IOPS o throughput deben validarse fuera de FOCUS antes de ejecutar cambios tecnicos.',
     'Devuelve solo JSON estricto con esta forma:',
@@ -180,6 +185,7 @@ export function buildExecutionPlanSystemPrompt(
     JSON.stringify(compactSnapshot(snapshot), null, 2),
     'Recomendacion:',
     JSON.stringify(recommendation, null, 2),
+    'Regla final de trazabilidad: la Recomendacion original tiene prioridad sobre el Contexto de costos para cuenta, recurso, moneda, periodo e importes. No copies una cifra o identificador que solo aparezca en el Contexto de costos.',
   ].join('\n');
 }
 
@@ -223,8 +229,11 @@ export function buildAuditSystemPrompt(
         'Para un execution_plan, audita el plan y la recomendacion original como artefactos relacionados. El plan no necesita repetir evidence.candidateId, sourceFacts, assumptions ni confidence: usa la evidencia de la Recomendacion original para comprobar la trazabilidad.',
         'Comprueba que scope.cloudAccountId coincida con la cuenta de la Recomendacion original y que scope.cloudResourceId o scope.externalResourceId, cuando existan, no contradigan el recurso objetivo.',
         'Comprueba que prerequisites, steps, validation, risks, rollback y successCriteria existan, sean concretos y describan una operación manual. El plan no autoriza ni ejecuta cambios.',
+        'Rechaza cualquier paso que ordene ejecutar, aplicar, cambiar, detener, eliminar o redimensionar un recurso sin una condicion explicita de aprobacion externa; "autorizado" por si solo no demuestra una aprobacion.',
         'Si la recomendacion requiere validacion tecnica, el plan debe exigir validacion de CPU, memoria, red, disco, disponibilidad u otra métrica pertinente antes de cambiar capacidad; no conviertas FOCUS en una métrica técnica.',
         'El campo estimatedSavings es informativo y debe ser coherente con la recomendacion original. Si la recomendacion contiene potentialMonthlySavings positivo, copia exactamente ese importe y añade status=POTENTIAL_NOT_VERIFIED y una nota de que no es ahorro garantizado; no lo reemplaces por 0. Si no existe potencial cuantificado, usa amount=0 y dilo explícitamente.',
+        'Comprueba toda cifra monetaria escrita en summary, steps, validation, risks, rollback o successCriteria contra los importes autorizados en la recomendacion original. La moneda, el periodo y la fuente deben ser explicitos; una cifra no presente en la evidencia es un bloqueo.',
+        'No describas POTENTIAL_NOT_VERIFIED como estado de la recomendacion: es solamente el estado del ahorro estimado.',
       ];
   const responseShape = artifactType === 'recommendations'
     ? '{"verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":[],"requiredChanges":[],"recommendationIndexes":[0],"repairInstructions":[],"candidateAudits":[{"index":0,"candidateId":"resource-1","verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":[],"requiredChanges":[]}]}'

@@ -13,6 +13,17 @@ const autoExecutionPatterns = [
   /\bsin\s+(?:ninguna\s+)?intervencion\s+manual\b/i,
 ];
 
+const unconditionedManualOperationPatterns = [
+  /\b(?:ejecutar|aplicar|realizar|efectuar)\s+(?:manualmente\s+)?(?:el\s+)?(?:cambio|ajuste|resize|redimensionamiento|apagado|reinicio)\b/i,
+  /\b(?:cambiar|reducir|aumentar|redimensionar|detener|terminar|eliminar)\s+(?:directamente\s+)?(?:la\s+)?(?:capacidad|instancia|recurso|servidor|tama[nñ]o)\b/i,
+];
+
+const explicitApprovalPattern = /\b(?:si|solo\s+despu[eé]s\s+de|una\s+vez\s+que|previa|bajo)\b[\s\S]{0,90}\b(?:aprobaci[oó]n|autorizaci[oó]n|confirmaci[oó]n)\b/i;
+const explicitNegativeOperationPattern = /\b(?:no|nunca|jam[aá]s)\b[\s\S]{0,35}\b(?:ejecutar|aplicar|realizar|cambiar|redimensionar|detener|eliminar)\b/i;
+const monetaryFieldPattern = /(?:cost|savings|amount|price|total|value)/i;
+const monetaryPrefixPattern = /\b(USD|COP|EUR|GBP|MXN|BRL|CAD|AUD)\s*([0-9][0-9.,]*)/gi;
+const monetarySuffixPattern = /\b([0-9][0-9.,]*)\s*(USD|COP|EUR|GBP|MXN|BRL|CAD|AUD)\b/gi;
+
 export function evaluateExecutionPlan(
   plan: Record<string, unknown>,
   snapshot: CostAnalyticsSnapshot,
@@ -42,12 +53,13 @@ export function evaluateExecutionPlan(
     detail: scopeOk ? 'El alcance apunta a una cuenta del snapshot.' : 'El alcance no referencia una cuenta válida.',
   });
 
+  const recommendationScopeOk = matchesRecommendationScope(scope, recommendation);
   checks.push({
     name: 'recommendationScope',
-    passed: matchesRecommendationScope(scope, recommendation),
-    detail: matchesRecommendationScope(scope, recommendation)
+    passed: recommendationScopeOk,
+    detail: recommendationScopeOk
       ? 'El plan no contradice la cuenta o recurso de la recomendación objetivo.'
-      : 'El plan contradice la cuenta o el recurso canónico de la recomendación objetivo.',
+      : describeScopeMismatch(scope, recommendation),
   });
 
   const noAuto = !containsAutoExecution(plan);
@@ -55,6 +67,33 @@ export function evaluateExecutionPlan(
     name: 'noAutoExecution',
     passed: noAuto,
     detail: noAuto ? 'El plan no promete ejecución automática.' : 'El plan promete ejecución automática (prohibido).',
+  });
+
+  const noUnconditionedOperation = !containsUnconditionedManualOperation(plan);
+  checks.push({
+    name: 'manualGovernance',
+    passed: noUnconditionedOperation,
+    detail: noUnconditionedOperation
+      ? 'Las operaciones potenciales están condicionadas a aprobación externa o se expresan como validación.'
+      : 'El plan contiene una instrucción operativa no condicionada a aprobación externa.',
+  });
+
+  const recommendationStateOk = matchesRecommendationState(plan, recommendation);
+  checks.push({
+    name: 'recommendationStateConsistency',
+    passed: recommendationStateOk,
+    detail: recommendationStateOk
+      ? 'El plan no confunde el estado de la recomendación con el estado del ahorro.'
+      : 'El plan confunde POTENTIAL_NOT_VERIFIED con el estado de gestión de la recomendación.',
+  });
+
+  const costProvenanceIssue = findCostProvenanceIssue(plan, recommendation);
+  const costProvenanceOk = costProvenanceIssue === undefined;
+  checks.push({
+    name: 'costProvenance',
+    passed: costProvenanceOk,
+    detail: costProvenanceIssue
+      ?? 'Los importes monetarios del plan coinciden con hechos autorizados de la recomendación.',
   });
 
   const noExecutablePayload = !containsUnsafeExecutionPayload(plan);
@@ -118,4 +157,166 @@ function readStringEvidence(evidence: Record<string, unknown>, field: string): s
 export function containsAutoExecution(plan: Record<string, unknown>): boolean {
   const haystack = JSON.stringify(plan);
   return autoExecutionPatterns.some((pattern) => pattern.test(haystack));
+}
+
+export function containsUnconditionedManualOperation(plan: Record<string, unknown>): boolean {
+  const operationalText = collectText({
+    steps: plan['steps'],
+    validation: plan['validation'],
+    rollback: plan['rollback'],
+  });
+
+  return operationalText
+    .split(/[.!?\n]+/u)
+    .some((sentence) => {
+      if (!unconditionedManualOperationPatterns.some((pattern) => pattern.test(sentence))) {
+        return false;
+      }
+
+      return !explicitApprovalPattern.test(sentence) && !explicitNegativeOperationPattern.test(sentence);
+    });
+}
+
+function matchesRecommendationState(
+  plan: Record<string, unknown>,
+  recommendation: FinOpsRecommendation | undefined,
+): boolean {
+  if (recommendation === undefined) return true;
+
+  const text = collectText(plan);
+  const incorrectlyReusedSavingsStatus = [
+    /\b(?:estado|estatus)\s+(?:de\s+)?(?:gesti[oó]n\s+)?(?:de\s+)?la\s+recomendaci[oó]n\b[\s\S]{0,60}\bPOTENTIAL_NOT_VERIFIED\b/i,
+    /\b(?:la\s+recomendaci[oó]n|recomendaci[oó]n\s+original)\b[\s\S]{0,60}\b(?:estado|estatus)\b[\s\S]{0,60}\bPOTENTIAL_NOT_VERIFIED\b/i,
+  ].some((pattern) => pattern.test(text));
+  return !incorrectlyReusedSavingsStatus;
+}
+
+function describeScopeMismatch(
+  scope: Record<string, unknown>,
+  recommendation: FinOpsRecommendation | undefined,
+): string {
+  if (recommendation === undefined) return 'El plan contradice la cuenta o el recurso canónico de la recomendación objetivo.';
+
+  const actualAccount = readScopeString(scope, 'cloudAccountId') ?? '(ausente)';
+  const actualResource = readScopeString(scope, 'cloudResourceId')
+    ?? readScopeString(scope, 'externalResourceId')
+    ?? readScopeString(scope, 'resourceId')
+    ?? '(ausente)';
+  const expectedResource = recommendation.cloudResourceId ?? (
+    isRecord(recommendation.evidence)
+      ? readStringEvidence(recommendation.evidence, 'externalResourceId') ?? '(sin recurso enlazado)'
+      : '(sin recurso enlazado)'
+  );
+  return `El alcance no coincide. Usa exactamente cloudAccountId=${recommendation.cloudAccountId} y recurso=${expectedResource}; recibió cloudAccountId=${actualAccount} y recurso=${actualResource}.`;
+}
+
+function findCostProvenanceIssue(
+  plan: Record<string, unknown>,
+  recommendation: FinOpsRecommendation | undefined,
+): string | undefined {
+  if (recommendation === undefined) return undefined;
+
+  const authorizedFacts = collectAuthorizedMonetaryFacts(recommendation);
+  if (authorizedFacts.length === 0) return undefined;
+  const authorizedText = authorizedFacts
+    .map((fact) => `${fact.amount} ${fact.currency}`)
+    .join(', ');
+
+  const estimatedSavings = isRecord(plan['estimatedSavings']) ? plan['estimatedSavings'] : undefined;
+  const estimatedAmount = typeof estimatedSavings?.['amount'] === 'number'
+    ? estimatedSavings['amount']
+    : undefined;
+  const estimatedCurrency = typeof estimatedSavings?.['currency'] === 'string'
+    ? estimatedSavings['currency'].toUpperCase()
+    : undefined;
+
+  if (
+    estimatedAmount !== undefined
+    && estimatedAmount > 0
+    && !authorizedFacts.some((fact) => sameMoney(fact.amount, fact.currency, estimatedAmount, estimatedCurrency))
+  ) {
+    return `El importe estructurado estimatedSavings no está autorizado. Importes permitidos: ${authorizedText}.`;
+  }
+
+  const unauthorizedMention = extractMoneyMentions(collectText(plan)).find((mention) => (
+    mention.amount !== 0
+      && !authorizedFacts.some((fact) => sameMoney(fact.amount, fact.currency, mention.amount, mention.currency))
+  ));
+
+  return unauthorizedMention === undefined
+    ? undefined
+    : `El importe ${unauthorizedMention.amount} ${unauthorizedMention.currency} no está autorizado. Importes permitidos: ${authorizedText}.`;
+}
+
+interface MonetaryFact {
+  readonly amount: number;
+  readonly currency: string;
+}
+
+function collectAuthorizedMonetaryFacts(value: unknown, inheritedCurrency?: string, key?: string): MonetaryFact[] {
+  if (typeof value === 'number' && key !== undefined && monetaryFieldPattern.test(key) && inheritedCurrency !== undefined) {
+    return [{ amount: value, currency: inheritedCurrency.toUpperCase() }];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectAuthorizedMonetaryFacts(item, inheritedCurrency, key));
+  }
+
+  if (!isRecord(value)) return [];
+
+  const currency = typeof value['currency'] === 'string'
+    ? value['currency']
+    : inheritedCurrency;
+
+  return Object.entries(value).flatMap(([entryKey, entryValue]) => (
+    collectAuthorizedMonetaryFacts(entryValue, currency, entryKey)
+  ));
+}
+
+function extractMoneyMentions(text: string): MonetaryFact[] {
+  const mentions: MonetaryFact[] = [];
+  for (const match of text.matchAll(monetaryPrefixPattern)) {
+    const currency = match[1];
+    const amount = parseLocalizedAmount(match[2]);
+    if (currency !== undefined && amount !== undefined) mentions.push({ amount, currency });
+  }
+  for (const match of text.matchAll(monetarySuffixPattern)) {
+    const amount = parseLocalizedAmount(match[1]);
+    const currency = match[2];
+    if (currency !== undefined && amount !== undefined) mentions.push({ amount, currency });
+  }
+  return mentions;
+}
+
+function parseLocalizedAmount(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const normalized = raw.replace(/\s/gu, '');
+  const lastComma = normalized.lastIndexOf(',');
+  const lastDot = normalized.lastIndexOf('.');
+  let value = normalized;
+
+  if (lastComma >= 0 && lastDot >= 0) {
+    value = lastComma > lastDot
+      ? normalized.replace(/\./gu, '').replace(',', '.')
+      : normalized.replace(/,/gu, '');
+  } else if (lastComma >= 0) {
+    const decimals = normalized.length - lastComma - 1;
+    value = decimals === 2 ? normalized.replace(',', '.') : normalized.replace(/,/gu, '');
+  } else {
+    value = normalized.replace(/,/gu, '');
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function sameMoney(
+  leftAmount: number,
+  leftCurrency: string,
+  rightAmount: number,
+  rightCurrency: string | undefined,
+): boolean {
+  return rightCurrency !== undefined
+    && leftCurrency.toUpperCase() === rightCurrency.toUpperCase()
+    && Math.abs(leftAmount - rightAmount) <= Math.max(0.01, Math.abs(leftAmount) * 0.0001);
 }

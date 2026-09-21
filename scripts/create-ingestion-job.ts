@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   const window = parseWindow(args, hours);
   const prisma = getPrismaClient();
 
-  const { connection, job } = await runWithDatabaseContext(
+  const { connection, job, reused } = await runWithDatabaseContext(
     { workerId: 'create-ingestion-job-cli', role: 'MASTER_ADMIN' },
     async () => {
       const connection = await prisma.cloudConnection.findFirstOrThrow({
@@ -36,33 +36,54 @@ async function main(): Promise<void> {
         ...(requestContext === undefined ? {} : { requestContext }),
       });
 
-      const job = await prisma.ingestionJob.create({
-        data: {
-          tenantId: connection.tenantId,
-          cloudConnectionId: connection.id,
-          sourceType,
-          targetStart: window.start,
-          targetEnd: window.end,
-          maxAttempts,
-          configurationHash,
-          ...(requestContext === undefined ? {} : { requestContext }),
-        },
-        select: {
-          id: true,
-          cloudConnectionId: true,
-          sourceType: true,
-          status: true,
-          targetStart: true,
-          targetEnd: true,
-        },
-      });
-      return { connection, job };
+      const jobWhere = {
+        cloudConnectionId: connection.id,
+        sourceType,
+        targetStart: window.start,
+        targetEnd: window.end,
+        configurationHash,
+        archivedAt: null,
+        status: { in: ['PENDING', 'RUNNING', 'SUCCESS'] as const },
+      };
+      const select = {
+        id: true,
+        cloudConnectionId: true,
+        sourceType: true,
+        status: true,
+        targetStart: true,
+        targetEnd: true,
+      } as const;
+      const existing = await prisma.ingestionJob.findFirst({ where: jobWhere, orderBy: { createdAt: 'desc' }, select });
+      if (existing !== null) return { connection, job: existing, reused: true };
+
+      try {
+        const job = await prisma.ingestionJob.create({
+          data: {
+            tenantId: connection.tenantId,
+            cloudConnectionId: connection.id,
+            sourceType,
+            targetStart: window.start,
+            targetEnd: window.end,
+            maxAttempts,
+            configurationHash,
+            ...(requestContext === undefined ? {} : { requestContext }),
+          },
+          select,
+        });
+        return { connection, job, reused: false };
+      } catch (error: unknown) {
+        if (!isUniqueConstraintError(error)) throw error;
+        const concurrent = await prisma.ingestionJob.findFirst({ where: jobWhere, orderBy: { createdAt: 'desc' }, select });
+        if (concurrent === null) throw error;
+        return { connection, job: concurrent, reused: true };
+      }
     },
   );
 
   console.log(JSON.stringify({
     success: true,
     provider: connection.providerCode,
+    ...(reused ? { reused: true, message: 'Ya existe un job para esta ventana y configuración; se devuelve el job existente.' } : { reused: false }),
     job,
   }, null, 2));
 
@@ -132,6 +153,10 @@ function parsePositiveInteger(value: string, field: string): number {
   }
 
   return parsed;
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002';
 }
 
 main().catch((error: unknown) => {

@@ -81,6 +81,36 @@ describe('collectOciResourceSearchInventory', () => {
     expect(result.resources.map((resource) => resource.externalResourceId)).toEqual(['included-id']);
     expect(result.filteredResourceCount).toBe(2);
   });
+
+  test('normalizes OCI Resource Search date strings without losing the resource', async () => {
+    const result = await collectOciResourceSearchInventory(buildJob(), {
+      createClient: () => ({
+        searchResources: async () => ({
+          resourceSummaryCollection: {
+            items: [{
+              resourceType: 'instance',
+              identifier: 'ocid1.instance.oc1.test',
+              compartmentId: 'tenancy-1',
+              displayName: 'Instancia con fecha serializada',
+              timeCreated: '2026-09-21T00:00:00.000Z',
+              lifecycleState: 'RUNNING',
+            }],
+          },
+        }),
+      }),
+      withRetry: (operation) => operation(),
+    });
+
+    expect(result.warnings).toEqual([]);
+    expect(result.resources).toEqual([
+      expect.objectContaining({
+        externalResourceId: 'ocid1.instance.oc1.test',
+        rawResource: expect.objectContaining({
+          timeCreated: '2026-09-21T00:00:00.000Z',
+        }),
+      }),
+    ]);
+  });
 });
 
 function buildJob(metadata: Readonly<Record<string, unknown>> = {}): CloudIngestionJobContext {

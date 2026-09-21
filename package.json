@@ -39,6 +39,7 @@
     "test:canary:oci-onboarding": "tsx scripts/testing/oci-onboarding-canary.ts",
     "test:canary:oci-gap": "tsx scripts/testing/oci-gap-readonly-canary.ts",
     "test:canary:messaging": "tsx scripts/testing/messaging-live-canary.ts",
+    "test:fixtures:prepare": "tsx scripts/testing/prepare-e2e-schema.ts",
     "test:fixtures:create": "tsx scripts/testing/create-e2e-fixtures.ts",
     "test:fixtures:cleanup": "tsx scripts/testing/cleanup-e2e-fixtures.ts",
     "test:all": "npm run check:architecture && npm run check:release-hygiene && npm run typecheck && npm run test:unit && npm run test:ai:offline && npm run build",

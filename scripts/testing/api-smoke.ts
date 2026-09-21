@@ -32,6 +32,35 @@ const billingPeriod = manifest.billingPeriod;
 
 await check('health', `${apiBaseUrl.replace(/\/api\/v1$/, '')}/health`);
 await check('auth tenants', '/auth/tenants', token);
+const masterJobs = await request('/master-admin/ingestion-jobs?limit=20', { token });
+assertOk(masterJobs, 'master ingestion jobs');
+const masterJobsBody = await masterJobs.response.json() as {
+  readonly jobs: readonly { readonly id: string; readonly status: string }[];
+};
+const reprocessableJob = masterJobsBody.jobs.find((job) => job.status === 'FAILED');
+if (reprocessableJob === undefined) throw new Error('Fixture did not expose a failed ingestion job.');
+const reprocess = await request(`/master-admin/ingestion-jobs/${encodeURIComponent(reprocessableJob.id)}/reprocess`, {
+  method: 'POST',
+  token,
+  body: JSON.stringify({ reason: 'API smoke: validar reintento de ventana con error de proveedor.' }),
+});
+if (reprocess.response.status !== 202) throw new Error(`Expected first reprocess to return 202, got ${reprocess.response.status}.`);
+const reprocessBody = await reprocess.response.json() as { readonly originalJobId: string; readonly job: { readonly id: string; readonly status: string }; readonly reusedActiveJob: boolean };
+if (reprocessBody.originalJobId !== reprocessableJob.id || reprocessBody.reusedActiveJob || reprocessBody.job.status !== 'PENDING') {
+  throw new Error('First reprocess did not create the expected pending replacement job.');
+}
+results.push({ name: 'master ingestion reprocess creates pending job', status: reprocess.response.status, ok: true, ms: reprocess.ms });
+const repeatedReprocess = await request(`/master-admin/ingestion-jobs/${encodeURIComponent(reprocessableJob.id)}/reprocess`, {
+  method: 'POST',
+  token,
+  body: JSON.stringify({ reason: 'API smoke: repetir solicitud y comprobar idempotencia.' }),
+});
+if (repeatedReprocess.response.status !== 200) throw new Error(`Expected repeated reprocess to return 200, got ${repeatedReprocess.response.status}.`);
+const repeatedBody = await repeatedReprocess.response.json() as { readonly reusedActiveJob: boolean; readonly job: { readonly id: string; readonly status: string } };
+if (!repeatedBody.reusedActiveJob || repeatedBody.job.id !== reprocessBody.job.id || repeatedBody.job.status !== 'PENDING') {
+  throw new Error('Repeated reprocess did not reuse the active replacement job.');
+}
+results.push({ name: 'master ingestion reprocess reuses active window', status: repeatedReprocess.response.status, ok: true, ms: repeatedReprocess.ms });
 await check('kpis savings', '/kpis/savings', token);
 await check('costs', '/costs', token);
 const allocationRuleInput = { name: 'E2E compute allocation', priority: 10, status: 'DRAFT', serviceName: 'Amazon Elastic Compute Cloud', costCenter: 'E2E-CC' };

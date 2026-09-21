@@ -224,6 +224,31 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
     periodStart,
   });
 
+  const tenantAConnection = await prisma.cloudConnection.findFirst({
+    where: { tenantId: tenantA.id },
+    select: { id: true },
+  });
+  if (tenantAConnection === null) throw new Error('E2E fixture connection was not created.');
+  await prisma.ingestionJob.create({
+    data: {
+      tenantId: tenantA.id,
+      cloudConnectionId: tenantAConnection.id,
+      sourceType: 'BILLING_EXPORT',
+      status: 'FAILED',
+      dataOutcome: 'PROVIDER_ERROR',
+      requestedByUserId: user.id,
+      targetStart: periodStart,
+      targetEnd: new Date(periodStart.getTime() + 60 * 60 * 1000),
+      attempts: 3,
+      maxAttempts: 3,
+      priority: 50,
+      errorMessage: 'Fixture provider error for audited reprocessing.',
+      requestContext: { e2eRunId: runId, fixture: true },
+      progress: { phase: 'FAILED', message: 'Fixture job available for reprocessing tests.' },
+      completedAt: new Date(),
+    },
+  });
+
   await seedTenantData(prisma, {
     runId,
     tenantId: tenantB.id,

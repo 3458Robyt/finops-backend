@@ -52,4 +52,23 @@ describe('PrismaProcessHeartbeatRepository', () => {
       data: { status: 'STOPPED', stoppedAt },
     });
   });
+
+  it('does not wrap single heartbeat operations in an interactive transaction', async () => {
+    const prisma = {
+      $transaction: vi.fn(),
+      runtimeProcessHeartbeat: {
+        upsert: vi.fn().mockResolvedValue(undefined),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
+    };
+    const repository = new PrismaProcessHeartbeatRepository(prisma as never);
+    const now = new Date('2026-09-21T00:00:00.000Z');
+
+    await repository.upsert({ processId: 'api-1', processRole: 'api', startedAt: now, heartbeatAt: now });
+    await repository.markStopped('api-1', now);
+    await repository.findById('api-1');
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
 });

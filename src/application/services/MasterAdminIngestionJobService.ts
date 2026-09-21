@@ -5,6 +5,7 @@ import type {
   IMasterAdminIngestionJobRepository,
   MasterAdminIngestionJob,
   MasterAdminIngestionJobPage,
+  ReprocessedIngestionJob,
   ReconciledIngestionJobs,
 } from '../../domain/interfaces/IMasterAdminIngestionJobRepository.js';
 import type { IngestionJobStatus, IngestionSourceType } from '../../domain/models/CloudConnection.js';
@@ -87,6 +88,34 @@ export class MasterAdminIngestionJobService {
       metadata: { sourceType: job.sourceType, status: job.status },
     });
     return job;
+  }
+
+  public async reprocess(actorUserId: string, jobId: string, reason: string): Promise<ReprocessedIngestionJob> {
+    await this.requireMasterAdmin(actorUserId);
+    const normalizedReason = reason.trim();
+    if (normalizedReason.length === 0 || normalizedReason.length > 500) {
+      throw new FinOpsBaseError('El motivo debe tener entre 1 y 500 caracteres.', 'VALIDATION_ERROR');
+    }
+    const result = await this.repository.reprocess(jobId, actorUserId, normalizedReason);
+    if (result === null) {
+      throw new FinOpsBaseError('El job no existe o no es elegible para reprocesamiento.', 'VALIDATION_ERROR');
+    }
+    await this.masterAdminRepository.createAuditEvent({
+      tenantId: result.job.tenantId,
+      actorUserId,
+      action: 'MASTER_ADMIN_INGESTION_JOB_REPROCESSED',
+      entityType: 'IngestionJob',
+      entityId: result.job.id,
+      metadata: {
+        originalJobId: result.originalJobId,
+        reusedActiveJob: result.reusedActiveJob,
+        reason: normalizedReason,
+        sourceType: result.job.sourceType,
+        targetStart: result.job.targetStart.toISOString(),
+        targetEnd: result.job.targetEnd.toISOString(),
+      },
+    });
+    return result;
   }
 
   private async requireMasterAdmin(userId: string): Promise<MasterAdminActor> {

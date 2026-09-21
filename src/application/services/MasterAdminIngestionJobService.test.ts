@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { IMasterAdminRepository, MasterAdminActor } from '../../domain/interfaces/IMasterAdminRepository.js';
-import type { DeletedPendingIngestionJobs, IMasterAdminIngestionJobRepository, MasterAdminIngestionJobPage } from '../../domain/interfaces/IMasterAdminIngestionJobRepository.js';
+import type { DeletedPendingIngestionJobs, IMasterAdminIngestionJobRepository, MasterAdminIngestionJobPage, ReprocessedIngestionJob } from '../../domain/interfaces/IMasterAdminIngestionJobRepository.js';
 import { MasterAdminIngestionJobService } from './MasterAdminIngestionJobService.js';
 
 describe('MasterAdminIngestionJobService', () => {
@@ -46,5 +46,45 @@ describe('MasterAdminIngestionJobService', () => {
 
     await expect(new MasterAdminIngestionJobService(repository, adminRepository).list({ actorUserId: actor.id })).rejects.toMatchObject({ code: 'AUTHORIZATION_FAILED' });
     expect(repository.list).not.toHaveBeenCalled();
+  });
+
+  test('reprocesses an eligible window and records the administrative reason', async () => {
+    const actor: MasterAdminActor = { id: 'master-1', tenantId: 'tenant-master', operatorOrganizationId: 'org-1', role: 'MASTER_ADMIN' };
+    const result: ReprocessedIngestionJob = {
+      originalJobId: 'job-old',
+      reusedActiveJob: false,
+      job: {
+        id: 'job-new', tenantId: 'tenant-a', tenantName: 'Tenant A', tenantSlug: 'tenant-a',
+        cloudConnectionId: 'connection-a', connectionName: 'OCI', providerCode: 'oci', sourceType: 'TECHNICAL_METRIC',
+        status: 'PENDING', projectionStatus: 'NOT_REQUIRED', projectionAttempts: 0, projectionMaxAttempts: 3,
+        attempts: 0, maxAttempts: 3, targetStart: new Date('2026-09-01T00:00:00Z'), targetEnd: new Date('2026-09-01T01:00:00Z'),
+        priority: 30, availableAt: new Date('2026-09-21T00:00:00Z'), createdAt: new Date('2026-09-21T00:00:00Z'),
+        updatedAt: new Date('2026-09-21T00:00:00Z'),
+      },
+    };
+    const reprocess = vi.fn().mockResolvedValue(result);
+    const audit = vi.fn().mockResolvedValue(undefined);
+    const repository = { reprocess } as unknown as IMasterAdminIngestionJobRepository;
+    const adminRepository = { findActor: vi.fn().mockResolvedValue(actor), createAuditEvent: audit } as unknown as IMasterAdminRepository;
+
+    await expect(new MasterAdminIngestionJobService(repository, adminRepository).reprocess(actor.id, 'job-old', '  Emisión tardía confirmada  ')).resolves.toEqual(result);
+
+    expect(reprocess).toHaveBeenCalledWith('job-old', actor.id, 'Emisión tardía confirmada');
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'MASTER_ADMIN_INGESTION_JOB_REPROCESSED',
+      entityId: 'job-new',
+      tenantId: 'tenant-a',
+      metadata: expect.objectContaining({ originalJobId: 'job-old', reason: 'Emisión tardía confirmada' }),
+    }));
+  });
+
+  test('rejects an empty reprocessing reason before touching the repository', async () => {
+    const actor: MasterAdminActor = { id: 'master-1', tenantId: 'tenant-master', operatorOrganizationId: 'org-1', role: 'MASTER_ADMIN' };
+    const reprocess = vi.fn();
+    const repository = { reprocess } as unknown as IMasterAdminIngestionJobRepository;
+    const adminRepository = { findActor: vi.fn().mockResolvedValue(actor) } as unknown as IMasterAdminRepository;
+
+    await expect(new MasterAdminIngestionJobService(repository, adminRepository).reprocess(actor.id, 'job-old', '   ')).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(reprocess).not.toHaveBeenCalled();
   });
 });

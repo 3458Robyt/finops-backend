@@ -94,11 +94,14 @@ function createCounters(): LinkCounters {
 }
 
 async function main(): Promise<void> {
-  const prisma = getPrismaClient();
-  const apply = process.argv.includes('--apply');
+  const apply = process.argv.includes('--apply')
+    || process.env['RESOURCE_LINK_RECONCILE_APPLY'] === 'true'
+    || process.env['npm_config_apply'] === 'true';
   const batchSize = parseBatchSize();
   const tenantFilter = readArgument('--tenant=');
   const only = readOnlyTable();
+  assertSafeScope(tenantFilter);
+  const prisma = getPrismaClient();
 
   try {
     const tenants = await runWithDatabaseContext(
@@ -524,9 +527,29 @@ function readRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 function readArgument(prefix: string): string | undefined {
-  const value = process.argv.find((argument) => argument.startsWith(prefix));
-  const parsed = value?.slice(prefix.length).trim();
+  const argumentName = prefix.replace(/=$/, '');
+  const inline = process.argv.find((argument) => argument.startsWith(prefix));
+  const positionalIndex = process.argv.indexOf(argumentName);
+  const positional = positionalIndex >= 0 ? process.argv[positionalIndex + 1] : undefined;
+  const suffix = argumentName.slice(2).replaceAll('-', '_').toUpperCase();
+  const configured = process.env[`RESOURCE_LINK_RECONCILE_${suffix}`]
+    ?? process.env[`npm_config_${suffix.toLowerCase()}`]
+    ?? process.env[`NPM_CONFIG_${suffix}`];
+  const value = inline !== undefined
+    ? inline.slice(prefix.length)
+    : positional !== undefined && !positional.startsWith('--')
+      ? positional
+      : configured;
+  const parsed = value?.trim();
   return parsed === undefined || parsed === '' ? undefined : parsed;
+}
+
+function assertSafeScope(tenantFilter: string | undefined): void {
+  const runningThroughNpm = process.env['npm_lifecycle_event'] !== undefined;
+  const explicitAll = process.argv.includes('--all') || process.env['RESOURCE_LINK_RECONCILE_ALL'] === 'true';
+  if (runningThroughNpm && tenantFilter === undefined && !explicitAll) {
+    throw new Error('El script npm exige --tenant=<id> o RESOURCE_LINK_RECONCILE_ALL=true para reconciliar todos los tenants de forma explícita.');
+  }
 }
 
 function parseBatchSize(): number {

@@ -274,7 +274,7 @@ async function login(email: string, password: string): Promise<string> {
   return ((await response.json()) as { readonly accessToken: string }).accessToken;
 }
 
-async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
+async function post(path: string, body: unknown, retryAfterUnauthorized = true): Promise<Record<string, unknown>> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: 'POST',
     headers: {
@@ -283,6 +283,10 @@ async function post(path: string, body: unknown): Promise<Record<string, unknown
     },
     body: JSON.stringify(body),
   });
+  if (response.status === 401 && retryAfterUnauthorized) {
+    token = await login(manifest.admin.email, manifest.password);
+    return post(path, body, false);
+  }
   if (!response.ok) {
     throw new Error(`${path} failed with HTTP ${response.status}: ${await response.text()}`);
   }
@@ -292,6 +296,7 @@ async function post(path: string, body: unknown): Promise<Record<string, unknown
 async function postMaybe(
   path: string,
   body: unknown,
+  retryAfterUnauthorized = true,
 ): Promise<{ readonly ok: true; readonly status: number; readonly body: Record<string, unknown> } | { readonly ok: false; readonly status: number; readonly body: Record<string, unknown> }> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: 'POST',
@@ -301,6 +306,10 @@ async function postMaybe(
     },
     body: JSON.stringify(body),
   });
+  if (response.status === 401 && retryAfterUnauthorized) {
+    token = await login(manifest.admin.email, manifest.password);
+    return postMaybe(path, body, false);
+  }
   const text = await response.text();
   const bodyJson = parseResponseRecord(text);
   return response.ok
@@ -310,12 +319,17 @@ async function postMaybe(
 
 async function getMaybe(
   path: string,
+  retryAfterUnauthorized = true,
 ): Promise<{ readonly ok: true; readonly status: number; readonly body: Record<string, unknown> } | { readonly ok: false; readonly status: number; readonly body: Record<string, unknown> }> {
   const response = await fetch(apiBaseUrl + path, {
     headers: {
       Authorization: 'Bearer ' + token,
     },
   });
+  if (response.status === 401 && retryAfterUnauthorized) {
+    token = await login(manifest.admin.email, manifest.password);
+    return getMaybe(path, false);
+  }
   const text = await response.text();
   const body = parseResponseRecord(text);
   return response.ok
@@ -323,12 +337,16 @@ async function getMaybe(
     : { ok: false, status: response.status, body };
 }
 
-async function get(path: string): Promise<Record<string, unknown>> {
+async function get(path: string, retryAfterUnauthorized = true): Promise<Record<string, unknown>> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     headers: {
       Authorization: `Bearer ${token}`,
     },
   });
+  if (response.status === 401 && retryAfterUnauthorized) {
+    token = await login(manifest.admin.email, manifest.password);
+    return get(path, false);
+  }
   if (!response.ok) {
     throw new Error(`${path} failed with HTTP ${response.status}: ${await response.text()}`);
   }

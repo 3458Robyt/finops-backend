@@ -211,4 +211,57 @@ describe('CloudIngestionWorkerService', () => {
     });
     expect(collect).not.toHaveBeenCalled();
   });
+
+  it('ignores an in-flight lease refresh that resolves after successful completion', async () => {
+    const job = createJob('oci');
+    let providerSignal: AbortSignal | undefined;
+    const result = {
+      apiCallCount: 1,
+      objectsProcessed: 0,
+      focusRows: [],
+      resources: [],
+      metricSamples: [],
+      warnings: [],
+      coverage: {},
+    };
+    const summary = {
+      durationMs: 10,
+      providerCode: 'oci',
+      sourceType: 'TECHNICAL_METRIC' as const,
+      apiCallCount: 1,
+      objectsProcessed: 0,
+      focusRows: 0,
+      focusRowsInserted: 0,
+      costMetrics: 0,
+      costMetricsInserted: 0,
+      resources: 0,
+      metricSamples: 0,
+      warnings: [],
+      coverage: {},
+    };
+    const provider: CloudIngestionProvider = {
+      providerCode: 'oci',
+      validate: vi.fn(async () => ({ providerCode: 'oci', capabilities: [] })),
+      collect: vi.fn(async (_job, options) => {
+        providerSignal = options?.signal;
+        return result;
+      }),
+    };
+    const repository = {
+      claimNextPendingJob: vi.fn(async () => job),
+      updateJobProgress: vi.fn(async () => true),
+      isCancellationRequested: vi.fn(async () => false),
+      refreshJobLease: vi.fn(async () => new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 10))),
+      completeJob: vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        return summary;
+      }),
+    } as unknown as PrismaCloudIngestionJobRepository;
+    const service = new CloudIngestionWorkerService(repository, [provider], undefined, undefined, 1, 100, 1);
+
+    await expect(service.runOnce('worker-1')).resolves.toMatchObject({ processed: true, jobId: job.id });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(providerSignal?.aborted).toBe(false);
+  });
 });

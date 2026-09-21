@@ -106,9 +106,10 @@ export class CloudIngestionWorkerService {
     }
 
     let leaseLost = false;
+    let backgroundTimersStopped = false;
     const abortController = new AbortController();
     const markLeaseLost = (): void => {
-      if (leaseLost) return;
+      if (leaseLost || backgroundTimersStopped) return;
       leaseLost = true;
       this.metrics?.increment('ingestion_job_lease_lost_total', { provider: job.connection.providerCode });
       console.warn(JSON.stringify({
@@ -139,15 +140,17 @@ export class CloudIngestionWorkerService {
       return { processed: true, jobId: job.id, providerCode: job.connection.providerCode, errorMessage: 'Cancelado por el usuario.' };
     }
     const heartbeat = setInterval(() => {
+      if (backgroundTimersStopped) return;
       void this.jobs.refreshJobLease(job.id, workerId, job.attempt)
-        .then((renewed) => { if (!renewed) markLeaseLost(); })
-        .catch(() => { markLeaseLost(); });
+        .then((renewed) => { if (!backgroundTimersStopped && !renewed) markLeaseLost(); })
+        .catch(() => { if (!backgroundTimersStopped) markLeaseLost(); });
     }, this.heartbeatMs);
 
     const progressTimer = setInterval(() => {
+      if (backgroundTimersStopped) return;
       void this.writeProgress(job.id, workerId, job.attempt, progress)
-        .then((updated) => { if (!updated) markLeaseLost(); })
-        .catch(() => { markLeaseLost(); });
+        .then((updated) => { if (!backgroundTimersStopped && !updated) markLeaseLost(); })
+        .catch(() => { if (!backgroundTimersStopped) markLeaseLost(); });
     }, this.progressUpdateMs);
     let cancellationPollInFlight = false;
     const cancellationTimer = setInterval(() => {
@@ -279,6 +282,7 @@ export class CloudIngestionWorkerService {
         errorMessage: safeErrorMessage(error),
       };
     } finally {
+      backgroundTimersStopped = true;
       clearInterval(heartbeat);
       clearInterval(progressTimer);
       clearInterval(cancellationTimer);

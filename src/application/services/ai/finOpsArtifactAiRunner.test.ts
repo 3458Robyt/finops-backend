@@ -3,6 +3,21 @@ import type { IAiGateway } from '../../../domain/interfaces/IAiGateway.js';
 import { FinOpsArtifactAiRunner } from './finOpsArtifactAiRunner.js';
 
 describe('FinOpsArtifactAiRunner', () => {
+  test('keeps recommendation generation bounded to two prioritized outputs', async () => {
+    const aiGateway = { generateText: vi.fn().mockResolvedValue('{"recommendations":[]}') } as unknown as IAiGateway;
+    const runner = new FinOpsArtifactAiRunner(aiGateway, { record: vi.fn() }, 'generator-model', 'auditor-model');
+
+    await runner.generateRecommendations('system prompt');
+
+    expect(aiGateway.generateText).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'generator-model',
+      maxTokens: 750,
+      messages: expect.arrayContaining([
+        expect.objectContaining({ content: expect.stringContaining('hasta 2 recomendaciones') }),
+      ]),
+    }));
+  });
+
   test('passes the configured low reasoning effort to the auditor', async () => {
     const aiGateway = {
       generateText: vi.fn().mockResolvedValue(JSON.stringify({

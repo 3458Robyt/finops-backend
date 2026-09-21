@@ -55,13 +55,13 @@ export class FinOpsArtifactAiRunner {
       // Las recomendaciones deben ser reproducibles: el contenido creativo
       // está acotado por candidatos/evidencia y no necesita aleatoriedad.
       temperature: 0,
-      maxTokens: 900,
+      maxTokens: 750,
       messages: [
         { role: 'system', content: systemPrompt },
         {
           role: 'user',
           content:
-            'Genera hasta 3 recomendaciones FinOps priorizadas en español usando solo los candidatos permitidos. Si solo hay candidatos VALIDATION_ONLY, genera recomendaciones de validacion tecnica previa.',
+            'Genera hasta 2 recomendaciones FinOps priorizadas en español usando solo los candidatos permitidos. Si solo hay candidatos VALIDATION_ONLY, genera recomendaciones de validacion tecnica previa.',
         },
       ],
     });

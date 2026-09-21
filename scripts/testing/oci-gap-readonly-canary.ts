@@ -116,6 +116,7 @@ function buildReadOnlyJob(source: CloudIngestionJobContext, input: Arguments): C
   return {
     ...source,
     id: `readonly-gap-${Date.now().toString(36)}`,
+    sourceType: 'TECHNICAL_METRIC',
     targetStart: input.start,
     targetEnd: input.end,
     requestContext: {

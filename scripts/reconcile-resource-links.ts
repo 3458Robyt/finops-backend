@@ -12,6 +12,7 @@ import {
 import type { PrismaClient } from '../src/generated/prisma/client.js';
 import { Prisma } from '../src/generated/prisma/client.js';
 import { backfillHistoricalOciResources } from '../src/infrastructure/ingestion/PrismaHistoricalOciResourceBackfill.js';
+import { isOciAggregateResourceId } from '../src/infrastructure/ingestion/oci/OciHistoricalResourceCatalog.js';
 
 const defaultBatchSize = 500;
 const reasonCodes: readonly ResourceLinkReasonCode[] = [
@@ -504,6 +505,7 @@ function isUnchanged(action: LinkAction): boolean {
 }
 
 function isServiceLevelCost(resourceId: string, providerRaw: unknown): boolean {
+  if (isOciAggregateResourceId(resourceId)) return true;
   if (resourceId.trim() !== '') return false;
   const raw = readRecord(providerRaw)?.['raw'];
   const sourceRow = readRecord(raw) ?? readRecord(providerRaw);

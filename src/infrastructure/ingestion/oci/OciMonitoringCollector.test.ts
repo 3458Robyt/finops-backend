@@ -54,6 +54,26 @@ describe('OCI monitoring collector', () => {
     expect(result.coverage).toMatchObject({ samples: 1, metricDefinitions: 1 });
   });
 
+  test('records provider retry telemetry in technical coverage', async () => {
+    const result = await collectOciTechnicalMetrics(buildJob({
+      ociMetricDefinitions: [metricDefinition('instance-1')],
+    }), {
+      createClient: asyncClient(() => ({ items: [metricStream('instance-1', 42)] })),
+      withRetry: (operation, _signal, onRetry) => {
+        onRetry?.({ attempt: 0, nextAttempt: 1, delayMs: 25, reason: 'RATE_LIMIT', statusCode: 429 });
+        return operation();
+      },
+    });
+
+    await materializeSamples(result);
+    expect(result.coverage).toMatchObject({
+      providerRetries: 1,
+      providerRateLimitRetries: 1,
+      providerTimeoutRetries: 0,
+      providerTransientRetries: 0,
+    });
+  });
+
   test('reports bounded progress while a streaming collection is active', async () => {
     const progress: Array<{ readonly activeTasks?: number; readonly completedTasks?: number; readonly totalTasks?: number }> = [];
     const result = await collectOciTechnicalMetrics(buildJob({

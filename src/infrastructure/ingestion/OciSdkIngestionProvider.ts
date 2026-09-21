@@ -198,7 +198,7 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
 
     return collectOciTechnicalMetrics(job, {
       createClient: (context, signal) => this.createMonitoringClient(context, signal),
-      withRetry: (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
+      withRetry: (operation, signal, onRetry) => withOciProviderRetry(operation, undefined, undefined, undefined, signal, onRetry),
       withRateLimit: (context, operation) => this.rateCoordinator.run(
         this.monitoringRateKey(context.connection),
         { requestsPerSecond: 8, maxConcurrent: 4 },

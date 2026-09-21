@@ -7,12 +7,14 @@ describe('OCI retry policy', () => {
       .mockRejectedValueOnce(new Error('429 Too Many Requests'))
       .mockResolvedValue('ok');
     const sleep = vi.fn(async () => undefined);
+    const retries: unknown[] = [];
 
-    await expect(withOciProviderRetry(operation, [25], sleep)).resolves.toBe('ok');
+    await expect(withOciProviderRetry(operation, [25], sleep, 1000, undefined, (event) => retries.push(event))).resolves.toBe('ok');
     expect(operation).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledOnce();
     expect(sleep.mock.calls[0]?.[0]).toBeGreaterThanOrEqual(20);
     expect(sleep.mock.calls[0]?.[0]).toBeLessThanOrEqual(30);
+    expect(retries).toEqual([expect.objectContaining({ attempt: 0, nextAttempt: 1, reason: 'RATE_LIMIT' })]);
   });
 
   test('retries OCI transient server-busy responses', async () => {

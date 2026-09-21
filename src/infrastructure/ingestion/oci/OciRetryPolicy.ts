@@ -1,9 +1,20 @@
+export type OciRetryReason = 'RATE_LIMIT' | 'TIMEOUT' | 'TRANSIENT';
+
+export interface OciRetryEvent {
+  readonly attempt: number;
+  readonly nextAttempt: number;
+  readonly delayMs: number;
+  readonly reason: OciRetryReason;
+  readonly statusCode?: number;
+}
+
 export async function withOciProviderRetry<T>(
   operation: (signal?: AbortSignal) => Promise<T>,
   delaysMs: readonly number[] = [1000, 2500, 5000],
   sleep: (delayMs: number) => Promise<void> = defaultSleep,
   timeoutMs = 30_000,
   signal?: AbortSignal,
+  onRetry?: (event: OciRetryEvent) => void,
 ): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= delaysMs.length; attempt += 1) {
@@ -13,7 +24,15 @@ export async function withOciProviderRetry<T>(
     } catch (error) {
       lastError = error;
       if (!isRetryableError(error) || attempt === delaysMs.length) throw error;
-      await sleepWithAbort(sleep, withJitter(delaysMs[attempt]!), signal);
+      const delayMs = withJitter(delaysMs[attempt]!);
+      onRetry?.({
+        attempt,
+        nextAttempt: attempt + 1,
+        delayMs,
+        reason: retryReason(error),
+        ...retryStatus(error),
+      });
+      await sleepWithAbort(sleep, delayMs, signal);
     }
   }
   throw lastError instanceof Error ? lastError : new Error('OCI operation failed after retries');
@@ -90,6 +109,23 @@ async function withTimeout<T>(
       signal.removeEventListener('abort', cancellationListener);
     }
   }
+}
+
+function retryReason(error: unknown): OciRetryReason {
+  if (isStatus(error, 429) || /rate exceeded|too many requests|429/i.test(errorMessage(error))) return 'RATE_LIMIT';
+  if (/timeout|timed out/i.test(errorMessage(error))) return 'TIMEOUT';
+  return 'TRANSIENT';
+}
+
+function retryStatus(error: unknown): { readonly statusCode?: number } {
+  if (error === null || typeof error !== 'object') return {};
+  const status = (error as { statusCode?: unknown; status?: unknown }).statusCode
+    ?? (error as { status?: unknown }).status;
+  return typeof status === 'number' ? { statusCode: status } : {};
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

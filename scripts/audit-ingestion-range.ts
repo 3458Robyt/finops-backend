@@ -157,6 +157,10 @@ async function buildReport(
       readonly metric_name: string;
       readonly statistic: string;
       readonly granularity_seconds: number;
+      readonly definition_id: string | null;
+      readonly definition_dimensions_hash: string | null;
+      readonly observed_dimensions_hash: string | null;
+      readonly observed_dimensions_hash_count: number;
       readonly windows: bigint;
       readonly expected_samples: bigint;
       readonly observed_samples: bigint;
@@ -169,6 +173,7 @@ async function buildReport(
       WITH gap_groups AS (
         SELECT status::text, stream_key, provider_namespace, region_id, external_resource_id,
           metric_name, statistic::text, granularity_seconds,
+          cloud_metric_definition_id AS definition_id,
           COUNT(*)::bigint AS windows,
           COALESCE(SUM(expected_samples), 0)::bigint AS expected_samples,
           COALESCE(SUM(observed_samples), 0)::bigint AS observed_samples,
@@ -181,12 +186,13 @@ async function buildReport(
           AND status IN ('PARTIAL'::"MetricCoverageStatus", 'NO_DATA'::"MetricCoverageStatus")
           ${coverageConfigurationFilter}
         GROUP BY status, stream_key, provider_namespace, region_id, external_resource_id,
-          metric_name, statistic, granularity_seconds
+          metric_name, statistic, granularity_seconds, cloud_metric_definition_id
         ORDER BY SUM(missing_samples) DESC, metric_name, external_resource_id
         LIMIT ${args.gapLimit}
       ), stream_summaries AS (
         SELECT md5(concat_ws('|', provider_namespace, region_id, external_resource_id,
           metric_name, statistic::text, granularity_seconds::text, dimensions_hash)) AS stream_key,
+          dimensions_hash AS observed_dimensions_hash,
           sample_count AS stream_sample_count, first_sampled_at, last_sampled_at
         FROM resource_metric_stream_summaries
         WHERE tenant_id = ${args.tenantId}
@@ -194,17 +200,51 @@ async function buildReport(
           AND sample_count > 0
           AND first_sampled_at < ${args.end}
           AND last_sampled_at >= ${args.start}
+      ), identity_summaries AS (
+        SELECT provider_namespace, region_id, external_resource_id, metric_name,
+          statistic::text AS statistic, granularity_seconds,
+          COUNT(DISTINCT dimensions_hash)::int AS observed_dimensions_hash_count,
+          MIN(dimensions_hash) AS alternate_observed_dimensions_hash
+        FROM resource_metric_stream_summaries
+        WHERE tenant_id = ${args.tenantId}
+          AND cloud_connection_id = ${args.connectionId}
+          AND sample_count > 0
+          AND first_sampled_at < ${args.end}
+          AND last_sampled_at >= ${args.start}
+        GROUP BY provider_namespace, region_id, external_resource_id, metric_name,
+          statistic, granularity_seconds
       )
       SELECT gap_groups.*,
+        definitions.dimensions_hash AS definition_dimensions_hash,
+        COALESCE(stream_summaries.observed_dimensions_hash,
+          identity_summaries.alternate_observed_dimensions_hash) AS observed_dimensions_hash,
+        COALESCE(identity_summaries.observed_dimensions_hash_count, 0)::int AS observed_dimensions_hash_count,
         COALESCE(stream_summaries.stream_sample_count, 0)::int AS stream_sample_count,
         stream_summaries.first_sampled_at,
         stream_summaries.last_sampled_at,
-        CASE WHEN stream_summaries.stream_key IS NULL
+        CASE
+          WHEN gap_groups.definition_id IS NULL OR definitions.id IS NULL
+            OR (stream_summaries.observed_dimensions_hash IS NOT NULL
+              AND definitions.dimensions_hash IS DISTINCT FROM stream_summaries.observed_dimensions_hash)
+            THEN 'HISTORICAL_CONFIGURATION_DRIFT'
+          WHEN stream_summaries.stream_key IS NULL
+            AND identity_summaries.observed_dimensions_hash_count > 0
+            AND definitions.dimensions_hash IS DISTINCT FROM identity_summaries.alternate_observed_dimensions_hash
+            THEN 'HISTORICAL_CONFIGURATION_DRIFT_CANDIDATE'
+          WHEN stream_summaries.stream_key IS NULL
           THEN 'NO_EMISSION_OBSERVED'
           ELSE 'INTERMITTENT_OR_RECOVERABLE_CANDIDATE'
         END AS classification
       FROM gap_groups
+      LEFT JOIN cloud_metric_definitions definitions ON definitions.id = gap_groups.definition_id
       LEFT JOIN stream_summaries USING (stream_key)
+      LEFT JOIN identity_summaries
+        ON identity_summaries.provider_namespace = gap_groups.provider_namespace
+       AND identity_summaries.region_id = gap_groups.region_id
+       AND identity_summaries.external_resource_id = gap_groups.external_resource_id
+       AND identity_summaries.metric_name = gap_groups.metric_name
+       AND identity_summaries.statistic = gap_groups.statistic
+       AND identity_summaries.granularity_seconds = gap_groups.granularity_seconds
       ORDER BY gap_groups.missing_samples DESC, gap_groups.metric_name, gap_groups.external_resource_id
     `),
     isPartialUtcDayRange(args)
@@ -405,6 +445,10 @@ async function buildReport(
         metricName: row.metric_name,
         statistic: row.statistic,
         granularitySeconds: row.granularity_seconds,
+        definitionId: row.definition_id,
+        definitionDimensionsHash: row.definition_dimensions_hash,
+        observedDimensionsHash: row.observed_dimensions_hash,
+        observedDimensionsHashCount: row.observed_dimensions_hash_count,
         windows: toNumber(row.windows),
         expectedSamples: toNumber(row.expected_samples),
         observedSamples: toNumber(row.observed_samples),

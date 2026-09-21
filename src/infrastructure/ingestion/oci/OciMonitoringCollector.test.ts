@@ -223,6 +223,27 @@ describe('OCI monitoring collector', () => {
     expect(result.apiCallCount).toBe(1);
   });
 
+  test('merges definition dimensions when grouped OCI responses return only resourceId', async () => {
+    const dimensions = {
+      attachmentType: 'IPSEC_TUNNEL',
+      drgOcid: 'drg-1',
+    };
+    const result = await collectOciTechnicalMetrics(buildJob({
+      ociMetricDefinitions: [
+        { ...metricDefinition('instance-1'), dimensions: { resourceId: 'instance-1', ...dimensions } },
+        { ...metricDefinition('instance-2'), dimensions: { resourceId: 'instance-2', ...dimensions } },
+      ],
+    }), {
+      createClient: asyncClient(() => ({ items: [metricStream('instance-1', 42)] })),
+      withRetry: (operation) => operation(),
+    });
+
+    const samples = await materializeSamples(result);
+    expect(samples[0]).toMatchObject({
+      dimensions: { resourceId: 'instance-1', ...dimensions },
+    });
+  });
+
   test('drains more than the bounded queue without leaving producers blocked', async () => {
     const definitions = Array.from({ length: 40 }, (_, index) => ({
       compartmentId: 'compartment-1',

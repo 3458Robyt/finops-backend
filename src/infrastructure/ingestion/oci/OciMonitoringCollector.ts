@@ -229,7 +229,7 @@ async function collectOciTask(
   let batch: NormalizedResourceMetricSample[] = [];
   for (const metric of response.items ?? response.summarizedMetricsData ?? []) {
     await assertCollectorActive(options);
-    const dimensions = normalizeDimensions(metric.dimensions ?? definition.dimensions);
+    const dimensions = normalizeDimensions({ ...(definition.dimensions ?? {}), ...(metric.dimensions ?? {}) });
     const externalResourceId = dimensions?.['resourceId'] ?? dimensions?.['resource_id'] ?? definition.resourceId;
     if (task.allowedResourceIds !== undefined && (externalResourceId === undefined || !task.allowedResourceIds.has(externalResourceId))) continue;
     const regionId = definition.regionId ?? dimensions?.['regionId'] ?? dimensions?.['region'];

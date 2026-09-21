@@ -23,6 +23,7 @@ describe('OpenAiCompatibleAiGateway', () => {
   const originalEnv = { ...process.env };
 
   afterEach(() => {
+    vi.useRealTimers();
     process.env = { ...originalEnv };
     openAiConstructor.mockClear();
     completionCreate.mockReset();
@@ -117,5 +118,33 @@ describe('OpenAiCompatibleAiGateway', () => {
     });
 
     expect(completionCreate.mock.calls[0]?.[0]).toMatchObject({ reasoning_effort: 'low' });
+  });
+
+  test('aborts a streaming request at its request timeout', async () => {
+    vi.useFakeTimers();
+    process.env['AI_API_KEY'] = 'test-ai-key';
+    process.env['AI_BASE_URL'] = 'https://api.example.test/v1';
+    completionCreate.mockResolvedValue({
+      [Symbol.asyncIterator]: async function* () {
+        await new Promise<never>(() => undefined);
+      },
+    });
+
+    const { OpenAiCompatibleAiGateway } = await import('./OpenAiCompatibleAiGateway.js');
+    const gateway = new OpenAiCompatibleAiGateway();
+    const pending = gateway.generateText({
+      timeoutMs: 25,
+      messages: [{ role: 'user', content: 'espera' }],
+    });
+    pending.catch(() => undefined);
+
+    await vi.advanceTimersByTimeAsync(25);
+    await expect(pending).rejects.toThrow('AI request timed out');
+    const requestOptions = completionCreate.mock.calls[0]?.[1] as { signal?: AbortSignal };
+    expect(requestOptions).toEqual(expect.objectContaining({
+      signal: expect.any(AbortSignal),
+      timeout: 25,
+    }));
+    expect(requestOptions.signal?.aborted).toBe(true);
   });
 });

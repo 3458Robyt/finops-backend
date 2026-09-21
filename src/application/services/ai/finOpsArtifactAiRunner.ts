@@ -46,7 +46,10 @@ export class FinOpsArtifactAiRunner {
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
-      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 45_000),
+      // Keep one generate+audit pass below the 120 s hard limit: 70 s for the
+      // artifact and 50 s for the mandatory auditor. The gateway enforces both
+      // budgets as strict wall-clock deadlines.
+      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 70_000),
       maxRetries: 0,
       ...(this.requestPolicy.reasoningEffort === undefined ? {} : { reasoningEffort: this.requestPolicy.reasoningEffort }),
       // Las recomendaciones deben ser reproducibles: el contenido creativo
@@ -68,7 +71,7 @@ export class FinOpsArtifactAiRunner {
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
-      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 45_000),
+      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 70_000),
       maxRetries: 0,
       ...(this.requestPolicy.reasoningEffort === undefined ? {} : { reasoningEffort: this.requestPolicy.reasoningEffort }),
       temperature: 0,
@@ -92,7 +95,7 @@ export class FinOpsArtifactAiRunner {
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
-      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 45_000),
+      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 70_000),
       maxRetries: 0,
       ...(this.requestPolicy.reasoningEffort === undefined ? {} : { reasoningEffort: this.requestPolicy.reasoningEffort }),
       temperature: 0,
@@ -111,7 +114,7 @@ export class FinOpsArtifactAiRunner {
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
-      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 45_000),
+      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 70_000),
       maxRetries: 0,
       ...(this.requestPolicy.reasoningEffort === undefined ? {} : { reasoningEffort: this.requestPolicy.reasoningEffort }),
       temperature: 0,
@@ -137,7 +140,7 @@ export class FinOpsArtifactAiRunner {
       responseFormat: 'json',
       // The auditor is a mandatory gate, but a failed provider must not turn a
       // recommendation run into a multi-minute retry chain.
-      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 30_000),
+      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 50_000),
       maxRetries: 0,
       temperature: 0,
       maxTokens: 900,

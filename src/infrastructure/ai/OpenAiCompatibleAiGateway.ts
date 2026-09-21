@@ -50,41 +50,60 @@ export class OpenAiCompatibleAiGateway implements IAiGateway {
     const model = request.model ?? this.model;
     const startedAt = Date.now();
     const inputTokens = estimateTokens(request.messages.map((message) => message.content).join('\n'));
+    const timeoutController = request.timeoutMs === undefined ? undefined : new AbortController();
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     try {
-      const completion = await this.client.chat.completions.create(
-        {
-          model,
-          messages: request.messages.map((message) => ({
-            role: message.role,
-            content: message.content,
-          })),
-          temperature: request.temperature ?? 0.3,
-          top_p: 0.95,
-          max_tokens: request.maxTokens ?? 2048,
-          ...(request.responseFormat === 'json'
-            ? { response_format: { type: 'json_object' as const } }
-            : {}),
-          ...(request.reasoningEffort === undefined ? {} : { reasoning_effort: request.reasoningEffort }),
-          stream: true,
-        },
-        {
-          ...(request.timeoutMs !== undefined ? { timeout: request.timeoutMs } : {}),
-          ...(request.maxRetries !== undefined ? { maxRetries: request.maxRetries } : {}),
-        },
-      );
+      const completionPromise = (async (): Promise<string> => {
+        const completion = await this.client.chat.completions.create(
+          {
+            model,
+            messages: request.messages.map((message) => ({
+              role: message.role,
+              content: message.content,
+            })),
+            temperature: request.temperature ?? 0.3,
+            top_p: 0.95,
+            max_tokens: request.maxTokens ?? 2048,
+            ...(request.responseFormat === 'json'
+              ? { response_format: { type: 'json_object' as const } }
+              : {}),
+            ...(request.reasoningEffort === undefined ? {} : { reasoning_effort: request.reasoningEffort }),
+            stream: true,
+          },
+          {
+            ...(request.timeoutMs !== undefined ? { timeout: request.timeoutMs } : {}),
+            ...(request.maxRetries !== undefined ? { maxRetries: request.maxRetries } : {}),
+            ...(timeoutController === undefined ? {} : { signal: timeoutController.signal }),
+          },
+        );
 
-      let output = '';
-      const stream = completion as AsyncIterable<{
-        readonly choices?: ReadonlyArray<{
-          readonly delta?: {
-            readonly content?: string | null;
-          };
+        let output = '';
+        const stream = completion as AsyncIterable<{
+          readonly choices?: ReadonlyArray<{
+            readonly delta?: {
+              readonly content?: string | null;
+            };
+          }>;
         }>;
-      }>;
 
-      for await (const chunk of stream) {
-        output += chunk.choices?.[0]?.delta?.content ?? '';
-      }
+        for await (const chunk of stream) {
+          output += chunk.choices?.[0]?.delta?.content ?? '';
+        }
+        return output;
+      })();
+
+      const output = request.timeoutMs === undefined
+        ? await completionPromise
+        : await Promise.race([
+            completionPromise,
+            new Promise<never>((_, reject) => {
+              timeoutHandle = setTimeout(() => {
+                const timeoutError = new Error('AI request timed out');
+                timeoutController?.abort(timeoutError);
+                reject(timeoutError);
+              }, request.timeoutMs);
+            }),
+          ]);
 
       this.metrics?.increment('ai_requests_total', { model, outcome: 'success' });
       this.metrics?.increment('ai_input_tokens_estimated_total', { model }, inputTokens);
@@ -95,6 +114,10 @@ export class OpenAiCompatibleAiGateway implements IAiGateway {
       this.metrics?.increment('ai_requests_total', { model, outcome: 'error' });
       this.metrics?.observe('ai_request_duration_ms', Date.now() - startedAt, { model, outcome: 'error' });
       throw error;
+    } finally {
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 }

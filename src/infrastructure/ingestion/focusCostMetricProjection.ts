@@ -6,6 +6,7 @@ import type {
 import type { Prisma } from '../../generated/prisma/client.js';
 import { CloudProvider, CostBillingSource } from '../../generated/prisma/client.js';
 import {
+  isKnownUnsupportedResourceId,
   normalizeExternalResourceId,
   resolveExactResourceLink,
 } from '../../domain/models/ResourceLinkage.js';
@@ -120,6 +121,10 @@ function resolveFocusResourceLink(
   if (provider === CloudProvider.OCI && normalizedResourceId !== undefined
     && isOciAggregateResourceId(normalizedResourceId)) {
     return { reason: 'SERVICE_LEVEL_COST' };
+  }
+
+  if (provider === CloudProvider.OCI && isKnownUnsupportedResourceId(normalizedResourceId)) {
+    return { reason: 'UNSUPPORTED_RESOURCE_ID' };
   }
 
   return resolveExactResourceLink({

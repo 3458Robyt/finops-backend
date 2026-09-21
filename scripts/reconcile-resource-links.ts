@@ -3,6 +3,7 @@ import 'dotenv/config';
 import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
 import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
 import {
+  isKnownUnsupportedResourceId,
   normalizeExternalResourceId,
   resourceExternalIdAliases,
   resolveExactResourceLink,
@@ -231,6 +232,7 @@ async function reconcileCostMetrics(
         currentReason: row.resource_link_reason,
         existingResource: resources.byId.get(row.cloud_resource_id ?? ''),
         resourceIndex: resources.index,
+        unsupportedResourceId: isKnownUnsupportedResourceId(row.resource_id),
         serviceLevel: isServiceLevelCost(row.resource_id, row.provider_raw),
       }),
     }));
@@ -366,6 +368,7 @@ function resolveAction(input: {
   readonly currentReason: string | null;
   readonly existingResource?: ResourceRow;
   readonly resourceIndex: ReadonlyMap<string, readonly string[]>;
+  readonly unsupportedResourceId?: boolean;
   readonly serviceLevel?: boolean;
 }): Pick<LinkAction, 'cloudResourceId' | 'reason' | 'currentCloudResourceId' | 'currentReason'> {
   if (input.currentCloudResourceId !== null) {
@@ -388,6 +391,7 @@ function resolveAction(input: {
     cloudConnectionId: input.cloudConnectionId ?? undefined,
     externalResourceId: input.externalResourceId,
     resourceIdsByKey: input.resourceIndex,
+    ...(input.unsupportedResourceId === true ? { unsupportedResourceId: true } : {}),
     ...(input.serviceLevel === true ? { serviceLevel: true } : {}),
   });
   return {

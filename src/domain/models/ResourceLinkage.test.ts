@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildResourceFreshness,
   classifyResourceEvidenceStatus,
+  isKnownUnsupportedResourceId,
   normalizeExternalResourceId,
   resolveExactResourceLink,
   resourceLookupKey,
@@ -46,6 +47,15 @@ describe('ResourceLinkage', () => {
       externalResourceId: 'ocid-1',
       resourceIdsByKey: links,
     })).toEqual({ reason: 'CONNECTION_NOT_AVAILABLE' });
+    expect(isKnownUnsupportedResourceId('dbbackupiad/bT9ej7zNsA6m3HEWavcJ')).toBe(true);
+    expect(isKnownUnsupportedResourceId('UnknownBucket')).toBe(true);
+    expect(isKnownUnsupportedResourceId('ocid1.volume.oc1.iad.example')).toBe(false);
+    expect(resolveExactResourceLink({
+      cloudConnectionId: 'connection-a',
+      externalResourceId: 'dbbackupiad/bT9ej7zNsA6m3HEWavcJ',
+      resourceIdsByKey: links,
+      unsupportedResourceId: true,
+    })).toEqual({ reason: 'UNSUPPORTED_RESOURCE_ID' });
   });
 
   it('does not accept ambiguous matches', () => {

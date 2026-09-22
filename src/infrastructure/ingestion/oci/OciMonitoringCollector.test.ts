@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { CloudIngestionJobContext } from '../../../domain/interfaces/ICloudIngestionProvider.js';
-import { buildOciResourceMetricQuery, collectOciTechnicalMetrics, resolveOciRequestRange } from './OciMonitoringCollector.js';
+import { buildOciResourceMetricQuery, collectOciTechnicalMetrics, readOciMetricDefinitions, resolveOciRequestRange } from './OciMonitoringCollector.js';
 
 describe('OCI monitoring collector', () => {
   test('returns an explicit empty result without constructing a client', async () => {
@@ -180,6 +180,39 @@ describe('OCI monitoring collector', () => {
     expect(samples.map((sample) => sample.statistic)).toEqual(['P95', 'LATEST']);
   });
 
+  test('filters a recovery job to one resource and one native statistic', async () => {
+    const queries: string[] = [];
+    const job = buildJob({
+      ociMetricDefinitions: [
+        metricDefinition('instance-1'),
+        metricDefinition('instance-2'),
+      ],
+    }, {
+      metricFilter: {
+        namespace: 'oci_computeagent',
+        metricName: 'CpuUtilization',
+        resourceId: 'instance-2',
+        regionId: 'us-ashburn-1',
+        statistic: 'P95',
+      },
+    });
+    expect(readOciMetricDefinitions(job)).toHaveLength(1);
+    const result = await collectOciTechnicalMetrics(job, {
+      createClient: () => ({
+        summarizeMetricsData: async (request) => {
+          queries.push(request.summarizeMetricsDataDetails.query);
+          return { items: [metricStream('instance-2', 95)] };
+        },
+      }),
+      withRetry: (operation) => operation(),
+    });
+
+    const samples = await materializeSamples(result);
+    expect(queries).toEqual(['CpuUtilization[30m]{resourceId = "instance-2"}.percentile(0.95)']);
+    expect(samples).toHaveLength(1);
+    expect(samples[0]).toMatchObject({ externalResourceId: 'instance-2', statistic: 'P95' });
+  });
+
   test('keeps discovered non-resource dimensions in resource queries', () => {
     expect(buildOciResourceMetricQuery({
       compartmentId: 'compartment-1',
@@ -312,7 +345,10 @@ describe('OCI monitoring collector', () => {
   });
 });
 
-function buildJob(metadata: Readonly<Record<string, unknown>>): CloudIngestionJobContext {
+function buildJob(
+  metadata: Readonly<Record<string, unknown>>,
+  requestContext?: Readonly<Record<string, unknown>>,
+): CloudIngestionJobContext {
   return {
     id: 'job-1',
     tenantId: 'tenant-1',
@@ -329,6 +365,7 @@ function buildJob(metadata: Readonly<Record<string, unknown>>): CloudIngestionJo
       credentials: [],
       metadata,
     },
+    ...(requestContext === undefined ? {} : { requestContext }),
   };
 }
 

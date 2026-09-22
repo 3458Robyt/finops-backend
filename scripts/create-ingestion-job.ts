@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
 import type { IngestionSourceType } from '../src/generated/prisma/enums.js';
+import { METRIC_STATISTICS, type MetricStatistic } from '../src/domain/interfaces/ICloudIngestionProvider.js';
 import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
 import { buildIngestionConfigurationHash } from '../src/infrastructure/ingestion/ingestionConfigurationHash.js';
 
@@ -26,8 +27,22 @@ async function main(): Promise<void> {
         orderBy: { createdAt: 'desc' },
         select: { id: true, tenantId: true, providerCode: true, metadata: true },
       });
+      const metricFilter = sourceType === 'TECHNICAL_METRIC' ? parseMetricFilter(args) : undefined;
+      if (sourceType !== 'TECHNICAL_METRIC' && hasMetricFilterArgs(args)) {
+        throw new Error('Los filtros de métrica solo aplican a source-type TECHNICAL_METRIC.');
+      }
+      if (metricFilter !== undefined && connection.providerCode !== 'oci') {
+        throw new Error('Los filtros selectivos de recuperación solo están implementados para OCI.');
+      }
       const requestContext = sourceType === 'TECHNICAL_METRIC'
-        ? { interval: '30m', resolutionSeconds: 1800 }
+        ? {
+          interval: '30m',
+          resolutionSeconds: 1800,
+          ...(metricFilter === undefined ? {} : {
+            ...(metricFilter.regionId === undefined ? {} : { regionId: metricFilter.regionId }),
+            metricFilter,
+          }),
+        }
         : undefined;
       const configurationHash = buildIngestionConfigurationHash({
         providerCode: connection.providerCode,
@@ -52,6 +67,7 @@ async function main(): Promise<void> {
         status: true,
         targetStart: true,
         targetEnd: true,
+        requestContext: true,
       } as const;
       const existing = await prisma.ingestionJob.findFirst({ where: jobWhere, orderBy: { createdAt: 'desc' }, select });
       if (existing !== null) return { connection, job: existing, reused: true };
@@ -88,6 +104,37 @@ async function main(): Promise<void> {
   }, null, 2));
 
   await prisma.$disconnect();
+}
+
+function hasMetricFilterArgs(args: ReadonlyMap<string, string>): boolean {
+  return ['metric-namespace', 'metric-name', 'resource-id', 'region-id', 'statistic'].some((key) => args.has(key));
+}
+
+function parseMetricFilter(args: ReadonlyMap<string, string>): {
+  readonly namespace: string;
+  readonly metricName: string;
+  readonly resourceId: string;
+  readonly regionId?: string;
+  readonly statistic: MetricStatistic;
+} | undefined {
+  if (!hasMetricFilterArgs(args)) return undefined;
+  const required = (key: string): string => {
+    const value = args.get(key)?.trim();
+    if (value === undefined || value === '') throw new Error(`--${key} es obligatorio cuando se filtra una métrica OCI.`);
+    return value;
+  };
+  const statistic = required('statistic').toUpperCase();
+  if (!(METRIC_STATISTICS as readonly string[]).includes(statistic)) {
+    throw new Error(`--statistic debe ser uno de: ${METRIC_STATISTICS.join(', ')}.`);
+  }
+  const regionId = args.get('region-id')?.trim();
+  return {
+    namespace: required('metric-namespace'),
+    metricName: required('metric-name'),
+    resourceId: required('resource-id'),
+    ...(regionId === undefined || regionId === '' ? {} : { regionId }),
+    statistic: statistic as MetricStatistic,
+  };
 }
 
 function parseArgs(args: readonly string[]): Map<string, string> {

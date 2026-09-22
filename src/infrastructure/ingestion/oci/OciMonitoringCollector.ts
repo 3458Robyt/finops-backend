@@ -300,7 +300,7 @@ function normalizeDimensions(
 export function readOciMetricDefinitions(
   job: CloudIngestionJobContext,
 ): readonly OciMetricDefinition[] {
-  return readObjectArray(job.connection.metadata, 'ociMetricDefinitions').map((item) => {
+  const definitions = readObjectArray(job.connection.metadata, 'ociMetricDefinitions').map((item) => {
     const query = optionalString(item['query']);
     const unit = optionalString(item['unit']);
     const regionId = optionalString(item['regionId']);
@@ -334,6 +334,56 @@ export function readOciMetricDefinitions(
       ...(unit !== undefined ? { unit } : {}),
     };
   });
+  return filterOciMetricDefinitions(definitions, readOciMetricFilter(job.requestContext));
+}
+
+interface OciMetricFilter {
+  readonly namespace?: string;
+  readonly metricName?: string;
+  readonly resourceId?: string;
+  readonly regionId?: string;
+  readonly statistic?: MetricStatistic;
+}
+
+function readOciMetricFilter(
+  requestContext: Readonly<Record<string, unknown>> | undefined,
+): OciMetricFilter | undefined {
+  const raw = requestContext?.['metricFilter'];
+  if (raw === undefined) return undefined;
+  if (!isStringRecord(raw)) throw new Error('requestContext.metricFilter debe ser un objeto de texto.');
+  const filter: OciMetricFilter = {
+    ...(raw['namespace'] !== undefined ? { namespace: requireFilterValue(raw['namespace'], 'namespace') } : {}),
+    ...(raw['metricName'] !== undefined ? { metricName: requireFilterValue(raw['metricName'], 'metricName') } : {}),
+    ...(raw['resourceId'] !== undefined ? { resourceId: requireFilterValue(raw['resourceId'], 'resourceId') } : {}),
+    ...(raw['regionId'] !== undefined ? { regionId: requireFilterValue(raw['regionId'], 'regionId') } : {}),
+    ...(raw['statistic'] !== undefined
+      ? { statistic: parseMetricStatistic(requireFilterValue(raw['statistic'], 'statistic'), 'requestContext.metricFilter.statistic') }
+      : {}),
+  };
+  if (Object.keys(filter).length === 0) throw new Error('requestContext.metricFilter debe contener al menos un filtro.');
+  return filter;
+}
+
+function filterOciMetricDefinitions(
+  definitions: readonly OciMetricDefinition[],
+  filter: OciMetricFilter | undefined,
+): readonly OciMetricDefinition[] {
+  if (filter === undefined) return definitions;
+  return definitions.flatMap((definition) => {
+    if (filter.namespace !== undefined && definition.namespace !== filter.namespace) return [];
+    if (filter.metricName !== undefined && definition.metricName !== filter.metricName) return [];
+    if (filter.resourceId !== undefined && normalizeExternalResourceId(definition.resourceId) !== normalizeExternalResourceId(filter.resourceId)) return [];
+    if (filter.regionId !== undefined && definition.regionId !== filter.regionId) return [];
+    if (filter.statistic === undefined) return [definition];
+    if (definition.query !== undefined && !queryContainsStatistic(definition.query, filter.statistic)) return [];
+    return [{ ...definition, statistics: [filter.statistic] }];
+  });
+}
+
+function requireFilterValue(value: string, field: string): string {
+  const normalized = value.trim();
+  if (normalized === '') throw new Error(`requestContext.metricFilter.${field} no puede estar vacío.`);
+  return normalized;
 }
 
 function isStringRecord(value: unknown): value is Readonly<Record<string, string>> {

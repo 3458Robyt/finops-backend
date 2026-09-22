@@ -1,7 +1,7 @@
 import 'dotenv/config';
 
 import { execFile, spawn } from 'node:child_process';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 import { Pool } from 'pg';
@@ -102,7 +102,19 @@ try {
   }
 } catch (error: unknown) {
   canaryError = error;
-  console.error(`AI live canary backend output:\n${serverOutput.join('')}`);
+  const details = failureDetails(error);
+  const outputFile = resolve(`.test-artifacts/ai-audit/ai-live-canary-failure-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+  await mkdir(resolve('.test-artifacts/ai-audit'), { recursive: true });
+  await writeFile(outputFile, `${JSON.stringify({
+    success: false,
+    generatedAt: new Date().toISOString(),
+    runId,
+    canaryScope,
+    error: details,
+    backendOutput: redactText(serverOutput.join('')),
+  }, null, 2)}\n`, 'utf8');
+  console.error(`AI live canary failure artifact: ${outputFile}`);
+  console.error(`AI live canary backend output:\n${redactText(serverOutput.join(''))}`);
   throw error;
 } finally {
   await stopProcess(server);
@@ -187,5 +199,32 @@ function appendOutput(buffer: string[], chunk: Buffer): void {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300);
+  return failureDetails(error).message;
+}
+
+function failureDetails(error: unknown): {
+  readonly code: string | number | undefined;
+  readonly message: string;
+  readonly childStdout: string;
+  readonly childStderr: string;
+} {
+  const record = typeof error === 'object' && error !== null
+    ? error as Record<string, unknown>
+    : undefined;
+  return {
+    code: typeof record?.['code'] === 'string' || typeof record?.['code'] === 'number'
+      ? record['code']
+      : undefined,
+    message: redactText(error instanceof Error ? error.message : String(record?.['message'] ?? error)),
+    childStdout: redactText(typeof record?.['stdout'] === 'string' ? record['stdout'] : ''),
+    childStderr: redactText(typeof record?.['stderr'] === 'string' ? record['stderr'] : ''),
+  };
+}
+
+function redactText(value: string): string {
+  const redacted = value
+    .replace(/(?:sk|nvapi)-[A-Za-z0-9._-]+/gi, '[REDACTED_AI_KEY]')
+    .replace(/(postgres(?:ql)?:\/\/)[^@\s]+@/gi, '$1[REDACTED]@');
+  if (redacted.length <= 4_000) return redacted;
+  return `${redacted.slice(0, 1_000)}\n...[truncated]...\n${redacted.slice(-3_000)}`;
 }

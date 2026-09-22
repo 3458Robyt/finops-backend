@@ -26,38 +26,45 @@ if (!liveEnabled) {
 
 const manifest = JSON.parse(await readFile(resolve(process.env['E2E_FIXTURE_FILE'] ?? '.test-artifacts/e2e-fixtures.json'), 'utf8')) as E2eFixtureManifest;
 let token = await login(manifest.admin.email, manifest.password);
+const auditStartedAt = Date.now();
 const checks: AuditCheck[] = [];
 const expectedModel = process.env['AI_EXPECTED_MODEL'] ?? 'gpt-5.6-luna';
 const persistedRecommendationsBefore = countRecommendations(await get('/recommendations'));
 
-const chat = await post('/ai/chat', {
+const chatResult = await postMaybe('/ai/chat', {
   message: 'Responde en una frase: cual es la principal oportunidad FinOps segun los datos disponibles?',
 });
-const chatAnswer = String(readJsonPath(chat, ['answer']) ?? '');
+const chatAnswer = chatResult.ok ? String(readJsonPath(chatResult.body, ['answer']) ?? '') : '';
 checks.push({
   name: 'chat_responde_en_espanol',
-  passed: looksLikeSpanish(chatAnswer),
-  detail: chatAnswer.slice(0, 300),
+  passed: chatResult.ok && looksLikeSpanish(chatAnswer),
+  detail: chatResult.ok ? chatAnswer.slice(0, 300) : JSON.stringify({ status: chatResult.status, ...summarizeAiFailure(chatResult.body) }),
 });
 
-const formattedChat = await post('/ai/chat', {
+const formattedChatResult = await postMaybe('/ai/chat', {
   message: 'Responde con un encabezado breve y dos viñetas Markdown: ¿cuál es la principal oportunidad según los datos? No inventes datos.',
 });
-const formattedChatAnswer = String(readJsonPath(formattedChat, ['answer']) ?? '');
+const formattedChatAnswer = formattedChatResult.ok ? String(readJsonPath(formattedChatResult.body, ['answer']) ?? '') : '';
 checks.push({
   name: 'chat_formato_markdown_seguro',
-  passed: looksLikeSpanish(formattedChatAnswer) && !containsUnsafeMarkup(formattedChatAnswer),
-  detail: formattedChatAnswer.slice(0, 500),
+  passed: formattedChatResult.ok && looksLikeSpanish(formattedChatAnswer) && !containsUnsafeMarkup(formattedChatAnswer),
+  detail: formattedChatResult.ok ? formattedChatAnswer.slice(0, 500) : JSON.stringify({ status: formattedChatResult.status, ...summarizeAiFailure(formattedChatResult.body) }),
 });
 
-const unsupportedTechnicalChat = await post('/ai/chat', {
+const unsupportedTechnicalChatResult = await postMaybe('/ai/chat', {
   message: '¿Cuál es el p95 de CPU y memoria de este tenant? Responde solo si existe evidencia técnica.',
 });
-const unsupportedTechnicalAnswer = String(readJsonPath(unsupportedTechnicalChat, ['answer']) ?? '');
+const unsupportedTechnicalAnswer = unsupportedTechnicalChatResult.ok
+  ? String(readJsonPath(unsupportedTechnicalChatResult.body, ['answer']) ?? '')
+  : '';
 checks.push({
   name: 'chat_no_inventa_metricas_tecnicas',
-  passed: looksLikeSpanish(unsupportedTechnicalAnswer) && !containsUnsupportedTechnicalClaim(unsupportedTechnicalAnswer),
-  detail: unsupportedTechnicalAnswer.slice(0, 500),
+  passed: unsupportedTechnicalChatResult.ok
+    && looksLikeSpanish(unsupportedTechnicalAnswer)
+    && !containsUnsupportedTechnicalClaim(unsupportedTechnicalAnswer),
+  detail: unsupportedTechnicalChatResult.ok
+    ? unsupportedTechnicalAnswer.slice(0, 500)
+    : JSON.stringify({ status: unsupportedTechnicalChatResult.status, ...summarizeAiFailure(unsupportedTechnicalChatResult.body) }),
 });
 
 const recommendationStartedAt = Date.now();
@@ -85,18 +92,22 @@ checks.push({
 });
 checks.push({
   name: 'recomendaciones_tienen_evidencia',
-  passed: recommendations.every((recommendation) => typeof recommendation['evidence'] === 'object' && recommendation['evidence'] !== null),
+  passed: generatedResult.ok
+    && recommendations.length > 0
+    && recommendations.every((recommendation) => typeof recommendation['evidence'] === 'object' && recommendation['evidence'] !== null),
   detail: JSON.stringify(recommendations.map((recommendation) => recommendation['evidence']).slice(0, 2)),
 });
 checks.push({
   name: 'recomendaciones_guardan_snapshot_y_auditoria',
-  passed: recommendations.every((recommendation) => {
+  passed: generatedResult.ok
+    && recommendations.length > 0
+    && recommendations.every((recommendation) => {
     const evidence = asRecord(recommendation['evidence']);
     const technicalSnapshot = asRecord(evidence?.['recommendationEvidenceSnapshot']);
     const audit = asRecord(evidence?.['aiAudit']);
     return technicalSnapshot === undefined ||
       (typeof technicalSnapshot['hash'] === 'string' && audit?.['verdict'] === 'APPROVED');
-  }),
+    }),
   detail: JSON.stringify(recommendations.map((recommendation) => {
     const evidence = asRecord(recommendation['evidence']);
     return {
@@ -107,10 +118,12 @@ checks.push({
 });
 checks.push({
   name: 'no_inventa_ahorro_negativo',
-  passed: recommendations.every((recommendation) => {
+  passed: generatedResult.ok
+    && recommendations.length > 0
+    && recommendations.every((recommendation) => {
     const savings = recommendation['estimatedMonthlySavings'];
     return typeof savings !== 'number' || savings >= 0;
-  }),
+    }),
   detail: JSON.stringify(recommendations.map((recommendation) => recommendation['estimatedMonthlySavings'])),
 });
 // A long live run can outlast the short-lived access token; refresh before the final persistence check.
@@ -220,21 +233,25 @@ checks.push({
 
 const traceResponse = await get('/agent/context-traces?limit=5');
 const traces = Array.isArray(traceResponse['traces']) ? traceResponse['traces'] as Record<string, unknown>[] : [];
+const currentTraces = traces.filter((trace) => {
+  const createdAt = Date.parse(String(trace['createdAt'] ?? ''));
+  return Number.isFinite(createdAt) && createdAt >= auditStartedAt - 1_000;
+});
 checks.push({
   name: 'registra_trazas_ia',
-  passed: traces.some((trace) => trace['status'] === 'SUCCESS'),
-  detail: JSON.stringify(traces.slice(0, 3)),
+  passed: currentTraces.some((trace) => trace['status'] === 'SUCCESS'),
+  detail: JSON.stringify(currentTraces.slice(0, 3)),
 });
 checks.push({
   name: 'usa_modelo_esperado',
-  passed: traces.some((trace) => trace['status'] === 'SUCCESS' && trace['model'] === expectedModel),
-  detail: `Modelo esperado: ${expectedModel}; modelos observados: ${JSON.stringify([...new Set(traces.map((trace) => trace['model']))])}`,
+  passed: currentTraces.some((trace) => trace['status'] === 'SUCCESS' && trace['model'] === expectedModel),
+  detail: `Modelo esperado: ${expectedModel}; modelos observados: ${JSON.stringify([...new Set(currentTraces.map((trace) => trace['model']))])}`,
 });
 
-const tokenEstimate = traces.reduce((total, trace) => (
+const tokenEstimate = currentTraces.reduce((total, trace) => (
   total + readNonNegativeNumber(trace['promptTokenEstimate']) + readNonNegativeNumber(trace['responseTokenEstimate'])
 ), 0);
-const traceLatencyMs = traces.reduce((total, trace) => total + readNonNegativeNumber(trace['latencyMs']), 0);
+const traceLatencyMs = currentTraces.reduce((total, trace) => total + readNonNegativeNumber(trace['latencyMs']), 0);
 
 const passed = checks.every((check) => check.passed);
 const output = {

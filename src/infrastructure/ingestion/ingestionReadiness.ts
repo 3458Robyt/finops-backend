@@ -226,6 +226,7 @@ export function summarizeReadinessJobResult(resultSummary: unknown): Readonly<Re
     return null;
   }
 
+  const retryTelemetry = readRetryTelemetry(resultSummary);
   return {
     durationMs: resultSummary['durationMs'],
     providerCode: resultSummary['providerCode'],
@@ -238,7 +239,26 @@ export function summarizeReadinessJobResult(resultSummary: unknown): Readonly<Re
     costMetricsInserted: resultSummary['costMetricsInserted'],
     metricSamples: resultSummary['metricSamples'],
     warnings: resultSummary['warnings'],
+    ...(retryTelemetry === undefined ? {} : { retryTelemetry }),
   };
+}
+
+function readRetryTelemetry(
+  resultSummary: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, number>> | undefined {
+  const coverage = isPlainRecord(resultSummary['coverage']) ? resultSummary['coverage'] : resultSummary;
+  const keys = [
+    'providerRetries',
+    'providerRateLimitRetries',
+    'providerTimeoutRetries',
+    'providerTransientRetries',
+  ] as const;
+  const telemetry = Object.fromEntries(
+    keys.flatMap((key) => typeof coverage[key] === 'number' && Number.isFinite(coverage[key])
+      ? [[key, coverage[key]]]
+      : []),
+  );
+  return Object.keys(telemetry).length === 0 ? undefined : telemetry;
 }
 
 function readCapabilityValidation(

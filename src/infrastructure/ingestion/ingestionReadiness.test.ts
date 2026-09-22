@@ -127,6 +127,13 @@ describe('ingestionReadiness', () => {
       sourceType: 'TECHNICAL_METRIC',
       apiCallCount: 11,
       metricSamples: 11,
+      coverage: {
+        providerRetries: 2,
+        providerRateLimitRetries: 1,
+        providerTimeoutRetries: 1,
+        providerTransientRetries: 0,
+        secret: 'do-not-return',
+      },
       secret: 'do-not-return',
     })).toEqual({
       providerCode: 'oci',
@@ -136,6 +143,12 @@ describe('ingestionReadiness', () => {
       focusRows: undefined,
       metricSamples: 11,
       warnings: undefined,
+      retryTelemetry: {
+        providerRetries: 2,
+        providerRateLimitRetries: 1,
+        providerTimeoutRetries: 1,
+        providerTransientRetries: 0,
+      },
     });
   });
 

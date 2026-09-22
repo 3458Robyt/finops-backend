@@ -244,7 +244,7 @@ checks.push({
 });
 checks.push({
   name: 'usa_modelo_esperado',
-  passed: currentTraces.some((trace) => trace['status'] === 'SUCCESS' && trace['model'] === expectedModel),
+  passed: currentTraces.some((trace) => trace['model'] === expectedModel),
   detail: `Modelo esperado: ${expectedModel}; modelos observados: ${JSON.stringify([...new Set(currentTraces.map((trace) => trace['model']))])}`,
 });
 

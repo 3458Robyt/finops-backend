@@ -121,6 +121,31 @@ describe('ingestionReadiness', () => {
     expect(summary.connections[0]?.onboardingStatus).toBe('NO_CREDENTIAL');
   });
 
+  it('does not hide successful sources behind a bounded technical job history', () => {
+    const summary = buildIngestionReadinessSummary({
+      generatedAt: new Date('2026-09-22T12:00:00.000Z'),
+      connections: [{
+        id: 'oci-2',
+        name: 'OCI TAK',
+        providerCode: 'oci',
+        lastValidatedAt: new Date('2026-09-22T11:00:00.000Z'),
+        metadata: { ociMetricDefinitions: [{ metricName: 'CpuUtilization' }] },
+        credentialPurposes: ['OPERATIONAL'],
+        successfulSourceTypes: ['INVENTORY', 'BILLING_EXPORT', 'TECHNICAL_METRIC'],
+        recentJobs: Array.from({ length: 5 }, (_, index) => ({
+          id: `metric-${index}`,
+          sourceType: 'TECHNICAL_METRIC',
+          status: 'SUCCESS' as const,
+          targetStart: new Date('2026-09-22T10:00:00.000Z'),
+          targetEnd: new Date('2026-09-22T10:30:00.000Z'),
+          resultSummary: { metricSamples: 10 },
+        })),
+      }],
+    });
+
+    expect(summary.connections[0]?.onboardingStatus).toBe('READY');
+  });
+
   it('summarizes only safe job result fields', () => {
     expect(summarizeReadinessJobResult({
       providerCode: 'oci',

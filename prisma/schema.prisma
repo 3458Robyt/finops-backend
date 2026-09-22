@@ -950,6 +950,7 @@ model IngestionJob {
 
   @@index([status, availableAt, priority, createdAt], map: "ingestion_jobs_queue_idx")
   @@index([status, sourceType, createdAt])
+  @@index([tenantId, status, cloudConnectionId, sourceType], map: "ingestion_jobs_tenant_status_source_idx")
   @@index([tenantId, cloudConnectionId, sourceType])
   @@index([tenantId, archivedAt, createdAt], map: "ingestion_jobs_tenant_archive_idx")
   @@index([cloudConnectionId], map: "ingestion_jobs_cloud_connection_id_idx")

@@ -231,6 +231,20 @@ export class PrismaCloudIngestionReadRepository {
         },
       },
     });
+    const successfulSources = await this.prisma.ingestionJob.groupBy({
+      by: ['cloudConnectionId', 'sourceType'],
+      where: {
+        tenantId,
+        status: 'SUCCESS',
+      },
+    });
+    const successfulSourcesByConnection = new Map<string, string[]>();
+    for (const row of successfulSources) {
+      if (row.cloudConnectionId === null) continue;
+      const sources = successfulSourcesByConnection.get(row.cloudConnectionId) ?? [];
+      sources.push(row.sourceType);
+      successfulSourcesByConnection.set(row.cloudConnectionId, sources);
+    }
 
     const operational = await this.readOperationalReadiness(tenantId);
     const globalIssues = operational.queue.pending > 0 && !operational.worker.available
@@ -259,6 +273,7 @@ export class PrismaCloudIngestionReadRepository {
         metadata: connection.metadata,
         configuredMetricDefinitionCount: connection.metricDefinitions.length,
         credentialPurposes: connection.credentials.map((credential) => credential.purpose),
+        successfulSourceTypes: successfulSourcesByConnection.get(connection.id) ?? [],
         recentJobs: connection.ingestionJobs.map((job) => ({
           id: job.id,
           sourceType: job.sourceType,

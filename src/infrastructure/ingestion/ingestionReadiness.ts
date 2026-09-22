@@ -17,6 +17,13 @@ export interface IngestionReadinessConnectionInput {
   /** Enabled definitions are persisted in the relational table, not only in metadata. */
   readonly configuredMetricDefinitionCount?: number;
   readonly credentialPurposes: readonly string[];
+  /**
+   * Source types that have completed successfully in the connection history.
+   * This is supplied by the repository because `recentJobs` is intentionally
+   * bounded for the UI and can otherwise hide older INVENTORY/BILLING jobs
+   * behind a large technical-metric backfill.
+   */
+  readonly successfulSourceTypes?: readonly string[];
   readonly recentJobs: readonly IngestionReadinessJobInput[];
 }
 
@@ -317,7 +324,7 @@ function resolveOnboardingStatus(
   const failed = capabilities.some((item) => item.status === 'DENIED' || item.status === 'ERROR');
   if (failed) return available > 0 ? 'PARTIAL' : 'REQUIRES_ATTENTION';
 
-  const successfulSources = new Set(connection.recentJobs
+  const successfulSources = new Set(connection.successfulSourceTypes ?? connection.recentJobs
     .filter((job) => job.status === 'SUCCESS')
     .map((job) => job.sourceType));
   return ['INVENTORY', 'BILLING_EXPORT', 'TECHNICAL_METRIC'].every((source) => successfulSources.has(source))

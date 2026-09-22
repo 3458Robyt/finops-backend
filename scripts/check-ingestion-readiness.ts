@@ -48,6 +48,16 @@ async function main(): Promise<void> {
       },
     }),
   );
+  const successfulSources = await prisma.ingestionJob.groupBy({
+    by: ['cloudConnectionId', 'sourceType'],
+    where: { status: 'SUCCESS' },
+  });
+  const successfulSourcesByConnection = new Map<string, string[]>();
+  for (const row of successfulSources) {
+    const sources = successfulSourcesByConnection.get(row.cloudConnectionId) ?? [];
+    sources.push(row.sourceType);
+    successfulSourcesByConnection.set(row.cloudConnectionId, sources);
+  }
 
   const globalIssues = buildGlobalIssues();
   const readiness = buildIngestionReadinessSummary({
@@ -63,6 +73,7 @@ async function main(): Promise<void> {
       metadata: connection.metadata,
       configuredMetricDefinitionCount: connection.metricDefinitions.length,
       credentialPurposes: connection.credentials.map((credential) => credential.purpose),
+      successfulSourceTypes: successfulSourcesByConnection.get(connection.id) ?? [],
       recentJobs: connection.ingestionJobs.map((job) => ({
         id: job.id,
         sourceType: job.sourceType,

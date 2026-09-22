@@ -96,6 +96,7 @@ try {
   const onboardingResult = await runIntegrationCommand(process.execPath, [tsxCli, 'scripts/testing/cloud-onboarding-api-smoke.ts'], {
     API_BASE_URL: apiBaseUrl,
     E2E_FIXTURE_FILE: fixtureFile,
+    EXPECT_WAITING_FOR_WORKER: 'true',
   });
   process.stdout.write(onboardingResult.stdout);
   process.stderr.write(onboardingResult.stderr);

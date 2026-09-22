@@ -248,6 +248,22 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
       completedAt: new Date(),
     },
   });
+  await prisma.ingestionJob.create({
+    data: {
+      tenantId: tenantA.id,
+      cloudConnectionId: tenantAConnection.id,
+      sourceType: 'TECHNICAL_METRIC',
+      status: 'PENDING',
+      requestedByUserId: user.id,
+      targetStart: new Date(periodStart.getTime() + 60 * 60 * 1000),
+      targetEnd: new Date(periodStart.getTime() + 2 * 60 * 60 * 1000),
+      attempts: 0,
+      maxAttempts: 3,
+      priority: 25,
+      requestContext: { e2eRunId: runId, fixture: true, readinessCase: 'pending_without_worker' },
+      progress: { phase: 'QUEUED', message: 'Fixture pendiente para validar readiness sin worker.' },
+    },
+  });
 
   await seedTenantData(prisma, {
     runId,

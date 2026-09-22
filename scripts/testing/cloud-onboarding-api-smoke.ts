@@ -28,6 +28,7 @@ const connection = firstConnection(connections);
 const accessibleTenants = await request('/auth/tenants', adminToken, 200);
 const onboarding = await request(`/cloud-connections/${encodeURIComponent(connection.id)}/onboarding`, adminToken, 200);
 const readiness = await request('/ingestion/readiness', adminToken, 200);
+assertWaitingForWorkerWhenRequested(readiness);
 const operationalReads = [
     '/kpis/savings',
     '/costs',
@@ -180,4 +181,20 @@ function requireEnv(name: string): string {
 
 function isFileMissing(error: unknown): boolean {
   return isRecord(error) && error['code'] === 'ENOENT';
+}
+
+function assertWaitingForWorkerWhenRequested(value: unknown): void {
+  if (process.env['EXPECT_WAITING_FOR_WORKER'] !== 'true') return;
+  const summary = isRecord(value) && isRecord(value['readiness']) ? value['readiness'] : undefined;
+  const operational = summary !== undefined && isRecord(summary['operational']) ? summary['operational'] : undefined;
+  const queue = operational !== undefined && isRecord(operational['queue']) ? operational['queue'] : undefined;
+  const worker = operational !== undefined && isRecord(operational['worker']) ? operational['worker'] : undefined;
+  if (
+    operational?.['state'] !== 'WAITING_FOR_WORKER'
+    || typeof queue?.['pending'] !== 'number'
+    || queue['pending'] < 1
+    || worker?.['available'] !== false
+  ) {
+    throw new Error(`El readiness no clasificó la cola sin worker: ${JSON.stringify(operational)}`);
+  }
 }

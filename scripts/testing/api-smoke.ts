@@ -29,6 +29,14 @@ const loginBody = await login.response.json() as {
 };
 let token = loginBody.accessToken;
 const billingPeriod = manifest.billingPeriod;
+const forecastYear = Number(billingPeriod.slice(0, 4));
+const forecastMonth = Number(billingPeriod.slice(5, 7));
+if (!Number.isInteger(forecastYear) || !Number.isInteger(forecastMonth) || forecastMonth < 1 || forecastMonth > 12) {
+  throw new Error(`Fixture billing period is not a valid YYYY-MM value: ${billingPeriod}`);
+}
+const forecastFrom = new Date(Date.UTC(forecastYear, forecastMonth - 1, 1));
+const forecastTo = new Date(Date.UTC(forecastYear, forecastMonth, 1));
+const forecastOutsideTo = new Date(Date.UTC(forecastYear, forecastMonth + 1, 1));
 
 await check('health', `${apiBaseUrl.replace(/\/api\/v1$/, '')}/health`);
 await check('auth tenants', '/auth/tenants', token);
@@ -63,6 +71,41 @@ if (!repeatedBody.reusedActiveJob || repeatedBody.job.id !== reprocessBody.job.i
 results.push({ name: 'master ingestion reprocess reuses active window', status: repeatedReprocess.response.status, ok: true, ms: repeatedReprocess.ms });
 await check('kpis savings', '/kpis/savings', token);
 await check('costs', '/costs', token);
+const analyticsRange = new URLSearchParams({ from: forecastFrom.toISOString(), to: forecastTo.toISOString() });
+await check('analytics opportunities', `/analytics/opportunities?${analyticsRange.toString()}`, token);
+await check('analytics trends', `/analytics/trends?${analyticsRange.toString()}`, token);
+await check('analytics usage', `/analytics/usage?${analyticsRange.toString()}`, token);
+await check('analytics unit economics', `/analytics/unit-economics?${analyticsRange.toString()}`, token);
+await check('analytics efficiency insights', `/analytics/efficiency-insights?${analyticsRange.toString()}`, token);
+const forecast = await request(`/analytics/forecast?${analyticsRange.toString()}`, { token });
+assertOk(forecast, 'analytics forecast in range');
+const forecastBody = await forecast.response.json() as { readonly forecasts: readonly { readonly forecastMonth: string }[] };
+if (forecastBody.forecasts.length === 0 || forecastBody.forecasts.some((item) => {
+  const month = Date.parse(item.forecastMonth);
+  return Number.isNaN(month) || month < forecastFrom.getTime() || month >= forecastTo.getTime();
+})) {
+  throw new Error('Analytics forecast returned no fixture forecast or returned a month outside the requested range.');
+}
+const excludedForecast = await request(`/analytics/forecast?${new URLSearchParams({ from: forecastTo.toISOString(), to: forecastOutsideTo.toISOString() }).toString()}`, { token });
+assertOk(excludedForecast, 'analytics forecast excludes out-of-range months');
+const excludedForecastBody = await excludedForecast.response.json() as { readonly forecasts: readonly unknown[] };
+if (excludedForecastBody.forecasts.length !== 0) {
+  throw new Error('Analytics forecast returned a forecast outside the requested range.');
+}
+const scenarios = await request(`/analytics/forecast/scenarios?${analyticsRange.toString()}`, { token });
+assertOk(scenarios, 'analytics forecast scenarios');
+const scenariosBody = await scenarios.response.json() as { readonly scenarios: readonly { readonly forecastMonth: string }[] };
+if (scenariosBody.scenarios.some((item) => {
+  const month = Date.parse(item.forecastMonth);
+  return Number.isNaN(month) || month < forecastFrom.getTime() || month >= forecastTo.getTime();
+})) {
+  throw new Error('Analytics forecast scenarios returned a month outside the requested range.');
+}
+const invalidAnalyticsDate = await request('/analytics/forecast?from=not-a-date', { token });
+if (invalidAnalyticsDate.response.status !== 400) {
+  throw new Error(`Expected invalid analytics date to return 400, got ${invalidAnalyticsDate.response.status}.`);
+}
+results.push({ name: 'analytics invalid date rejected', status: invalidAnalyticsDate.response.status, ok: true, ms: invalidAnalyticsDate.ms });
 const allocationRuleInput = { name: 'E2E compute allocation', priority: 10, status: 'DRAFT', serviceName: 'Amazon Elastic Compute Cloud', costCenter: 'E2E-CC' };
 const allocationRule = await request('/cost-allocation/rules', {
   method: 'POST', token,

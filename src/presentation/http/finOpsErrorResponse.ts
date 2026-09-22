@@ -30,6 +30,7 @@ export function resolveFinOpsError(error: unknown, fallback: string): {
         : error.code === 'VALIDATION_ERROR' ? 400
           : error.code === 'CONFLICT' ? 409
             : error.code === 'RECOMMENDATION_ANALYSIS_WORKER_UNAVAILABLE' ? 503
+            : error.code === 'PROVIDER_UNAVAILABLE' ? 503
             : error.code === 'PROVIDER_TIMEOUT' ? 504
             : ['AI_RESPONSE_ERROR', 'PROVIDER_ERROR'].includes(error.code) ? 502
             : 500;

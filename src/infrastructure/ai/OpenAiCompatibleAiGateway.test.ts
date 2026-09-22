@@ -151,7 +151,7 @@ describe('OpenAiCompatibleAiGateway', () => {
     expect(requestOptions.signal?.aborted).toBe(true);
   });
 
-  test('normalizes raw provider failures instead of returning an internal error', async () => {
+  test('classifies retryable provider failures without exposing credentials', async () => {
     process.env['AI_API_KEY'] = 'test-ai-key';
     process.env['AI_BASE_URL'] = 'https://api.example.test/v1';
     completionCreate.mockRejectedValue(new Error('429 rate limited apiKey=super-secret'));
@@ -160,8 +160,24 @@ describe('OpenAiCompatibleAiGateway', () => {
     const gateway = new OpenAiCompatibleAiGateway();
 
     await expect(gateway.generateText({ messages: [{ role: 'user', content: 'hola' }] }))
-      .rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
+      .rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
     await expect(gateway.generateText({ messages: [{ role: 'user', content: 'hola' }] }))
       .rejects.toMatchObject({ message: expect.not.stringContaining('super-secret') });
+  });
+
+  test('classifies upstream 503 as temporarily unavailable', async () => {
+    process.env['AI_API_KEY'] = 'test-ai-key';
+    process.env['AI_BASE_URL'] = 'https://api.example.test/v1';
+    const error = Object.assign(new Error('service unavailable'), { status: 503 });
+    completionCreate.mockRejectedValue(error);
+
+    const { OpenAiCompatibleAiGateway } = await import('./OpenAiCompatibleAiGateway.js');
+    const gateway = new OpenAiCompatibleAiGateway();
+
+    await expect(gateway.generateText({ messages: [{ role: 'user', content: 'hola' }] }))
+      .rejects.toMatchObject({
+        code: 'PROVIDER_UNAVAILABLE',
+        details: { providerStatus: 503, retryable: true },
+      });
   });
 });

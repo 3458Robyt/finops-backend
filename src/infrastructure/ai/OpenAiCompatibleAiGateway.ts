@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 
-import { ConfigurationError, FinOpsBaseError, ProviderError, ProviderTimeoutError } from '../../domain/errors/errors.js';
+import { ConfigurationError, FinOpsBaseError, ProviderError, ProviderTimeoutError, ProviderUnavailableError } from '../../domain/errors/errors.js';
 import type { AiGatewayRequest, IAiGateway } from '../../domain/interfaces/IAiGateway.js';
 import type { MetricsRegistry } from '../../application/observability/MetricsRegistry.js';
 import { loadRuntimeConfig } from '../config/runtimeConfigReader.js';
@@ -117,6 +117,10 @@ export class OpenAiCompatibleAiGateway implements IAiGateway {
       this.metrics?.increment('ai_requests_total', { model, outcome: 'error' });
       this.metrics?.observe('ai_request_duration_ms', Date.now() - startedAt, { model, outcome: 'error' });
       if (error instanceof FinOpsBaseError) throw error;
+      const providerStatus = readProviderStatus(error);
+      if (isTransientProviderFailure(error, providerStatus)) {
+        throw new ProviderUnavailableError('AI', providerStatus, error instanceof Error ? error : undefined);
+      }
       throw new ProviderError(
         'AI',
         safeErrorMessage(error),
@@ -129,6 +133,26 @@ export class OpenAiCompatibleAiGateway implements IAiGateway {
     }
   }
 }
+
+function readProviderStatus(error: unknown): number | undefined {
+  if (error === null || typeof error !== 'object') return readStatusFromMessage(error);
+  const value = error as { readonly status?: unknown; readonly response?: { readonly status?: unknown } };
+  const status = typeof value.status === 'number' ? value.status : value.response?.status;
+  return typeof status === 'number' && Number.isInteger(status) ? status : readStatusFromMessage(error);
+}
+
+function readStatusFromMessage(error: unknown): number | undefined {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = message.match(/\b([45]\d{2})\b/);
+  return match === null ? undefined : Number(match[1]);
+}
+
+function isTransientProviderFailure(error: unknown, status?: number): boolean {
+  if (status === 429 || (status !== undefined && status >= 500 && status <= 599)) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /rate\s*limit|too many requests|service temporarily unavailable|upstream unavailable/i.test(message);
+}
+
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }

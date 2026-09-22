@@ -36,4 +36,23 @@ describe('respondWithRecommendationError', () => {
 
     expect(response.status).toHaveBeenCalledWith(502);
   });
+
+  test('exposes transient provider availability as service unavailable', () => {
+    const response = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    } as never;
+
+    respondWithRecommendationError(
+      response,
+      new FinOpsBaseError('El proveedor no está disponible temporalmente', 'PROVIDER_UNAVAILABLE'),
+      'fallback',
+    );
+
+    expect(response.status).toHaveBeenCalledWith(503);
+    expect(response.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: false,
+      code: 'PROVIDER_UNAVAILABLE',
+    }));
+  });
 });

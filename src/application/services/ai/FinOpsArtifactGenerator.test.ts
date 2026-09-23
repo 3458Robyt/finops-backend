@@ -45,7 +45,7 @@ function plan(steps: string[]): string {
     scope: { cloudAccountId: 'acc-prod-aws', cloudResourceId: 'cloud-resource-1' },
     prerequisites: ['Confirmar responsable y ventana de revisión.'],
     steps,
-    validation: ['Comparar las métricas y el costo autorizado de 169 USD.'],
+    validation: ['Comparar las métricas y confirmar la consistencia de las fuentes.'],
     risks: ['La capacidad puede ser insuficiente si cambia la carga.'],
     rollback: ['Restaurar la configuración anterior si la validación falla.'],
     successCriteria: ['La decisión queda documentada y es reversible.'],
@@ -90,6 +90,7 @@ describe('FinOpsArtifactGenerator execution plans', () => {
 
     expect(generateText).toHaveBeenCalledTimes(4);
     expect(result.auditReport.verdict).toBe('APPROVED');
+    expect(result.content['estimatedSavings']).toMatchObject({ amount: 0, currency: 'USD' });
     expect(result.auditReport.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'deterministic:manualGovernance', passed: true }),
       expect.objectContaining({ name: 'deterministic:costProvenance', passed: true }),

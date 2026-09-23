@@ -1,5 +1,6 @@
 import type { CostAnalyticsSnapshot } from '../../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { FinOpsRecommendation } from '../../../../domain/models/FinOpsRecommendation.js';
+import { isVerifiedSavingsCalculation } from '../../../../domain/models/recommendationEconomics.js';
 import { isRecord } from '../jsonReadHelpers.js';
 import { collectText, looksLikeSpanish } from '../aiLanguageGuard.js';
 import { buildNoSensitiveOutputCheck } from './qualitySensitiveOutput.js';
@@ -20,9 +21,9 @@ const unconditionedManualOperationPatterns = [
 
 const explicitApprovalPattern = /\b(?:si|solo\s+despu[eé]s\s+de|una\s+vez\s+que|previa|bajo)\b[\s\S]{0,90}\b(?:aprobaci[oó]n|autorizaci[oó]n|confirmaci[oó]n)\b/i;
 const explicitNegativeOperationPattern = /\b(?:no|nunca|jam[aá]s)\b[\s\S]{0,35}\b(?:ejecutar|aplicar|realizar|cambiar|redimensionar|detener|eliminar)\b/i;
-const monetaryFieldPattern = /(?:cost|savings|amount|price|total|value)/i;
 const monetaryPrefixPattern = /\b(USD|COP|EUR|GBP|MXN|BRL|CAD|AUD)\s*([0-9][0-9.,]*)/gi;
 const monetarySuffixPattern = /\b([0-9][0-9.,]*)\s*(USD|COP|EUR|GBP|MXN|BRL|CAD|AUD)\b/gi;
+const monetarySymbolPattern = /[$€£]\s*([0-9][0-9.,]*)/gu;
 
 export function evaluateExecutionPlan(
   plan: Record<string, unknown>,
@@ -214,13 +215,9 @@ function findCostProvenanceIssue(
   plan: Record<string, unknown>,
   recommendation: FinOpsRecommendation | undefined,
 ): string | undefined {
-  if (recommendation === undefined) return undefined;
-
-  const authorizedFacts = collectAuthorizedMonetaryFacts(recommendation);
-  if (authorizedFacts.length === 0) return undefined;
-  const authorizedText = authorizedFacts
-    .map((fact) => `${fact.amount} ${fact.currency}`)
-    .join(', ');
+  if (extractMoneyMentions(collectText(plan)).length > 0) {
+    return 'No incluyas montos monetarios en el texto del plan; la evidencia económica pertenece a la recomendación y estimatedSavings debe usar solo el cálculo determinístico.';
+  }
 
   const estimatedSavings = isRecord(plan['estimatedSavings']) ? plan['estimatedSavings'] : undefined;
   const estimatedAmount = typeof estimatedSavings?.['amount'] === 'number'
@@ -230,47 +227,29 @@ function findCostProvenanceIssue(
     ? estimatedSavings['currency'].toUpperCase()
     : undefined;
 
-  if (
-    estimatedAmount !== undefined
-    && estimatedAmount > 0
-    && !authorizedFacts.some((fact) => sameMoney(fact.amount, fact.currency, estimatedAmount, estimatedCurrency))
-  ) {
-    return `El importe estructurado estimatedSavings no está autorizado. Importes permitidos: ${authorizedText}.`;
+  if (estimatedAmount !== undefined && estimatedAmount > 0) {
+    if (recommendation === undefined) {
+      return 'No hay una recomendación asociada que autorice el ahorro estructurado del plan.';
+    }
+    const evidence = isRecord(recommendation.evidence) ? recommendation.evidence : {};
+    const calculation = isRecord(evidence['savingsCalculation']) ? evidence['savingsCalculation'] : undefined;
+    const verified = isVerifiedSavingsCalculation(
+      evidence,
+      recommendation.estimatedMonthlySavings,
+      recommendation.currency,
+    );
+    const authorizedAmount = typeof calculation?.['amount'] === 'number' ? calculation['amount'] : undefined;
+    if (
+      !verified
+      || authorizedAmount === undefined
+      || estimatedCurrency !== recommendation.currency.toUpperCase()
+      || !sameMoney(authorizedAmount, recommendation.currency, estimatedAmount, estimatedCurrency)
+    ) {
+      return 'El ahorro estructurado no coincide con un cálculo determinístico de alternativa tarifada.';
+    }
   }
 
-  const unauthorizedMention = extractMoneyMentions(collectText(plan)).find((mention) => (
-    mention.amount !== 0
-      && !authorizedFacts.some((fact) => sameMoney(fact.amount, fact.currency, mention.amount, mention.currency))
-  ));
-
-  return unauthorizedMention === undefined
-    ? undefined
-    : `El importe ${unauthorizedMention.amount} ${unauthorizedMention.currency} no está autorizado. Importes permitidos: ${authorizedText}.`;
-}
-
-interface MonetaryFact {
-  readonly amount: number;
-  readonly currency: string;
-}
-
-function collectAuthorizedMonetaryFacts(value: unknown, inheritedCurrency?: string, key?: string): MonetaryFact[] {
-  if (typeof value === 'number' && key !== undefined && monetaryFieldPattern.test(key) && inheritedCurrency !== undefined) {
-    return [{ amount: value, currency: inheritedCurrency.toUpperCase() }];
-  }
-
-  if (Array.isArray(value)) {
-    return value.flatMap((item) => collectAuthorizedMonetaryFacts(item, inheritedCurrency, key));
-  }
-
-  if (!isRecord(value)) return [];
-
-  const currency = typeof value['currency'] === 'string'
-    ? value['currency']
-    : inheritedCurrency;
-
-  return Object.entries(value).flatMap(([entryKey, entryValue]) => (
-    collectAuthorizedMonetaryFacts(entryValue, currency, entryKey)
-  ));
+  return undefined;
 }
 
 function extractMoneyMentions(text: string): MonetaryFact[] {
@@ -285,7 +264,16 @@ function extractMoneyMentions(text: string): MonetaryFact[] {
     const currency = match[2];
     if (currency !== undefined && amount !== undefined) mentions.push({ amount, currency });
   }
+  for (const match of text.matchAll(monetarySymbolPattern)) {
+    const amount = parseLocalizedAmount(match[1]);
+    if (amount !== undefined) mentions.push({ amount, currency: 'SYMBOL' });
+  }
   return mentions;
+}
+
+interface MonetaryFact {
+  readonly amount: number;
+  readonly currency: string;
 }
 
 function parseLocalizedAmount(raw: string | undefined): number | undefined {

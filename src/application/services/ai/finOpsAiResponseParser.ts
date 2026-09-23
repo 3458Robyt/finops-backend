@@ -3,6 +3,7 @@ import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnal
 import type { CreateRecommendationInput } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
 import type { AiAuditReport, AiCandidateAudit, AiAuditCheck } from '../../../domain/models/RecommendationExecutionPlan.js';
+import { isVerifiedSavingsCalculation } from '../../../domain/models/recommendationEconomics.js';
 import type { AiRecommendationDraft } from './finOpsAiTypes.js';
 import {
   extractJson,
@@ -179,25 +180,23 @@ export function parseAuditReport(rawResponse: string): AiAuditReport {
 }
 
 function normalizePlanSavings(
-  value: unknown,
+  _value: unknown,
   recommendation: FinOpsRecommendation,
 ): Record<string, unknown> {
-  const estimatedSavings = isRecord(value) ? { ...value } : {};
   const evidence = isRecord(recommendation.evidence) ? recommendation.evidence : {};
-  const potential = readNumber(evidence, 'potentialMonthlySavings')
-    ?? recommendation.estimatedMonthlySavings;
-  const amount = readNumber(estimatedSavings, 'amount');
-
-  if (potential === undefined || potential <= 0 || (amount !== undefined && amount > 0)) {
-    return estimatedSavings;
-  }
-
+  const calculation = isRecord(evidence['savingsCalculation']) ? evidence['savingsCalculation'] : undefined;
+  const verified = isVerifiedSavingsCalculation(
+    evidence,
+    recommendation.estimatedMonthlySavings,
+    recommendation.currency,
+  );
   return {
-    ...estimatedSavings,
-    amount: potential,
+    amount: verified && calculation !== undefined ? readNumber(calculation, 'amount') ?? 0 : 0,
     currency: recommendation.currency,
     status: 'POTENTIAL_NOT_VERIFIED',
-    note: 'Importe potencial sujeto a validación; no representa ahorro garantizado.',
+    note: verified
+      ? 'Estimación respaldada por precio determinístico; todavía no es ahorro realizado.'
+      : 'No existe un cálculo determinístico de ahorro validado para esta recomendación.',
   };
 }
 

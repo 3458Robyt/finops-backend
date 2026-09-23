@@ -133,6 +133,7 @@ export class FinOpsArtifactAiRunner {
             'Conserva los hechos monetarios y el estado de gestion de la recomendacion; no inventes importes, periodos ni estados.',
             'No copies cifras del plan actual si no aparecen en la recomendacion original. Si hay conflicto entre fuentes, elimina la cifra conflictiva y solicita reconciliacion.',
             'La Recomendacion original tiene prioridad sobre el contexto y sobre el plan actual para cuenta, recurso, moneda, periodo e importes. Usa únicamente los importes permitidos indicados por los controles deterministas.',
+            'No incluyas cifras monetarias en el texto narrativo; conserva cualquier ahorro autorizado solo en estimatedSavings.amount.',
             JSON.stringify(requiredChanges),
             ...(currentPlan === undefined ? [] : ['Plan actual que debes corregir:', JSON.stringify(currentPlan)]),
           ].join('\n'),

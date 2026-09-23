@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
+import type { CostAnalyticsSnapshot, CostAnomaly } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
 import {
   buildAuditSystemPrompt,
@@ -24,6 +24,24 @@ const snapshot: CostAnalyticsSnapshot = {
   environments: [],
   topResources: [],
 };
+
+function opportunity(id: string, isStale: boolean): CostAnomaly {
+  return {
+    id,
+    tenantId: 'tenant-demo',
+    periodStart: '2026-04-01T00:00:00.000Z',
+    periodEnd: '2026-05-01T00:00:00.000Z',
+    baselineCost: 10,
+    observedCost: 20,
+    deltaAmount: 10,
+    deltaPercent: 100,
+    severity: 'HIGH',
+    status: 'OPEN',
+    explanation: 'Opportunity evidence',
+    detectedAt: '2026-05-02T00:00:00.000Z',
+    isStale,
+  };
+}
 
 const recommendation = {
   id: 'recommendation-1',
@@ -122,5 +140,26 @@ describe('FinOps AI prompt boundaries', () => {
     expect(prompt).toContain('"isComplete": false');
     expect(prompt).toContain('periodEnd se excluye');
     expect(prompt).toContain('no coincide con el snapshot');
+  });
+
+  test('requires dated multi-period evidence before asserting cost trends', () => {
+    const prompt = buildChatSystemPrompt(snapshot);
+
+    expect(prompt).toContain('valores fechados para al menos dos periodos comparables');
+    expect(prompt).toContain('Un snapshot agregado de un único periodo no demuestra una tendencia');
+  });
+
+  test('excludes stale stored opportunities from chat context and reports the stale count', () => {
+    const prompt = buildChatSystemPrompt({
+      ...snapshot,
+      anomalies: [
+        opportunity('stale-opportunity', true),
+        opportunity('current-opportunity', false),
+      ],
+    });
+
+    expect(prompt).toContain('"staleOpportunityCount": 1');
+    expect(prompt).not.toContain('stale-opportunity');
+    expect(prompt).toContain('No cites oportunidades marcadas isStale=true');
   });
 });

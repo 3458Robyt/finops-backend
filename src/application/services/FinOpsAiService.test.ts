@@ -883,7 +883,7 @@ describe('FinOpsAiService', () => {
       validation: ['Comparar costo diario antes y despues del cambio.'],
       risks: ['Posible degradacion si la instancia esta subdimensionada.'],
       rollback: ['Restaurar el tamano anterior de la instancia.'],
-      successCriteria: ['Ahorro mensual cercano a 18.25 USD sin degradacion.'],
+      successCriteria: ['Mantener el rendimiento y validar el impacto despues del cambio.'],
       estimatedSavings: {
         amount: 18.25,
         currency: 'USD',
@@ -923,6 +923,7 @@ describe('FinOpsAiService', () => {
       generatedByUserId: 'user-1',
       auditVerdict: 'APPROVED',
       auditScore: 92,
+      content: { estimatedSavings: { amount: 0, currency: 'USD' } },
     });
     expect(gateway.requests[0]?.messages[0]?.content).toContain('plan de ejecucion');
     expect(gateway.requests[1]?.messages[0]?.content).toContain('agente auditor');

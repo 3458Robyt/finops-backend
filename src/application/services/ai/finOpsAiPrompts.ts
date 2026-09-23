@@ -65,6 +65,8 @@ export function buildChatSystemPrompt(
     'Indica siempre el periodo y la moneda cuando hables de costos. Distingue costo/consumo facturado de métricas técnicas.',
     'El periodo del snapshot es semiabierto: periodStart se incluye y periodEnd se excluye. periodEnd no es la última fecha con datos; usa observedThrough como último límite realmente observado. Si isComplete es false o coveredDays es menor que los días del rango, declara la cobertura parcial.',
     'Si la pregunta pide un rango que no coincide con el snapshot, no extrapoles ni presentes el total del snapshot como si cubriera ese rango; aclara qué ventana recibiste y qué dato falta.',
+    'No afirmes tendencias, aumentos, disminuciones, picos ni comparaciones contra una línea base sin valores fechados para al menos dos periodos comparables en la evidencia. Un snapshot agregado de un único periodo no demuestra una tendencia; si no hay serie temporal, dilo explícitamente.',
+    'No cites oportunidades marcadas isStale=true: el ledger de costos avanzó desde su último análisis. Indica que el análisis de oportunidades requiere actualización y no repitas sus cifras como actuales.',
     'FOCUS puede incluir costo, consumo facturado y unidades, pero no demuestra CPU, memoria, IOPS, throughput, disponibilidad ni utilización técnica. Si se incluye evidencia técnica separada, úsala solo para responder preguntas técnicas y no la mezcles con el costo facturado.',
     'Si un dato no está disponible o no es suficiente para responder, dilo explícitamente y explica qué evidencia adicional se necesita. No inventes recursos, valores, métricas, fechas, monedas, ahorros ni causas.',
     'Usa únicamente la palabra oportunidad u oportunidades para referirte a posibilidades de mejora; no uses la terminología de anomalías.',
@@ -182,6 +184,7 @@ export function buildExecutionPlanSystemPrompt(
     'POTENTIAL_NOT_VERIFIED describe el estado del ahorro estimado, no el estado de la recomendacion. Conserva el estado de gestion original de la recomendacion (por ejemplo PENDING).',
     untrustedContextInstruction,
     'Si la recomendacion solo tiene evidencia FOCUS, indica que CPU, memoria, IOPS o throughput deben validarse fuera de FOCUS antes de ejecutar cambios tecnicos.',
+    'No escribas montos monetarios, monedas ni cifras de ahorro en el texto narrativo del plan. La única cifra económica va en estimatedSavings.amount y debe provenir de savingsCalculation; si no existe, usa cero y explica en note que no hay ahorro cuantificado.',
     'Devuelve solo JSON estricto con esta forma:',
     '{"summary":"...","scope":{"cloudAccountId":"...","service":"..."},"prerequisites":["..."],"steps":["..."],"validation":["..."],"risks":["..."],"rollback":["..."],"successCriteria":["..."],"estimatedSavings":{"amount":0,"currency":"USD","status":"POTENTIAL_NOT_VERIFIED","note":"..."}}',
     'Contexto de costos:',
@@ -236,7 +239,8 @@ export function buildAuditSystemPrompt(
         'Rechaza cualquier paso que ordene ejecutar, aplicar, cambiar, detener, eliminar o redimensionar un recurso sin una condicion explicita de aprobacion externa; "autorizado" por si solo no demuestra una aprobacion.',
         'Si la recomendacion requiere validacion tecnica, el plan debe exigir validacion de CPU, memoria, red, disco, disponibilidad u otra métrica pertinente antes de cambiar capacidad; no conviertas FOCUS en una métrica técnica.',
         'No inventes estimatedSavings. Copia solo un importe respaldado por savingsCalculation del candidato. Si no existe cálculo determinístico, usa amount=0 y explica que la oportunidad aún no tiene ahorro cuantificado.',
-        'Comprueba toda cifra monetaria escrita en summary, steps, validation, risks, rollback o successCriteria contra los importes autorizados en la recomendacion original. La moneda, el periodo y la fuente deben ser explicitos; una cifra no presente en la evidencia es un bloqueo.',
+        'Rechaza montos monetarios en el texto narrativo del plan. No rechaces amount=0 y currency dentro del campo estructurado estimatedSavings cuando su note aclare que no existe ahorro cuantificado.',
+        'Un amount positivo en estimatedSavings solo es válido si coincide exactamente con savingsCalculation determinístico de la recomendación original; costo observado, consumo o snapshot no son ahorro.',
         'No describas POTENTIAL_NOT_VERIFIED como estado de la recomendacion: es solamente el estado del ahorro estimado.',
       ];
   const responseShape = artifactType === 'recommendations'
@@ -316,6 +320,7 @@ export function normalizeHistory(history: readonly AiChatMessage[] | undefined):
  * campos agregados clave (coste total, divisa, periodo, etc.).
  */
 export function compactSnapshot(snapshot: CostAnalyticsSnapshot): unknown {
+  const anomalies = snapshot.anomalies ?? [];
   return {
     tenantId: snapshot.tenantId,
     periodStart: snapshot.periodStart,
@@ -335,7 +340,8 @@ export function compactSnapshot(snapshot: CostAnalyticsSnapshot): unknown {
     topResources: snapshot.topResources.slice(0, 6),
     topUsage: snapshot.topUsage?.slice(0, 8) ?? [],
     usageInsights: snapshot.usageInsights?.slice(0, 8) ?? [],
-    anomalies: snapshot.anomalies?.slice(0, 5) ?? [],
+    anomalies: anomalies.filter((item) => item.isStale !== true).slice(0, 5),
+    staleOpportunityCount: anomalies.filter((item) => item.isStale === true).length,
     forecasts: snapshot.forecasts?.slice(0, 6) ?? [],
   };
 }

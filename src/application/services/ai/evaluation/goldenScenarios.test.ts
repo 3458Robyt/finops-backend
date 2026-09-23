@@ -483,6 +483,70 @@ describe('qualityRubric — execution plan', () => {
     expect(report.checks.find((check) => check.name === 'costProvenance')?.passed).toBe(false);
   });
 
+  test('does not treat observed cost as authorized savings', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-prod-aws',
+      status: 'PENDING',
+      currency: 'USD',
+      estimatedMonthlySavings: 0,
+      evidence: { observedCost: 169, normalizedMonthlyCost: 169 },
+    } as FinOpsRecommendation;
+    const plan = {
+      ...validPlan,
+      estimatedSavings: { amount: 169, currency: 'USD' },
+    };
+
+    expect(evaluateExecutionPlan(plan, snapshot, recommendation).checks
+      .find((check) => check.name === 'costProvenance')?.passed).toBe(false);
+  });
+
+  test('accepts only the exact savings amount from a verified priced alternative', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-prod-aws',
+      status: 'PENDING',
+      currency: 'USD',
+      estimatedMonthlySavings: 42.25,
+      evidence: {
+        savingsCalculation: {
+          provenance: 'SERVER_DETERMINISTIC',
+          version: 'priced-alternative/v1',
+          status: 'CALCULATED',
+          formula: 'BASELINE_MINUS_ALTERNATIVE_MONTHLY',
+          baselineMonthlyCost: 169,
+          alternativeMonthlyCost: 126.75,
+          amount: 42.25,
+          currency: 'USD',
+          priceEvidenceRef: 'fixture:price-catalog:instance-type',
+        },
+      },
+    } as FinOpsRecommendation;
+    const plan = {
+      ...validPlan,
+      estimatedSavings: { amount: 42.25, currency: 'USD' },
+    };
+
+    expect(evaluateExecutionPlan(plan, snapshot, recommendation).checks
+      .find((check) => check.name === 'costProvenance')?.passed).toBe(true);
+  });
+
+  test('rejects monetary figures in free-text plan sections', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-prod-aws',
+      status: 'PENDING',
+      currency: 'USD',
+      evidence: {},
+    } as FinOpsRecommendation;
+    const plan = { ...validPlan, steps: ['Validar un costo observado de $169.'] };
+    expect(evaluateExecutionPlan(plan, snapshot, recommendation).checks
+      .find((check) => check.name === 'costProvenance')?.passed).toBe(false);
+  });
+
+  test('rejects positive structured savings when no recommendation is available', () => {
+    const plan = { ...validPlan, estimatedSavings: { amount: 10, currency: 'USD' } };
+    expect(evaluateExecutionPlan(plan, snapshot).checks
+      .find((check) => check.name === 'costProvenance')?.passed).toBe(false);
+  });
+
   test('fails when normalized savings exceed the candidate cap', () => {
     const draft = {
       cloudAccountId: 'acc-prod-aws',

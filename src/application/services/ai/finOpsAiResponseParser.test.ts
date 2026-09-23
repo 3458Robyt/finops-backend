@@ -40,7 +40,7 @@ describe('finOpsAiResponseParser', () => {
     expect(report.candidateAudits?.[1]?.blockingIssues).toEqual(['Ahorro no sustentado']);
   });
 
-  it('restores the factual potential savings when a plan returns zero', () => {
+  it('zeros model-provided savings when the recommendation has no priced alternative proof', () => {
     const recommendation = {
       id: 'rec-1',
       cloudAccountId: 'account-1',
@@ -49,7 +49,7 @@ describe('finOpsAiResponseParser', () => {
       severity: 'HIGH',
       title: 'Revisar capacidad',
       description: 'Validar capacidad con métricas.',
-      evidence: { potentialMonthlySavings: 23.63 },
+      evidence: { potentialMonthlySavings: 23.63, observedCost: 169 },
       currency: 'USD',
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -64,7 +64,54 @@ describe('finOpsAiResponseParser', () => {
       risks: ['Puede variar la carga.'],
       rollback: ['Restaurar la capacidad anterior.'],
       successCriteria: ['Mantener el servicio estable.'],
-      estimatedSavings: { amount: 0, currency: 'USD' },
+      estimatedSavings: { amount: 169, currency: 'USD' },
+    }), recommendation);
+
+    expect(plan.estimatedSavings).toMatchObject({
+      amount: 0,
+      currency: 'USD',
+      status: 'POTENTIAL_NOT_VERIFIED',
+    });
+  });
+
+  it('copies only the server-verified savings calculation into a plan', () => {
+    const recommendation = {
+      id: 'rec-1',
+      cloudAccountId: 'account-1',
+      type: 'RIGHTSIZING',
+      status: 'PENDING',
+      severity: 'HIGH',
+      title: 'Revisar capacidad',
+      description: 'Validar capacidad con métricas.',
+      estimatedMonthlySavings: 23.63,
+      currency: 'USD',
+      evidence: {
+        savingsCalculation: {
+          provenance: 'SERVER_DETERMINISTIC',
+          version: 'priced-alternative/v1',
+          status: 'CALCULATED',
+          formula: 'BASELINE_MINUS_ALTERNATIVE_MONTHLY',
+          baselineMonthlyCost: 80,
+          alternativeMonthlyCost: 56.37,
+          amount: 23.63,
+          currency: 'USD',
+          priceEvidenceRef: 'fixture:price-catalog:instance-type',
+        },
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as FinOpsRecommendation;
+
+    const plan = parseExecutionPlan(JSON.stringify({
+      summary: 'Plan manual de validación.',
+      scope: { cloudAccountId: 'account-1' },
+      prerequisites: ['Confirmar ventana.'],
+      steps: ['Validar métricas.'],
+      validation: ['Comparar resultados.'],
+      risks: ['Puede variar la carga.'],
+      rollback: ['Restaurar la configuración anterior.'],
+      successCriteria: ['Mantener el servicio estable.'],
+      estimatedSavings: { amount: 169, currency: 'USD', note: 'Texto no confiable.' },
     }), recommendation);
 
     expect(plan.estimatedSavings).toMatchObject({
@@ -72,5 +119,6 @@ describe('finOpsAiResponseParser', () => {
       currency: 'USD',
       status: 'POTENTIAL_NOT_VERIFIED',
     });
+    expect(plan.estimatedSavings).not.toHaveProperty('note', 'Texto no confiable.');
   });
 });

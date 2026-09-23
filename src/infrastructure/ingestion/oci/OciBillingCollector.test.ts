@@ -1,8 +1,80 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import type { CloudIngestionJobContext } from '../../../domain/interfaces/ICloudIngestionProvider.js';
 import { OciBillingCollector } from './OciBillingCollector.js';
 
 describe('OCI billing collector', () => {
+  test('exposes the actual complete-day range queried for a narrow Usage API job', async () => {
+    vi.useFakeTimers({ now: new Date('2026-09-22T12:00:00Z') });
+    try {
+    let requestedRange: { timeUsageStarted?: Date; timeUsageEnded?: Date } | undefined;
+    const collector = new OciBillingCollector({
+      createObjectStorageClient: () => ({
+        listObjects: async () => ({ listObjects: { objects: [] } }),
+        getObject: async () => ({ value: '' }),
+      }),
+      createUsageClient: () => ({
+        requestSummarizedUsages: async (request) => {
+          requestedRange = request.requestSummarizedUsagesDetails;
+          return { usageAggregation: { items: [] } };
+        },
+      }),
+    });
+
+    const job = buildJob();
+    const result = await collector.collect({
+      ...job,
+      targetStart: new Date('2026-09-20T02:00:00Z'),
+      targetEnd: new Date('2026-09-20T03:00:00Z'),
+      connection: { ...job.connection, metadata: { billingSourceMode: 'PROVIDER_API' } },
+    });
+
+    expect(requestedRange).toMatchObject({
+      timeUsageStarted: new Date('2026-09-20T00:00:00Z'),
+      timeUsageEnded: new Date('2026-09-21T00:00:00Z'),
+    });
+    expect(result.effectiveRange).toEqual({
+      start: new Date('2026-09-20T00:00:00Z'),
+      end: new Date('2026-09-21T00:00:00Z'),
+    });
+    expect(result.dataOutcome).toBe('NO_DATA');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('marks a current-day-only request partial instead of claiming it was covered', async () => {
+    vi.useFakeTimers({ now: new Date('2026-09-20T02:30:00Z') });
+    try {
+      const collector = new OciBillingCollector({
+        createObjectStorageClient: () => ({
+          listObjects: async () => ({ listObjects: { objects: [] } }),
+          getObject: async () => ({ value: '' }),
+        }),
+        createUsageClient: () => ({
+          requestSummarizedUsages: async () => ({
+            usageAggregation: { items: [{ service: 'Compute', computedAmount: 4, currency: 'USD' }] },
+          }),
+        }),
+      });
+      const job = buildJob();
+      const result = await collector.collect({
+        ...job,
+        targetStart: new Date('2026-09-20T02:00:00Z'),
+        targetEnd: new Date('2026-09-20T03:00:00Z'),
+        connection: { ...job.connection, metadata: { billingSourceMode: 'PROVIDER_API' } },
+      });
+
+      expect(result.effectiveRange).toEqual({
+        start: new Date('2026-09-19T00:00:00Z'),
+        end: new Date('2026-09-20T00:00:00Z'),
+      });
+      expect(result.dataOutcome).toBe('PARTIAL');
+      expect(result.warnings.some((warning) => warning.includes('no quedó cubierta íntegramente'))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('keeps AUTO billing as partial coverage when FOCUS has no current object and Usage API is denied', async () => {
     const collector = new OciBillingCollector({
       createObjectStorageClient: () => ({

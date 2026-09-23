@@ -409,6 +409,8 @@ compartmentCount: 3,
   });
 
   it('normalizes OCI Usage API costs through the billing collector', async () => {
+    vi.useFakeTimers({ now: new Date('2026-09-22T12:00:00Z') });
+    try {
     const provider = new OciSdkIngestionProvider();
     const requests: unknown[] = [];
     let closed = false;
@@ -445,8 +447,8 @@ compartmentCount: 3,
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({
       requestSummarizedUsagesDetails: {
-        timeUsageStarted: new Date('2026-06-03T00:00:00.000Z'),
-        timeUsageEnded: new Date('2026-06-04T00:00:00.000Z'),
+        timeUsageStarted: new Date('2026-06-04T00:00:00.000Z'),
+        timeUsageEnded: new Date('2026-06-05T00:00:00.000Z'),
         granularity: 'DAILY',
       },
     });
@@ -458,8 +460,8 @@ compartmentCount: 3,
         consumedQuantity: 4,
         billingCurrency: 'USD',
         resourceId: 'ocid1.instance.oc1.test',
-        chargePeriodStart: new Date('2026-06-03T00:00:00.000Z'),
-        chargePeriodEnd: new Date('2026-06-04T00:00:00.000Z'),
+        chargePeriodStart: new Date('2026-06-04T00:00:00.000Z'),
+        chargePeriodEnd: new Date('2026-06-05T00:00:00.000Z'),
       }),
     ]);
     expect(result.coverage).toMatchObject({
@@ -468,6 +470,9 @@ compartmentCount: 3,
       rows: 1,
     });
     expect(closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('falls back to OCI Usage API when AUTO cannot find a managed FOCUS object', async () => {

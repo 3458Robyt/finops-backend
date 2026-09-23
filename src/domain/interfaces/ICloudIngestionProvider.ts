@@ -232,6 +232,8 @@ export interface CloudIngestionResult {
   readonly metricBatches?: AsyncIterable<readonly NormalizedResourceMetricSample[]>;
   readonly warnings: readonly string[];
   readonly coverage: Readonly<Record<string, unknown>>;
+  /** Provider-reported range actually queried; it may differ from the job window. */
+  readonly effectiveRange?: { readonly start: Date; readonly end: Date };
   /** Optional explicit result; legacy providers are classified centrally. */
   readonly dataOutcome?: IngestionDataOutcome;
 }

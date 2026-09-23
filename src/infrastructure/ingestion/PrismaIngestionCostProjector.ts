@@ -43,6 +43,7 @@ export class PrismaIngestionCostProjector {
     job: CloudIngestionJobContext,
     rows: readonly NormalizedProviderCostLineItem[],
     resourceIdsByExternalId: ReadonlyMap<string, string>,
+    effectiveRange = { start: job.targetStart, end: job.targetEnd },
   ): Promise<FocusCostMetricProjectionResult> {
     if (rows.length === 0) return { projected: 0, inserted: 0, linkage: emptyResourceLinkageStats() };
     const historicalResourcesInserted = await insertHistoricalCloudResources(
@@ -56,7 +57,7 @@ export class PrismaIngestionCostProjector {
       create: { tenantId: job.tenantId, provider: rows[0]!.provider, externalAccountId: job.connection.rootExternalId, name: job.connection.rootExternalId },
       select: { id: true },
     });
-    await tx.costMetric.deleteMany({ where: { cloudConnectionId: job.cloudConnectionId, chargePeriodStart: { gte: job.targetStart, lt: job.targetEnd }, billingSource: CostBillingSource.PROVIDER_API } });
+    await tx.costMetric.deleteMany({ where: { cloudConnectionId: job.cloudConnectionId, chargePeriodStart: { gte: effectiveRange.start, lt: effectiveRange.end }, billingSource: CostBillingSource.PROVIDER_API } });
     const data = rows.map((row) => {
       const normalizedResourceId = normalizeExternalResourceId(row.resourceId);
       const knownResourceId = normalizedResourceId === undefined ? undefined : resolvedResourceIds.get(normalizedResourceId);

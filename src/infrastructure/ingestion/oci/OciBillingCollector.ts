@@ -128,6 +128,7 @@ export class OciBillingCollector {
     options: CloudIngestionCollectOptions,
   ): Promise<CloudIngestionResult> {
     const range = normalizeOciDailyUsageRange(job.targetStart, job.targetEnd);
+    const requestedRangeCovered = coversRequestedRange(job, range);
     const rows: NormalizedProviderCostLineItem[] = [];
     let itemsWithoutCurrency = 0;
     let nextPage: string | undefined;
@@ -196,7 +197,12 @@ export class OciBillingCollector {
       providerCostRows: rows,
       resources: [],
       metricSamples: [],
+      effectiveRange: range,
+      dataOutcome: !requestedRangeCovered ? 'PARTIAL' : rows.length > 0 ? 'DATA_WRITTEN' : 'NO_DATA',
       warnings: [
+        ...(!requestedRangeCovered ? [
+          'OCI Usage API consulta días UTC completos; la ventana solicitada no quedó cubierta íntegramente y el día en curso se recuperará cuando cierre.',
+        ] : []),
         ...(rows.length === 0 ? ['OCI Usage API returned no costs for the requested range.'] : []),
         ...(itemsWithoutCurrency > 0 ? [`OCI Usage API omitted currency for ${itemsWithoutCurrency} rows; USD was used as the compatibility fallback.`] : []),
       ],
@@ -218,9 +224,9 @@ export class OciBillingCollector {
         // execution. Mark successful Usage API rows as written so the
         // scheduler advances the watermark instead of requeueing the same
         // window forever.
-        dataOutcome: result.providerCostRows !== undefined && result.providerCostRows.length > 0
-          ? 'DATA_WRITTEN'
-          : 'NO_DATA',
+        dataOutcome: result.effectiveRange !== undefined && !coversRequestedRange(job, result.effectiveRange)
+          ? 'PARTIAL'
+          : (result.providerCostRows?.length ?? 0) > 0 ? 'DATA_WRITTEN' : 'NO_DATA',
         warnings: [warning, ...result.warnings],
         coverage: {
           ...result.coverage,
@@ -358,6 +364,13 @@ function parseUsageTimestamp(value: Date | string | undefined, fallback: Date): 
     if (!Number.isNaN(parsed.getTime())) return parsed;
   }
   return fallback;
+}
+
+function coversRequestedRange(
+  job: CloudIngestionJobContext,
+  effectiveRange: { readonly start: Date; readonly end: Date },
+): boolean {
+  return effectiveRange.start <= job.targetStart && effectiveRange.end >= job.targetEnd;
 }
 
 async function ensureNotCancelled(options: CloudIngestionCollectOptions): Promise<void> {

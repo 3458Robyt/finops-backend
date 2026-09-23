@@ -12,6 +12,9 @@ const snapshot: CostAnalyticsSnapshot = {
   tenantId: 'tenant-demo',
   periodStart: '2026-04-01',
   periodEnd: '2026-05-01',
+  observedThrough: '2026-04-20T00:00:00.000Z',
+  coveredDays: 19,
+  isComplete: false,
   totalCost: 100,
   currency: 'USD',
   metricCount: 1,
@@ -69,11 +72,11 @@ describe('FinOps AI prompt boundaries', () => {
     expect(generationPrompt).toContain('subutilización no prueban por sí solos un importe ahorrable');
   });
 
-  test('keeps potential savings on manual capacity reviews explicitly unverified', () => {
+  test('accepts potential savings only from a deterministic candidate calculation', () => {
     const prompt = buildAuditSystemPrompt();
 
-    expect(prompt).toContain('Puede conservar evidence.potentialMonthlySavings unicamente como referencia no verificada');
-    expect(prompt).toContain('no existe estimatedMonthlySavings positivo en el nivel raiz');
+    expect(prompt).toContain('savingsCalculation determinístico del candidato');
+    expect(prompt).toContain('Rechaza importes positivos sin savingsCalculation determinístico del candidato');
     expect(prompt).toContain('Errores menores de ortografia o tildes, por si solos, no son un bloqueo');
   });
 
@@ -109,5 +112,15 @@ describe('FinOps AI prompt boundaries', () => {
     expect(prompt).toContain('CpuUtilization p95=18');
     expect(prompt).toContain('Recomendaciones persistidas del tenant actual');
     expect(prompt).toContain('rec-1');
+  });
+
+  test('provides actual cost freshness and coverage instead of treating the exclusive boundary as data', () => {
+    const prompt = buildChatSystemPrompt(snapshot);
+
+    expect(prompt).toContain('"observedThrough": "2026-04-20T00:00:00.000Z"');
+    expect(prompt).toContain('"coveredDays": 19');
+    expect(prompt).toContain('"isComplete": false');
+    expect(prompt).toContain('periodEnd se excluye');
+    expect(prompt).toContain('no coincide con el snapshot');
   });
 });

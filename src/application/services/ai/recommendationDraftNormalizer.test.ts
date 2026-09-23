@@ -27,7 +27,8 @@ describe('normalizeRecommendationDrafts', () => {
     expect(draft.description.toLowerCase()).not.toContain('rightsizing');
     expect(draft.description.toLowerCase()).not.toContain('reducir el costo');
     expect(draft.estimatedMonthlySavings).toBeUndefined();
-    expect((draft.evidence as Record<string, unknown>)['potentialMonthlySavings']).toBe(12);
+    expect((draft.evidence as Record<string, unknown>)['potentialMonthlySavings']).toBeUndefined();
+    expect((draft.evidence as Record<string, unknown>)['savingsStatus']).toBe('UNVERIFIED');
     expect((draft.evidence as Record<string, unknown>)['operationalAuthorization']).toBe('NONE');
   });
 
@@ -57,6 +58,11 @@ describe('normalizeRecommendationDrafts', () => {
           evidenceLevelAllowed: 'COST_ONLY',
           requiresTechnicalValidation: false,
           observedCost: 100,
+          savingsCalculation: {
+            provenance: 'SERVER_DETERMINISTIC', version: 'priced-alternative/v1', status: 'CALCULATED',
+            formula: 'BASELINE_MINUS_ALTERNATIVE_MONTHLY', baselineMonthlyCost: 120,
+            alternativeMonthlyCost: 110, amount: 10, currency: 'USD', priceEvidenceRef: 'price:fixture:sku',
+          },
           reviewScope: 'FINANCIAL',
           maxEstimatedMonthlySavings: 20,
           currency: 'USD',
@@ -80,6 +86,38 @@ describe('normalizeRecommendationDrafts', () => {
       requiresTechnicalValidation: false,
     });
     expect(result[0]?.estimatedMonthlySavings).toBeUndefined();
+  });
+
+  test('ignores a model-provided amount and uses only a reconciled server calculation', () => {
+    const calculation = {
+      provenance: 'SERVER_DETERMINISTIC' as const,
+      version: 'priced-alternative/v1' as const,
+      status: 'CALCULATED' as const,
+      formula: 'BASELINE_MINUS_ALTERNATIVE_MONTHLY' as const,
+      baselineMonthlyCost: 100,
+      alternativeMonthlyCost: 88,
+      amount: 12,
+      currency: 'USD',
+      priceEvidenceRef: 'price:fixture:shape-b',
+    };
+    const report: RecommendationReadinessReport = {
+      summary: 'fixture', blocked: [], deferred: [], candidates: [{
+        id: 'service-priced', readiness: 'GENERATABLE', cloudAccountId: 'account-1', provider: 'OCI',
+        serviceName: 'Compute', opportunityType: 'COST_OPTIMIZATION', evidenceLevelAllowed: 'COST_AND_USAGE',
+        requiresTechnicalValidation: false, observedCost: 100, maxEstimatedMonthlySavings: 12,
+        savingsCalculation: calculation, currency: 'USD', sourceFacts: ['Precio alternativo verificado.'],
+        costEvidenceRefs: ['cost:fixture'], technicalEvidenceRefs: [], reasons: [], forbiddenClaims: [],
+      }],
+    };
+    const normalized = normalizeRecommendationDrafts([{
+      cloudAccountId: 'account-1', type: 'COST_OPTIMIZATION', severity: 'LOW', title: 'Review',
+      description: 'Potential saving 99.', estimatedMonthlySavings: 99, currency: 'USD',
+      evidence: { candidateId: 'service-priced', savingsCalculation: { provenance: 'MODEL', amount: 99 }, potentialMonthlySavings: 99 },
+    }], report, undefined);
+
+    expect(normalized[0]?.estimatedMonthlySavings).toBe(12);
+    expect(normalized[0]?.evidence).toMatchObject({ savingsCalculation: calculation, maxEstimatedMonthlySavings: 12 });
+    expect(normalized[0]?.evidence).not.toHaveProperty('potentialMonthlySavings');
   });
 
   test('drops unquantified service financial reviews when their deterministic savings cap is zero', () => {

@@ -10,12 +10,13 @@ import { evaluateRecommendationDrafts } from './evaluation/recommendationQuality
 import type { AiRecommendationDraft } from './finOpsAiTypes.js';
 
 describe('RecommendationReadinessGate', () => {
-  it('marks resource cost opportunities as validation-only when technical evidence is missing', () => {
+  it('keeps resource candidates validation-only and out of generation when technical evidence is missing', () => {
     const report = buildRecommendationReadinessReport({ snapshot: buildSnapshot() });
 
-    const resourceCandidate = report.candidates.find((candidate) => candidate.id === 'resource-1');
+    const resourceCandidate = report.blocked.find((candidate) => candidate.id === 'resource-1');
 
     expect(resourceCandidate?.readiness).toBe('VALIDATION_ONLY');
+    expect(report.candidates.some((candidate) => candidate.id === 'resource-1')).toBe(false);
     expect(resourceCandidate?.requiresTechnicalValidation).toBe(true);
     expect(resourceCandidate?.evidenceLevelAllowed).toBe('COST_ONLY');
     expect(resourceCandidate?.maxEstimatedMonthlySavings).toBe(0);
@@ -26,7 +27,7 @@ describe('RecommendationReadinessGate', () => {
     const report = buildRecommendationReadinessReport({ snapshot: buildSnapshot() });
 
     expect(report.blocked.find((candidate) => candidate.id === 'usage-1')?.maxEstimatedMonthlySavings).toBe(0);
-    expect(report.candidates.find((candidate) => candidate.id === 'resource-1')?.maxEstimatedMonthlySavings).toBe(0);
+    expect(report.blocked.find((candidate) => candidate.id === 'resource-1')?.maxEstimatedMonthlySavings).toBe(0);
     expect(report.blocked.find((candidate) => candidate.id === 'service-1')?.maxEstimatedMonthlySavings).toBe(0);
   });
 
@@ -116,7 +117,7 @@ describe('RecommendationReadinessGate', () => {
     expect(resourceCandidate?.reasons.join(' ')).toContain('cloudResourceId');
   });
 
-  it('keeps a resource validation-only when deterministic rules report blockers', () => {
+  it('blocks a resource from generation when deterministic rules report blockers', () => {
     const report = buildRecommendationReadinessReport({
       snapshot: buildSnapshot(),
       technicalEvidenceSnapshot: buildEvidenceSnapshot({
@@ -128,9 +129,10 @@ describe('RecommendationReadinessGate', () => {
       }),
     });
 
-    const resourceCandidate = report.candidates.find((candidate) => candidate.id === 'resource-1');
+    const resourceCandidate = report.blocked.find((candidate) => candidate.id === 'resource-1');
 
     expect(resourceCandidate?.readiness).toBe('VALIDATION_ONLY');
+    expect(report.candidates.some((candidate) => candidate.id === 'resource-1')).toBe(false);
     expect(resourceCandidate?.opportunityType).toBe('PERFORMANCE_CAPACITY_REVIEW');
     expect(resourceCandidate?.blockers).toContain('CPU_SATURATION_RISK');
     expect(resourceCandidate?.maxEstimatedMonthlySavings).toBe(0);
@@ -143,11 +145,27 @@ describe('RecommendationReadinessGate', () => {
 
     expect(promptBlock).toContain('maxEstimatedMonthlySavings');
     expect(promptBlock).toContain('VALIDATION_ONLY');
-    expect(promptBlock).toContain('estimatedMonthlySavings no puede superar');
+    expect(promptBlock).toContain('no están autorizados para generación');
+    expect(promptBlock).toContain('No inventes ahorros');
   });
 
   it('records lower-priority candidates as deferred instead of dropping them silently', () => {
     const base = buildSnapshot();
+    const evidence = buildEvidenceSnapshot();
+    const evidenceResource = evidence.resources[0]!;
+    const resourceEvidence = Array.from({ length: 8 }, (_, index) => {
+      const resourceId = `i-prod-${index + 1}`;
+      const ruleEvaluation = { ...evidenceResource.ruleEvaluation!, externalResourceId: resourceId };
+      return {
+        ...evidenceResource,
+        externalResourceId: resourceId,
+        ruleEvaluation,
+        metrics: evidenceResource.metrics.map((metric) => ({
+          ...metric,
+          evidenceRef: metric.evidenceRef.replace('i-prod-1', resourceId),
+        })),
+      };
+    });
     const report = buildRecommendationReadinessReport({
       snapshot: {
         ...base,
@@ -163,6 +181,11 @@ describe('RecommendationReadinessGate', () => {
           totalCost: 500 - index,
           metricCount: 10,
         })),
+      },
+      technicalEvidenceSnapshot: {
+        ...evidence,
+        resources: resourceEvidence,
+        deterministicRules: resourceEvidence.map((resource) => resource.ruleEvaluation!),
       },
     });
 

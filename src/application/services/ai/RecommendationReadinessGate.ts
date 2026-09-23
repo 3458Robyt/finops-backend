@@ -3,6 +3,7 @@ import type {
   RecommendationEvidenceResource,
   RecommendationEvidenceSnapshot,
 } from './RecommendationEvidenceSnapshot.js';
+import type { VerifiedSavingsCalculation } from '../../../domain/models/recommendationEconomics.js';
 
 export type RecommendationReadiness = 'GENERATABLE' | 'VALIDATION_ONLY' | 'BLOCKED_NO_EVIDENCE';
 
@@ -21,6 +22,8 @@ export interface RecommendationOpportunityCandidate {
   readonly requiresTechnicalValidation: boolean;
   /** Costo observado que limita el candidato; no es ahorro. */
   readonly observedCost?: number;
+  /** Deterministic server-side comparison against a priced alternative; never model-authored. */
+  readonly savingsCalculation?: VerifiedSavingsCalculation;
   readonly maxEstimatedMonthlySavings: number;
   readonly currency: string;
   readonly sourceFacts: readonly string[];
@@ -61,17 +64,16 @@ export function buildRecommendationReadinessReport(input: {
   ]
     .sort((left, right) => right.maxEstimatedMonthlySavings - left.maxEstimatedMonthlySavings);
 
-  // Los candidatos bloqueados se informan aparte y no consumen el cupo de
-  // generación: una oportunidad ambigua no debe ocultar otra que sí pueda
-  // auditarse.
-  const eligible = prioritized.filter((candidate) => candidate.readiness !== 'BLOCKED_NO_EVIDENCE');
+  // Solo reglas determinísticas GENERATABLE llegan al LLM. VALIDATION_ONLY y
+  // BLOCKED se muestran como faltantes de evidencia, nunca como recomendaciones.
+  const eligible = prioritized.filter((candidate) => candidate.readiness === 'GENERATABLE');
   const batch = eligible.slice(0, maxCandidates);
   const deferred = eligible.slice(maxCandidates).map((candidate) => ({
     ...candidate,
     reasons: [...candidate.reasons, 'Aplazado porque existen candidatos de mayor impacto en este lote.'],
   }));
   const allowed = batch;
-  const blocked = prioritized.filter((candidate) => candidate.readiness === 'BLOCKED_NO_EVIDENCE');
+  const blocked = prioritized.filter((candidate) => candidate.readiness !== 'GENERATABLE');
 
   return {
     candidates: allowed,
@@ -79,7 +81,7 @@ export function buildRecommendationReadinessReport(input: {
     deferred,
     summary:
       allowed.length === 0
-        ? 'No hay candidatos suficientes para generar recomendaciones auditables.'
+        ? 'No hay oportunidades con evidencia determinística suficiente para generar recomendaciones auditables.'
         : `Hay ${allowed.length} candidatos auditables${deferred.length > 0 ? ` y ${deferred.length} aplazados para otro lote` : ''}: ${allowed
             .map((candidate) => `${candidate.id}:${candidate.readiness}`)
             .join(', ')}.`,
@@ -90,10 +92,9 @@ export function formatRecommendationReadinessForPrompt(report: RecommendationRea
   return JSON.stringify(
     {
       instructions: [
-        'Solo puedes generar recomendaciones basadas en candidates.',
-        'No generes recomendaciones para candidatos BLOCKED_NO_EVIDENCE.',
-        'Si readiness es VALIDATION_ONLY, la recomendacion debe pedir validacion tecnica y no debe afirmar ahorro tecnico probado.',
-        'estimatedMonthlySavings no puede superar maxEstimatedMonthlySavings.',
+        'Solo puedes generar recomendaciones basadas en candidates; los candidatos blocked y deferred no están autorizados para generación.',
+        'No generes recomendaciones para readiness VALIDATION_ONLY o BLOCKED_NO_EVIDENCE; espera a que la evidencia determinística los habilite.',
+        'No inventes ahorros; estimatedMonthlySavings solo puede copiar amount de savingsCalculation generado por el servidor y debe reconciliar con su evidencia y maxEstimatedMonthlySavings.',
       'Debes copiar sourceFacts y technicalEvidenceRefs relevantes en evidence.',
       ],
       summary: report.summary,

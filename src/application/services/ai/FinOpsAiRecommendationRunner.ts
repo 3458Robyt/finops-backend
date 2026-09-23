@@ -35,7 +35,7 @@ export class FinOpsAiRecommendationRunner {
       return {
         recommendations: [],
         snapshot,
-        persisted: input.persist === true,
+        persisted: false,
         analysis: {
           readinessReport,
           ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),

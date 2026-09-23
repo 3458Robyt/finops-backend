@@ -5,6 +5,7 @@ import type {
   RecommendationReadinessReport,
 } from './RecommendationReadinessGate.js';
 import { isRecord } from './jsonReadHelpers.js';
+import { isVerifiedSavingsCalculation } from '../../../domain/models/recommendationEconomics.js';
 
 /**
  * Normaliza borradores generados por el modelo contra los candidatos y el
@@ -18,14 +19,14 @@ export function normalizeRecommendationDrafts(
   cloudResourceId?: string,
   periodDays?: number,
 ): readonly AiRecommendationDraft[] {
-  if (readinessReport === undefined) {
-    return drafts;
-  }
+  if (readinessReport === undefined) return [];
 
-  return drafts.map((draft) => {
+  return drafts
+    .filter((draft) => findCandidate(draft, readinessReport.candidates) !== undefined)
+    .map((draft) => {
     const candidate = findCandidate(draft, readinessReport.candidates);
     if (candidate === undefined) {
-      return draft;
+      return stripUnverifiedSavings(draft);
     }
 
     const existingEvidence = isRecord(draft.evidence) ? draft.evidence : {};
@@ -122,14 +123,21 @@ export function normalizeRecommendationDrafts(
       : {};
     const normalizedCloudResourceId = technicalResource?.cloudResourceId ?? candidate.cloudResourceId;
     const { estimatedMonthlySavings: generatedSavings, ...draftWithoutSavings } = draft;
+    const calculation = candidate.savingsCalculation;
+    const deterministicSavings = calculation !== undefined
+      && isVerifiedSavingsCalculation({ savingsCalculation: calculation }, calculation.amount, candidate.currency)
+      && calculation.amount <= candidate.maxEstimatedMonthlySavings + 0.01
+      ? calculation.amount
+      : undefined;
+    const hasVerifiedCalculation = deterministicSavings !== undefined;
 
     return {
       ...draftWithoutSavings,
       cloudAccountId: candidate.cloudAccountId,
       currency: candidate.currency,
-      ...(technicalValidationOnly || technicalReviewOnly || financialReviewOnly || generatedSavings === undefined
-        ? {}
-        : { estimatedMonthlySavings: generatedSavings }),
+      ...(!technicalValidationOnly && !technicalReviewOnly && !financialReviewOnly && deterministicSavings !== undefined
+        ? { estimatedMonthlySavings: deterministicSavings }
+        : {}),
       ...(normalizedCloudResourceId !== undefined ? { cloudResourceId: normalizedCloudResourceId } : {}),
       ...(normalizedCloudResourceId === undefined && candidate.resourceId !== undefined
         ? { resourceLinkReason: 'INVENTORY_RESOURCE_NOT_FOUND' }
@@ -153,12 +161,16 @@ export function normalizeRecommendationDrafts(
         ...(candidate.observedCost === undefined ? {} : {
           normalizedMonthlyCost: round(normalizeMonthlyAmount(candidate.observedCost, periodDays)),
         }),
-        maxEstimatedMonthlySavings: candidate.maxEstimatedMonthlySavings,
-        ...(generatedSavings !== undefined && (technicalValidationOnly || technicalReviewOnly || financialReviewOnly)
+        maxEstimatedMonthlySavings: deterministicSavings ?? 0,
+        ...(hasVerifiedCalculation ? { savingsCalculation: calculation } : {}),
+        ...(deterministicSavings !== undefined && (technicalValidationOnly || technicalReviewOnly || financialReviewOnly)
           ? {
-              potentialMonthlySavings: generatedSavings,
+              potentialMonthlySavings: deterministicSavings,
               savingsStatus: 'POTENTIAL_NOT_VERIFIED',
             }
+          : {}),
+        ...(deterministicSavings === undefined && generatedSavings !== undefined && generatedSavings > 0
+          ? { savingsStatus: 'UNVERIFIED' }
           : {}),
         readiness: candidate.readiness,
         ...(technicalValidationOnly
@@ -195,12 +207,25 @@ export function dropNonActionableFinancialDrafts(
     const candidateId = typeof evidence['candidateId'] === 'string' ? evidence['candidateId'] : undefined;
     const candidate = candidateId === undefined ? undefined : candidatesById.get(candidateId);
     const isUnscopedFinancialReview = candidate?.reviewScope === 'FINANCIAL';
-    const hasQuantifiableSavings = (candidate?.maxEstimatedMonthlySavings ?? 0) > 0;
-    const potential = typeof evidence['potentialMonthlySavings'] === 'number'
-      ? evidence['potentialMonthlySavings']
-      : draft.estimatedMonthlySavings;
+    const calculation = candidate?.savingsCalculation;
+    const hasQuantifiableSavings = candidate !== undefined && calculation !== undefined
+      && isVerifiedSavingsCalculation({ savingsCalculation: calculation }, calculation.amount, candidate.currency)
+      && calculation.amount <= candidate.maxEstimatedMonthlySavings + 0.01;
+    const potential = hasQuantifiableSavings ? calculation.amount : undefined;
     return !(isUnscopedFinancialReview && (!hasQuantifiableSavings || (potential ?? 0) <= 0));
-  });
+    });
+}
+
+function stripUnverifiedSavings(draft: AiRecommendationDraft): AiRecommendationDraft {
+  const { estimatedMonthlySavings, ...withoutAmount } = draft;
+  const evidence = isRecord(draft.evidence) ? removeGeneratedSafetyAndCostFields(draft.evidence) : {};
+  return {
+    ...withoutAmount,
+    evidence: {
+      ...evidence,
+      ...(estimatedMonthlySavings !== undefined && estimatedMonthlySavings > 0 ? { savingsStatus: 'UNVERIFIED' } : {}),
+    },
+  };
 }
 
 function findCandidate(
@@ -287,6 +312,10 @@ function removeGeneratedSafetyAndCostFields(evidence: Record<string, unknown>): 
     'technicalReviewOnly',
     'operationalAuthorization',
     'requiresManualValidation',
+    'potentialMonthlySavings',
+    'maxEstimatedMonthlySavings',
+    'savingsCalculation',
+    'savingsStatus',
   ]);
   return Object.fromEntries(Object.entries(evidence).filter(([key]) => (
     !blockedKeys.has(key) && !isGeneratedMonthlyCostField(key)

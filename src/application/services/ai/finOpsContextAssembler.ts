@@ -10,6 +10,7 @@ import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnal
 import type { IRecommendationCoreRepository } from '../../../domain/interfaces/recommendationRepositoryCapabilities.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
 import type { AiContextOperation } from '../../../domain/models/AgentContext.js';
+import { isVerifiedSavingsCalculation } from '../../../domain/models/recommendationEconomics.js';
 import {
   buildChatSystemPrompt,
   buildExecutionPlanSystemPrompt,
@@ -344,6 +345,7 @@ private async getChatRecommendationContext(tenantId: string): Promise<string | u
         ? { resourceLinkReason: recommendation.resourceLinkReason }
         : {}),
       ...(recommendation.estimatedMonthlySavings !== undefined
+        && isVerifiedSavingsCalculation(recommendation.evidence, recommendation.estimatedMonthlySavings, recommendation.currency)
         ? { estimatedMonthlySavings: recommendation.estimatedMonthlySavings }
         : {}),
       currency: recommendation.currency,

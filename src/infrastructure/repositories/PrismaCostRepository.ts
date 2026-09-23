@@ -20,7 +20,6 @@ import {
   isUsdCopPair,
   mergeConversionStatus,
   normalizeCurrency,
-  startOfUtcDay,
   sumNativeTotals,
   type CostHistoryRow,
 } from './queries/costHistorySupport.js';
@@ -135,26 +134,28 @@ export class PrismaCostRepository implements ICostRepository {
   }
 
   public async getLatestCostPeriod(tenantId: string): Promise<Date | null> {
-    const [row] = await this.prisma.$queryRaw<readonly { latest_period: Date | null }[]>`
-      SELECT MAX(charge_period_start)::timestamptz AS latest_period
+    const [row] = await this.prisma.$queryRaw<readonly { latest_period_utc: string | null }[]>`
+      SELECT to_char(MAX(charge_period_start) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS latest_period_utc
       FROM cost_metrics
       WHERE tenant_id = ${tenantId}
     `;
-    return row?.latest_period ?? null;
+    return row?.latest_period_utc === null || row?.latest_period_utc === undefined
+      ? null
+      : new Date(row.latest_period_utc);
   }
 
   public async getCostHistory(query: CostHistoryQuery): Promise<CostHistoryResult> {
     const rows = await this.prisma.$queryRaw<CostHistoryRow[]>`
-      SELECT date_trunc('day', charge_period_start)::timestamptz AS period,
+      SELECT to_char(date_trunc('day', charge_period_start AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS period_utc,
              billing_currency AS currency,
              COUNT(*)::int AS metric_count,
              COALESCE(SUM(billed_cost), 0)::float8 AS total_cost
       FROM cost_metrics
       WHERE tenant_id = ${query.tenantId}
-        AND charge_period_start >= ${query.startDate}
-        AND charge_period_start < ${query.endDate}
-      GROUP BY date_trunc('day', charge_period_start), billing_currency
-      ORDER BY period ASC, currency ASC
+        AND charge_period_start >= ${query.startDate.toISOString()}::timestamptz
+        AND charge_period_start < ${query.endDate.toISOString()}::timestamptz
+      GROUP BY date_trunc('day', charge_period_start AT TIME ZONE 'UTC'), billing_currency
+      ORDER BY period_utc ASC, currency ASC
     `;
 
     const normalizedReportingCurrency = normalizeCurrency(query.reportingCurrency);
@@ -163,7 +164,7 @@ export class PrismaCostRepository implements ICostRepository {
     const convertedByDay = new Map<string, CostHistoryPoint>();
 
     for (const row of rows) {
-      const periodStart = startOfUtcDay(row.period);
+      const periodStart = new Date(`${row.period_utc}T00:00:00.000Z`);
       const key = periodStart.toISOString();
       const existing = convertedByDay.get(key);
       const nativeForPeriod = existing?.nativeTotals ?? [];

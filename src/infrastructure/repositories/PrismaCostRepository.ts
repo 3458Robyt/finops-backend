@@ -99,16 +99,19 @@ export class PrismaCostRepository implements ICostRepository {
   }
 
   public async getDataOptions(tenantId: string, period?: string): Promise<CostDataOptions> {
-    const periodRows = await this.prisma.$queryRaw<readonly { period: Date; metric_count: bigint }[]>`
-      SELECT date_trunc('month', charge_period_start) AS period, COUNT(*)::bigint AS metric_count
-      FROM cost_metrics
-      WHERE tenant_id = ${tenantId}
-      GROUP BY date_trunc('month', charge_period_start)
-      ORDER BY period DESC
-    `;
+    const [periodRows, reportingCurrency] = await Promise.all([
+      this.prisma.$queryRaw<readonly { period: Date; metric_count: bigint }[]>`
+        SELECT date_trunc('month', charge_period_start) AS period, COUNT(*)::bigint AS metric_count
+        FROM cost_metrics
+        WHERE tenant_id = ${tenantId}
+        GROUP BY date_trunc('month', charge_period_start)
+        ORDER BY period DESC
+      `,
+      this.getReportingCurrency(tenantId),
+    ]);
     const periods = periodRows.map((row) => ({ period: row.period.toISOString().slice(0, 7), metricCount: Number(row.metric_count) }));
     const selectedPeriod = period ?? periods[0]?.period;
-    if (selectedPeriod === undefined) return { periods, cloudAccounts: [], services: [], regions: [], currencies: [] };
+    if (selectedPeriod === undefined) return { reportingCurrency, periods, cloudAccounts: [], services: [], regions: [], currencies: [] };
     const [year, month] = selectedPeriod.split('-').map(Number);
     const start = new Date(Date.UTC(year!, month! - 1, 1));
     const end = new Date(Date.UTC(year!, month!, 1));
@@ -119,6 +122,7 @@ export class PrismaCostRepository implements ICostRepository {
     ]);
     const accountIds = new Set(dimensions.map((row) => row.cloudAccountId));
     return {
+      reportingCurrency,
       periods,
       ...(periods[0] === undefined ? {} : { latestPeriod: periods[0].period }),
       cloudAccounts: accounts.filter((account) => accountIds.has(account.id)).map((account) => ({ ...account, provider: String(account.provider) })),

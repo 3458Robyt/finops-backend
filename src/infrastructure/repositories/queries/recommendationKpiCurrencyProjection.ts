@@ -22,7 +22,7 @@ export async function computeProjectedSavingsKpis(
   const [recommendations, executions, measurements, executedGroups] = await Promise.all([
     prisma.recommendation.findMany({
       where: { tenantId },
-      select: { id: true, title: true, estimatedMonthlySavings: true, currency: true, status: true, createdAt: true },
+      select: { id: true, title: true, estimatedMonthlySavings: true, currency: true, status: true, evidence: true, createdAt: true },
     }),
     prisma.recommendationManualExecution.findMany({
       where: { tenantId, status: { in: ['EXECUTED', 'PARTIAL'] } },

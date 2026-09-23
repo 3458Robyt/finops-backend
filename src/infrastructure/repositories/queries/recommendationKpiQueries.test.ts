@@ -36,6 +36,16 @@ interface ActivityRow {
   readonly createdAt: Date;
 }
 
+function savingsEvidence(amount: number, currency = 'USD') {
+  return {
+    savingsCalculation: {
+      provenance: 'SERVER_DETERMINISTIC', version: 'priced-alternative/v1', status: 'CALCULATED',
+      formula: 'BASELINE_MINUS_ALTERNATIVE_MONTHLY', baselineMonthlyCost: amount + 100,
+      alternativeMonthlyCost: 100, amount, currency, priceEvidenceRef: 'price:fixture:alternative',
+    },
+  };
+}
+
 /**
  * Construye un stub de PrismaClient con los resultados predefinidos para las
  * (5) consultas que ejecutan los KPIs. Solo implementa los metodos usados; se
@@ -227,6 +237,7 @@ describe('computeSavingsKpis', () => {
         estimatedMonthlySavings: 1000,
         currency: 'USD',
         status: 'APPROVED',
+        evidence: savingsEvidence(1000),
         createdAt: new Date(),
       }],
     });
@@ -264,8 +275,8 @@ describe('computeSavingsKpis', () => {
     const prisma = createPrismaStub({
       pendingRecs: [
         { id: 'financial', title: 'Revisar costo', estimatedMonthlySavings: 500, currency: 'USD', status: 'PENDING', evidence: { reviewScope: 'FINANCIAL' }, createdAt: now },
-        { id: 'pending', title: 'Optimizar capacidad', estimatedMonthlySavings: 100, currency: 'USD', status: 'PENDING', createdAt: now },
-        { id: 'approved', title: 'Aplicar rightsizing validado', estimatedMonthlySavings: 200, currency: 'USD', status: 'APPROVED', createdAt: now },
+        { id: 'pending', title: 'Optimizar capacidad', estimatedMonthlySavings: 100, currency: 'USD', status: 'PENDING', evidence: savingsEvidence(100), createdAt: now },
+        { id: 'approved', title: 'Aplicar rightsizing validado', estimatedMonthlySavings: 200, currency: 'USD', status: 'APPROVED', evidence: savingsEvidence(200), createdAt: now },
       ],
     });
     const kpis = await computeSavingsKpis(prisma, 'tenant-1');
@@ -273,6 +284,19 @@ describe('computeSavingsKpis', () => {
     expect(kpis.estimatedMonthlySavings).toBe(300);
     expect(kpis.approvedMonthlySavings).toBe(200);
     expect(kpis.pendingSavingsRecommendations).toBe(2);
+  });
+
+  it('excluye del impacto económico un ahorro heredado sin cálculo de alternativa con precio', async () => {
+    const prisma = createPrismaStub({
+      pendingRecs: [
+        { id: 'legacy', title: 'Revisar costo de almacenamiento', estimatedMonthlySavings: 8559.39, currency: 'COP', status: 'PENDING', evidence: { normalizedMonthlyCost: 71328.25, maxEstimatedMonthlySavings: 8559.39 }, createdAt: new Date('2026-09-17T00:00:00Z') },
+        { id: 'verified', title: 'Comparar alternativa cotizada', estimatedMonthlySavings: 12, currency: 'USD', status: 'PENDING', evidence: savingsEvidence(12), createdAt: new Date('2026-09-17T00:00:00Z') },
+      ],
+    });
+
+    const kpis = await computeSavingsKpis(prisma, 'tenant-1');
+    expect(kpis.estimatedMonthlySavings).toBe(12);
+    expect(kpis.pendingSavingsRecommendations).toBe(1);
   });
 
   it('acumula el ahorro perdido prorrateado y destaca la recomendacion con mayor ahorro perdido', async () => {
@@ -292,6 +316,7 @@ describe('computeSavingsKpis', () => {
           estimatedMonthlySavings: 300,
           currency: 'USD',
           status: 'PENDING',
+          evidence: savingsEvidence(300),
           // 60 dias sin ejecutar -> (300/30)*60 = 600.
           createdAt: new Date(now.getTime() - 60 * dayMs),
         },
@@ -301,6 +326,7 @@ describe('computeSavingsKpis', () => {
           estimatedMonthlySavings: 300,
           currency: 'USD',
           status: 'APPROVED',
+          evidence: savingsEvidence(300),
           // 30 dias sin ejecutar -> (300/30)*30 = 300.
           createdAt: new Date(now.getTime() - 30 * dayMs),
         },
@@ -337,6 +363,7 @@ describe('computeSavingsKpis', () => {
           estimatedMonthlySavings: 300,
           currency: 'USD',
           status: 'PENDING',
+          evidence: savingsEvidence(300),
           // Creada justo ahora -> 0 dias transcurridos -> ahorro perdido 0.
           createdAt: now,
         },

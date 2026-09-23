@@ -14,7 +14,11 @@ import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommen
 import type { RecommendationExecutionPlan } from '../../../domain/models/RecommendationExecutionPlan.js';
 import type { RecommendationManualExecution } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { PrismaClient } from '../../../generated/prisma/client.js';
-import { isFinancialReviewEvidence } from '../../../domain/models/recommendationEconomics.js';
+import {
+  isFinancialReviewEvidence,
+  isVerifiedSavingsCalculation,
+  sanitizeSavingsEvidence,
+} from '../../../domain/models/recommendationEconomics.js';
 
 /**
  * Mapea una fila de `recommendations` (Prisma) al modelo de dominio
@@ -28,6 +32,9 @@ import { isFinancialReviewEvidence } from '../../../domain/models/recommendation
  * @returns Recomendación de dominio.
  */
 export function toDomain(row: Awaited<ReturnType<PrismaClient['recommendation']['findFirst']>> & {}): FinOpsRecommendation {
+  const amount = row.estimatedMonthlySavings === null ? undefined : Number(row.estimatedMonthlySavings);
+  const verifiedSavings = !isFinancialReviewEvidence(row.evidence)
+    && isVerifiedSavingsCalculation(row.evidence, amount, row.currency);
   return {
     id: row.id,
     cloudAccountId: row.cloudAccountId,
@@ -39,9 +46,9 @@ export function toDomain(row: Awaited<ReturnType<PrismaClient['recommendation'][
     severity: row.severity,
     title: row.title,
     description: row.description,
-    evidence: row.evidence,
-    ...(row.estimatedMonthlySavings !== null && !isFinancialReviewEvidence(row.evidence)
-      ? { estimatedMonthlySavings: Number(row.estimatedMonthlySavings) }
+    evidence: sanitizeSavingsEvidence(row.evidence, amount, row.currency),
+    ...(verifiedSavings && amount !== undefined
+      ? { estimatedMonthlySavings: amount }
       : {}),
     currency: row.currency,
     createdAt: row.createdAt,

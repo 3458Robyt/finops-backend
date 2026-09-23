@@ -20,6 +20,8 @@ import type {
 } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { PrismaClient } from '../../../generated/prisma/client.js';
 
+const COST_PERIOD_BOUNDARY_GRACE_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Fila cruda de la agregación por proveedor (consulta `$queryRaw`).
  * `total_cost` se castea a `float8` en SQL para evitar el tipo `Decimal`.
@@ -224,8 +226,13 @@ export function toUsageItem(row: TopUsageRow): CostAnalyticsUsageItem {
  * @param row Fila de anomalía de Prisma.
  * @returns Anomalía de coste de dominio.
  */
-export function toAnomalyDomain(row: Awaited<ReturnType<PrismaClient['costAnomaly']['findFirst']>> & {}): CostAnomaly {
+export function toAnomalyDomain(
+  row: Awaited<ReturnType<PrismaClient['costAnomaly']['findFirst']>> & {},
+  latestCostPeriodEnd?: Date | null,
+): CostAnomaly {
   const currency = readEvidenceCurrency(row.evidence);
+  const isStale = latestCostPeriodEnd !== undefined && latestCostPeriodEnd !== null
+    && latestCostPeriodEnd.getTime() > row.detectedAt.getTime() + COST_PERIOD_BOUNDARY_GRACE_MS;
   return {
     id: row.id,
     tenantId: row.tenantId,
@@ -247,6 +254,7 @@ export function toAnomalyDomain(row: Awaited<ReturnType<PrismaClient['costAnomal
     ...(currency === undefined ? {} : { currency }),
     ...(row.evidence !== null ? { evidence: row.evidence } : {}),
     detectedAt: row.detectedAt.toISOString(),
+    ...(isStale ? { isStale: true } : {}),
   };
 }
 

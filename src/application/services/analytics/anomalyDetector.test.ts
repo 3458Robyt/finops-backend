@@ -89,6 +89,16 @@ describe('detectAnomalies', () => {
     expect(detected).toHaveLength(1);
     expect(detected[0]!.deltaAmount).toBe(3);
   });
+
+  it('ignora el mes calendario actual porque su costo todavía está incompleto', () => {
+    const series = [
+      point('2026-01', 100), point('2026-02', 100), point('2026-03', 100),
+      point('2026-04', 100), point('2026-05', 100), point('2026-06', 100),
+      point('2026-07', 100), point('2026-08', 100), point('2026-09', 1_000),
+    ];
+
+    expect(detectAnomalies('tenant-oci', series, thresholds, new Date('2026-09-23T12:00:00.000Z'))).toHaveLength(0);
+  });
 });
 
 describe('scoreAnomalySeverity', () => {

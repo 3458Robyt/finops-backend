@@ -302,6 +302,8 @@ export interface CostAnomaly {
   readonly evidence?: unknown;
   /** Instante de detección de la anomalía, en formato ISO 8601. */
   readonly detectedAt: string;
+  /** El periodo de costos observado avanzó después del análisis. */
+  readonly isStale?: boolean;
 }
 
 /**

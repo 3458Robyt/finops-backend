@@ -12,6 +12,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '../../../generated/prisma/client.js';
+import { computeAdoptionEngagement } from './adoptionKpiQueries.js';
 import { computeAdoptionKpis, computeSavingsKpis } from './recommendationKpiQueries.js';
 
 /** Fila minima de recomendacion que consume computeSavingsKpis (findMany). */
@@ -32,7 +33,7 @@ interface StatusCountRow {
 }
 
 interface ActivityRow {
-  readonly userId: string;
+  readonly userId: string | null;
   readonly createdAt: Date;
 }
 
@@ -216,6 +217,34 @@ describe('computeAdoptionKpis', () => {
     // Sin decididas el denominador es 0 -> tasas 0.
     expect(kpis.acceptanceRate).toBe(0);
     expect(kpis.executionRate).toBe(0);
+  });
+});
+
+describe('computeAdoptionEngagement', () => {
+  it('excludes unattributed chat traces from engagement counts and series', async () => {
+    const createdAt = new Date('2026-09-23T10:00:00.000Z');
+    const prisma = createPrismaStub({
+      chatRows: [
+        { userId: 'user-1', createdAt },
+        { userId: null, createdAt },
+      ],
+    });
+
+    const engagement = await computeAdoptionEngagement(prisma, 'tenant-1', { granularity: 'month' });
+
+    expect(engagement).toMatchObject({
+      chatInteractions: 1,
+      chatUsers: 1,
+      activeUsers: 1,
+    });
+    expect(engagement.series).toEqual([{
+      periodStart: '2026-09-01',
+      activeUsers: 1,
+      chatInteractions: 1,
+      telegramInteractions: 0,
+      decisions: 0,
+      executions: 0,
+    }]);
   });
 });
 

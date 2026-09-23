@@ -19,6 +19,7 @@ import {
   queryMonthlyCostRows,
   queryMonthlyUsageRows,
 } from './queries/costAnalyticsSeriesQueries.js';
+import { queryCostAnomalies } from './queries/costAnalyticsAnomalyQueries.js';
 import {
   replaceTenantAnomalies,
   replaceTenantForecasts,
@@ -194,23 +195,8 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
     tenantId: string,
     filters: AnalyticsFilters = {},
   ): Promise<CostAnomaly[]> {
-    const rows = await this.prisma.costAnomaly.findMany({
-      where: {
-        tenantId,
-        ...(filters.from !== undefined ? { periodStart: { gte: filters.from } } : {}),
-        ...(filters.to !== undefined ? { periodStart: { lt: filters.to } } : {}),
-        ...(filters.provider !== undefined ? { provider: filters.provider as never } : {}),
-        ...(filters.cloudAccountId !== undefined ? { cloudAccountId: filters.cloudAccountId } : {}),
-        ...(filters.serviceName !== undefined ? { serviceName: filters.serviceName } : {}),
-      },
-      orderBy: [
-        { severity: 'desc' },
-        { detectedAt: 'desc' },
-      ],
-      take: 100,
-    });
-
-    const anomalies = rows.map((row) => toAnomalyDomain(row));
+    const { rows, latestCostPeriodEnd } = await queryCostAnomalies(this.prisma, tenantId, filters);
+    const anomalies = rows.map((row) => toAnomalyDomain(row, latestCostPeriodEnd));
     if (this.currencyConverter === undefined) return anomalies;
 
     const reportingCurrency = await this.getReportingCurrency(tenantId);

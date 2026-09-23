@@ -108,6 +108,36 @@ describe('OCI inventory modules', () => {
     expect(result.coverage).toMatchObject({ sdkResourceCount: 2, mergedResourceCount: 2 });
   });
 
+  test('classifies metric-definition resources from OCID and excludes tenancy-level aggregates', async () => {
+    const result = await collectOciInventory(buildJob({
+      metadata: {
+        ociMetricDefinitions: [
+          { compartmentId: 'tenancy-1', namespace: 'oci_blockstore', metricName: 'VolumeGuaranteedIOPS', resourceId: 'ocid1.volume.oc1.test' },
+          { compartmentId: 'tenancy-1', namespace: 'oci_blockstore', metricName: 'VolumeGuaranteedThroughput', resourceId: 'ocid1.bootvolume.oc1.test' },
+          { compartmentId: 'tenancy-1', namespace: 'oci_computeagent', metricName: 'CpuUtilization', resourceId: 'ocid1.instance.oc1.test' },
+          { compartmentId: 'tenancy-1', namespace: 'oci_unknown', metricName: 'UnknownMetric', resourceId: 'ocid1.unknownresource.oc1.test' },
+          { compartmentId: 'tenancy-1', namespace: 'oci_computeagent', metricName: 'CpuUtilization' },
+        ],
+      },
+    }), {
+      discoverCompartments: async () => ({
+        compartmentIds: ['tenancy-1'], apiCallCount: 0, status: 'CONFIGURED_ONLY',
+        configuredCompartmentCount: 1, discoveredCompartmentCount: 0,
+      }),
+      createComputeClient: () => ({ listInstances: async () => ({ items: [] }) }),
+      withRetry: (operation) => operation(),
+    });
+
+    expect(result.resources).toHaveLength(4);
+    expect(result.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ externalResourceId: 'ocid1.volume.oc1.test', resourceType: 'BLOCK_VOLUME', serviceName: 'Oracle Block Volume' }),
+      expect.objectContaining({ externalResourceId: 'ocid1.bootvolume.oc1.test', resourceType: 'BOOT_VOLUME', serviceName: 'Oracle Block Volume' }),
+      expect.objectContaining({ externalResourceId: 'ocid1.instance.oc1.test', resourceType: 'COMPUTE_INSTANCE', serviceName: 'Oracle Compute' }),
+      expect.objectContaining({ externalResourceId: 'ocid1.unknownresource.oc1.test', resourceType: 'OCI_RESOURCE', serviceName: 'Oracle Cloud Infrastructure' }),
+    ]));
+    expect(result.resources.some((resource) => resource.externalResourceId === 'tenancy-1')).toBe(false);
+  });
+
   test('persists the canonical discovered region instead of OCI short region keys', async () => {
     const result = await collectOciInventory(buildJob({ defaultRegion: 'us-phoenix-1' }), {
       discoverCompartments: async () => ({
@@ -139,6 +169,87 @@ describe('OCI inventory modules', () => {
     expect(result.resources).toEqual([
       expect.objectContaining({ externalResourceId: 'instance-1', regionId: 'us-phoenix-1' }),
     ]);
+  });
+
+  test('searches inventory in every discovered region and keeps each resource region', async () => {
+    const searchedRegions: string[] = [];
+    const rateLimitedRegions: string[] = [];
+    const result = await collectOciInventory(buildJob({
+      metadata: {
+        ociMetricDefinitions: [
+          { compartmentId: 'tenancy-1', namespace: 'oci_blockstore', metricName: 'VolumeGuaranteedIOPS', resourceId: 'ocid1.volume.phx', regionId: 'us-phoenix-1' },
+          { compartmentId: 'tenancy-1', namespace: 'oci_blockstore', metricName: 'VolumeGuaranteedIOPS', resourceId: 'ocid1.bootvolume.iad', regionId: 'us-ashburn-1' },
+        ],
+      },
+    }), {
+      discoverCompartments: async () => ({
+        compartmentIds: ['tenancy-1'], apiCallCount: 0, status: 'CONFIGURED_ONLY',
+        configuredCompartmentCount: 1, discoveredCompartmentCount: 0,
+      }),
+      discoverRegions: async () => ({
+        regionIds: ['us-phoenix-1', 'us-ashburn-1'], apiCallCount: 1, status: 'COMPLETE', warnings: [],
+      }),
+      createComputeClient: () => ({ listInstances: async () => ({ items: [] }) }),
+      createResourceSearchClient: (regionalJob) => ({
+        searchResources: async () => {
+          const regionId = String(regionalJob.requestContext?.['regionId']);
+          searchedRegions.push(regionId);
+          const isPhoenix = regionId === 'us-phoenix-1';
+          return { resourceSummaryCollection: { items: [{
+            identifier: isPhoenix ? 'ocid1.volume.phx' : 'ocid1.bootvolume.iad',
+            displayName: isPhoenix ? 'Datos Phoenix' : 'Sistema Ashburn',
+            resourceType: isPhoenix ? 'volume' : 'bootVolume',
+            compartmentId: 'tenancy-1',
+          }] } };
+        },
+      }),
+      withRateLimit: async (regionalJob, api, operation) => {
+        if (api === 'resourceSearch') rateLimitedRegions.push(String(regionalJob.requestContext?.['regionId']));
+        return operation();
+      },
+      withRetry: (operation) => operation(),
+    });
+
+    expect(searchedRegions).toEqual(['us-phoenix-1', 'us-ashburn-1']);
+    expect(rateLimitedRegions).toEqual(searchedRegions);
+    expect(result.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ externalResourceId: 'ocid1.volume.phx', name: 'Datos Phoenix', resourceType: 'BLOCK_VOLUME', regionId: 'us-phoenix-1' }),
+      expect.objectContaining({ externalResourceId: 'ocid1.bootvolume.iad', name: 'Sistema Ashburn', resourceType: 'BOOT_VOLUME', regionId: 'us-ashburn-1' }),
+    ]));
+    expect(result.coverage).toMatchObject({
+      resourceSearchStatus: 'COMPLETE', resourceSearchRegionCount: 2, resourceSearchFailedRegionCount: 0,
+      resourceSearchResourceCount: 2,
+    });
+  });
+
+  test('marks Resource Search partial when one regional query fails', async () => {
+    const result = await collectOciInventory(buildJob({}), {
+      discoverCompartments: async () => ({
+        compartmentIds: ['tenancy-1'], apiCallCount: 0, status: 'CONFIGURED_ONLY',
+        configuredCompartmentCount: 1, discoveredCompartmentCount: 0,
+      }),
+      discoverRegions: async () => ({
+        regionIds: ['us-phoenix-1', 'us-ashburn-1'], apiCallCount: 1, status: 'COMPLETE', warnings: [],
+      }),
+      createComputeClient: () => ({ listInstances: async () => ({ items: [] }) }),
+      createResourceSearchClient: (regionalJob) => ({
+        searchResources: async () => {
+          if (regionalJob.requestContext?.['regionId'] === 'us-phoenix-1') throw new Error('regional search unavailable');
+          return { resourceSummaryCollection: { items: [{
+            identifier: 'ocid1.volume.iad', displayName: 'Almacenamiento Ashburn', resourceType: 'volume', compartmentId: 'tenancy-1',
+          }] } };
+        },
+      }),
+      withRetry: (operation) => operation(),
+    });
+
+    expect(result.resources).toEqual([
+      expect.objectContaining({ externalResourceId: 'ocid1.volume.iad', name: 'Almacenamiento Ashburn', regionId: 'us-ashburn-1' }),
+    ]);
+    expect(result.coverage).toMatchObject({
+      resourceSearchStatus: 'PARTIAL', resourceSearchRegionCount: 2, resourceSearchFailedRegionCount: 1,
+    });
+    expect(result.warnings).toEqual([expect.stringContaining('us-phoenix-1')]);
   });
 
   test('collects Object Storage buckets with a canonical id and a safe bucket alias', async () => {

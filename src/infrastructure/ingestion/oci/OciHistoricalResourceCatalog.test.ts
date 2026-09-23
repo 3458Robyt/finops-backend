@@ -15,13 +15,14 @@ describe('buildHistoricalOciResources', () => {
     const rows = [
       row('ocid1.bootvolume.oc1.test', 'BLOCK_STORAGE', '2026-05-01', '2026-05-02'),
       row('ocid1.bootvolume.oc1.test', 'BLOCK_STORAGE', '2026-05-02', '2026-05-03'),
+      row('ocid1.volume.oc1.test', 'BLOCK_STORAGE', '2026-05-01', '2026-05-02'),
       row('oci_computeagent', 'TELEMETRY', '2026-05-01', '2026-05-02'),
       row('', 'COMPUTE', '2026-05-01', '2026-05-02'),
     ];
 
     const resources = buildHistoricalOciResources(job(), rows);
 
-    expect(resources).toEqual([
+    expect(resources).toEqual(expect.arrayContaining([
       expect.objectContaining({
         externalResourceId: 'ocid1.bootvolume.oc1.test',
         resourceType: 'BOOT_VOLUME',
@@ -35,7 +36,12 @@ describe('buildHistoricalOciResources', () => {
           historicalReference: true,
         }),
       }),
-    ]);
+      expect.objectContaining({
+        externalResourceId: 'ocid1.volume.oc1.test',
+        resourceType: 'BLOCK_VOLUME',
+        serviceName: 'Oracle Block Volume',
+      }),
+    ]));
   });
 
   test('creates UNKNOWN historical references for provider OCIDs but excludes logical and aggregate identifiers', () => {

@@ -5,6 +5,7 @@ import { collectOciResourceSearchInventory } from './OciResourceSearchCollector.
 describe('collectOciResourceSearchInventory', () => {
   test('paginates configured resource types and normalizes exact OCI identities', async () => {
     const close = vi.fn();
+    let rateLimitCalls = 0;
     const searchResources = vi.fn()
       .mockResolvedValueOnce({
         resourceSummaryCollection: {
@@ -33,6 +34,10 @@ describe('collectOciResourceSearchInventory', () => {
     const result = await collectOciResourceSearchInventory(buildJob(), {
       createClient: () => ({ close, searchResources }),
       withRetry: (operation) => operation(),
+      withRateLimit: async (_job, operation) => {
+        rateLimitCalls += 1;
+        return operation();
+      },
     });
 
     expect(searchResources).toHaveBeenNthCalledWith(1, expect.objectContaining({
@@ -41,6 +46,7 @@ describe('collectOciResourceSearchInventory', () => {
     }));
     expect(searchResources).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 'page-2' }));
     expect(close).toHaveBeenCalledTimes(2);
+    expect(rateLimitCalls).toBe(2);
     expect(result.apiCallCount).toBe(2);
     expect(result.resources).toEqual([
       expect.objectContaining({

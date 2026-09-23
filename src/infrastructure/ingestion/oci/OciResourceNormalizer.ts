@@ -3,6 +3,7 @@ import type {
   NormalizedCloudResource,
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
 import type { OciResourceSearchSummary } from './OciSdkContracts.js';
+import { optionalString } from '../providerConfig.js';
 
 export function normalizeOciSearchResource(
   job: CloudIngestionJobContext,
@@ -11,7 +12,7 @@ export function normalizeOciSearchResource(
   const externalResourceId = summary.identifier.trim();
   if (externalResourceId === '') return undefined;
   const catalog = classifyResourceType(summary.resourceType);
-  const regionId = readRegionId(summary, job.connection.defaultRegion);
+  const regionId = readRegionId(summary, optionalString(job.requestContext?.['regionId']) ?? job.connection.defaultRegion);
   const timeCreated = normalizeTimestamp(summary.timeCreated);
   return {
     tenantId: job.tenantId,
@@ -80,6 +81,7 @@ function classifyResourceType(resourceType: string): {
 } {
   switch (resourceType.toLowerCase()) {
     case 'instance': return { resourceType: 'COMPUTE_INSTANCE', serviceName: 'Oracle Compute' };
+    case 'volume': return { resourceType: 'BLOCK_VOLUME', serviceName: 'Oracle Block Volume' };
     case 'bootvolume': return { resourceType: 'BOOT_VOLUME', serviceName: 'Oracle Block Volume' };
     case 'bootvolumebackup': return { resourceType: 'BOOT_VOLUME_BACKUP', serviceName: 'Oracle Block Volume' };
     case 'vnic': return { resourceType: 'VNIC', serviceName: 'Oracle Networking' };

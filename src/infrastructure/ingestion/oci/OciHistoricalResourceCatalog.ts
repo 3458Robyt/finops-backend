@@ -7,6 +7,7 @@ import type {
 
 const supportedHistoricalTypes: ReadonlyMap<string, { readonly resourceType: string; readonly serviceName: string }> = new Map([
   ['instance', { resourceType: 'COMPUTE_INSTANCE', serviceName: 'Oracle Compute' }],
+  ['volume', { resourceType: 'BLOCK_VOLUME', serviceName: 'Oracle Block Volume' }],
   ['bootvolume', { resourceType: 'BOOT_VOLUME', serviceName: 'Oracle Block Volume' }],
   ['bootvolumebackup', { resourceType: 'BOOT_VOLUME_BACKUP', serviceName: 'Oracle Block Volume' }],
   ['vnic', { resourceType: 'VNIC', serviceName: 'Oracle Networking' }],

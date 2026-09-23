@@ -6,6 +6,8 @@ import {
 } from './RecommendationReadinessGate.js';
 import type { RecommendationEvidenceSnapshot } from './RecommendationEvidenceSnapshot.js';
 import type { TechnicalResourceRuleEvaluation } from './TechnicalOptimizationRuleEngine.js';
+import { evaluateRecommendationDrafts } from './evaluation/recommendationQualityChecks.js';
+import type { AiRecommendationDraft } from './finOpsAiTypes.js';
 
 describe('RecommendationReadinessGate', () => {
   it('marks resource cost opportunities as validation-only when technical evidence is missing', () => {
@@ -16,7 +18,57 @@ describe('RecommendationReadinessGate', () => {
     expect(resourceCandidate?.readiness).toBe('VALIDATION_ONLY');
     expect(resourceCandidate?.requiresTechnicalValidation).toBe(true);
     expect(resourceCandidate?.evidenceLevelAllowed).toBe('COST_ONLY');
+    expect(resourceCandidate?.maxEstimatedMonthlySavings).toBe(0);
     expect(resourceCandidate?.forbiddenClaims.join(' ')).toContain('rightsizing');
+  });
+
+  it('does not infer savings from billed consumption or service cost alone', () => {
+    const report = buildRecommendationReadinessReport({ snapshot: buildSnapshot() });
+
+    expect(report.blocked.find((candidate) => candidate.id === 'usage-1')?.maxEstimatedMonthlySavings).toBe(0);
+    expect(report.candidates.find((candidate) => candidate.id === 'resource-1')?.maxEstimatedMonthlySavings).toBe(0);
+    expect(report.blocked.find((candidate) => candidate.id === 'service-1')?.maxEstimatedMonthlySavings).toBe(0);
+  });
+
+  it('blocks top-consumption and service-cost candidates without an evidenced saving mechanism', () => {
+    const report = buildRecommendationReadinessReport({ snapshot: buildSnapshot() });
+
+    expect(report.candidates.some((candidate) => candidate.id === 'usage-1')).toBe(false);
+    expect(report.candidates.some((candidate) => candidate.id === 'service-1')).toBe(false);
+    expect(report.blocked.find((candidate) => candidate.id === 'usage-1')?.readiness).toBe('BLOCKED_NO_EVIDENCE');
+    expect(report.blocked.find((candidate) => candidate.id === 'service-1')?.readiness).toBe('BLOCKED_NO_EVIDENCE');
+    expect(report.blocked.find((candidate) => candidate.id === 'usage-1')?.reasons.join(' ')).toMatch(/demuestra|ahorro/i);
+  });
+
+  it('rejects a quantified savings claim in prose when no priced alternative is available', () => {
+    const baseReadiness = buildRecommendationReadinessReport({ snapshot: buildSnapshot() });
+    const blockedUsage = baseReadiness.blocked.find((item) => item.id === 'usage-1')!;
+    const candidate = { ...blockedUsage, readiness: 'GENERATABLE' as const };
+    const readiness = {
+      ...baseReadiness,
+      candidates: [...baseReadiness.candidates, candidate],
+      blocked: baseReadiness.blocked.filter((item) => item.id !== 'usage-1'),
+    };
+    const draft: AiRecommendationDraft = {
+      cloudAccountId: candidate.cloudAccountId,
+      type: candidate.opportunityType,
+      severity: 'MEDIUM',
+      title: 'Ahorrar 6.514 COP mensuales en el servicio',
+      description: 'Revisar el costo y consumo observado.',
+      currency: candidate.currency,
+      evidence: {
+        candidateId: candidate.id,
+        evidenceLevel: candidate.evidenceLevelAllowed,
+        requiresTechnicalValidation: candidate.requiresTechnicalValidation,
+        observedCost: candidate.observedCost,
+        normalizedMonthlyCost: 500,
+        maxEstimatedMonthlySavings: candidate.maxEstimatedMonthlySavings,
+      },
+    };
+
+    const quality = evaluateRecommendationDrafts([draft], buildSnapshot(), undefined, undefined, undefined, readiness);
+
+    expect(quality.checks.find((check) => check.name === 'savingsNarrativeCap')?.passed).toBe(false);
   });
 
   it('allows technical recommendations only when a resource has technical evidence refs', () => {
@@ -35,11 +87,11 @@ describe('RecommendationReadinessGate', () => {
     ]);
   });
 
-  it('keeps service cost reviews financial and does not require technical validation', () => {
+  it('blocks service cost reviews without a deterministic savings basis', () => {
     const report = buildRecommendationReadinessReport({ snapshot: buildSnapshot() });
-    const serviceCandidate = report.candidates.find((candidate) => candidate.id === 'service-1');
+    const serviceCandidate = report.blocked.find((candidate) => candidate.id === 'service-1');
 
-    expect(serviceCandidate?.readiness).toBe('GENERATABLE');
+    expect(serviceCandidate?.readiness).toBe('BLOCKED_NO_EVIDENCE');
     expect(serviceCandidate?.requiresTechnicalValidation).toBe(false);
     expect(serviceCandidate?.evidenceLevelAllowed).toBe('COST_ONLY');
     expect(serviceCandidate?.reviewScope).toBe('FINANCIAL');
@@ -99,6 +151,12 @@ describe('RecommendationReadinessGate', () => {
     const report = buildRecommendationReadinessReport({
       snapshot: {
         ...base,
+        topResources: Array.from({ length: 8 }, (_, index) => ({
+          ...base.topResources[0]!,
+          resourceId: `i-prod-${index + 1}`,
+          resourceName: `worker-${index + 1}`,
+          totalCost: 500 - index,
+        })),
         services: Array.from({ length: 8 }, (_, index) => ({
           serviceName: `Servicio ${index + 1}`,
           provider: 'AWS',
@@ -108,8 +166,8 @@ describe('RecommendationReadinessGate', () => {
       },
     });
 
-    expect(report.candidates.length + report.blocked.length).toBe(6);
-    expect(report.deferred).toHaveLength(4);
+    expect(report.candidates).toHaveLength(6);
+    expect(report.deferred).toHaveLength(2);
     expect(report.deferred[0]?.reasons.join(' ')).toContain('Aplazado');
   });
 });

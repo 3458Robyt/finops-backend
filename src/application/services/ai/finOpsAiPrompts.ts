@@ -118,6 +118,7 @@ return [
     'Evalua cada recomendacion por separado: no rechaces un lote solo porque combina una revision financiera FOCUS con una revision tecnica. SERVICE_COST_REVIEW y USAGE_OPTIMIZATION son validas sin recurso enlazado ni metricas tecnicas si no implican capacidad, CPU, memoria, resize, apagado ni otra accion operativa.',
     'No uses la palabra "anomalia" ni "anomalias"; usa "oportunidad" u "oportunidades".',
     'estimatedMonthlySavings nunca puede superar maxEstimatedMonthlySavings del candidato usado.',
+    'Si maxEstimatedMonthlySavings es 0, no declares estimatedMonthlySavings positivo ni potentialMonthlySavings positivo: costo, consumo o subutilización no prueban por sí solos un importe ahorrable.',
     'Usa normalizedMonthlyCost del candidato sin recalcularlo con coveredDays. La normalización autorizada es costo observado * 30 / días exactos entre periodStart y periodEnd; para un período de 30 días coincide con el costo observado.',
     'Cada recomendacion debe incluir evidence.candidateId, sourceFacts, assumptions y confidence entre 0 y 1.',
     'type debe copiar exactamente opportunityType del candidateId citado; no inventes nombres de tipo ni mezcles candidatos.',
@@ -222,6 +223,7 @@ export function buildAuditSystemPrompt(
         'Los campos candidateId, sourceFacts, assumptions y confidence deben estar dentro de evidence; no rechaces una recomendacion porque no los repita en el nivel raiz.',
         'Evalua cada recomendacion por separado: no rechaces un lote solo porque combina una revision financiera FOCUS con una revision tecnica. SERVICE_COST_REVIEW y USAGE_OPTIMIZATION son validas sin recurso enlazado ni metricas tecnicas si no implican capacidad, CPU, memoria, resize, apagado ni otra accion operativa.',
         'Rechaza recomendaciones cuyo estimatedMonthlySavings supere el maxEstimatedMonthlySavings del candidato citado.',
+        'Si el candidato tiene maxEstimatedMonthlySavings=0, rechaza cualquier ahorro positivo afirmado en título, descripción o potentialMonthlySavings, aunque estimatedMonthlySavings esté ausente o sea 0.',
         'Comprueba que evidence.requiresTechnicalValidation coincida exactamente con el candidato autorizado; una diferencia es un bloqueo de consistencia aunque el resto del texto sea valido.',
         'Errores menores de ortografia o tildes, por si solos, no son un bloqueo ni un requiredChange cuando el significado, la evidencia y las restricciones son correctos; prioriza la seguridad y la coherencia factual.',
       ]

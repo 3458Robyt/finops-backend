@@ -149,11 +149,12 @@ describe('qualityRubric — recommendations', () => {
     const report = evaluateRecommendationDrafts([
       draft({
         type: 'RIGHTSIZING',
-        estimatedMonthlySavings: 40,
+        estimatedMonthlySavings: 0,
         evidence: {
           evidenceLevel: 'COST_USAGE_AND_TECHNICAL',
           externalResourceId: 'i-requested',
           cloudResourceId: 'resource-1',
+          maxEstimatedMonthlySavings: 0,
           technicalEvidenceRefs: ['resource_metric_samples:i-requested:CpuUtilization:2026-04-30T00:00:00.000Z'],
           technicalSampleCount: 96,
           technicalCoverageDays: 14,
@@ -164,6 +165,27 @@ describe('qualityRubric — recommendations', () => {
 
     expect(report.passed).toBe(true);
     expect(report.checks.find((check) => check.name === 'canonicalTechnicalEvidence')?.passed).toBe(true);
+  });
+
+  test('does not fall back to a utilization percentage when canonical savings cap is zero', () => {
+    const report = evaluateRecommendationDrafts([
+      draft({
+        type: 'RIGHTSIZING',
+        estimatedMonthlySavings: 10,
+        evidence: {
+          evidenceLevel: 'COST_USAGE_AND_TECHNICAL',
+          externalResourceId: 'i-requested',
+          cloudResourceId: 'resource-1',
+          maxEstimatedMonthlySavings: 0,
+          technicalEvidenceRefs: ['resource_metric_samples:i-requested:CpuUtilization:2026-04-30T00:00:00.000Z'],
+          technicalSampleCount: 96,
+          technicalCoverageDays: 14,
+          latestTechnicalSampleAt: '2026-04-30T00:00:00.000Z',
+        },
+      }),
+    ], snapshot, undefined, undefined, buildCanonicalEvidenceSnapshot());
+
+    expect(report.checks.find((check) => check.name === 'canonicalTechnicalEvidence')?.passed).toBe(false);
   });
 
   test('rejects technical evidence without the normalized resource relationship', () => {
@@ -477,6 +499,90 @@ describe('qualityRubric — execution plan', () => {
     } as AiRecommendationDraft;
 
     const report = evaluateRecommendationDrafts([draft], snapshot);
+    expect(report.checks.find((check) => check.name === 'candidateSavingsCap')?.passed).toBe(false);
+  });
+
+  test('rejects root savings and unverified potential when deterministic candidate cap is zero', () => {
+    const readinessReport = {
+      candidates: [{
+        id: 'usage-1',
+        readiness: 'GENERATABLE',
+        cloudAccountId: 'acc-prod-aws',
+        provider: 'AWS',
+        serviceName: 'Amazon EC2',
+        opportunityType: 'USAGE_OPTIMIZATION',
+        evidenceLevelAllowed: 'COST_AND_USAGE',
+        requiresTechnicalValidation: false,
+        observedCost: 500,
+        maxEstimatedMonthlySavings: 0,
+        currency: 'USD',
+        sourceFacts: ['Consumo y costo FOCUS.'],
+        costEvidenceRefs: ['cost_metrics:aggregate:usage'],
+        technicalEvidenceRefs: [],
+        reasons: [],
+        forbiddenClaims: [],
+      }],
+      blocked: [],
+      deferred: [],
+      summary: 'test',
+    } as unknown as Parameters<typeof evaluateRecommendationDrafts>[5];
+    const unsupported = draft({
+      estimatedMonthlySavings: 10,
+      evidence: {
+        candidateId: 'usage-1',
+        evidenceLevel: 'COST_AND_USAGE',
+        requiresTechnicalValidation: false,
+        maxEstimatedMonthlySavings: 0,
+        observedCost: 500,
+        normalizedMonthlyCost: 500,
+        potentialMonthlySavings: 10,
+      },
+    });
+
+    const report = evaluateRecommendationDrafts([unsupported], snapshot, undefined, undefined, undefined, readinessReport);
+
+    expect(report.checks.find((check) => check.name === 'candidateSavingsCap')?.passed).toBe(false);
+  });
+
+  test('rejects a quantified savings claim in prose when deterministic cap is zero', () => {
+    const readinessReport = {
+      candidates: [{
+        id: 'usage-1', readiness: 'GENERATABLE', cloudAccountId: 'acc-prod-aws', provider: 'AWS',
+        serviceName: 'Amazon EC2', opportunityType: 'USAGE_OPTIMIZATION', evidenceLevelAllowed: 'COST_AND_USAGE',
+        requiresTechnicalValidation: false, observedCost: 500, maxEstimatedMonthlySavings: 0, currency: 'USD',
+        sourceFacts: [], costEvidenceRefs: ['cost_metrics:aggregate:usage'], technicalEvidenceRefs: [], reasons: [], forbiddenClaims: [],
+      }], blocked: [], deferred: [], summary: 'test',
+    } as unknown as Parameters<typeof evaluateRecommendationDrafts>[5];
+    const unsupported = draft({
+      estimatedMonthlySavings: undefined,
+      title: 'Reducir la factura en 25 USD al mes',
+      evidence: {
+        candidateId: 'usage-1', evidenceLevel: 'COST_AND_USAGE', requiresTechnicalValidation: false,
+        maxEstimatedMonthlySavings: 0, observedCost: 500, normalizedMonthlyCost: 500,
+      },
+    });
+
+    const report = evaluateRecommendationDrafts([unsupported], snapshot, undefined, undefined, undefined, readinessReport);
+
+    expect(report.checks.find((check) => check.name === 'savingsNarrativeCap')?.passed).toBe(false);
+  });
+
+  test('rejects unverified potential alone when deterministic candidate cap is zero', () => {
+    const readinessReport = {
+      candidates: [{
+        id: 'usage-1', readiness: 'GENERATABLE', cloudAccountId: 'acc-prod-aws', provider: 'AWS',
+        serviceName: 'Amazon EC2', opportunityType: 'USAGE_OPTIMIZATION', evidenceLevelAllowed: 'COST_AND_USAGE',
+        requiresTechnicalValidation: false, observedCost: 500, maxEstimatedMonthlySavings: 0, currency: 'USD',
+        sourceFacts: ['Consumo y costo FOCUS.'], costEvidenceRefs: ['cost_metrics:aggregate:usage'],
+        technicalEvidenceRefs: [], reasons: [], forbiddenClaims: [],
+      }], blocked: [], deferred: [], summary: 'test',
+    } as unknown as Parameters<typeof evaluateRecommendationDrafts>[5];
+
+    const report = evaluateRecommendationDrafts([draft({
+      estimatedMonthlySavings: undefined,
+      evidence: { candidateId: 'usage-1', maxEstimatedMonthlySavings: 0, potentialMonthlySavings: 10 },
+    })], snapshot, undefined, undefined, undefined, readinessReport);
+
     expect(report.checks.find((check) => check.name === 'candidateSavingsCap')?.passed).toBe(false);
   });
 });

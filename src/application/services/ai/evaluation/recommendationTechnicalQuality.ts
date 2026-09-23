@@ -57,12 +57,11 @@ export function matchesCanonicalTechnicalEvidence(
     metric.coverageDays === readNumericEvidence(evidence, 'technicalCoverageDays') &&
     metric.latestSampledAt === readStringEvidence(evidence, 'latestTechnicalSampleAt')
   ));
-  const configuredCap = readNumericEvidence(evidence, 'maxEstimatedMonthlySavings');
+  const configuredCap = readOptionalNumericEvidence(evidence, 'maxEstimatedMonthlySavings');
   const savingsWithinEvidence = draft.estimatedMonthlySavings === undefined
     ? true
-    : configuredCap > 0
-      ? draft.estimatedMonthlySavings <= configuredCap + 0.01
-      : resource.cost === undefined || draft.estimatedMonthlySavings <= resource.cost.totalCost * resource.ruleEvaluation.maxTechnicalSavingsRate + 0.01;
+    : configuredCap !== undefined && draft.estimatedMonthlySavings >= 0
+      && draft.estimatedMonthlySavings <= configuredCap + 0.01;
   const allowedPercentages = referencedMetrics.flatMap((metric) => [
     metric.min, metric.max, metric.avg, metric.p50, metric.p95, metric.p99, metric.latest,
     metric.highUtilizationRatio * 100,
@@ -83,6 +82,11 @@ function readEvidenceRefs(evidence: Record<string, unknown>): readonly string[] 
 function readNumericEvidence(evidence: Record<string, unknown>, field: string): number {
   const value = evidence[field];
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function readOptionalNumericEvidence(evidence: Record<string, unknown>, field: string): number | undefined {
+  const value = evidence[field];
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 function readStringEvidence(evidence: Record<string, unknown>, field: string): string | undefined {

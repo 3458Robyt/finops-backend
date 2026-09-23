@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest';
 
 import type { RecommendationEvidenceSnapshot } from './RecommendationEvidenceSnapshot.js';
 import type { RecommendationReadinessReport } from './RecommendationReadinessGate.js';
-import { normalizeRecommendationDrafts } from './recommendationDraftNormalizer.js';
+import { dropNonActionableFinancialDrafts, normalizeRecommendationDrafts } from './recommendationDraftNormalizer.js';
 
 describe('normalizeRecommendationDrafts', () => {
   test('converts technical capacity language into a manual review before the auditor', () => {
@@ -80,6 +80,24 @@ describe('normalizeRecommendationDrafts', () => {
       requiresTechnicalValidation: false,
     });
     expect(result[0]?.estimatedMonthlySavings).toBeUndefined();
+  });
+
+  test('drops unquantified service financial reviews when their deterministic savings cap is zero', () => {
+    const readiness = {
+      summary: 'fixture', blocked: [], deferred: [], candidates: [{
+        id: 'service-1', readiness: 'GENERATABLE', cloudAccountId: 'account-1', provider: 'OCI',
+        serviceName: 'Object Storage', opportunityType: 'SERVICE_COST_REVIEW', evidenceLevelAllowed: 'COST_ONLY',
+        requiresTechnicalValidation: false, observedCost: 100, reviewScope: 'FINANCIAL', maxEstimatedMonthlySavings: 0,
+        currency: 'USD', sourceFacts: [], costEvidenceRefs: [], technicalEvidenceRefs: [], reasons: [], forbiddenClaims: [],
+      }],
+    } as unknown as RecommendationReadinessReport;
+    const normalized = normalizeRecommendationDrafts([{
+      cloudAccountId: 'account-1', type: 'SERVICE_COST_REVIEW', severity: 'LOW', title: 'Revisar costo',
+      description: 'Revisar el costo del servicio.', estimatedMonthlySavings: 0, currency: 'USD',
+      evidence: { candidateId: 'service-1' },
+    }], readiness, undefined, undefined, 30);
+
+    expect(dropNonActionableFinancialDrafts(normalized, readiness)).toHaveLength(0);
   });
 
   test('keeps a resource without technical evidence as an explicit validation-only opportunity', () => {

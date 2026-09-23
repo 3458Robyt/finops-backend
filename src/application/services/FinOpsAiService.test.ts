@@ -349,7 +349,7 @@ describe('FinOpsAiService', () => {
           severity: 'HIGH',
           title: 'Reducir EC2 sobredimensionado',
           description: 'EC2 domina el costo del periodo; revisar instancias con baja utilizacion.',
-          estimatedMonthlySavings: 18.25,
+          estimatedMonthlySavings: 0,
           currency: 'USD',
           evidence: {
             serviceName: 'Amazon Elastic Compute Cloud',
@@ -408,20 +408,20 @@ describe('FinOpsAiService', () => {
     expect(gateway.requests[1]?.messages[0]?.content).toContain('agente auditor');
   });
 
-  test('persists each approved recommendation with its candidate audit in a partial batch', async () => {
+  test('rejects cost-only drafts for candidates blocked without a savings basis', async () => {
     const gateway = new FakeAiGateway([
       JSON.stringify({ recommendations: [
         {
           cloudAccountId: 'account-focus-aws-prod', type: 'USAGE_OPTIMIZATION', severity: 'MEDIUM',
           title: 'Revisar el consumo facturado de EC2',
           description: 'Validar las horas consumidas y su costo unitario antes de optimizar.',
-          estimatedMonthlySavings: 6, currency: 'USD',
+          estimatedMonthlySavings: 0, currency: 'USD',
           evidence: { candidateId: 'usage-1', evidenceLevel: 'COST_AND_USAGE', sourceFacts: [], assumptions: [], confidence: 0.8 },
         },
         {
           cloudAccountId: 'account-focus-aws-prod', type: 'SERVICE_COST_REVIEW', severity: 'LOW',
           title: 'Revisar el costo de EC2', description: 'Revisar el costo facturado del servicio.',
-          estimatedMonthlySavings: 9, currency: 'USD',
+          estimatedMonthlySavings: 0, currency: 'USD',
           evidence: { candidateId: 'service-1', evidenceLevel: 'COST_ONLY', sourceFacts: [], assumptions: [], confidence: 0.7 },
         },
       ] }),
@@ -436,13 +436,11 @@ describe('FinOpsAiService', () => {
     const recommendations = new FakeRecommendationRepository();
     const service = new FinOpsAiService(new FakeCostAnalyticsRepository(), recommendations, gateway);
 
-    const response = await service.generateRecommendations({ tenantId: 'tenant-1', persist: true });
+    await expect(service.generateRecommendations({ tenantId: 'tenant-1', persist: true }))
+      .rejects.toMatchObject({ code: 'AI_AUDIT_REJECTED' });
 
-    expect(response.recommendations).toHaveLength(1);
-    expect(recommendations.created[0]?.evidence).toMatchObject({
-      candidateId: 'usage-1',
-      aiAudit: { verdict: 'APPROVED', score: 93 },
-    });
+    expect(recommendations.created).toHaveLength(0);
+    expect(gateway.requests).toHaveLength(1);
   });
 
   test('uses approved learning context when generating recommendations', async () => {
@@ -454,7 +452,7 @@ describe('FinOpsAiService', () => {
           severity: 'HIGH',
           title: 'Reducir EC2 con evidencia de utilizacion',
           description: 'Validar metricas tecnicas antes del rightsizing de EC2.',
-          estimatedMonthlySavings: 18.25,
+          estimatedMonthlySavings: 0,
           currency: 'USD',
           evidence: {
             serviceName: 'Amazon Elastic Compute Cloud',
@@ -513,7 +511,7 @@ describe('FinOpsAiService', () => {
           severity: 'MEDIUM',
           title: 'Reducir capacidad de la instancia',
           description: 'La instancia presenta CPU y memoria bajas con cobertura técnica suficiente.',
-          estimatedMonthlySavings: 3.7,
+          estimatedMonthlySavings: 0,
           currency: 'USD',
           evidence: {
             candidateId: 'resource-1',
@@ -632,7 +630,7 @@ describe('FinOpsAiService', () => {
             severity: 'HIGH',
             title: 'Reducir EC2 sobredimensionado',
             description: 'EC2 domina el costo del periodo; revisar instancias con baja utilizacion.',
-            estimatedMonthlySavings: 18.25,
+            estimatedMonthlySavings: 0,
             currency: 'USD',
             evidence: {
               serviceName: 'Amazon Elastic Compute Cloud',
@@ -796,7 +794,7 @@ describe('FinOpsAiService', () => {
             severity: 'HIGH',
             title: 'Reducir EC2',
             description: 'Revisar EC2.',
-            estimatedMonthlySavings: 18.25,
+            estimatedMonthlySavings: 0,
             currency: 'USD',
             evidence: {
               serviceName: 'Amazon Elastic Compute Cloud',
@@ -826,7 +824,7 @@ describe('FinOpsAiService', () => {
             severity: 'HIGH',
             title: 'Reducir EC2 con validacion previa',
             description: 'Revisar utilizacion antes del cambio y documentar rollback.',
-            estimatedMonthlySavings: 18.25,
+            estimatedMonthlySavings: 0,
             currency: 'USD',
             evidence: {
               serviceName: 'Amazon Elastic Compute Cloud',

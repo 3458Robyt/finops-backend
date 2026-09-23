@@ -155,10 +155,20 @@ export function evaluateRecommendationDrafts(
   checks.push(buildAllPass(
     'candidateSavingsCap',
     drafts,
-    (draft) => isWithinCandidateSavingsCap(draft),
+    (draft) => isWithinCandidateSavingsCap(draft, readinessReport),
     'Los ahorros no superan el límite determinista del candidato.',
     'Hay un ahorro estimado superior al máximo calculado para su candidato.',
   ));
+
+  if (readinessReport !== undefined) {
+    checks.push(buildAllPass(
+      'savingsNarrativeCap',
+      drafts,
+      (draft) => hasNoUnpricedSavingsClaim(draft, readinessReport),
+      'El texto no cuantifica ahorros por encima de la evidencia calculada.',
+      'El texto afirma un importe de ahorro sin un cálculo determinístico autorizado.',
+    ));
+  }
 
   checks.push(buildAllPass(
     'spanishText',
@@ -315,18 +325,43 @@ function readBlockers(draft: AiRecommendationDraft): readonly string[] {
   return raw.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
 }
 
-function isWithinCandidateSavingsCap(draft: AiRecommendationDraft): boolean {
-  if (draft.estimatedMonthlySavings === undefined || !isRecord(draft.evidence)) {
-    return true;
+function isWithinCandidateSavingsCap(
+  draft: AiRecommendationDraft,
+  readinessReport: RecommendationReadinessReport | undefined,
+): boolean {
+  const evidence = isRecord(draft.evidence) ? draft.evidence : undefined;
+  const potential = readOptionalNumericEvidence(evidence ?? {}, 'potentialMonthlySavings');
+  const amounts = [draft.estimatedMonthlySavings, potential].filter((amount): amount is number => amount !== undefined);
+  if (amounts.length === 0) return true;
+
+  if (readinessReport === undefined) {
+    const configuredCap = readOptionalNumericEvidence(evidence ?? {}, 'maxEstimatedMonthlySavings');
+    return configuredCap === undefined
+      || amounts.every((amount) => amount >= 0 && amount <= configuredCap + 0.01);
   }
 
-  const configuredCap = draft.evidence['maxEstimatedMonthlySavings'];
-  if (typeof configuredCap !== 'number' || !Number.isFinite(configuredCap)) {
-    // Golden fixtures and legacy callers may not contain the normalized cap.
-    return true;
-  }
+  if (evidence === undefined) return false;
+  const candidateId = readStringEvidence(evidence, 'candidateId');
+  const candidate = readinessReport.candidates.find((item) => item.id === candidateId);
+  return candidate !== undefined && amounts.every((amount) => (
+    amount >= 0 && amount <= candidate.maxEstimatedMonthlySavings + 0.01
+  ));
+}
 
-  return draft.estimatedMonthlySavings >= 0 && draft.estimatedMonthlySavings <= configuredCap + 0.01;
+function hasNoUnpricedSavingsClaim(
+  draft: AiRecommendationDraft,
+  readinessReport: RecommendationReadinessReport,
+): boolean {
+  if (!isRecord(draft.evidence)) return false;
+  const candidateId = readStringEvidence(draft.evidence, 'candidateId');
+  const candidate = readinessReport.candidates.find((item) => item.id === candidateId);
+  if (candidate === undefined || candidate.maxEstimatedMonthlySavings > 0) return true;
+
+  const currency = String.raw`(?:COP|USD|EUR|GBP|MXN|BRL|\$)`;
+  const money = String.raw`(?:${currency}\s*[\d][\d.,]*|[\d][\d.,]*\s*${currency})`;
+  const savingAction = String.raw`(?:ahorr\w*|reduc\w*|disminu\w*|baj\w*)`;
+  const claim = new RegExp(String.raw`(?:${savingAction}.{0,60}${money}|${money}.{0,60}${savingAction})`, 'i');
+  return !claim.test(`${draft.title} ${draft.description}`);
 }
 
 function readStringEvidence(evidence: Record<string, unknown>, field: string): string | undefined {

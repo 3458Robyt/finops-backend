@@ -61,6 +61,14 @@ describe('FinOps AI prompt boundaries', () => {
     expect(prompt).toContain('resourceLinkReason=INVENTORY_RESOURCE_NOT_FOUND puede ser el estado honesto de trazabilidad');
   });
 
+  test('forbids savings claims when no deterministic priced alternative exists', () => {
+    const prompt = buildAuditSystemPrompt();
+    const generationPrompt = buildRecommendationSystemPrompt(snapshot, { memoryIds: [], caseIds: [], summary: '' });
+
+    expect(prompt).toContain('maxEstimatedMonthlySavings=0');
+    expect(generationPrompt).toContain('subutilización no prueban por sí solos un importe ahorrable');
+  });
+
   test('keeps potential savings on manual capacity reviews explicitly unverified', () => {
     const prompt = buildAuditSystemPrompt();
 

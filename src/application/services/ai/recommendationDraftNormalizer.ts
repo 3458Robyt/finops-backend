@@ -194,12 +194,12 @@ export function dropNonActionableFinancialDrafts(
     const evidence = isRecord(draft.evidence) ? draft.evidence : {};
     const candidateId = typeof evidence['candidateId'] === 'string' ? evidence['candidateId'] : undefined;
     const candidate = candidateId === undefined ? undefined : candidatesById.get(candidateId);
-    const isFinancialCandidate = candidate !== undefined && candidate.resourceId === undefined;
-    const hasPositivePotential = (candidate?.maxEstimatedMonthlySavings ?? 0) > 0;
+    const isUnscopedFinancialReview = candidate?.reviewScope === 'FINANCIAL';
+    const hasQuantifiableSavings = (candidate?.maxEstimatedMonthlySavings ?? 0) > 0;
     const potential = typeof evidence['potentialMonthlySavings'] === 'number'
       ? evidence['potentialMonthlySavings']
       : draft.estimatedMonthlySavings;
-    return !(isFinancialCandidate && hasPositivePotential && (potential ?? 0) <= 0);
+    return !(isUnscopedFinancialReview && (!hasQuantifiableSavings || (potential ?? 0) <= 0));
   });
 }
 

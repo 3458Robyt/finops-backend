@@ -45,9 +45,6 @@ export interface RecommendationReadinessReport {
 }
 
 const maxCandidates = 6;
-const costSavingsRate = 0.18;
-const usageSavingsRate = 0.12;
-const technicalSavingsRate = 0.25;
 const standardMonthDays = 30;
 
 export function buildRecommendationReadinessReport(input: {
@@ -121,15 +118,17 @@ function buildUsageCandidates(
     const account = pickAccountForProvider(snapshot, accountById, usage.provider);
     return {
       id: `usage-${index + 1}`,
-      readiness: 'GENERATABLE',
+      readiness: 'BLOCKED_NO_EVIDENCE',
       cloudAccountId: account.cloudAccountId,
       provider: usage.provider,
       serviceName: usage.serviceName,
       opportunityType: 'USAGE_OPTIMIZATION',
       evidenceLevelAllowed: 'COST_AND_USAGE',
       requiresTechnicalValidation: false,
+      reviewScope: 'FINANCIAL',
       observedCost: usage.totalCost,
-      maxEstimatedMonthlySavings: round(Math.max(normalizeMonthlyAmount(usage.totalCost, snapshot) * usageSavingsRate, 0)),
+      // Cost/quantity evidence identifies spend, not waste or an achievable reduction.
+      maxEstimatedMonthlySavings: 0,
       currency: usage.currency,
       sourceFacts: [
         `Servicio ${usage.serviceName} consumio ${usage.consumedQuantity} ${usage.consumedUnit}.`,
@@ -139,8 +138,8 @@ function buildUsageCandidates(
       ],
       costEvidenceRefs: [costEvidenceRef(snapshot, 'usage', usage.provider, usage.serviceName)],
       technicalEvidenceRefs: [],
-      reasons: ['Existe consumo facturado FOCUS con unidad y costo unitario.'],
-      forbiddenClaims: ['No afirmes CPU, memoria, IOPS, throughput ni utilizacion tecnica.'],
+      reasons: ['El costo y la cantidad facturados describen consumo, pero sin una alternativa tarifada, línea base o regla de desperdicio no demuestran ahorro posible.'],
+      forbiddenClaims: ['No presentes el mayor consumo como desperdicio ni cuantifiques ahorro sin comparar una alternativa verificable.'],
     };
   });
 }
@@ -190,7 +189,6 @@ function buildResourceCandidates(
     const readiness = ambiguous
       ? 'BLOCKED_NO_EVIDENCE'
       : ruleEvaluation?.readiness ?? (hasResourceTechnicalEvidence ? 'GENERATABLE' : 'VALIDATION_ONLY');
-    const maxSavingsRate = ruleEvaluation?.maxTechnicalSavingsRate ?? (hasResourceTechnicalEvidence ? technicalSavingsRate : costSavingsRate);
     const normalizedMonthlyCost = normalizeMonthlyAmount(resource.totalCost, snapshot);
 
     return {
@@ -210,9 +208,8 @@ function buildResourceCandidates(
         readiness === 'GENERATABLE' && hasResourceTechnicalEvidence ? 'COST_USAGE_AND_TECHNICAL' : 'COST_ONLY',
       requiresTechnicalValidation: readiness !== 'GENERATABLE' || hasResourceTechnicalEvidence,
       observedCost: resource.totalCost,
-      maxEstimatedMonthlySavings: round(
-        Math.max(normalizedMonthlyCost * maxSavingsRate, 0),
-      ),
+      // Technical utilization rules identify a review/action class, not the target SKU or its price.
+      maxEstimatedMonthlySavings: 0,
       currency: snapshot.currency,
       sourceFacts: [
         `Recurso ${resource.resourceName ?? resource.resourceId} (${resource.resourceId}) en ${resource.serviceName}.`,
@@ -255,9 +252,8 @@ function buildServiceCandidates(
     const account = pickAccountForProvider(snapshot, accountById, service.provider);
     return {
       id: `service-${index + 1}`,
-      // Un SERVICE_COST_REVIEW es una oportunidad financiera basada en FOCUS;
-      // no debe heredar el estado de validación técnica de los recursos.
-      readiness: service.metricCount > 0 ? 'GENERATABLE' : 'BLOCKED_NO_EVIDENCE',
+      // Service spend alone is descriptive; no savings basis exists without a priced alternative.
+      readiness: 'BLOCKED_NO_EVIDENCE',
       cloudAccountId: account.cloudAccountId,
       provider: service.provider,
       serviceName: service.serviceName,
@@ -266,7 +262,8 @@ function buildServiceCandidates(
       requiresTechnicalValidation: false,
       reviewScope: 'FINANCIAL',
       observedCost: service.totalCost,
-      maxEstimatedMonthlySavings: round(Math.max(normalizeMonthlyAmount(service.totalCost, snapshot) * costSavingsRate, 0)),
+      // A service-level bill has no defensible savings amount without a priced alternative.
+      maxEstimatedMonthlySavings: 0,
       currency: snapshot.currency,
       sourceFacts: [
         `Servicio ${service.serviceName} costo ${service.totalCost} ${snapshot.currency}.`,
@@ -275,8 +272,8 @@ function buildServiceCandidates(
       ],
       costEvidenceRefs: [costEvidenceRef(snapshot, 'service', service.provider, service.serviceName)],
       technicalEvidenceRefs: [],
-      reasons: ['Costo agregado por servicio disponible; requiere revisión financiera antes de cualquier decisión operativa.'],
-      forbiddenClaims: ['No afirmes metricas tecnicas ni ahorro garantizado.'],
+      reasons: ['El costo agregado identifica gasto, pero no demuestra desperdicio ni ahorro sin una oportunidad de precio/capacidad calculable.'],
+      forbiddenClaims: ['No presentes concentración de costo como ahorro ni propongas una reducción sin evidencia calculada.'],
     };
   });
 }

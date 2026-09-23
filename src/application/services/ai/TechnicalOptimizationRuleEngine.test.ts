@@ -45,6 +45,7 @@ describe('TechnicalOptimizationRuleEngine', () => {
     expect(result?.readiness).toBe('GENERATABLE');
     expect(result?.recommendedActionType).toBe('RIGHTSIZING');
     expect(result?.evidenceStrength).toBe('HIGH');
+    expect(result?.maxTechnicalSavingsRate).toBe(0);
     expect(result?.ruleMatches).toEqual(
       expect.arrayContaining(['CPU_STRONG_UNDERUTILIZATION', 'MEMORY_LOW_UTILIZATION']),
     );

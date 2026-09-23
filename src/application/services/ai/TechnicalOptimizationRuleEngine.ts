@@ -32,6 +32,7 @@ export interface TechnicalResourceRuleEvaluation {
   readonly sourceFacts: readonly string[];
   readonly technicalEvidenceRefs: readonly string[];
   readonly metricSummary: readonly TechnicalMetricRuleSummary[];
+  /** Always zero until a deterministic estimator prices a concrete target configuration. */
   readonly maxTechnicalSavingsRate: number;
   readonly ruleVersion?: string;
   readonly appliedThresholds?: Readonly<{
@@ -198,7 +199,9 @@ function evaluateResource(
     sourceFacts,
     technicalEvidenceRefs: summaries.map(technicalMetricEvidenceRef),
     metricSummary: summaries.map(toMetricRuleSummary),
-    maxTechnicalSavingsRate: idleCandidate ? 0.4 : strongRightsizing ? 0.25 : moderateRightsizing ? 0.15 : 0,
+    // Utilization rules do not know the target configuration or its price.
+    // Keep the legacy field at zero until a deterministic price-difference estimator exists.
+    maxTechnicalSavingsRate: 0,
     ruleVersion: ruleConfig.version,
     appliedThresholds: {
       highUtilizationPercent: ruleConfig.highUtilizationPercent,

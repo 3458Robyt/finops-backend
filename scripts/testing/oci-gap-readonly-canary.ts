@@ -31,6 +31,10 @@ interface Arguments {
 }
 
 const args = readArguments(process.argv.slice(2));
+const databaseHost = new URL(process.env['DATABASE_URL'] ?? 'http://invalid').hostname.toLowerCase();
+if (!['localhost', '127.0.0.1', '[::1]'].includes(databaseHost)) {
+  throw new Error('El canary OCI de brechas solo permite una DATABASE_URL local; se rechazó el acceso a una BD remota.');
+}
 const prisma = getPrismaClient();
 
 try {
@@ -92,7 +96,9 @@ try {
 }
 
 function buildReadOnlyJob(source: CloudIngestionJobContext, input: Arguments): CloudIngestionJobContext {
-  const definitions = readOciMetricDefinitions(source);
+  const requestContext = { ...(source.requestContext ?? {}) };
+  delete requestContext['metricFilter'];
+  const definitions = readOciMetricDefinitions({ ...source, requestContext });
   const matching = definitions.find((definition) => (
     (input.metricName === undefined || definition.metricName === input.metricName)
       && (input.namespace === undefined || definition.namespace === input.namespace)
@@ -120,7 +126,7 @@ function buildReadOnlyJob(source: CloudIngestionJobContext, input: Arguments): C
     targetStart: input.start,
     targetEnd: input.end,
     requestContext: {
-      ...(source.requestContext ?? {}),
+      ...requestContext,
       interval: input.interval,
       ...(input.regionId === undefined ? {} : { regionId: input.regionId }),
     },

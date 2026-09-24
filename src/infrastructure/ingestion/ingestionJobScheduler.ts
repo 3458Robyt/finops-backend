@@ -2,6 +2,7 @@ import type { IngestionJobStatus, IngestionSourceType } from '../../domain/model
 import { buildIngestionConfigurationHash } from './ingestionConfigurationHash.js';
 import { buildMissingTechnicalMetricJobs, resolveTechnicalMetricFloor } from './ingestionMetricGapPlanner.js';
 import { getCooldownMs, getWindowMs } from './ingestionScheduleWindows.js';
+import { DEFAULT_INGESTION_VALIDATION_MAX_AGE_MINUTES, isIngestionValidationFresh } from './ingestionValidationFreshness.js';
 
 type CredentialPurpose =
   | 'TEMPORARY_ADMIN'
@@ -136,9 +137,8 @@ function evaluateSource(
     return { kind: 'skip', reason: 'La conexión debe validarse después de su última modificación.' };
   }
 
-  const validationMaxAgeMinutes = options.validationMaxAgeMinutes ?? 24 * 60;
-  const validationAgeMs = options.now.getTime() - connection.lastValidatedAt.getTime();
-  if (!Number.isFinite(validationAgeMs) || validationAgeMs > validationMaxAgeMinutes * 60 * 1000) {
+  const validationMaxAgeMinutes = options.validationMaxAgeMinutes ?? DEFAULT_INGESTION_VALIDATION_MAX_AGE_MINUTES;
+  if (!isIngestionValidationFresh(connection.lastValidatedAt, options.now, validationMaxAgeMinutes)) {
     return { kind: 'skip', reason: 'La validación de capacidades expiró; ejecuta una nueva validación antes de ingerir.' };
   }
 

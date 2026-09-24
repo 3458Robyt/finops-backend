@@ -18,6 +18,7 @@ import {
   toIngestionJobHistoryItem,
 } from './mappers/cloudConnectionMappers.js';
 import { buildIngestionReadinessSummary } from '../ingestion/ingestionReadiness.js';
+import { DEFAULT_INGESTION_VALIDATION_MAX_AGE_MINUTES } from '../ingestion/ingestionValidationFreshness.js';
 import { buildIngestionOperationalReadiness } from '../ingestion/ingestionOperationalReadiness.js';
 import { PrismaMetricCoverageReadRepository } from './PrismaMetricCoverageReadRepository.js';
 
@@ -25,7 +26,10 @@ import { PrismaMetricCoverageReadRepository } from './PrismaMetricCoverageReadRe
 export class PrismaCloudIngestionReadRepository {
   private readonly metricCoverageRepository: PrismaMetricCoverageReadRepository;
 
-  constructor(private readonly prisma: PrismaClient) {
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly validationMaxAgeMinutes = DEFAULT_INGESTION_VALIDATION_MAX_AGE_MINUTES,
+  ) {
     this.metricCoverageRepository = new PrismaMetricCoverageReadRepository(prisma);
   }
 
@@ -261,6 +265,7 @@ export class PrismaCloudIngestionReadRepository {
       : [];
     return buildIngestionReadinessSummary({
       generatedAt: new Date(),
+      validationMaxAgeMinutes: this.validationMaxAgeMinutes,
       missingProviderMessageSuffix: ' for this tenant',
       globalIssues,
       operational,

@@ -5,6 +5,7 @@ import type {
   IngestionReadinessSummary,
 } from '../../domain/interfaces/ICloudConnectionRepository.js';
 import type { IngestionSourceType, ProviderCode } from '../../domain/models/CloudConnection.js';
+import { DEFAULT_INGESTION_VALIDATION_MAX_AGE_MINUTES, isIngestionValidationFresh } from './ingestionValidationFreshness.js';
 
 export interface IngestionReadinessConnectionInput {
   readonly id: string;
@@ -41,6 +42,7 @@ export interface IngestionReadinessJobInput {
 export interface BuildIngestionReadinessInput {
   readonly generatedAt: Date;
   readonly connections: readonly IngestionReadinessConnectionInput[];
+  readonly validationMaxAgeMinutes?: number;
   readonly globalIssues?: readonly IngestionReadinessIssue[];
   readonly missingProviderMessageSuffix?: string;
   readonly operational?: IngestionOperationalReadiness;
@@ -59,6 +61,11 @@ export function buildIngestionReadinessSummary(
       connection.configuredMetricDefinitionCount,
     );
     const capabilities = readCapabilityValidation(metadata);
+    const validationIsFresh = isIngestionValidationFresh(
+      connection.lastValidatedAt,
+      input.generatedAt,
+      input.validationMaxAgeMinutes ?? DEFAULT_INGESTION_VALIDATION_MAX_AGE_MINUTES,
+    );
 
     issues.push(...assessReadinessConnection({
       connectionId: connection.id,
@@ -75,6 +82,17 @@ export function buildIngestionReadinessSummary(
         message: 'La conexión todavía no tiene una validación guardada.',
         affectedData: ['Activación inicial'],
         action: 'Ejecuta “Validar acceso” antes de activar la sincronización.',
+        actionCode: 'VALIDATE_ACCESS',
+      });
+    } else if (!validationIsFresh) {
+      issues.push({
+        provider: connection.providerCode,
+        connectionId: connection.id,
+        severity: 'BLOCKER',
+        capability: 'CREDENTIALS',
+        message: 'La validación de capacidades expiró; vuelve a validar antes de ingerir.',
+        affectedData: ['Inventario', 'Costos', 'Métricas'],
+        action: 'Ejecuta “Validar acceso” para renovar la validación antes de activar la ingesta.',
         actionCode: 'VALIDATE_ACCESS',
       });
     }
@@ -120,7 +138,7 @@ export function buildIngestionReadinessSummary(
       ...(connection.lastValidationAttemptAt !== null && connection.lastValidationAttemptAt !== undefined
         ? { lastValidationAttemptAt: connection.lastValidationAttemptAt }
         : {}),
-      onboardingStatus: resolveOnboardingStatus(connection, credentialPurposes, capabilities),
+      onboardingStatus: resolveOnboardingStatus(connection, credentialPurposes, capabilities, validationIsFresh),
       credentialPurposes,
       ...(authentication === undefined ? {} : { authentication }),
       capabilities,
@@ -315,10 +333,11 @@ function resolveOnboardingStatus(
   connection: IngestionReadinessConnectionInput,
   credentialPurposes: readonly string[],
   capabilities: IngestionReadinessConnectionSummary['capabilities'],
+  validationIsFresh: boolean,
 ): IngestionReadinessConnectionSummary['onboardingStatus'] {
   if (credentialPurposes.length === 0) return 'NO_CREDENTIAL';
   if (connection.recentJobs.some((job) => job.status === 'PENDING' || job.status === 'RUNNING')) return 'SYNCING';
-  if (connection.lastValidatedAt === null || connection.lastValidatedAt === undefined) return 'REQUIRES_VALIDATION';
+  if (!validationIsFresh) return 'REQUIRES_VALIDATION';
 
   const available = capabilities.filter((item) => item.status === 'AVAILABLE').length;
   const failed = capabilities.some((item) => item.status === 'DENIED' || item.status === 'ERROR');

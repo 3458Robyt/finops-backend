@@ -7,9 +7,11 @@ import {
 } from '../src/infrastructure/ingestion/ingestionReadiness.js';
 import type { IngestionReadinessIssue } from '../src/domain/interfaces/ICloudConnectionRepository.js';
 import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
+import { loadRuntimeConfig } from '../src/infrastructure/config/runtimeConfigReader.js';
 
 async function main(): Promise<void> {
-  const prisma = getPrismaClient();
+  const config = loadRuntimeConfig();
+  const prisma = getPrismaClient(config.database);
   const connections = await runWithDatabaseContext(
     { workerId: 'ingestion-readiness-cli', role: 'MASTER_ADMIN' },
     () => prisma.cloudConnection.findMany({
@@ -62,6 +64,7 @@ async function main(): Promise<void> {
   const globalIssues = buildGlobalIssues();
   const readiness = buildIngestionReadinessSummary({
     generatedAt: new Date(),
+    validationMaxAgeMinutes: config.schedulers.ingestion.validationMaxAgeMinutes,
     globalIssues,
     connections: connections.map((connection) => ({
       id: connection.id,

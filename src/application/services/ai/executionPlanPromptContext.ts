@@ -2,7 +2,7 @@ import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnal
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
 
 const recommendationEvidenceFields = [
-  'externalResourceId', 'evidenceLevel', 'evidenceStrength', 'requiresTechnicalValidation',
+  'externalResourceId', 'cloudResourceId', 'evidenceLevel', 'evidenceStrength', 'requiresTechnicalValidation',
   'technicalEvidenceRefs', 'technicalSampleCount', 'technicalCoverageDays', 'latestTechnicalSampleAt',
   'readiness', 'normalizedActionType', 'operationalAuthorization', 'requiresManualValidation',
   'reviewScope', 'financialReviewOnly', 'technicalReviewOnly', 'blockers', 'ruleMatches',
@@ -42,7 +42,6 @@ export function compactExecutionPlanContext(
       ...(recommendation.cloudResourceId === undefined ? {} : { cloudResourceId: recommendation.cloudResourceId }),
       ...(recommendation.resourceLinkReason === undefined ? {} : { resourceLinkReason: recommendation.resourceLinkReason }),
       type: recommendation.type,
-      status: recommendation.status,
       severity: recommendation.severity,
       title: redactMonetaryMentions(recommendation.title),
       description: redactMonetaryMentions(recommendation.description),

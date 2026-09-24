@@ -106,6 +106,7 @@ export function buildRecommendationSystemPrompt(
 return [
     'Eres un motor IA de optimización FinOps.',
     'Analiza el contexto FOCUS proporcionado y produce recomendaciones como JSON estricto, solo desde candidatos permitidos.',
+    'La abstención es una respuesta válida: si ningún candidato GENERATABLE sustenta una oportunidad segura y accionable dentro del límite determinístico, devuelve exactamente {"recommendations":[]} y no inventes una recomendación para completar el máximo.',
     'Todas las recomendaciones deben estar redactadas en español: title, description y cualquier texto dentro de evidence.',
     'Devuelve solo esta forma: {"recommendations":[{"cloudAccountId":"...","cloudResourceId":"...","resourceLinkReason":"...","type":"...","severity":"LOW|MEDIUM|HIGH|CRITICAL","title":"...","description":"...","estimatedMonthlySavings":0,"currency":"USD","evidence":{"candidateId":"...","evidenceLevel":"COST_ONLY|COST_AND_USAGE|COST_USAGE_AND_TECHNICAL","evidenceStrength":"LOW|MEDIUM|HIGH","sourceFacts":["..."],"costEvidenceRefs":["..."],"technicalEvidenceRefs":["..."],"requiresTechnicalValidation":true,"confidence":0.0,"assumptions":["..."],"financialReviewOnly":false,"reviewScope":"FINANCIAL|TECHNICAL"}}]}',
     'Usa solo cloudAccountId presentes en accounts. No inventes recursos ni proveedores.',
@@ -173,22 +174,31 @@ export function buildExecutionPlanSystemPrompt(
   snapshot: CostAnalyticsSnapshot,
   recommendation: FinOpsRecommendation,
 ): string {
+  const scope: Record<string, string> = { cloudAccountId: recommendation.cloudAccountId };
+  const cloudResourceId = readRecordString(recommendation, 'cloudResourceId')
+    ?? readRecordString(recommendation.evidence, 'cloudResourceId');
+  const externalResourceId = readRecordString(recommendation.evidence, 'externalResourceId');
+  if (cloudResourceId !== undefined) scope['cloudResourceId'] = cloudResourceId;
+  if (externalResourceId !== undefined) scope['externalResourceId'] = externalResourceId;
+
   return [
     'Eres un arquitecto FinOps senior para FinOps Demo.',
     'Debes generar un plan de ejecucion manual, gobernado y en español.',
     'El plan es una propuesta/checklist y nunca es una autorizacion ni una ejecucion.',
     'No afirmes que el sistema ejecutara cambios automaticamente en AWS, OCI u otro proveedor.',
     'No escribas instrucciones no condicionadas como "ejecutar manualmente el cambio autorizado", "aplicar el cambio" o "redimensionar la instancia". Si una operacion futura es pertinente, describela como una posibilidad posterior condicionada a una aprobacion externa explicita del responsable y a una validacion previa.',
+    'En cada paso operativo, coloca la condicion en la misma frase y antes de la accion: "Solo despues de la aprobacion externa explicita del responsable, la persona autorizada podra ejecutar manualmente el cambio". No uses solo "autorizado"; la validacion tecnica no reemplaza la aprobacion humana.',
     'Empieza por comprobaciones read-only, documenta la aprobacion externa, conserva un snapshot de la configuracion actual y define rollback antes de describir una operacion potencial.',
     'No devuelvas tool_calls, function_calls, SQL, shell, scripts ni codigo ejecutable; el plan solo describe pasos manuales para una persona autorizada.',
     'Usa solo la recomendacion y la evidencia tecnica/operativa proporcionadas. El periodo indica cobertura, no importes; no inventes recursos, cuentas, metricas tecnicas ni proveedores.',
+    'En scope copia exactamente los identificadores del objeto de alcance que aparece en el formato JSON. Incluye cloudResourceId y externalResourceId cuando estén presentes; nunca los omitas, sustituyas ni inventes. El estado de la recomendación y los estados internos del ahorro son gestionados por el servidor: no los repitas en el texto narrativo.',
     'El contexto autorizado de este plan omite deliberadamente importes, monedas y agregados financieros para evitar mezclar hechos de distintos alcances. No infieras ni inventes ahorros; el servidor calcula y reemplaza estimatedSavings usando la evidencia deterministica de la recomendacion.',
-    'POTENTIAL_NOT_VERIFIED describe el estado del ahorro estimado, no el estado de la recomendacion. Conserva el estado de gestion original de la recomendacion (por ejemplo PENDING).',
     untrustedContextInstruction,
-    'Si la recomendacion solo tiene evidencia FOCUS, indica que CPU, memoria, IOPS o throughput deben validarse fuera de FOCUS antes de ejecutar cambios tecnicos.',
+    'Usa deterministicRules.metricSummary y technicalEvidenceRefs como lista de métricas realmente aportadas. Prioriza solo métricas presentes y pertinentes para la acción. No enumeres todas las familias posibles ni presentes una métrica ausente como si ya estuviera medida; si otra métrica es necesaria por seguridad, indícala como no disponible en esta evidencia y solicita que la persona la compruebe en la consola del proveedor antes de cualquier cambio.',
+    'Si solo hay evidencia FOCUS/de costos, aclara que no demuestra CPU, memoria, red, disco ni utilización técnica; solicita validar las métricas que sean pertinentes antes de cualquier operación, sin afirmar valores ni disponibilidad que no estén en la evidencia.',
     'No escribas montos monetarios, monedas ni cifras de ahorro en el texto narrativo. Para estimatedSavings devuelve solo un placeholder con amount=0, currency="SERVER_NORMALIZED", status="POTENTIAL_NOT_VERIFIED" y una nota neutral; el servidor reemplazará todo ese campo antes de validarlo o persistirlo.',
     'Devuelve solo JSON estricto con esta forma:',
-    '{"summary":"...","scope":{"cloudAccountId":"...","service":"..."},"prerequisites":["..."],"steps":["..."],"validation":["..."],"risks":["..."],"rollback":["..."],"successCriteria":["..."],"estimatedSavings":{"amount":0,"currency":"SERVER_NORMALIZED","status":"POTENTIAL_NOT_VERIFIED","note":"El servidor normaliza este campo."}}',
+    `{"summary":"...","scope":${JSON.stringify(scope)},"prerequisites":["..."],"steps":["..."],"validation":["..."],"risks":["..."],"rollback":["..."],"successCriteria":["..."],"estimatedSavings":{"amount":0,"currency":"SERVER_NORMALIZED","status":"POTENTIAL_NOT_VERIFIED","note":"El servidor normaliza este campo."}}`,
     'Contexto acotado a periodo, alcance y evidencia técnica/operativa no financiera:',
     JSON.stringify(compactExecutionPlanContext(snapshot, recommendation), null, 2),
   ].join('\n');
@@ -233,13 +243,13 @@ export function buildAuditSystemPrompt(
       ]
     : [
         'Para un execution_plan, audita el plan y la recomendacion original como artefactos relacionados. El plan no necesita repetir evidence.candidateId, sourceFacts, assumptions ni confidence: usa la evidencia de la Recomendacion original para comprobar la trazabilidad.',
-        'Comprueba que scope.cloudAccountId coincida con la cuenta de la Recomendacion original y que scope.cloudResourceId o scope.externalResourceId, cuando existan, no contradigan el recurso objetivo.',
+        'Comprueba que scope.cloudAccountId coincida exactamente con la cuenta de la Recomendacion original. Si existen cloudResourceId y/o evidence.externalResourceId, exige que el plan copie cada identificador exacto en scope; no basta con que no los contradiga.',
         'Comprueba que prerequisites, steps, validation, risks, rollback y successCriteria existan, sean concretos y describan una operación manual. El plan no autoriza ni ejecuta cambios.',
         'Rechaza cualquier paso que ordene ejecutar, aplicar, cambiar, detener, eliminar o redimensionar un recurso sin una condicion explicita de aprobacion externa; "autorizado" por si solo no demuestra una aprobacion.',
-        'Si la recomendacion requiere validacion tecnica, el plan debe exigir validacion de CPU, memoria, red, disco, disponibilidad u otra métrica pertinente antes de cambiar capacidad; no conviertas FOCUS en una métrica técnica.',
+        'Compara las métricas mencionadas con deterministicRules.metricSummary y technicalEvidenceRefs de la recomendación: prioriza únicamente las métricas presentes y pertinentes. No exijas en bloque CPU, memoria, red, disco y disponibilidad si la evidencia no las contiene. Una métrica necesaria que falte puede indicarse explícitamente como no disponible en el contexto y pendiente de consulta en la consola del proveedor; no se puede describir como medición existente.',
         'estimatedSavings se omite del artefacto que recibes: el servidor lo normaliza y valida con evidencia determinística independiente. No infieras importes, moneda ni ahorros y no solicites cambios en ese campo.',
         'Rechaza montos monetarios en el texto narrativo del plan; las cifras de ahorro no forman parte de tu tarea de auditoría.',
-        'No describas POTENTIAL_NOT_VERIFIED como estado de la recomendacion: es solamente el estado del ahorro estimado.',
+        'Los estados de recomendación y ahorro son metadatos gestionados por el servidor, no los interpretes ni repitas en la narrativa del plan.',
       ];
   const responseShape = artifactType === 'recommendations'
     ? '{"verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":[],"requiredChanges":[],"recommendationIndexes":[0],"repairInstructions":[],"candidateAudits":[{"index":0,"candidateId":"resource-1","verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":[],"requiredChanges":[]}]}'
@@ -266,6 +276,12 @@ export function buildAuditSystemPrompt(
           'Usa APPROVED solo si el plan supera todas las verificaciones y su score es mayor o igual a 80. Si falta información, devuelve NEEDS_REVISION con cambios concretos.',
         ]),
   ].join('\n');
+}
+
+function readRecordString(value: unknown, field: string): string | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const fieldValue = (value as Record<string, unknown>)[field];
+  return typeof fieldValue === 'string' && fieldValue.trim() !== '' ? fieldValue.trim() : undefined;
 }
 
 /**

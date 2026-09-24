@@ -97,3 +97,28 @@ describe('FinOpsArtifactGenerator execution plans', () => {
     ]));
   });
 });
+
+describe('FinOpsArtifactGenerator recommendation abstention', () => {
+  test('does not invoke the auditor for an explicit empty recommendation response', async () => {
+    const generateText = vi.fn().mockResolvedValue('{"recommendations":[]}');
+    const generator = new FinOpsArtifactGenerator(
+      { generateText } as unknown as IAiGateway,
+      { record: vi.fn().mockResolvedValue(undefined) },
+      'generator-model',
+      'auditor-model',
+    );
+
+    const result = await generator.generateAuditedDrafts(
+      'tenant-demo',
+      undefined,
+      snapshot,
+      'prompt de prueba',
+    );
+
+    expect(result.drafts).toEqual([]);
+    expect(result.approvedDrafts).toEqual([]);
+    expect(result.auditReport).toBeUndefined();
+    expect(result.firstRawResponse).toBe('{"recommendations":[]}');
+    expect(generateText).toHaveBeenCalledTimes(1);
+  });
+});

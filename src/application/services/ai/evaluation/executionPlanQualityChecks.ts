@@ -19,7 +19,10 @@ const unconditionedManualOperationPatterns = [
   /\b(?:cambiar|reducir|aumentar|redimensionar|detener|terminar|eliminar)\s+(?:directamente\s+)?(?:la\s+)?(?:capacidad|instancia|recurso|servidor|tama[nñ]o)\b/i,
 ];
 
-const explicitApprovalPattern = /\b(?:si|solo\s+despu[eé]s\s+de|una\s+vez\s+que|previa|bajo)\b[\s\S]{0,90}\b(?:aprobaci[oó]n|autorizaci[oó]n|confirmaci[oó]n)\b/i;
+const explicitApprovalPatterns = [
+  /\b(?:si|siempre\s+que|cuando|solo\s+despu[eé]s\s+de|una\s+vez\s+que|previa|bajo)\b[\s\S]{0,100}\b(?:aprobaci[oó]n|autorizaci[oó]n|confirmaci[oó]n)\b[\s\S]{0,45}\b(?:externa|expl[ií]cita|del\s+responsable|del\s+cliente|de\s+finops)\b/i,
+  /\b(?:si|siempre\s+que|cuando|solo\s+despu[eé]s\s+de|una\s+vez\s+que)\b[\s\S]{0,70}\b(?:responsable|cliente|equipo\s+finops)\b[\s\S]{0,35}\b(?:aprueba|apruebe|autoriza|autorice|confirma|confirme)\b[\s\S]{0,40}\b(?:expl[ií]citamente|externamente|de\s+forma\s+expl[ií]cita)\b/i,
+];
 const explicitNegativeOperationPattern = /\b(?:no|nunca|jam[aá]s)\b[\s\S]{0,35}\b(?:ejecutar|aplicar|realizar|cambiar|redimensionar|detener|eliminar)\b/i;
 const monetaryPrefixPattern = /\b(USD|COP|EUR|GBP|MXN|BRL|CAD|AUD)\s*([0-9][0-9.,]*)/gi;
 const monetarySuffixPattern = /\b([0-9][0-9.,]*)\s*(USD|COP|EUR|GBP|MXN|BRL|CAD|AUD)\b/gi;
@@ -127,22 +130,22 @@ function matchesRecommendationScope(
   if (recommendation === undefined) return true;
 
   const scopeAccountId = readScopeString(scope, 'cloudAccountId');
-  if (scopeAccountId !== undefined && scopeAccountId !== recommendation.cloudAccountId) {
+  if (scopeAccountId !== recommendation.cloudAccountId) {
     return false;
   }
 
+  const recommendationEvidence = isRecord(recommendation.evidence) ? recommendation.evidence : {};
+  const recommendationCloudResourceId = recommendation.cloudResourceId
+    ?? readStringEvidence(recommendationEvidence, 'cloudResourceId');
   const scopeCloudResourceId = readScopeString(scope, 'cloudResourceId');
-  if (scopeCloudResourceId !== undefined && scopeCloudResourceId !== recommendation.cloudResourceId) {
+  if (scopeCloudResourceId !== recommendationCloudResourceId) {
     return false;
   }
 
   const scopeExternalResourceId = readScopeString(scope, 'externalResourceId')
     ?? readScopeString(scope, 'resourceId');
-  const recommendationExternalResourceId = isRecord(recommendation.evidence)
-    ? readStringEvidence(recommendation.evidence, 'externalResourceId')
-    : undefined;
-  return scopeExternalResourceId === undefined
-    || scopeExternalResourceId === recommendationExternalResourceId;
+  const recommendationExternalResourceId = readStringEvidence(recommendationEvidence, 'externalResourceId');
+  return scopeExternalResourceId === recommendationExternalResourceId;
 }
 
 function readScopeString(scope: Record<string, unknown>, field: string): string | undefined {
@@ -174,7 +177,8 @@ export function containsUnconditionedManualOperation(plan: Record<string, unknow
         return false;
       }
 
-      return !explicitApprovalPattern.test(sentence) && !explicitNegativeOperationPattern.test(sentence);
+      return !explicitApprovalPatterns.some((pattern) => pattern.test(sentence))
+        && !explicitNegativeOperationPattern.test(sentence);
     });
 }
 
@@ -199,16 +203,16 @@ function describeScopeMismatch(
   if (recommendation === undefined) return 'El plan contradice la cuenta o el recurso canónico de la recomendación objetivo.';
 
   const actualAccount = readScopeString(scope, 'cloudAccountId') ?? '(ausente)';
-  const actualResource = readScopeString(scope, 'cloudResourceId')
-    ?? readScopeString(scope, 'externalResourceId')
+  const actualCloudResourceId = readScopeString(scope, 'cloudResourceId') ?? '(ausente)';
+  const actualExternalResourceId = readScopeString(scope, 'externalResourceId')
     ?? readScopeString(scope, 'resourceId')
     ?? '(ausente)';
-  const expectedResource = recommendation.cloudResourceId ?? (
-    isRecord(recommendation.evidence)
-      ? readStringEvidence(recommendation.evidence, 'externalResourceId') ?? '(sin recurso enlazado)'
-      : '(sin recurso enlazado)'
-  );
-  return `El alcance no coincide. Usa exactamente cloudAccountId=${recommendation.cloudAccountId} y recurso=${expectedResource}; recibió cloudAccountId=${actualAccount} y recurso=${actualResource}.`;
+  const recommendationEvidence = isRecord(recommendation.evidence) ? recommendation.evidence : {};
+  const expectedCloudResourceId = recommendation.cloudResourceId
+    ?? readStringEvidence(recommendationEvidence, 'cloudResourceId')
+    ?? '(sin vínculo canónico)';
+  const expectedExternalResourceId = readStringEvidence(recommendationEvidence, 'externalResourceId') ?? '(sin vínculo externo)';
+  return `El alcance no coincide. Usa exactamente cloudAccountId=${recommendation.cloudAccountId}, cloudResourceId=${expectedCloudResourceId} y externalResourceId=${expectedExternalResourceId}; recibió cloudAccountId=${actualAccount}, cloudResourceId=${actualCloudResourceId} y externalResourceId=${actualExternalResourceId}.`;
 }
 
 function findCostProvenanceIssue(

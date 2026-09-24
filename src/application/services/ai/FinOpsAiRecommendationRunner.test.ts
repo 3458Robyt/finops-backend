@@ -58,4 +58,57 @@ describe('FinOpsAiRecommendationRunner no-op readiness', () => {
     expect(recommendationRepository.createMany).not.toHaveBeenCalled();
     expect(artifactGenerator.generateAuditedDrafts).not.toHaveBeenCalled();
   });
+
+  test('treats a valid model abstention as a successful non-persisted result', async () => {
+    const readinessReport: RecommendationReadinessReport = {
+      candidates: [{ readiness: 'GENERATABLE' } as never],
+      blocked: [],
+      deferred: [],
+      summary: 'Hay candidatos, pero el modelo no encontró una recomendación segura.',
+    };
+    const prepared: PreparedRecommendationAnalysis = {
+      snapshot,
+      readinessReport,
+      evidenceHash: 'hash',
+      deterministicAnalysis: { trends: [], summary: 'none' } as never,
+      model: 'model',
+      auditorModel: 'auditor',
+    };
+    const recommendationRepository = { createMany: vi.fn() } as unknown as IRecommendationRepository;
+    const contextAssembler = {
+      assembleRecommendationContext: vi.fn().mockResolvedValue({ systemPrompt: 'prompt' }),
+    } as never;
+    const artifactGenerator = {
+      generateAuditedDrafts: vi.fn().mockResolvedValue({
+        drafts: [],
+        approvedDrafts: [],
+        rejectedDrafts: [],
+        candidateAudits: [],
+        firstRawResponse: '{"recommendations":[]}',
+      }),
+    } as never;
+    const traceRecorder = { record: vi.fn().mockResolvedValue(undefined) } as never;
+    const runner = new FinOpsAiRecommendationRunner(
+      recommendationRepository,
+      contextAssembler,
+      artifactGenerator,
+      traceRecorder,
+      { prepare: vi.fn() } as never,
+      'model',
+      'auditor',
+    );
+    const onStage = vi.fn();
+
+    const result = await runner.run({ tenantId: 'tenant-1', persist: true, prepared, onStage });
+
+    expect(result.recommendations).toEqual([]);
+    expect(result.persisted).toBe(false);
+    expect(result.analysis.generatedCount).toBe(0);
+    expect(result.analysis.auditReport).toBeUndefined();
+    expect(recommendationRepository.createMany).not.toHaveBeenCalled();
+    expect(traceRecorder.record).toHaveBeenCalledWith(expect.objectContaining({
+      responseText: '{"recommendations":[]}',
+    }));
+    expect(onStage).toHaveBeenCalledWith('PERSISTENCE');
+  });
 });

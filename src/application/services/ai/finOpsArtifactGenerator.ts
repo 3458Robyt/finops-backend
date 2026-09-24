@@ -42,7 +42,7 @@ export interface AuditedDraftsResult {
   readonly approvedDrafts: readonly (AiRecommendationDraft & { tenantId: string })[];
   readonly rejectedDrafts: readonly (AiRecommendationDraft & { tenantId: string })[];
   readonly candidateAudits: readonly AiCandidateAuditArtifact[];
-  readonly auditReport: AiAuditReport;
+  readonly auditReport?: AiAuditReport;
   /** Texto crudo de la primera respuesta del modelo (para la traza de la operación). */
   readonly firstRawResponse: string;
 }
@@ -104,9 +104,19 @@ export class FinOpsArtifactGenerator {
     options: { readonly allowRepair?: boolean } = {},
   ): Promise<AuditedDraftsResult> {
     const firstRawResponse = await this.aiRunner.generateRecommendations(systemPrompt);
+    const parsedDrafts = parseRecommendationDrafts(firstRawResponse, snapshot);
+    if (parsedDrafts.length === 0) {
+      return {
+        drafts: [],
+        approvedDrafts: [],
+        rejectedDrafts: [],
+        candidateAudits: [],
+        firstRawResponse,
+      };
+    }
     let drafts = this.withTenant(
       dropNonActionableFinancialDrafts(normalizeRecommendationDrafts(
-        parseRecommendationDrafts(firstRawResponse, snapshot),
+        parsedDrafts,
         readinessReport,
         technicalEvidenceSnapshot,
         cloudResourceId,

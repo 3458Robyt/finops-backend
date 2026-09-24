@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import type { E2eFixtureManifest } from '../../src/testing/e2eFixtures.js';
 import { looksLikeSpanish } from '../../src/application/services/ai/aiLanguageGuard.js';
 import { containsAutoExecution } from '../../src/application/services/ai/evaluation/executionPlanQualityChecks.js';
+import { isVerifiedSavingsCalculation } from '../../src/domain/models/recommendationEconomics.js';
 
 interface AuditCheck {
   readonly name: string;
@@ -80,34 +81,54 @@ checks.push({
 });
 const generated = generatedResult.ok ? generatedResult.body : {};
 const recommendations = Array.isArray(generated['recommendations']) ? generated['recommendations'] as Record<string, unknown>[] : [];
+const generationAnalysis = asRecord(generated['analysis']);
+const safeAbstention = generatedResult.ok && generated['persisted'] === false
+  && recommendations.length === 0 && generationAnalysis?.['generatedCount'] === 0;
+const verifiedSavingsCount = recommendations.filter((recommendation) => (
+  isVerifiedSavingsCalculation(
+    recommendation['evidence'],
+    recommendation['estimatedMonthlySavings'],
+    typeof recommendation['currency'] === 'string' ? recommendation['currency'] : undefined,
+  )
+)).length;
+const hasUnsupportedPositiveSavings = recommendations.some((recommendation) => {
+  const evidence = asRecord(recommendation['evidence']);
+  const claims = [recommendation['estimatedMonthlySavings'], evidence?.['potentialMonthlySavings']]
+    .filter((value) => typeof value === 'number' && value > 0);
+  return claims.length > 0 && !isVerifiedSavingsCalculation(
+    evidence,
+    recommendation['estimatedMonthlySavings'] ?? evidence?.['potentialMonthlySavings'],
+    typeof recommendation['currency'] === 'string' ? recommendation['currency'] : undefined,
+  );
+});
 checks.push({
   name: 'corrida_live_no_persiste_recomendaciones',
   passed: generatedResult.ok && generated['persisted'] === false,
   detail: JSON.stringify({ requestedPersist: false, persisted: generated['persisted'] }),
 });
 checks.push({
-  name: 'genera_recomendaciones',
-  passed: recommendations.length > 0,
-  detail: `Cantidad: ${recommendations.length}`,
+  name: 'recomendaciones_generadas_o_abstencion_segura',
+  passed: recommendations.length > 0 || safeAbstention,
+  detail: recommendations.length > 0
+    ? `Cantidad: ${recommendations.length}; con ahorro determinístico verificado: ${verifiedSavingsCount}.`
+    : `Abstención segura=${safeAbstention}; sin recomendaciones ni persistencia. La fixture carece de alternativa tarifada y no demuestra impacto económico positivo.`,
 });
 checks.push({
   name: 'recomendaciones_tienen_evidencia',
   passed: generatedResult.ok
-    && recommendations.length > 0
-    && recommendations.every((recommendation) => typeof recommendation['evidence'] === 'object' && recommendation['evidence'] !== null),
+    && (safeAbstention || recommendations.every((recommendation) => typeof recommendation['evidence'] === 'object' && recommendation['evidence'] !== null)),
   detail: JSON.stringify(recommendations.map((recommendation) => recommendation['evidence']).slice(0, 2)),
 });
 checks.push({
   name: 'recomendaciones_guardan_snapshot_y_auditoria',
   passed: generatedResult.ok
-    && recommendations.length > 0
-    && recommendations.every((recommendation) => {
+    && (safeAbstention || recommendations.every((recommendation) => {
     const evidence = asRecord(recommendation['evidence']);
     const technicalSnapshot = asRecord(evidence?.['recommendationEvidenceSnapshot']);
     const audit = asRecord(evidence?.['aiAudit']);
     return audit?.['verdict'] === 'APPROVED'
       && (technicalSnapshot === undefined || typeof technicalSnapshot['hash'] === 'string');
-    }),
+    })),
   detail: JSON.stringify(recommendations.map((recommendation) => {
     const evidence = asRecord(recommendation['evidence']);
     return {
@@ -117,12 +138,11 @@ checks.push({
   })),
 });
 checks.push({
-  name: 'no_inventa_ahorro_negativo',
+  name: 'ahorro_no_negativo_y_cuantificado_con_evidencia',
   passed: generatedResult.ok
-    && recommendations.length > 0
     && recommendations.every((recommendation) => {
     const savings = recommendation['estimatedMonthlySavings'];
-    return typeof savings !== 'number' || savings >= 0;
+    return (typeof savings !== 'number' || savings >= 0) && !hasUnsupportedPositiveSavings;
     }),
   detail: JSON.stringify(recommendations.map((recommendation) => recommendation['estimatedMonthlySavings'])),
 });
@@ -242,7 +262,12 @@ const traceCountsByOperation = currentTraces.reduce<Record<string, number>>((cou
   counts[operation] = (counts[operation] ?? 0) + 1;
   return counts;
 }, {});
-const expectedTraceMinimums = { CHAT: 3, RECOMMENDATION: 1, AUDIT: 2, EXECUTION_PLAN: 1 };
+const expectedTraceMinimums = {
+  CHAT: 3,
+  RECOMMENDATION: 1,
+  AUDIT: recommendations.length > 0 ? 2 : 1,
+  EXECUTION_PLAN: 1,
+};
 checks.push({
   name: 'registra_trazas_ia',
   passed: currentTraces.some((trace) => trace['status'] === 'SUCCESS'),
@@ -278,6 +303,9 @@ const output = {
     tokenEstimate,
     traceCount: currentTraces.length,
     recommendationCount: recommendations.length,
+    verifiedSavingsRecommendationCount: verifiedSavingsCount,
+    positiveEconomicImpactDemonstrated: verifiedSavingsCount > 0,
+    safeAbstention,
     persistedRecommendationsBefore,
     persistedRecommendationsAfter,
     expectedModel,

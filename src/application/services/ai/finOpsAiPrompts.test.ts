@@ -59,6 +59,42 @@ const recommendation = {
 } as FinOpsRecommendation;
 
 describe('FinOps AI prompt boundaries', () => {
+  test('makes safe recommendation abstention explicit', () => {
+    const prompt = buildRecommendationSystemPrompt(snapshot, { memoryIds: [], caseIds: [], summary: '' });
+
+    expect(prompt).toContain('La abstención es una respuesta válida');
+    expect(prompt).toContain('{"recommendations":[]}');
+    expect(prompt).toContain('Omite por completo candidatos readiness=VALIDATION_ONLY');
+  });
+
+  test('requires a human approval gate in the same plan step as an operation', () => {
+    const prompt = buildExecutionPlanSystemPrompt(snapshot, recommendation);
+
+    expect(prompt).toContain('aprobacion externa explicita del responsable');
+    expect(prompt).toContain('en la misma frase');
+  });
+
+  test('pins plan generation to the recommendation resource and available technical evidence', () => {
+    const linkedRecommendation = {
+      ...recommendation,
+      evidence: {
+        cloudResourceId: 'cloud-resource-1',
+        externalResourceId: 'ocid1.instance.example',
+        technicalEvidenceRefs: ['metric-ref-1'],
+        deterministicRules: { metricSummary: [{ metricName: 'CpuUtilization', p95: 42 }] },
+      },
+    } as FinOpsRecommendation;
+    const prompt = buildExecutionPlanSystemPrompt(snapshot, linkedRecommendation);
+
+    expect(prompt).toContain('"cloudResourceId":"cloud-resource-1"');
+    expect(prompt).toContain('"externalResourceId":"ocid1.instance.example"');
+    expect(prompt).toContain('Incluye cloudResourceId y externalResourceId cuando estén presentes');
+    expect(prompt).toContain('Prioriza solo métricas presentes y pertinentes');
+    expect(prompt).toContain('ni presentes una métrica ausente como si ya estuviera medida');
+    expect(prompt).not.toContain('"status": "PENDING"');
+    expect(prompt).not.toContain('Conserva el estado de gestion original');
+  });
+
   test('marks context as untrusted data in every model-facing prompt', () => {
     const learning = { memoryIds: [], caseIds: [], summary: '' };
     const prompts = [

@@ -1,8 +1,32 @@
 import { describe, expect, it } from 'vitest';
+import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
-import { parseAuditReport, parseExecutionPlan } from './finOpsAiResponseParser.js';
+import { parseAuditReport, parseExecutionPlan, parseRecommendationDrafts } from './finOpsAiResponseParser.js';
 
 describe('finOpsAiResponseParser', () => {
+  it('accepts an explicit empty recommendations array as a safe abstention', () => {
+    const snapshot = {
+      currency: 'USD',
+      accounts: [{ cloudAccountId: 'account-1' }],
+    } as CostAnalyticsSnapshot;
+
+    expect(parseRecommendationDrafts('{"recommendations":[]}', snapshot)).toEqual([]);
+  });
+
+  it.each([
+    '{}',
+    '{"recommendations":null}',
+    '{"recommendations":[{"cloudAccountId":"other","type":"x"}]}',
+  ])('rejects malformed or invalid recommendation payloads instead of treating them as abstention: %s', (raw) => {
+    const snapshot = {
+      currency: 'USD',
+      accounts: [{ cloudAccountId: 'account-1' }],
+    } as CostAnalyticsSnapshot;
+
+    expect(() => parseRecommendationDrafts(raw, snapshot))
+      .toThrow('AI did not return valid recommendations');
+  });
+
   it('keeps structured repair metadata from the AI auditor', () => {
     const report = parseAuditReport(
       JSON.stringify({

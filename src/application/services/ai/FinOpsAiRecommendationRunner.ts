@@ -88,6 +88,43 @@ export class FinOpsAiRecommendationRunner {
 
     const { drafts, approvedDrafts, auditReport, candidateAudits, firstRawResponse } = generated;
 
+    if (drafts.length === 0) {
+      await input.onStage?.('PERSISTENCE');
+      await this.traceRecorder.record({
+        tenantId: input.tenantId,
+        ...(input.userId === undefined ? {} : { userId: input.userId }),
+        operation: 'RECOMMENDATION',
+        model: this.mainModel,
+        ...(assembled.builtContext === undefined ? {} : { builtContext: assembled.builtContext }),
+        startedAt,
+        responseText: firstRawResponse,
+      });
+
+      return {
+        recommendations: [],
+        snapshot,
+        persisted: false,
+        analysis: {
+          readinessReport,
+          ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),
+          evidenceHash: prepared.evidenceHash,
+          generatedCount: 0,
+          rejectedCount: 0,
+          candidateAudits: [],
+          promptTokenEstimate: estimateTokens(governedSystemPrompt),
+          responseTokenEstimate: estimateTokens(firstRawResponse),
+          model: this.mainModel,
+          auditorModel: this.auditorModel,
+        },
+      };
+    }
+
+    if (auditReport === undefined) {
+      const error = new FinOpsBaseError('AI audit report is missing for generated recommendations', 'AI_AUDIT_ERROR');
+      await this.recordFailure(input.tenantId, input.userId, assembled.builtContext, startedAt, error);
+      throw error;
+    }
+
     if (drafts.length > 0 && approvedDrafts.length === 0) {
       const rejection = new AiAuditRejectedError('AI audit rejected recommendation output', {
         diagnosticId: `audit-${input.tenantId}-${Date.now().toString(36)}`,

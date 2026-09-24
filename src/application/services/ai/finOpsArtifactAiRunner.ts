@@ -65,7 +65,7 @@ export class FinOpsArtifactAiRunner {
         {
           role: 'user',
           content:
-            'Genera hasta 2 recomendaciones FinOps priorizadas en español usando solo los candidatos permitidos. Si solo hay candidatos VALIDATION_ONLY, genera recomendaciones de validacion tecnica previa.',
+            'Genera hasta 2 recomendaciones FinOps priorizadas en español usando solo candidatos GENERATABLE autorizados. Si ninguno permite una oportunidad segura y accionable, responde exactamente {"recommendations":[]}; no propongas recomendaciones de validación.',
         },
       ],
     });
@@ -135,6 +135,7 @@ export class FinOpsArtifactAiRunner {
           content: [
             'Corrige el plan de ejecucion usando exactamente estos cambios requeridos por auditoria.',
             'Mantiene el alcance manual y no prometas ejecucion automatica.',
+            'Cada paso operativo debe incluir en la misma frase la condicion de aprobacion externa previa del responsable; usa una forma explicita como "Solo despues de la aprobacion externa explicita del responsable, la persona autorizada podra ejecutar manualmente el cambio". La validacion tecnica no sustituye esa aprobacion.',
             'Conserva el estado de gestion de la recomendacion y el alcance del plan; no inventes periodos, recursos ni estados.',
             'No incluyas cifras monetarias en el texto narrativo. Devuelve el placeholder estimatedSavings; el servidor lo normaliza desde evidencia deterministica.',
             JSON.stringify(requiredChanges),

@@ -366,6 +366,36 @@ describe('qualityRubric — execution plan', () => {
     expect(report.checks.find((check) => check.name === 'manualGovernance')?.passed).toBe(true);
   });
 
+  test('recognizes explicit external approval expressed as an approval verb', () => {
+    const plan = {
+      ...validPlan,
+      steps: ['Solo después de que el responsable apruebe explícitamente el cambio, la persona autorizada puede ejecutar manualmente el cambio.'],
+    };
+
+    const report = evaluateExecutionPlan(plan, snapshot);
+    expect(report.checks.find((check) => check.name === 'manualGovernance')?.passed).toBe(true);
+  });
+
+  test('does not treat technical validation as approval to operate', () => {
+    const plan = {
+      ...validPlan,
+      steps: ['Solo después de validar las métricas, ejecutar manualmente el cambio.'],
+    };
+
+    const report = evaluateExecutionPlan(plan, snapshot);
+    expect(report.checks.find((check) => check.name === 'manualGovernance')?.passed).toBe(false);
+  });
+
+  test('does not accept an unspecified approval as external human authorization', () => {
+    const plan = {
+      ...validPlan,
+      steps: ['Si el cambio está aprobado, ejecutar manualmente el cambio.'],
+    };
+
+    const report = evaluateExecutionPlan(plan, snapshot);
+    expect(report.checks.find((check) => check.name === 'manualGovernance')?.passed).toBe(false);
+  });
+
   test('allows POTENTIAL_NOT_VERIFIED as the savings status but not as recommendation status', () => {
     const recommendation = {
       cloudAccountId: 'acc-prod-aws',
@@ -455,6 +485,47 @@ describe('qualityRubric — execution plan', () => {
     };
 
     const report = evaluateExecutionPlan(mismatchedPlan, snapshot, recommendation);
+    expect(report.checks.find((check) => check.name === 'recommendationScope')?.passed).toBe(false);
+  });
+
+  test('requires every canonical resource identifier in the plan scope', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-prod-aws',
+      evidence: { cloudResourceId: 'cloud-resource-1', externalResourceId: 'bucket-logs' },
+    } as FinOpsRecommendation;
+
+    const missingResourceIds = evaluateExecutionPlan({
+      ...validPlan,
+      scope: { cloudAccountId: 'acc-prod-aws', service: 'Amazon S3' },
+    }, snapshot, recommendation);
+    const missingExternalId = evaluateExecutionPlan({
+      ...validPlan,
+      scope: { cloudAccountId: 'acc-prod-aws', cloudResourceId: 'cloud-resource-1' },
+    }, snapshot, recommendation);
+    const exactScope = evaluateExecutionPlan({
+      ...validPlan,
+      scope: {
+        cloudAccountId: 'acc-prod-aws',
+        cloudResourceId: 'cloud-resource-1',
+        externalResourceId: 'bucket-logs',
+      },
+    }, snapshot, recommendation);
+
+    expect(missingResourceIds.checks.find((check) => check.name === 'recommendationScope')?.passed).toBe(false);
+    expect(missingExternalId.checks.find((check) => check.name === 'recommendationScope')?.passed).toBe(false);
+    expect(exactScope.checks.find((check) => check.name === 'recommendationScope')?.passed).toBe(true);
+  });
+
+  test('requires the plan account to match the recommendation, not just any snapshot account', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-other-account',
+      evidence: {},
+    } as FinOpsRecommendation;
+    const report = evaluateExecutionPlan({
+      ...validPlan,
+      scope: { cloudAccountId: 'acc-prod-aws' },
+    }, snapshot, recommendation);
+
     expect(report.checks.find((check) => check.name === 'recommendationScope')?.passed).toBe(false);
   });
 

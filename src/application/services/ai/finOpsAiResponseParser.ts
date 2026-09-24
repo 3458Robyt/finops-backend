@@ -51,10 +51,11 @@ export function parseRecommendationDrafts(
 ): readonly AiRecommendationDraft[] {
   const json = extractJson(rawResponse);
   const parsed = JSON.parse(json) as unknown;
-  const container = isRecord(parsed) ? parsed : {};
-  const rawRecommendations = Array.isArray(container['recommendations'])
-    ? container['recommendations']
-    : [];
+  if (!isRecord(parsed) || !Array.isArray(parsed['recommendations'])) {
+    throw new FinOpsBaseError('AI did not return valid recommendations', 'AI_RESPONSE_ERROR');
+  }
+  const rawRecommendations = parsed['recommendations'];
+  if (rawRecommendations.length === 0) return [];
 
   const allowedAccountIds = new Set(snapshot.accounts.map((account) => account.cloudAccountId));
 

@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import type { E2eFixtureManifest } from '../../src/testing/e2eFixtures.js';
 import { looksLikeSpanish } from '../../src/application/services/ai/aiLanguageGuard.js';
 import { containsAutoExecution } from '../../src/application/services/ai/evaluation/executionPlanQualityChecks.js';
+import { isVerifiedSavingsCalculation } from '../../src/domain/models/recommendationEconomics.js';
 
 const apiBaseUrl = (process.env['E2E_API_BASE_URL'] ?? 'http://localhost:3000/api/v1').replace(/\/$/, '');
 if (process.env['AI_LIVE_TESTS'] !== 'true') {
@@ -56,17 +57,31 @@ const recommendationRuns = await sequentialRuns(10, async () => {
     const recommendations = Array.isArray(result['recommendations'])
       ? result['recommendations'] as Record<string, unknown>[]
       : [];
-    const passed = result['persisted'] === false && recommendations.length > 0
-      && recommendations.every(isAuditedRecommendation);
-    return { passed, latencyMs: Date.now() - startedAt, status: 200, candidateCount: recommendations.length };
+    const analysis = asRecord(result['analysis']);
+    const safeAbstention = recommendations.length === 0 && analysis?.['generatedCount'] === 0;
+    const passed = result['persisted'] === false && (safeAbstention || recommendations.every(isAuditedRecommendation));
+    return {
+      passed,
+      outcome: safeAbstention ? 'SAFE_ABSTENTION' : 'AUDITED_OUTPUT',
+      latencyMs: Date.now() - startedAt,
+      status: 200,
+      candidateCount: recommendations.length,
+      verifiedSavingsCount: recommendations.filter(hasVerifiedSavings).length,
+    };
   } catch (error) {
-    return { passed: false, latencyMs: Date.now() - startedAt, status: statusFrom(error), candidateCount: 0 };
+    return { passed: false, outcome: 'REQUEST_ERROR', latencyMs: Date.now() - startedAt, status: statusFrom(error), candidateCount: 0, verifiedSavingsCount: 0 };
   }
 });
 const afterCount = await recommendationCount();
 
 const recommendationId = manifest.recommendationIds[0];
 if (recommendationId === undefined) throw new Error('Synthetic fixture must include an isolated recommendation.');
+const recommendationDetail = await request(`/recommendations/${encodeURIComponent(recommendationId)}`, undefined, 'GET');
+const recommendation = asRecord(recommendationDetail['recommendation']);
+const recommendationEvidence = asRecord(recommendation?.['evidence']);
+const expectedAccountId = recommendation?.['cloudAccountId'];
+const expectedCloudResourceId = recommendation?.['cloudResourceId'] ?? recommendationEvidence?.['cloudResourceId'];
+const expectedExternalResourceId = recommendationEvidence?.['externalResourceId'];
 const generatedPlanIds = new Set<string>();
 const planRuns = await sequentialRuns(5, async () => {
   const startedAt = Date.now();
@@ -74,6 +89,7 @@ const planRuns = await sequentialRuns(5, async () => {
     const result = await request(`/recommendations/${encodeURIComponent(recommendationId)}/execution-plan`, {});
     const executionPlan = asRecord(result['executionPlan']);
     const content = asRecord(executionPlan?.['content']);
+    const scope = asRecord(content?.['scope']);
     const planId = typeof executionPlan?.['id'] === 'string' ? executionPlan['id'] : undefined;
     if (planId !== undefined) generatedPlanIds.add(planId);
     const latest = asRecord((await request(
@@ -84,12 +100,15 @@ const planRuns = await sequentialRuns(5, async () => {
     const fields = ['prerequisites', 'steps', 'validation', 'risks', 'rollback', 'successCriteria'];
     const text = content === undefined ? '' : JSON.stringify(content);
     const latencyMs = Date.now() - startedAt;
+    const scopeMatches = scope?.['cloudAccountId'] === expectedAccountId
+      && scope?.['cloudResourceId'] === expectedCloudResourceId
+      && scope?.['externalResourceId'] === expectedExternalResourceId;
     const passed = planId !== undefined && latest?.['id'] === planId
       && executionPlan?.['auditVerdict'] === 'APPROVED'
       && typeof executionPlan['auditScore'] === 'number' && executionPlan['auditScore'] >= 80
       && content !== undefined && fields.every((key) => Array.isArray(content[key]) && (content[key] as unknown[]).length > 0)
-      && looksLikeSpanish(text) && !containsAutoExecution(content) && latencyMs <= 120_000;
-    return { passed, latencyMs, status: 200 };
+      && looksLikeSpanish(text) && !containsAutoExecution(content) && scopeMatches && latencyMs <= 120_000;
+    return { passed, latencyMs, status: 200, scopeMatches };
   } catch (error) {
     return { passed: false, latencyMs: Date.now() - startedAt, status: statusFrom(error) };
   }
@@ -114,6 +133,10 @@ const output = {
   generatedAt: new Date().toISOString(),
   providerModel: process.env['AI_EXPECTED_MODEL'] ?? 'gpt-5.6-luna',
   isolatedFixtureRunId: manifest.runId,
+  economicImpactCoverage: recommendationRuns.some((run) => run.verifiedSavingsCount > 0)
+    ? 'VERIFIED_SAVINGS_CANDIDATE_EXERCISED'
+    : 'NOT_DEMONSTRATED_FIXTURE_HAS_NO_PRICED_ALTERNATIVE',
+  executionPlanResourceScope: { expectedAccountId, expectedCloudResourceId, expectedExternalResourceId },
   metrics: {
     chatCount: chatResults.length,
     recommendationRuns: recommendationRuns.length,
@@ -180,7 +203,16 @@ function isAuditedRecommendation(recommendation: Record<string, unknown>): boole
   return evidence !== undefined && audit?.['verdict'] === 'APPROVED'
     && typeof audit['score'] === 'number' && audit['score'] >= 80
     && savingsValues.every((value) => typeof value === 'number' && Number.isFinite(value)
-      && value >= 0 && typeof maximumSavings === 'number' && value <= maximumSavings);
+      && value >= 0 && typeof maximumSavings === 'number' && value <= maximumSavings)
+    && (!savingsValues.some((value) => typeof value === 'number' && value > 0) || hasVerifiedSavings(recommendation));
+}
+
+function hasVerifiedSavings(recommendation: Record<string, unknown>): boolean {
+  return isVerifiedSavingsCalculation(
+    recommendation['evidence'],
+    recommendation['estimatedMonthlySavings'],
+    typeof recommendation['currency'] === 'string' ? recommendation['currency'] : undefined,
+  );
 }
 
 async function sequentialRuns<T>(count: number, run: () => Promise<T>): Promise<T[]> {

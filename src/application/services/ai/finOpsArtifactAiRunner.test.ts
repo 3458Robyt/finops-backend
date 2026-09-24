@@ -16,6 +16,9 @@ describe('FinOpsArtifactAiRunner', () => {
         expect.objectContaining({ content: expect.stringContaining('hasta 2 recomendaciones') }),
       ]),
     }));
+    const userPrompt = vi.mocked(aiGateway.generateText).mock.calls[0]?.[0].messages[1]?.content ?? '';
+    expect(userPrompt).toContain('"recommendations":[]');
+    expect(userPrompt).not.toContain('VALIDATION_ONLY');
   });
 
   test('audits execution plans without financial aggregates or server-owned savings', async () => {

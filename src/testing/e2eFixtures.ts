@@ -252,6 +252,39 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
     data: {
       tenantId: tenantA.id,
       cloudConnectionId: tenantAConnection.id,
+      sourceType: 'BILLING_EXPORT',
+      status: 'SUCCESS',
+      dataOutcome: 'PARTIAL',
+      requestedByUserId: user.id,
+      targetStart: new Date(periodStart.getTime() - 60 * 60 * 1000),
+      targetEnd: periodStart,
+      attempts: 1,
+      maxAttempts: 3,
+      priority: 50,
+      requestContext: { e2eRunId: runId, fixture: true, focusSchemaCase: 'nonconformant' },
+      progress: { phase: 'COMPLETED', message: 'Fixture con esquema FOCUS incompleto.' },
+      resultSummary: {
+        focusRows: 4,
+        focusRowsInserted: 4,
+        warnings: ['Fixture: FOCUS 1.0 sin dos columnas obligatorias.'],
+        coverage: {
+          focusSchemaValidation: {
+            status: 'NONCONFORMANT',
+            filesChecked: 2,
+            filesConformant: 0,
+            filesNonconformant: 2,
+            filesUnverified: 0,
+            missingMandatoryColumns: ['ChargeClass', 'ContractedCost'],
+          },
+        },
+      },
+      completedAt: new Date(),
+    },
+  });
+  await prisma.ingestionJob.create({
+    data: {
+      tenantId: tenantA.id,
+      cloudConnectionId: tenantAConnection.id,
       sourceType: 'TECHNICAL_METRIC',
       status: 'PENDING',
       requestedByUserId: user.id,

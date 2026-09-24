@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { CloudIngestionJobContext } from '../../../domain/interfaces/ICloudIngestionProvider.js';
+import { FOCUS_1_0_MANDATORY_COLUMNS } from '../focusSchemaValidation.js';
 import { OciBillingCollector } from './OciBillingCollector.js';
 
 describe('OCI billing collector', () => {
@@ -99,6 +100,54 @@ describe('OCI billing collector', () => {
     expect(result.coverage).toMatchObject({
       billingSourceFallback: 'FOCUS_TO_PROVIDER_API',
       apiCallCount: 1,
+    });
+  });
+
+  test('warns on missing mandatory FOCUS headers without dropping usable cost rows', async () => {
+    const headers = FOCUS_1_0_MANDATORY_COLUMNS.filter(
+      (column) => column !== 'ChargeClass' && column !== 'ContractedCost',
+    );
+    const values: Readonly<Record<string, string>> = {
+      BilledCost: '25',
+      BillingCurrency: 'USD',
+      BillingAccountId: 'account-1',
+      BillingAccountName: 'Test account',
+      BillingPeriodStart: '2026-08-01T00:00:00Z',
+      BillingPeriodEnd: '2026-09-01T00:00:00Z',
+      ChargeCategory: 'Usage',
+      ChargePeriodStart: '2026-08-23T00:00:00Z',
+      ChargePeriodEnd: '2026-08-23T01:00:00Z',
+      EffectiveCost: '25',
+      InvoiceIssuer: 'Oracle',
+      PricingUnit: 'Hours',
+      Provider: 'Oracle',
+      Publisher: 'Oracle',
+      ServiceCategory: 'Compute',
+      ServiceName: 'Compute',
+    };
+    const csv = [headers.join(','), headers.map((header) => values[header] ?? '').join(',')].join('\n');
+    const collector = new OciBillingCollector({
+      createObjectStorageClient: () => ({
+        listObjects: async () => ({ listObjects: { objects: [{ name: 'FOCUS Reports/2026/08/23/report.csv' }] } }),
+        getObject: async () => ({ value: csv }),
+      }),
+      createUsageClient: () => ({ requestSummarizedUsages: async () => ({ usageAggregation: { items: [] } }) }),
+    });
+
+    const result = await collector.collect(buildJob());
+    const rows = [];
+    for await (const batch of result.focusBatches ?? []) rows.push(...batch);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ billedCost: 25, billingCurrency: 'USD' });
+    expect(result.warnings).toContain(
+      'FOCUS 1.0: uno o más archivos omiten columnas obligatorias. Se conservaron las filas disponibles, pero no se certifica conformidad; revisa el resumen de esquema del job.',
+    );
+    expect(result.coverage['focusSchemaValidation']).toMatchObject({
+      status: 'NONCONFORMANT',
+      filesChecked: 1,
+      filesNonconformant: 1,
+      missingMandatoryColumns: ['ChargeClass', 'ContractedCost'],
     });
   });
 

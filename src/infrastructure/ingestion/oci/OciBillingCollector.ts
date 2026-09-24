@@ -9,6 +9,11 @@ import type {
   NormalizedProviderCostLineItem,
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
 import { parseFocusCsvStream, toAsyncByteChunks } from '../focusCsvIngestion.js';
+import {
+  createFocusSchemaValidationSummary,
+  recordFocusSchemaAssessment,
+  type FocusSchemaValidationSummary,
+} from '../focusSchemaValidation.js';
 import { readBillingSourceMode, resolveBillingSource } from '../billingSourceMode.js';
 import type {
   OciFocusReportObject,
@@ -103,15 +108,18 @@ export class OciBillingCollector {
       });
     }
 
+    const warnings: string[] = [];
+    const schemaValidation = createFocusSchemaValidationSummary();
+
     return {
       apiCallCount: discovery.apiCallCount + objects.length,
       objectsProcessed: objects.length,
       sourceObjects: objects.map(toIngestionObjectDescriptor),
       focusRows: [],
-      focusBatches: this.streamFocusObjects(job, createClient, objects, options),
+      focusBatches: this.streamFocusObjects(job, createClient, objects, options, warnings, schemaValidation),
       resources: [],
       metricSamples: [],
-      warnings: [],
+      warnings,
       coverage: {
         costSource: 'OCI Cost Reports FOCUS',
         expectedRefreshHours: 6,
@@ -119,6 +127,7 @@ export class OciBillingCollector {
         objectsDiscovered: discovery.objects.length,
         prefixesConfigured: readOciFocusLocations(job).length,
         rowsParsed: 'streamed',
+        focusSchemaValidation: schemaValidation,
       },
     };
   }
@@ -260,6 +269,8 @@ export class OciBillingCollector {
     createClient: (signal?: AbortSignal) => OciObjectStorageClient,
     objects: readonly OciFocusReportObject[],
     options: CloudIngestionCollectOptions,
+    warnings: string[],
+    schemaValidation: FocusSchemaValidationSummary,
   ): AsyncGenerator<readonly NormalizedFocusCostLineItem[]> {
     const batch: NormalizedFocusCostLineItem[] = [];
     for (const object of objects) {
@@ -283,6 +294,7 @@ export class OciBillingCollector {
           cloudConnectionId: job.cloudConnectionId,
           provider: 'OCI',
           focusVersion: object.focusVersion,
+          onHeader: (headers) => recordFocusSchemaAssessment(object.focusVersion, headers, schemaValidation, warnings),
         },
         object.objectName,
       )) {

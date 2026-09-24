@@ -4,6 +4,7 @@ import type {
   CloudIngestionResult,
   NormalizedFocusCostLineItem,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
+import { FOCUS_1_0_MANDATORY_COLUMNS } from './focusSchemaValidation.js';
 import { OciSdkIngestionProvider } from './OciSdkIngestionProvider.js';
 
 describe('OciSdkIngestionProvider', () => {
@@ -231,6 +232,7 @@ compartmentCount: 3,
     expect(result.coverage).toMatchObject({
       objectsDiscovered: 1,
       rowsParsed: 'streamed',
+      focusSchemaValidation: { status: 'CONFORMANT', filesChecked: 1, filesConformant: 1 },
     });
     expect(result.warnings).toEqual([]);
   });
@@ -580,40 +582,35 @@ function buildOciFocusJob(): CloudIngestionJobContext {
 }
 
 function buildFocusCsv(): string {
+  const values: Readonly<Record<string, string>> = {
+    BilledCost: '8.75',
+    BillingAccountId: 'tenancy-1',
+    BillingAccountName: 'Test tenancy',
+    BillingCurrency: 'USD',
+    BillingPeriodEnd: '2026-07-01 00:00:00',
+    BillingPeriodStart: '2026-06-01 00:00:00',
+    ChargeCategory: 'Usage',
+    ChargeClass: 'Usage',
+    ChargePeriodEnd: '2026-06-04 02:00:00',
+    ChargePeriodStart: '2026-06-04 01:30:00',
+    ContractedCost: '8.75',
+    ConsumedQuantity: '2',
+    ConsumedUnit: 'Hours',
+    EffectiveCost: '8',
+    InvoiceIssuer: 'Oracle Cloud Infrastructure',
+    ListCost: '9',
+    PricingUnit: 'Hours',
+    Provider: 'Oracle Cloud Infrastructure',
+    ProviderName: 'Oracle Cloud Infrastructure',
+    Publisher: 'Oracle',
+    RegionId: 'sa-bogota-1',
+    ResourceId: 'ocid1.instance.oc1.test',
+    ServiceCategory: 'Compute',
+    ServiceName: 'Compute',
+    SubAccountId: 'compartment-1',
+  };
   return [
-    [
-      'BilledCost',
-      'BillingCurrency',
-      'BillingAccountId',
-      'ChargeCategory',
-      'ChargePeriodStart',
-      'ChargePeriodEnd',
-      'ConsumedQuantity',
-      'ConsumedUnit',
-      'EffectiveCost',
-      'ListCost',
-      'ProviderName',
-      'RegionId',
-      'ResourceId',
-      'ServiceName',
-      'SubAccountId',
-    ].join(','),
-    [
-      '8.75',
-      'USD',
-      'tenancy-1',
-      'Usage',
-      '2026-06-04 01:30:00',
-      '2026-06-04 02:00:00',
-      '2',
-      'Hours',
-      '8',
-      '9',
-      'Oracle Cloud Infrastructure',
-      'sa-bogota-1',
-      'ocid1.instance.oc1.test',
-      'Compute',
-      'compartment-1',
-    ].join(','),
+    [...FOCUS_1_0_MANDATORY_COLUMNS, 'ConsumedQuantity', 'ConsumedUnit', 'ListCost', 'ProviderName', 'RegionId', 'ResourceId', 'SubAccountId'].join(','),
+    [...FOCUS_1_0_MANDATORY_COLUMNS, 'ConsumedQuantity', 'ConsumedUnit', 'ListCost', 'ProviderName', 'RegionId', 'ResourceId', 'SubAccountId'].map((header) => values[header] ?? '').join(','),
   ].join('\n');
 }

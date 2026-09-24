@@ -28,6 +28,34 @@ describe('RecommendationAnalysisService', () => {
       .rejects.toBeInstanceOf(AuthorizationError);
   });
 
+  test('bloquea a clientes la lectura del readiness y del historial de gobierno del agente', async () => {
+    const { service, repository, aiService } = createSubject();
+    const client = { ...actor, role: 'CLIENT_VIEWER' as const };
+
+    await expect(service.preview(client, {})).rejects.toBeInstanceOf(AuthorizationError);
+    await expect(service.list(client)).rejects.toBeInstanceOf(AuthorizationError);
+    await expect(service.get(client, 'run-1')).rejects.toBeInstanceOf(AuthorizationError);
+
+    expect(aiService.prepareRecommendationAnalysis).not.toHaveBeenCalled();
+    expect(repository.listByTenant).not.toHaveBeenCalled();
+    expect(repository.findById).not.toHaveBeenCalled();
+  });
+
+  test('permite a un técnico FinOps consultar readiness e historial del agente', async () => {
+    const { service, repository } = createSubject();
+    const technician = { ...actor, role: 'FINOPS_TECHNICIAN' as const };
+
+    await expect(service.preview(technician, {})).resolves.toMatchObject({
+      scope: 'TENANT',
+      resourcesEvaluated: 0,
+    });
+    await expect(service.list(technician)).resolves.toEqual([]);
+    await expect(service.get(technician, 'run-1')).resolves.toBeNull();
+
+    expect(repository.listByTenant).toHaveBeenCalledWith(technician.tenantId, undefined);
+    expect(repository.findById).toHaveBeenCalledWith(technician.tenantId, 'run-1');
+  });
+
   test('no encola una corrida cuando el worker no tiene heartbeat vigente', async () => {
     const { service, repository } = createSubject(buildPrepared([], []), {
       findFreshByRoles: vi.fn(async () => null),

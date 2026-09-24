@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { FinOpsAiService } from '../../application/services/FinOpsAiService.js';
 import type { IAgentLearningService } from '../../domain/interfaces/IAgentLearningService.js';
+import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
 import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const chatSchema = z.object({
@@ -228,6 +229,7 @@ export class AiController {
     }
 
     try {
+      requirePermission(req.auth.role, 'AGENT_OBSERVE', 'No tienes permiso para consultar el aprendizaje del agente.');
       const learning = await this.learningService.getLearningSummary(req.auth.tenantId);
 
       res.status(200).json({

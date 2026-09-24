@@ -9,7 +9,7 @@ import {
   type RawMetricSeriesRow,
 } from './technicalMetricQueryHelpers.js';
 
-/** Combines 30m/hour/day projections when a target bucket has mixed sources. */
+/** Combines native projections into hour/day buckets without dropping source samples. */
 export class PrismaResourceMetricMixedRollupReader {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -21,7 +21,33 @@ export class PrismaResourceMetricMixedRollupReader {
     limit: number,
   ): Promise<RawMetricSeriesRow[]> {
     const sourceWhere = buildMetricRollupWhereClause(tenantId, filters);
-    const preferredResolution = bucketSeconds === 86400 ? Prisma.sql`MAX` : Prisma.sql`MIN`;
+    const sourceCtes = bucketSeconds === 3600
+      ? Prisma.sql`source AS (SELECT * FROM filtered)`
+      : Prisma.sql`
+        preferred AS (
+          SELECT tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id,
+            provider_namespace, region_id, dimensions_hash, metric_name, statistic,
+            target_bucket_start, MAX(bucket_seconds) AS bucket_seconds
+          FROM filtered
+          GROUP BY tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id,
+            provider_namespace, region_id, dimensions_hash, metric_name, statistic, target_bucket_start
+        ), source AS (
+          SELECT filtered.*
+          FROM filtered
+          INNER JOIN preferred
+            ON preferred.tenant_id = filtered.tenant_id
+           AND preferred.cloud_connection_id = filtered.cloud_connection_id
+           AND preferred.cloud_resource_id IS NOT DISTINCT FROM filtered.cloud_resource_id
+           AND preferred.external_resource_id = filtered.external_resource_id
+           AND preferred.provider_namespace = filtered.provider_namespace
+           AND preferred.region_id = filtered.region_id
+           AND preferred.dimensions_hash = filtered.dimensions_hash
+           AND preferred.metric_name = filtered.metric_name
+           AND preferred.statistic = filtered.statistic
+           AND preferred.target_bucket_start = filtered.target_bucket_start
+           AND preferred.bucket_seconds = filtered.bucket_seconds
+        )
+      `;
     const cursorCondition = cursor === undefined
       ? Prisma.empty
       : cursor.kind === 'legacy-date'
@@ -43,29 +69,7 @@ export class PrismaResourceMetricMixedRollupReader {
           to_timestamp(floor(extract(epoch FROM r.bucket_start) / ${bucketSeconds}) * ${bucketSeconds}) AS target_bucket_start
         FROM resource_metric_rollups r
         WHERE ${sourceWhere} AND r.bucket_seconds <= ${bucketSeconds}
-      ), preferred AS (
-        SELECT tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id,
-          provider_namespace, region_id, dimensions_hash, metric_name, statistic,
-          target_bucket_start, ${preferredResolution}(bucket_seconds) AS bucket_seconds
-        FROM filtered
-        GROUP BY tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id,
-          provider_namespace, region_id, dimensions_hash, metric_name, statistic, target_bucket_start
-      ), source AS (
-        SELECT filtered.*
-        FROM filtered
-        INNER JOIN preferred
-          ON preferred.tenant_id = filtered.tenant_id
-         AND preferred.cloud_connection_id = filtered.cloud_connection_id
-         AND preferred.cloud_resource_id IS NOT DISTINCT FROM filtered.cloud_resource_id
-         AND preferred.external_resource_id = filtered.external_resource_id
-         AND preferred.provider_namespace = filtered.provider_namespace
-         AND preferred.region_id = filtered.region_id
-         AND preferred.dimensions_hash = filtered.dimensions_hash
-         AND preferred.metric_name = filtered.metric_name
-         AND preferred.statistic = filtered.statistic
-         AND preferred.target_bucket_start = filtered.target_bucket_start
-         AND preferred.bucket_seconds = filtered.bucket_seconds
-      ), grouped AS (
+      ), ${sourceCtes}, grouped AS (
         SELECT
           target_bucket_start AS bucket_start,
           max(provider)::text AS provider,

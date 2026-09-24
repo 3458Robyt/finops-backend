@@ -7,8 +7,8 @@ import {
   type RawMetricSeriesRow,
 } from './technicalMetricQueryHelpers.js';
 
-/** Reads the finest persisted projection without mixed-resolution reconciliation. */
-export class PrismaResourceMetricExactRollupReader {
+/** Reads native 30m and 1h projections for a 30m chart without splitting coarse samples. */
+export class PrismaResourceMetric30mRollupReader {
   constructor(private readonly prisma: PrismaClient) {}
 
   public async listFor(
@@ -17,7 +17,7 @@ export class PrismaResourceMetricExactRollupReader {
     cursor: MetricSeriesCursor | undefined,
     limit: number,
   ): Promise<RawMetricSeriesRow[]> {
-    const where = buildMetricRollupWhereClause(tenantId, filters, 1800);
+    const where = buildMetricRollupWhereClause(tenantId, filters);
     const cursorCondition = cursor === undefined
       ? Prisma.empty
       : cursor.kind === 'legacy-date'
@@ -72,7 +72,7 @@ export class PrismaResourceMetricExactRollupReader {
         max_sampled_at,
         latest_sampled_at
       FROM resource_metric_rollups
-      WHERE ${where}
+      WHERE ${where} AND bucket_seconds IN (1800, 3600)
       ${cursorCondition}
       ORDER BY bucket_start ASC, external_resource_id ASC, COALESCE(cloud_resource_id, '') ASC,
         provider_namespace ASC, region_id ASC, metric_name ASC, dimensions_hash ASC, bucket_seconds ASC
@@ -84,7 +84,8 @@ export class PrismaResourceMetricExactRollupReader {
     const rows = await this.prisma.$queryRaw<{ readonly total: string | number | bigint }[]>(Prisma.sql`
       SELECT COALESCE(SUM(sample_count), 0)::bigint AS total
       FROM resource_metric_rollups
-      WHERE ${buildMetricRollupWhereClause(tenantId, filters, 1800)}
+      WHERE ${buildMetricRollupWhereClause(tenantId, filters)}
+        AND bucket_seconds IN (1800, 3600)
     `);
     return Number(rows[0]?.total ?? 0);
   }

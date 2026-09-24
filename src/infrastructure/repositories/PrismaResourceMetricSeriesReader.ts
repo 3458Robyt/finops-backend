@@ -14,7 +14,7 @@ import {
   type MetricSeriesCursor,
   type RawMetricSeriesRow,
 } from './technicalMetricQueryHelpers.js';
-import { PrismaResourceMetricExactRollupReader } from './PrismaResourceMetricExactRollupReader.js';
+import { PrismaResourceMetric30mRollupReader } from './PrismaResourceMetric30mRollupReader.js';
 import { PrismaResourceMetricMixedRollupReader } from './PrismaResourceMetricMixedRollupReader.js';
 
 /**
@@ -22,11 +22,11 @@ import { PrismaResourceMetricMixedRollupReader } from './PrismaResourceMetricMix
  * coverage, summaries, or cost context into the same repository class.
  */
 export class PrismaResourceMetricSeriesReader {
-  private readonly exactRollups: PrismaResourceMetricExactRollupReader;
+  private readonly thirtyMinuteRollups: PrismaResourceMetric30mRollupReader;
   private readonly mixedRollups: PrismaResourceMetricMixedRollupReader;
 
   constructor(private readonly prisma: PrismaClient) {
-    this.exactRollups = new PrismaResourceMetricExactRollupReader(prisma);
+    this.thirtyMinuteRollups = new PrismaResourceMetric30mRollupReader(prisma);
     this.mixedRollups = new PrismaResourceMetricMixedRollupReader(prisma);
   }
 
@@ -236,11 +236,10 @@ export class PrismaResourceMetricSeriesReader {
     cursor: MetricSeriesCursor | undefined,
     limit: number,
   ): Promise<RawMetricSeriesRow[]> {
-    // 30m is the finest persisted projection. There is no finer source to
-    // reconcile at this resolution, so avoid the preferred-resolution CTE,
-    // duplicate sorts and merge join used by hour/day mixed-resolution reads.
+    // Keep native 30m and 1h samples as separate points. Never split an hourly
+    // value into synthetic half-hour values; the source resolution is exposed.
     if (bucketSeconds === 1800) {
-      return this.exactRollups.listFor(tenantId, filters, cursor, limit);
+      return this.thirtyMinuteRollups.listFor(tenantId, filters, cursor, limit);
     }
 
     return this.mixedRollups.listFor(tenantId, filters, bucketSeconds, cursor, limit);
@@ -266,9 +265,17 @@ export class PrismaResourceMetricSeriesReader {
     bucketSeconds: number,
   ): Promise<number> {
     const where = buildMetricRollupWhereClause(tenantId, filters);
-    if (bucketSeconds === 1800) return this.exactRollups.countFor(tenantId, filters);
+    if (bucketSeconds === 1800) return this.thirtyMinuteRollups.countFor(tenantId, filters);
+    if (bucketSeconds === 3600) {
+      const rows = await this.prisma.$queryRaw<{ readonly total: string | number | bigint }[]>(Prisma.sql`
+        SELECT COALESCE(SUM(sample_count), 0)::bigint AS total
+        FROM resource_metric_rollups
+        WHERE ${where} AND bucket_seconds IN (1800, 3600)
+      `);
+      return Number(rows[0]?.total ?? 0);
+    }
 
-    const preferredResolution = bucketSeconds === 86400 ? Prisma.sql`MAX` : Prisma.sql`MIN`;
+    const preferredResolution = Prisma.sql`MAX`;
     const rows = await this.prisma.$queryRaw<{ readonly total: string | number | bigint }[]>(Prisma.sql`
       WITH filtered AS (
         SELECT tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id,

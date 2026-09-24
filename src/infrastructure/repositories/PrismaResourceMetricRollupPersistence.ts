@@ -17,6 +17,8 @@ export class PrismaResourceMetricRollupPersistence {
         FROM ingestion_jobs
         WHERE id = ${ingestionJobId}
       ), affected AS MATERIALIZED (
+        -- Recompute every source resolution for each affected stream together;
+        -- otherwise a job at one resolution can overwrite an incomplete daily rollup.
         SELECT DISTINCT
           samples.tenant_id,
           samples.cloud_connection_id,
@@ -25,8 +27,7 @@ export class PrismaResourceMetricRollupPersistence {
           samples.region_id,
           samples.dimensions_hash,
           samples.metric_name,
-          samples.statistic,
-          samples.granularity_seconds
+          samples.statistic
         FROM resource_metric_samples samples
         WHERE samples.ingestion_job_id = ${ingestionJobId}
       ), samples_range AS MATERIALIZED (
@@ -64,7 +65,6 @@ export class PrismaResourceMetricRollupPersistence {
          AND affected.dimensions_hash = samples.dimensions_hash
          AND affected.metric_name = samples.metric_name
          AND affected.statistic = samples.statistic
-         AND affected.granularity_seconds = samples.granularity_seconds
         CROSS JOIN LATERAL (
           SELECT CASE
             WHEN samples.granularity_seconds <= 1800 THEN 1800
@@ -86,8 +86,10 @@ export class PrismaResourceMetricRollupPersistence {
             floor(extract(epoch FROM job."target_start") / bucket.bucket_seconds)
             * bucket.bucket_seconds
           )
-          AND bucket.bucket_start < to_timestamp(
-            ceil(extract(epoch FROM job."target_end") / bucket.bucket_seconds)
+        -- OCI may return a datapoint exactly at endTime. Include that end
+        -- bucket when refreshing this job's projection instead of dropping it.
+        AND bucket.bucket_start <= to_timestamp(
+            floor(extract(epoch FROM job."target_end") / bucket.bucket_seconds)
             * bucket.bucket_seconds
           )
       ), grouped AS (

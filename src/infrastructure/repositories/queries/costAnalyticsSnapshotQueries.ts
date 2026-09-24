@@ -155,22 +155,25 @@ export async function runSnapshotAggregations(
     // atribuibles a un recurso concreto). Usa max() para servicio/proveedor
     // representativos del recurso agrupado.
     prisma.$queryRaw<ResourceRow[]>`
-      select resource_id,
-             cloud_account_id,
-             max(cloud_connection_id) as cloud_connection_id,
-             max(cloud_resource_id) as cloud_resource_id,
-             max(resource_name) as resource_name,
-             max(service_name) as service_name,
-             max(provider::text) as provider,
+      select cm.resource_id,
+             cm.cloud_account_id,
+             max(cm.cloud_connection_id) as cloud_connection_id,
+             max(cm.cloud_resource_id) as cloud_resource_id,
+             coalesce(max(nullif(cm.resource_name, '')), max(cr.name)) as resource_name,
+             max(cm.service_name) as service_name,
+             max(cm.provider::text) as provider,
              count(*)::int as metric_count,
-             coalesce(sum(billed_cost), 0)::float8 as total_cost,
-             billing_currency as currency
-      from cost_metrics
-      where tenant_id = ${tenantId}
-        and charge_period_start >= ${periodStart}
-        and charge_period_start < ${periodEnd}
-        and resource_id <> ''
-      group by resource_id, cloud_account_id, billing_currency
+             coalesce(sum(cm.billed_cost), 0)::float8 as total_cost,
+             cm.billing_currency as currency
+      from cost_metrics cm
+      left join cloud_resources cr
+        on cr.id = cm.cloud_resource_id
+       and cr.tenant_id = cm.tenant_id
+      where cm.tenant_id = ${tenantId}
+        and cm.charge_period_start >= ${periodStart}
+        and cm.charge_period_start < ${periodEnd}
+        and cm.resource_id <> ''
+      group by cm.resource_id, cm.cloud_account_id, cm.billing_currency
       order by total_cost desc
       limit 10
     `,

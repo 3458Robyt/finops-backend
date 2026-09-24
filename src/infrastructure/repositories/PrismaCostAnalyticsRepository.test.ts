@@ -1,8 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { PrismaCostAnalyticsRepository } from './PrismaCostAnalyticsRepository.js';
+import { runSnapshotAggregations } from './queries/costAnalyticsSnapshotQueries.js';
 
 describe('PrismaCostAnalyticsRepository', () => {
+  it('falls back to the tenant-scoped inventory name for top cost resources', async () => {
+    const statements: string[] = [];
+    const queryRaw = vi.fn().mockImplementation((strings: TemplateStringsArray) => {
+      statements.push(Array.from(strings).join('?'));
+      return Promise.resolve([]);
+    });
+    const prisma = { $queryRaw: queryRaw } as unknown as PrismaClient;
+
+    await runSnapshotAggregations(
+      prisma,
+      'tenant-1',
+      new Date('2026-09-01T00:00:00.000Z'),
+      new Date('2026-10-01T00:00:00.000Z'),
+    );
+
+    const topResourcesQuery = statements.find((statement) => statement.includes('left join cloud_resources cr'));
+    expect(topResourcesQuery).toContain("coalesce(max(nullif(cm.resource_name, '')), max(cr.name)) as resource_name");
+    expect(topResourcesQuery).toContain('cr.tenant_id = cm.tenant_id');
+  });
+
   it('applies the requested forecast month range', async () => {
     const findMany = vi.fn().mockResolvedValue([]);
     const prisma = { costForecast: { findMany } } as unknown as PrismaClient;

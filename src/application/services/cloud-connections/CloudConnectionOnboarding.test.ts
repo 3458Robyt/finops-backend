@@ -66,6 +66,46 @@ describe('CloudConnectionOnboarding staged credentials', () => {
     expect(discoverMetricDefinitions).not.toHaveBeenCalled();
   });
 
+  test('does not reveal or discover a connection outside the active tenant', async () => {
+    const repository = buildRepository();
+    repository.getIngestionConnectionForTenant.mockResolvedValue(null);
+    const discoverMetricDefinitions = vi.fn();
+    const provider = { ...buildProvider({ status: 'VERIFIED' }), discoverMetricDefinitions } as unknown as CloudIngestionProvider;
+    const service = new CloudConnectionService(repository, [provider]);
+
+    await expect(service.previewMetricDefinitions({
+      tenantId: 'other-tenant', userId: 'user-1', cloudConnectionId: connection.id,
+      scope: { regionId: 'us-phoenix-1', compartmentId: 'compartment-1' },
+    })).rejects.toThrow(/no existe|tenant activo/i);
+
+    expect(discoverMetricDefinitions).not.toHaveBeenCalled();
+    expect(repository.createCloudAuditEvent).not.toHaveBeenCalled();
+  });
+
+  test('aborts provider discovery at the fixed timeout and does not audit an incomplete preview', async () => {
+    vi.useFakeTimers();
+    try {
+      const repository = buildRepository();
+      const discoverMetricDefinitions = vi.fn((_connection, _scope, signal?: AbortSignal) => new Promise<CloudMetricDiscoveryResult>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('provider request aborted')), { once: true });
+      }));
+      const provider = { ...buildProvider({ status: 'VERIFIED' }), discoverMetricDefinitions } as unknown as CloudIngestionProvider;
+      const service = new CloudConnectionService(repository, [provider]);
+      const preview = service.previewMetricDefinitions({
+        tenantId: 'tenant-1', userId: 'user-1', cloudConnectionId: connection.id,
+        scope: { regionId: 'us-phoenix-1', compartmentId: 'compartment-1' },
+      });
+
+      const timeout = expect(preview).rejects.toThrow(/20 segundos/i);
+      await vi.advanceTimersByTimeAsync(20_000);
+      await timeout;
+      expect(discoverMetricDefinitions.mock.calls[0]?.[2]?.aborted).toBe(true);
+      expect(repository.createCloudAuditEvent).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('retains the discovered OCI region when explicitly saving metric definitions', async () => {
     const repository = buildRepository();
     const service = new CloudConnectionService(repository, [buildProvider({ status: 'VERIFIED' })]);

@@ -3,6 +3,8 @@ import type { AgentLearningContext } from '../../../domain/interfaces/IAgentLear
 import type { BuiltAiContext } from '../../../domain/interfaces/IContextEngineService.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
 import type { AiChatMessage, AiChatOutputFormat } from './finOpsAiTypes.js';
+import { compactExecutionPlanContext } from './executionPlanPromptContext.js';
+export { compactExecutionPlanArtifact } from './executionPlanPromptContext.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -164,8 +166,8 @@ JSON.stringify(compactSnapshot(snapshot), null, 2),
  * Construye el prompt de sistema para el plan de ejecución.
  *
  * Exige un plan manual, gobernado y en español, prohíbe afirmar ejecución
- * automática, restringe el contenido al contexto FOCUS y a la recomendación,
- * y fija el formato JSON estricto del plan. Adjunta snapshot y recomendación.
+ * automática, restringe el contenido a la evidencia autorizada no financiera,
+ * y fija el formato JSON estricto del plan.
  */
 export function buildExecutionPlanSystemPrompt(
   snapshot: CostAnalyticsSnapshot,
@@ -179,19 +181,16 @@ export function buildExecutionPlanSystemPrompt(
     'No escribas instrucciones no condicionadas como "ejecutar manualmente el cambio autorizado", "aplicar el cambio" o "redimensionar la instancia". Si una operacion futura es pertinente, describela como una posibilidad posterior condicionada a una aprobacion externa explicita del responsable y a una validacion previa.',
     'Empieza por comprobaciones read-only, documenta la aprobacion externa, conserva un snapshot de la configuracion actual y define rollback antes de describir una operacion potencial.',
     'No devuelvas tool_calls, function_calls, SQL, shell, scripts ni codigo ejecutable; el plan solo describe pasos manuales para una persona autorizada.',
-    'Usa solo la recomendacion, evidencia y contexto FOCUS proporcionados. No inventes recursos, cuentas, metricas tecnicas ni proveedores.',
-    'Usa exactamente los importes, moneda y periodo de la recomendacion original. Si el snapshot y la recomendacion presentan importes distintos, no copies la cifra conflictiva del snapshot: omite ese importe y solicita reconciliacion antes de continuar.',
+    'Usa solo la recomendacion y la evidencia tecnica/operativa proporcionadas. El periodo indica cobertura, no importes; no inventes recursos, cuentas, metricas tecnicas ni proveedores.',
+    'El contexto autorizado de este plan omite deliberadamente importes, monedas y agregados financieros para evitar mezclar hechos de distintos alcances. No infieras ni inventes ahorros; el servidor calcula y reemplaza estimatedSavings usando la evidencia deterministica de la recomendacion.',
     'POTENTIAL_NOT_VERIFIED describe el estado del ahorro estimado, no el estado de la recomendacion. Conserva el estado de gestion original de la recomendacion (por ejemplo PENDING).',
     untrustedContextInstruction,
     'Si la recomendacion solo tiene evidencia FOCUS, indica que CPU, memoria, IOPS o throughput deben validarse fuera de FOCUS antes de ejecutar cambios tecnicos.',
-    'No escribas montos monetarios, monedas ni cifras de ahorro en el texto narrativo del plan. La única cifra económica va en estimatedSavings.amount y debe provenir de savingsCalculation; si no existe, usa cero y explica en note que no hay ahorro cuantificado.',
+    'No escribas montos monetarios, monedas ni cifras de ahorro en el texto narrativo. Para estimatedSavings devuelve solo un placeholder con amount=0, currency="SERVER_NORMALIZED", status="POTENTIAL_NOT_VERIFIED" y una nota neutral; el servidor reemplazará todo ese campo antes de validarlo o persistirlo.',
     'Devuelve solo JSON estricto con esta forma:',
-    '{"summary":"...","scope":{"cloudAccountId":"...","service":"..."},"prerequisites":["..."],"steps":["..."],"validation":["..."],"risks":["..."],"rollback":["..."],"successCriteria":["..."],"estimatedSavings":{"amount":0,"currency":"USD","status":"POTENTIAL_NOT_VERIFIED","note":"..."}}',
-    'Contexto de costos:',
-    JSON.stringify(compactSnapshot(snapshot), null, 2),
-    'Recomendacion:',
-    JSON.stringify(recommendation, null, 2),
-    'Regla final de trazabilidad: la Recomendacion original tiene prioridad sobre el Contexto de costos para cuenta, recurso, moneda, periodo e importes. No copies una cifra o identificador que solo aparezca en el Contexto de costos.',
+    '{"summary":"...","scope":{"cloudAccountId":"...","service":"..."},"prerequisites":["..."],"steps":["..."],"validation":["..."],"risks":["..."],"rollback":["..."],"successCriteria":["..."],"estimatedSavings":{"amount":0,"currency":"SERVER_NORMALIZED","status":"POTENTIAL_NOT_VERIFIED","note":"El servidor normaliza este campo."}}',
+    'Contexto acotado a periodo, alcance y evidencia técnica/operativa no financiera:',
+    JSON.stringify(compactExecutionPlanContext(snapshot, recommendation), null, 2),
   ].join('\n');
 }
 
@@ -238,9 +237,8 @@ export function buildAuditSystemPrompt(
         'Comprueba que prerequisites, steps, validation, risks, rollback y successCriteria existan, sean concretos y describan una operación manual. El plan no autoriza ni ejecuta cambios.',
         'Rechaza cualquier paso que ordene ejecutar, aplicar, cambiar, detener, eliminar o redimensionar un recurso sin una condicion explicita de aprobacion externa; "autorizado" por si solo no demuestra una aprobacion.',
         'Si la recomendacion requiere validacion tecnica, el plan debe exigir validacion de CPU, memoria, red, disco, disponibilidad u otra métrica pertinente antes de cambiar capacidad; no conviertas FOCUS en una métrica técnica.',
-        'No inventes estimatedSavings. Copia solo un importe respaldado por savingsCalculation del candidato. Si no existe cálculo determinístico, usa amount=0 y explica que la oportunidad aún no tiene ahorro cuantificado.',
-        'Rechaza montos monetarios en el texto narrativo del plan. No rechaces amount=0 y currency dentro del campo estructurado estimatedSavings cuando su note aclare que no existe ahorro cuantificado.',
-        'Un amount positivo en estimatedSavings solo es válido si coincide exactamente con savingsCalculation determinístico de la recomendación original; costo observado, consumo o snapshot no son ahorro.',
+        'estimatedSavings se omite del artefacto que recibes: el servidor lo normaliza y valida con evidencia determinística independiente. No infieras importes, moneda ni ahorros y no solicites cambios en ese campo.',
+        'Rechaza montos monetarios en el texto narrativo del plan; las cifras de ahorro no forman parte de tu tarea de auditoría.',
         'No describas POTENTIAL_NOT_VERIFIED como estado de la recomendacion: es solamente el estado del ahorro estimado.',
       ];
   const responseShape = artifactType === 'recommendations'

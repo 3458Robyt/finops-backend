@@ -2,7 +2,11 @@ import type { AiGatewayRequest, AiReasoningEffort, IAiGateway } from '../../../d
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
 import type { AiAuditReport } from '../../../domain/models/RecommendationExecutionPlan.js';
-import { buildAuditSystemPrompt, compactSnapshot } from './finOpsAiPrompts.js';
+import {
+  buildAuditSystemPrompt,
+  compactSnapshot,
+} from './finOpsAiPrompts.js';
+import { compactExecutionPlanArtifact, compactExecutionPlanContext } from './executionPlanPromptContext.js';
 import { parseAuditReport } from './finOpsAiResponseParser.js';
 import type { AiTraceRecorder } from './aiTraceRecorder.js';
 import type { RecommendationEvidenceSnapshot } from './RecommendationEvidenceSnapshot.js';
@@ -115,6 +119,7 @@ export class FinOpsArtifactAiRunner {
     requiredChanges: readonly string[],
     currentPlan?: Record<string, unknown>,
   ): Promise<string> {
+    const planForRepair = currentPlan === undefined ? undefined : omitEstimatedSavings(currentPlan);
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
@@ -130,12 +135,10 @@ export class FinOpsArtifactAiRunner {
           content: [
             'Corrige el plan de ejecucion usando exactamente estos cambios requeridos por auditoria.',
             'Mantiene el alcance manual y no prometas ejecucion automatica.',
-            'Conserva los hechos monetarios y el estado de gestion de la recomendacion; no inventes importes, periodos ni estados.',
-            'No copies cifras del plan actual si no aparecen en la recomendacion original. Si hay conflicto entre fuentes, elimina la cifra conflictiva y solicita reconciliacion.',
-            'La Recomendacion original tiene prioridad sobre el contexto y sobre el plan actual para cuenta, recurso, moneda, periodo e importes. Usa únicamente los importes permitidos indicados por los controles deterministas.',
-            'No incluyas cifras monetarias en el texto narrativo; conserva cualquier ahorro autorizado solo en estimatedSavings.amount.',
+            'Conserva el estado de gestion de la recomendacion y el alcance del plan; no inventes periodos, recursos ni estados.',
+            'No incluyas cifras monetarias en el texto narrativo. Devuelve el placeholder estimatedSavings; el servidor lo normaliza desde evidencia deterministica.',
             JSON.stringify(requiredChanges),
-            ...(currentPlan === undefined ? [] : ['Plan actual que debes corregir:', JSON.stringify(currentPlan)]),
+            ...(planForRepair === undefined ? [] : ['Plan actual que debes corregir:', JSON.stringify(planForRepair)]),
           ].join('\n'),
         },
       ],
@@ -144,6 +147,10 @@ export class FinOpsArtifactAiRunner {
 
   public async auditArtifact(input: ArtifactAuditInput): Promise<AiAuditReport> {
     const startedAt = Date.now();
+    const isExecutionPlan = input.artifactType === 'execution_plan';
+    const executionPlanContext = isExecutionPlan
+      ? compactExecutionPlanContext(input.snapshot, input.recommendation)
+      : undefined;
     const request: AiGatewayRequest = {
       model: this.auditorModel,
       responseFormat: 'json',
@@ -161,7 +168,7 @@ export class FinOpsArtifactAiRunner {
           content: [
             `Audita este artefacto: ${input.artifactType}.`,
             'Contexto autorizado:',
-            JSON.stringify(compactSnapshot(input.snapshot)),
+            JSON.stringify(executionPlanContext ?? compactSnapshot(input.snapshot)),
             ...(input.technicalEvidenceSnapshot === undefined
               ? []
               : [
@@ -182,9 +189,9 @@ export class FinOpsArtifactAiRunner {
                 ]),
             ...(input.recommendation === undefined
               ? []
-              : ['Recomendacion original:', JSON.stringify(input.recommendation)]),
+              : ['Recomendacion original:', JSON.stringify(executionPlanContext?.['recommendation'] ?? input.recommendation)]),
             'Artefacto generado:',
-            JSON.stringify(input.artifact),
+            JSON.stringify(isExecutionPlan ? compactExecutionPlanArtifact(input.artifact) : input.artifact),
           ].join('\n'),
         },
       ],
@@ -204,6 +211,11 @@ export class FinOpsArtifactAiRunner {
 
     return parseAuditReport(rawResponse);
   }
+}
+
+function omitEstimatedSavings(plan: Record<string, unknown>): Record<string, unknown> {
+  const { estimatedSavings: _estimatedSavings, ...safePlan } = plan;
+  return safePlan;
 }
 
 function compactReadinessReport(report: RecommendationReadinessReport): Readonly<Record<string, unknown>> {

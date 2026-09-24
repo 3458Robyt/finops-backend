@@ -6,6 +6,7 @@ import {
   buildChatSystemPrompt,
   buildExecutionPlanSystemPrompt,
   buildRecommendationSystemPrompt,
+  compactExecutionPlanArtifact,
 } from './finOpsAiPrompts.js';
 
 const snapshot: CostAnalyticsSnapshot = {
@@ -80,6 +81,52 @@ describe('FinOps AI prompt boundaries', () => {
     expect(prompt).toContain('No rechaces un candidateId válido solo porque no sea un campo de un recurso técnico');
     expect(prompt).toContain('Un candidato VALIDATION_ONLY puede no tener technicalEvidenceRefs suficientes');
     expect(prompt).toContain('resourceLinkReason=INVENTORY_RESOURCE_NOT_FOUND puede ser el estado honesto de trazabilidad');
+  });
+
+  test('excludes conflicting cost totals and server savings from execution-plan prompts', () => {
+    const financiallyConflictingRecommendation = {
+      ...recommendation,
+      title: 'Validar capacidad: USD 157.50 y JPY 5,000',
+      description: 'El costo actual es USD 169; validar antes de actuar.',
+      estimatedMonthlySavings: 157.5,
+      evidence: {
+        evidenceLevel: 'COST_USAGE_AND_TECHNICAL',
+        observedCost: 169,
+        normalizedMonthlyCost: 169,
+        potentialMonthlySavings: 157.5,
+        savingsCalculation: { baselineMonthlyCost: 169, alternativeMonthlyCost: 11.5, amount: 157.5, currency: 'USD' },
+        technicalSampleCount: 96,
+        technicalCoverageDays: 14,
+        latestTechnicalSampleAt: '2026-04-30T23:30:00.000Z',
+        technicalEvidenceRefs: ['metric-ref-1'],
+        deterministicRules: {
+          recommendedActionType: 'RIGHTSIZING',
+          metricSummary: [{ metricName: 'CpuUtilization', avg: 18, p95: 42 }],
+          baselineCost: 169,
+        },
+      },
+    } as FinOpsRecommendation;
+    const prompt = buildExecutionPlanSystemPrompt({
+      ...snapshot,
+      totalCost: 169,
+      accounts: [{ cloudAccountId: 'acc-1', provider: 'OCI', name: 'Cuenta', totalCost: 169, metricCount: 1 }],
+    }, financiallyConflictingRecommendation);
+
+    expect(prompt).not.toContain('169');
+    expect(prompt).not.toContain('157.5');
+    expect(prompt).not.toContain('5,000');
+    expect(prompt).not.toContain('savingsCalculation');
+    expect(prompt).toContain('acc-1');
+    expect(prompt).toContain('metric-ref-1');
+    expect(prompt).toContain('CpuUtilization');
+    expect(prompt).toContain('SERVER_NORMALIZED');
+  });
+
+  test('removes the server-owned savings field before plan audit', () => {
+    expect(compactExecutionPlanArtifact({
+      summary: 'Validar capacidad.',
+      estimatedSavings: { amount: 157.5, currency: 'USD' },
+    })).toEqual({ summary: 'Validar capacidad.' });
   });
 
   test('forbids savings claims when no deterministic priced alternative exists', () => {

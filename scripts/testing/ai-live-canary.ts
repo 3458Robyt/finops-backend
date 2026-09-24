@@ -86,6 +86,16 @@ try {
     if (audit.stderr.trim() !== '') {
       console.error(audit.stderr.trim());
     }
+    const deepAudit = await runCommand(nodeCommand, [tsxCli, 'scripts/testing/ai-live-deep-audit.ts'], {
+      AI_LIVE_TESTS: 'true',
+      AI_EXPECTED_MODEL: process.env['AI_EXPECTED_MODEL'] ?? 'gpt-5.6-luna',
+      E2E_API_BASE_URL: apiBaseUrl,
+      E2E_FIXTURE_FILE: fixtureFile,
+    });
+    console.log(deepAudit.stdout.trim());
+    if (deepAudit.stderr.trim() !== '') {
+      console.error(deepAudit.stderr.trim());
+    }
   }
   if (canaryScope === 'learning' || canaryScope === 'all') {
     const learningAudit = await runCommand(nodeCommand, [tsxCli, 'scripts/testing/learning-live-audit.ts'], {

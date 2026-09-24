@@ -6,10 +6,11 @@ import type {
   ConfigureMetricDefinitionsForConnectionInput,
   ConfigureMetricDefinitionsForConnectionResult,
 } from '../../domain/interfaces/ICloudConnectionRepository.js';
-import type { PrismaClient } from '../../generated/prisma/client.js';
+import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { isJsonObject } from './mappers/cloudConnectionMappers.js';
 import { invalidatedValidationData } from './cloudConnectionMetadata.js';
 import { configureFocusSourceMetadata } from '../ingestion/focusSourceMetadata.js';
+import { hashOciMetricDimensions } from '../ingestion/oci/OciMetricDimensions.js';
 
 /**
  * Persists the provider-specific ingestion configuration of a cloud
@@ -77,28 +78,103 @@ export class PrismaCloudConnectionConfigurationRepository {
   public async configureMetricDefinitionsForConnection(
     input: ConfigureMetricDefinitionsForConnectionInput,
   ): Promise<ConfigureMetricDefinitionsForConnectionResult | null> {
-    const connection = await this.findActiveConnection(input.tenantId, input.cloudConnectionId);
-    if (connection === null || (connection.providerCode !== 'aws' && connection.providerCode !== 'oci')) return null;
+    return this.prisma.$transaction(async (tx) => {
+      const connection = await tx.cloudConnection.findFirst({
+        where: { id: input.cloudConnectionId, tenantId: input.tenantId, status: 'ACTIVE' },
+        select: { id: true, providerCode: true, metadata: true, defaultRegion: true },
+      });
+      if (connection === null || (connection.providerCode !== 'aws' && connection.providerCode !== 'oci')) return null;
 
-    const updatedKey = connection.providerCode === 'aws' ? 'awsMetricDefinitions' : 'ociMetricDefinitions';
-    const metadata = isJsonObject(connection.metadata) ? { ...(connection.metadata as Record<string, unknown>) } : {};
-    const existing = !input.replace && Array.isArray(metadata[updatedKey]) ? metadata[updatedKey] : [];
-    const definitions = [...new Map(
-      [...existing, ...input.definitions].map((definition) => [JSON.stringify(definition), definition]),
-    ).values()];
+      const updatedKey = connection.providerCode === 'aws' ? 'awsMetricDefinitions' : 'ociMetricDefinitions';
+      const metadata = isJsonObject(connection.metadata) ? { ...(connection.metadata as Record<string, unknown>) } : {};
+      const existing = !input.replace && Array.isArray(metadata[updatedKey]) ? metadata[updatedKey] : [];
+      const definitions = [...new Map(
+        [...existing, ...input.definitions].map((definition) => [JSON.stringify(definition), definition]),
+      ).values()];
+      metadata[updatedKey] = definitions;
 
-    metadata[updatedKey] = definitions;
-    await this.prisma.cloudConnection.update({
-      where: { id: connection.id },
-      data: invalidatedValidationData(metadata),
+      await tx.cloudConnection.update({
+        where: { id: connection.id },
+        data: invalidatedValidationData(metadata),
+      });
+
+      if (connection.providerCode === 'oci') {
+        if (input.replace) {
+          await tx.cloudMetricDefinition.updateMany({
+            where: { tenantId: input.tenantId, cloudConnectionId: connection.id },
+            data: { enabled: false, status: 'DISCOVERED' },
+          });
+        }
+        const confirmedAt = new Date();
+        for (const definition of input.definitions) {
+          await this.upsertOciMetricDefinition(
+            tx,
+            input.tenantId,
+            connection.id,
+            connection.defaultRegion,
+            definition,
+            confirmedAt,
+          );
+        }
+      }
+
+      return {
+        cloudConnectionId: connection.id,
+        providerCode: connection.providerCode,
+        updatedKey,
+        configuredCount: definitions.length,
+        replaced: input.replace,
+      };
     });
-    return {
-      cloudConnectionId: connection.id,
-      providerCode: connection.providerCode,
-      updatedKey,
-      configuredCount: definitions.length,
-      replaced: input.replace,
+  }
+
+  private upsertOciMetricDefinition(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    cloudConnectionId: string,
+    defaultRegion: string | null,
+    definition: Readonly<Record<string, unknown>>,
+    confirmedAt: Date,
+  ) {
+    const compartmentId = String(definition['compartmentId']);
+    const namespace = String(definition['namespace']);
+    const metricName = String(definition['metricName']);
+    const externalResourceId = String(definition['resourceId'] ?? '');
+    const regionId = typeof definition['regionId'] === 'string' ? definition['regionId'] : defaultRegion;
+    const dimensions = readStringDimensions(definition['dimensions']);
+    const dimensionsHash = hashOciMetricDimensions(dimensions);
+    const shared = {
+      tenantId,
+      cloudConnectionId,
+      regionId,
+      compartmentId,
+      namespace,
+      metricName,
+      externalResourceId,
+      dimensionsHash,
+      dimensions: dimensions === undefined ? Prisma.DbNull : dimensions as Prisma.InputJsonValue,
+      metricUnit: typeof definition['unit'] === 'string' ? definition['unit'] : null,
+      statistics: definition['statistics'] as Prisma.InputJsonValue,
+      status: 'CONFIRMED',
+      enabled: true,
+      discoverySource: 'OCI_LIST_METRICS',
+      lastSeenAt: confirmedAt,
+      confirmedAt,
     };
+    return tx.cloudMetricDefinition.upsert({
+      where: {
+        cloudConnectionId_namespace_metricName_compartmentId_externalResourceId_dimensionsHash: {
+          cloudConnectionId,
+          namespace,
+          metricName,
+          compartmentId,
+          externalResourceId,
+          dimensionsHash,
+        },
+      },
+      create: shared,
+      update: shared,
+    });
   }
 
   private findActiveConnection(tenantId: string, cloudConnectionId: string) {
@@ -107,4 +183,12 @@ export class PrismaCloudConnectionConfigurationRepository {
       select: { id: true, providerCode: true, metadata: true },
     });
   }
+}
+
+function readStringDimensions(value: unknown): Readonly<Record<string, string>> | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value);
+  return entries.every(([, item]) => typeof item === 'string')
+    ? Object.fromEntries(entries) as Record<string, string>
+    : undefined;
 }

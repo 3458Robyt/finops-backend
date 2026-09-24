@@ -34,6 +34,7 @@ const vitestCli = resolve('node_modules/vitest/vitest.mjs');
 const tsxCli = resolve('node_modules/tsx/dist/cli.mjs');
 const integrationTests = [
   'src/testing/e2eFixtures.test.ts',
+  'src/testing/metricDefinitionCatalog.integration.test.ts',
   'src/testing/technicalMetrics.integration.test.ts',
   'src/testing/recommendationAnalysis.integration.test.ts',
   'src/testing/verifiedSavingsMeasurement.integration.test.ts',

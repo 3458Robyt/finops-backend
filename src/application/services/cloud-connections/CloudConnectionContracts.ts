@@ -11,6 +11,7 @@ import type {
 } from '../../../domain/models/CloudConnection.js';
 import type {
   CloudConnectionValidationResult,
+  CloudMetricDiscoveryScope,
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
 
 export interface RegisterCloudConnectionInput {
@@ -152,4 +153,11 @@ export interface PreviewFocusSourceInput {
   readonly userId: string;
   readonly cloudConnectionId: string;
   readonly limit?: number;
+}
+
+export interface PreviewMetricDefinitionsInput {
+  readonly tenantId: string;
+  readonly userId: string;
+  readonly cloudConnectionId: string;
+  readonly scope: CloudMetricDiscoveryScope;
 }

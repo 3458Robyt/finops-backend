@@ -5,6 +5,7 @@ import type {
 } from '../../../domain/interfaces/ICloudConnectionRepository.js';
 import type {
   CloudConnectionValidationResult,
+  CloudMetricDiscoveryResult,
   CloudIngestionProvider,
   FocusSourcePreviewResult,
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
@@ -14,6 +15,7 @@ import { serializeCapabilityValidation, withTimeout } from '../cloudConnectionPo
 import type {
   CloudConnectionOnboardingDetail,
   PreviewFocusSourceInput,
+  PreviewMetricDefinitionsInput,
   RegisterCloudConnectionInput,
   StoreOperationalCredentialInput,
   UpdateCloudConnectionInput,
@@ -27,10 +29,12 @@ import {
   requireNonEmpty,
 } from './CloudConnectionInputPolicy.js';
 import { CloudCredentialValidationService } from './CloudCredentialValidationService.js';
+import { CloudConnectionMetricDiscovery } from './CloudConnectionMetricDiscovery.js';
 
 export class CloudConnectionOnboarding {
   private readonly providers: ReadonlyMap<string, CloudIngestionProvider>;
   private readonly credentialValidation: CloudCredentialValidationService;
+  private readonly metricDiscovery: CloudConnectionMetricDiscovery;
 
   constructor(
     private readonly repository: ICloudConnectionRepository,
@@ -38,6 +42,7 @@ export class CloudConnectionOnboarding {
   ) {
     this.providers = new Map(providers.map((provider) => [provider.providerCode, provider]));
     this.credentialValidation = new CloudCredentialValidationService(repository, providers);
+    this.metricDiscovery = new CloudConnectionMetricDiscovery(repository, providers);
   }
 
   public listProviders(): Promise<readonly ProviderCatalogEntry[]> {
@@ -356,6 +361,10 @@ export class CloudConnectionOnboarding {
       },
     });
     return preview;
+  }
+
+  public previewMetricDefinitions(input: PreviewMetricDefinitionsInput): Promise<CloudMetricDiscoveryResult> {
+    return this.metricDiscovery.preview(input);
   }
 
   private async requireConnection(

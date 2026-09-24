@@ -12,6 +12,7 @@ import type {
 } from '../../domain/interfaces/ICloudConnectionRepository.js';
 import type {
   CloudConnectionValidationResult,
+  CloudMetricDiscoveryResult,
   CloudIngestionProvider,
   FocusSourcePreviewResult,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
@@ -32,6 +33,7 @@ import type {
   ConfigureMetricDefinitionsInput,
   ManageIngestionJobsInput,
   PreviewFocusSourceInput,
+  PreviewMetricDefinitionsInput,
   QueueIngestionInput,
   QueueTechnicalBackfillInput,
   RegisterCloudConnectionInput,
@@ -106,6 +108,10 @@ export class CloudConnectionService {
 
   public previewFocusSource(input: PreviewFocusSourceInput): Promise<FocusSourcePreviewResult> {
     return this.onboarding.previewFocusSource(input);
+  }
+
+  public previewMetricDefinitions(input: PreviewMetricDefinitionsInput): Promise<CloudMetricDiscoveryResult> {
+    return this.onboarding.previewMetricDefinitions(input);
   }
 
   public activateConnection(input: ActivateCloudConnectionInput): Promise<ActivateCloudConnectionResult> {

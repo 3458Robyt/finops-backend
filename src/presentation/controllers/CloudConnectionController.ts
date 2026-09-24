@@ -15,6 +15,7 @@ export class CloudConnectionController {
   public readonly validateCredential: CloudConnectionManagementController["validateCredential"];
   public readonly validateConnection: CloudConnectionManagementController["validateConnection"];
   public readonly previewFocusSource: CloudConnectionManagementController["previewFocusSource"];
+  public readonly previewMetricDefinitions: CloudConnectionManagementController["previewMetricDefinitions"];
   public readonly activateConnection: CloudConnectionManagementController["activateConnection"];
   public readonly configureBillingSource: CloudConnectionManagementController["configureBillingSource"];
   public readonly configureMetricDefinitions: CloudConnectionManagementController["configureMetricDefinitions"];
@@ -49,6 +50,7 @@ export class CloudConnectionController {
     this.validateCredential = management.validateCredential;
     this.validateConnection = management.validateConnection;
     this.previewFocusSource = management.previewFocusSource;
+    this.previewMetricDefinitions = management.previewMetricDefinitions;
     this.activateConnection = management.activateConnection;
     this.configureBillingSource = management.configureBillingSource;
     this.configureMetricDefinitions = management.configureMetricDefinitions;

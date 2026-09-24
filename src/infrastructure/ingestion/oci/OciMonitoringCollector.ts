@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type {
   CloudIngestionCollectOptions,
   CloudIngestionJobContext,
@@ -14,6 +13,7 @@ import { buildOciCollectionTasks, type OciCollectionTask } from './OciMonitoring
 import { mapWithConcurrency, regionKey } from './OciMonitoringCollectionSupport.js';
 import { createOciMonitoringRetryTelemetry, type OciMonitoringWithRetry } from './OciMonitoringRetryTelemetry.js';
 import { resolveOciRequestRange } from './OciMonitoringWindow.js';
+import { hashOciMetricDimensions } from './OciMetricDimensions.js';
 export { buildOciGroupedMetricQuery, buildOciResourceMetricQuery } from './OciMonitoringQueryBuilder.js';
 export { resolveOciRequestRange } from './OciMonitoringWindow.js';
 const MAX_PERSIST_BATCH_SIZE = 5_000;
@@ -243,7 +243,7 @@ async function collectOciTask(
         providerNamespace: metric.namespace ?? definition.namespace,
         ...(regionId !== undefined ? { regionId } : {}),
         compartmentId: definition.compartmentId,
-        ...(dimensions !== undefined ? { dimensions, dimensionsHash: hashDimensions(dimensions) } : {}),
+        ...(dimensions !== undefined ? { dimensions, dimensionsHash: hashOciMetricDimensions(dimensions) } : {}),
         metricName: metric.name ?? definition.metricName,
         statistic,
         value: point.value,
@@ -360,11 +360,6 @@ export function resolveOciCollectionWindow(job: Pick<CloudIngestionJobContext, '
   return spanMs > 30 * 24 * 60 * 60 * 1000
     ? { interval: '1h', granularitySeconds: 3600 }
     : { interval: '30m', granularitySeconds: 1800 };
-}
-
-function hashDimensions(dimensions: Readonly<Record<string, string>>): string {
-  const canonical = Object.keys(dimensions).sort().map((key) => `${key}=${dimensions[key]}`).join('&');
-  return createHash('sha256').update(canonical).digest('hex');
 }
 
 function emptyMetricResult(

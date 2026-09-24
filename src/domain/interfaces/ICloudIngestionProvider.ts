@@ -238,6 +238,32 @@ export interface CloudIngestionResult {
   readonly dataOutcome?: IngestionDataOutcome;
 }
 
+export interface CloudMetricDiscoveryScope {
+  readonly regionId: string;
+  readonly compartmentId: string;
+  readonly namespace?: string;
+}
+
+export interface CloudMetricDefinitionCandidate {
+  readonly compartmentId: string;
+  readonly namespace: string;
+  readonly metricName: string;
+  readonly resourceId: string;
+  readonly regionId?: string;
+  readonly dimensions?: Readonly<Record<string, string>>;
+  readonly statistics?: readonly MetricStatistic[];
+  readonly unit?: string;
+}
+
+export interface CloudMetricDiscoveryResult {
+  readonly definitions: readonly CloudMetricDefinitionCandidate[];
+  readonly regions: readonly string[];
+  readonly compartments: readonly string[];
+  readonly apiCallCount: number;
+  readonly truncated: boolean;
+  readonly warnings: readonly string[];
+}
+
 export interface CloudIngestionCollectOptions {
   /** Aborts provider HTTP calls when the operator cancels the job. */
   readonly signal?: AbortSignal;
@@ -259,5 +285,6 @@ export interface CloudIngestionProvider {
   readonly providerCode: ProviderCode;
   validate(connection: CloudIngestionConnection): Promise<CloudConnectionValidationResult>;
   previewFocus?(connection: CloudIngestionConnection, limit: number): Promise<FocusSourcePreviewResult>;
+  discoverMetricDefinitions?(connection: CloudIngestionConnection, scope: CloudMetricDiscoveryScope, signal?: AbortSignal): Promise<CloudMetricDiscoveryResult>;
   collect(job: CloudIngestionJobContext, options?: CloudIngestionCollectOptions): Promise<CloudIngestionResult>;
 }

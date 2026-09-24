@@ -8,6 +8,8 @@ import type {
   CloudIngestionJobContext,
   CloudIngestionCollectOptions,
   CloudIngestionConnection,
+  CloudMetricDiscoveryScope,
+  CloudMetricDiscoveryResult,
   CloudConnectionValidationResult,
   CloudCapabilityValidation,
   CloudIngestionProvider,
@@ -42,7 +44,7 @@ import { collectOciInventory } from './oci/OciInventoryCollector.js';
 import { createOciResourceSearchClient } from './oci/OciResourceSearchCollector.js';
 import { discoverOciInventoryCompartments } from './oci/OciCompartmentDiscovery.js';
 import { discoverOciRegions } from './oci/OciRegionDiscovery.js';
-import { discoverOciMetricDefinitions, type OciMetricDiscoveryResult } from './oci/OciMetricDiscovery.js';
+import { discoverOciMetricDefinitions } from './oci/OciMetricDiscovery.js';
 import {
   buildOciFocusPreviewResult,
   discoverOciFocusObjects,
@@ -125,27 +127,21 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
   }
 
   /** Read-only discovery used by onboarding; streams remain disabled until confirmation. */
-  public async discoverMetricDefinitions(connection: CloudIngestionConnection): Promise<OciMetricDiscoveryResult> {
+  public async discoverMetricDefinitions(
+    connection: CloudIngestionConnection,
+    scope: CloudMetricDiscoveryScope,
+    signal?: AbortSignal,
+  ): Promise<CloudMetricDiscoveryResult> {
     return discoverOciMetricDefinitions(connection, {
-      createClient: (context) => this.createMonitoringClient(context),
-      discoverRegions: async (context) => {
-        const result = await discoverOciRegions(context, {
-          createIdentityClient: (target) => this.createIdentityClient(this.createAuthProvider(target)),
-          withRetry: (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
-        });
-        return { regions: result.regionIds, apiCallCount: result.apiCallCount, warnings: result.warnings };
-      },
-      discoverCompartments: (context) => discoverOciInventoryCompartments(context, {
-        createIdentityClient: (target) => this.createIdentityClient(this.createAuthProvider(target)),
-        withRetry: (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
-      }),
-      withRetry: withOciProviderRetry,
-      withRateLimit: (operation) => this.rateCoordinator.run(
+      createClient: (context, requestSignal) => this.createMonitoringClient(context, requestSignal),
+      withRetry: (operation, requestSignal) => withOciProviderRetry(operation, undefined, undefined, undefined, requestSignal),
+      withRateLimit: (operation, requestSignal) => this.rateCoordinator.run(
         this.monitoringRateKey(connection),
         { requestsPerSecond: 8, maxConcurrent: 2 },
         operation,
+        requestSignal,
       ),
-    });
+    }, scope, signal);
   }
 
   private async collectInternal(job: CloudIngestionJobContext, options: CloudIngestionCollectOptions): Promise<CloudIngestionResult> {

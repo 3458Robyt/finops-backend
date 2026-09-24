@@ -272,6 +272,34 @@ export class CloudConnectionManagementController extends CloudConnectionControll
     }
   };
 
+  public previewMetricDefinitions = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      if (req.auth === undefined)
+        throw new FinOpsBaseError('Debes iniciar sesión para continuar.', 'AUTHENTICATION_REQUIRED');
+      const body = this.requireObjectBody(req.body);
+      const scopeValue = this.requireObjectBody(body['scope']);
+      const scope = {
+        regionId: this.requireString(scopeValue['regionId'], 'scope.regionId'),
+        compartmentId: this.requireString(scopeValue['compartmentId'], 'scope.compartmentId'),
+        ...(scopeValue['namespace'] === undefined
+          ? {}
+          : { namespace: this.requireString(scopeValue['namespace'], 'scope.namespace') }),
+      };
+      const discovery = await this.cloudConnectionService.previewMetricDefinitions({
+        tenantId: req.auth.tenantId,
+        userId: req.auth.userId,
+        cloudConnectionId: this.requireParam(req, 'id'),
+        scope,
+      });
+      res.status(200).json({ success: true, discovery });
+    } catch (error: unknown) {
+      this.respondWithError(res, error);
+    }
+  };
+
   public activateConnection = async (
     req: Request,
     res: Response,

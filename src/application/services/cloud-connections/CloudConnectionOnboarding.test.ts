@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
 import { CloudConnectionService } from '../CloudConnectionService.js';
 import type { ICloudConnectionRepository, StoreCloudCredentialInput } from '../../../domain/interfaces/ICloudConnectionRepository.js';
-import type { CloudIngestionConnection, CloudIngestionProvider } from '../../../domain/interfaces/ICloudIngestionProvider.js';
+import type { CloudIngestionConnection, CloudIngestionProvider, CloudMetricDiscoveryResult } from '../../../domain/interfaces/ICloudIngestionProvider.js';
 import type { CloudConnectionSummary } from '../../../domain/models/CloudConnection.js';
 
 const connection: CloudConnectionSummary = {
@@ -29,6 +29,64 @@ const candidateConnection: CloudIngestionConnection = {
 };
 
 describe('CloudConnectionOnboarding staged credentials', () => {
+  test('previews OCI metric definitions only within the explicit scope and audits counts without resource IDs', async () => {
+    const repository = buildRepository();
+    const discovery: CloudMetricDiscoveryResult = {
+      definitions: [{ compartmentId: 'compartment-1', namespace: 'oci_computeagent', metricName: 'CpuUtilization', resourceId: 'instance-1', regionId: 'us-phoenix-1' }],
+      regions: ['us-phoenix-1'], compartments: ['compartment-1'], apiCallCount: 1, truncated: false, warnings: [],
+    };
+    const discoverMetricDefinitions = vi.fn(async () => discovery);
+    const provider = { ...buildProvider({ status: 'VERIFIED' }), discoverMetricDefinitions } as unknown as CloudIngestionProvider;
+    const service = new CloudConnectionService(repository, [provider]);
+    const scope = { regionId: 'us-phoenix-1', compartmentId: 'compartment-1', namespace: 'oci_computeagent' };
+
+    const result = await service.previewMetricDefinitions({
+      tenantId: 'tenant-1', userId: 'user-1', cloudConnectionId: connection.id, scope,
+    });
+
+    expect(result).toBe(discovery);
+    expect(repository.getIngestionConnectionForTenant).toHaveBeenCalledWith('tenant-1', connection.id);
+    expect(discoverMetricDefinitions).toHaveBeenCalledWith(candidateConnection, scope, expect.any(AbortSignal));
+    expect(repository.createCloudAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'CLOUD_METRIC_DISCOVERY_PREVIEWED',
+      metadata: { regionId: 'us-phoenix-1', definitions: 1, apiCallCount: 1, truncated: false },
+    }));
+  });
+
+  test('rejects malformed discovery scope before calling OCI', async () => {
+    const repository = buildRepository();
+    const discoverMetricDefinitions = vi.fn();
+    const provider = { ...buildProvider({ status: 'VERIFIED' }), discoverMetricDefinitions } as unknown as CloudIngestionProvider;
+    const service = new CloudConnectionService(repository, [provider]);
+
+    await expect(service.previewMetricDefinitions({
+      tenantId: 'tenant-1', userId: 'user-1', cloudConnectionId: connection.id,
+      scope: { regionId: 'bad region', compartmentId: 'compartment-1' },
+    })).rejects.toThrow(/región debe contener/i);
+    expect(discoverMetricDefinitions).not.toHaveBeenCalled();
+  });
+
+  test('retains the discovered OCI region when explicitly saving metric definitions', async () => {
+    const repository = buildRepository();
+    const service = new CloudConnectionService(repository, [buildProvider({ status: 'VERIFIED' })]);
+    await service.configureMetricDefinitions({
+      tenantId: 'tenant-1', userId: 'user-1', cloudConnectionId: connection.id, replace: false,
+      definitions: [{
+        compartmentId: 'compartment-1', namespace: 'oci_computeagent', metricName: 'CpuUtilization',
+        resourceId: 'instance-1', regionId: 'us-phoenix-1', dimensions: { resourceId: 'instance-1', availabilityDomain: 'AD-1' },
+        statistics: ['MEAN', 'MAX'], unit: 'Percent',
+      }],
+    });
+
+    expect(repository.configureMetricDefinitionsForConnection).toHaveBeenCalledWith(expect.objectContaining({
+      definitions: [{
+        compartmentId: 'compartment-1', namespace: 'oci_computeagent', metricName: 'CpuUtilization',
+        resourceId: 'instance-1', regionId: 'us-phoenix-1', dimensions: { resourceId: 'instance-1', availabilityDomain: 'AD-1' },
+        statistics: ['MEAN', 'MAX'], unit: 'Percent',
+      }],
+    }));
+  });
+
   test('stores a candidate without blocking on provider validation', async () => {
     const repository = buildRepository();
     const provider = buildProvider({ status: 'VERIFIED' });
@@ -163,6 +221,9 @@ function buildRepository(options: { readonly credentialCreatedAt?: Date } = {}):
   readonly stored?: StoreCloudCredentialInput;
   readonly promoteCredential: ReturnType<typeof vi.fn>;
   readonly updateCredentialValidation: ReturnType<typeof vi.fn>;
+  readonly getIngestionConnectionForTenant: ReturnType<typeof vi.fn>;
+  readonly createCloudAuditEvent: ReturnType<typeof vi.fn>;
+  readonly configureMetricDefinitionsForConnection: ReturnType<typeof vi.fn>;
 } {
   const credentialCreatedAt = options.credentialCreatedAt ?? new Date();
   const repository = {
@@ -180,6 +241,15 @@ function buildRepository(options: { readonly credentialCreatedAt?: Date } = {}):
       createdAt: credentialCreatedAt, validationStatus, validationMessage,
     })),
     findCloudConnectionForTenant: vi.fn(async () => connection),
+    getIngestionConnectionForTenant: vi.fn(async () => candidateConnection),
+    createCloudAuditEvent: vi.fn(async () => undefined),
+    configureMetricDefinitionsForConnection: vi.fn(async (input) => ({
+      cloudConnectionId: input.cloudConnectionId,
+      providerCode: 'oci',
+      updatedKey: 'ociMetricDefinitions',
+      configuredCount: input.definitions.length,
+      replaced: input.replace,
+    })),
     listCredentialSummaries: vi.fn(async () => [
       { id: 'credential-1', purpose: 'OPERATIONAL', status: 'PENDING', label: 'OCI candidate', createdAt: credentialCreatedAt },
     ]),
@@ -194,6 +264,9 @@ function buildRepository(options: { readonly credentialCreatedAt?: Date } = {}):
     readonly stored?: StoreCloudCredentialInput;
     readonly promoteCredential: ReturnType<typeof vi.fn>;
     readonly updateCredentialValidation: ReturnType<typeof vi.fn>;
+    readonly getIngestionConnectionForTenant: ReturnType<typeof vi.fn>;
+    readonly createCloudAuditEvent: ReturnType<typeof vi.fn>;
+    readonly configureMetricDefinitionsForConnection: ReturnType<typeof vi.fn>;
   };
 }
 

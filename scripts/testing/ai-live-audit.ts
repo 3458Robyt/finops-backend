@@ -105,8 +105,8 @@ checks.push({
     const evidence = asRecord(recommendation['evidence']);
     const technicalSnapshot = asRecord(evidence?.['recommendationEvidenceSnapshot']);
     const audit = asRecord(evidence?.['aiAudit']);
-    return technicalSnapshot === undefined ||
-      (typeof technicalSnapshot['hash'] === 'string' && audit?.['verdict'] === 'APPROVED');
+    return audit?.['verdict'] === 'APPROVED'
+      && (technicalSnapshot === undefined || typeof technicalSnapshot['hash'] === 'string');
     }),
   detail: JSON.stringify(recommendations.map((recommendation) => {
     const evidence = asRecord(recommendation['evidence']);
@@ -231,16 +231,29 @@ checks.push({
   }),
 });
 
-const traceResponse = await get('/agent/context-traces?limit=5');
+const traceResponse = await get('/agent/context-traces?limit=100');
 const traces = Array.isArray(traceResponse['traces']) ? traceResponse['traces'] as Record<string, unknown>[] : [];
 const currentTraces = traces.filter((trace) => {
   const createdAt = Date.parse(String(trace['createdAt'] ?? ''));
   return Number.isFinite(createdAt) && createdAt >= auditStartedAt - 1_000;
 });
+const traceCountsByOperation = currentTraces.reduce<Record<string, number>>((counts, trace) => {
+  const operation = String(trace['operation'] ?? 'UNKNOWN');
+  counts[operation] = (counts[operation] ?? 0) + 1;
+  return counts;
+}, {});
+const expectedTraceMinimums = { CHAT: 3, RECOMMENDATION: 1, AUDIT: 2, EXECUTION_PLAN: 1 };
 checks.push({
   name: 'registra_trazas_ia',
   passed: currentTraces.some((trace) => trace['status'] === 'SUCCESS'),
-  detail: JSON.stringify(currentTraces.slice(0, 3)),
+  detail: JSON.stringify({ count: currentTraces.length, operations: traceCountsByOperation }),
+});
+checks.push({
+  name: 'trazas_cubren_operaciones_generadas',
+  passed: Object.entries(expectedTraceMinimums).every(([operation, minimum]) => (
+    (traceCountsByOperation[operation] ?? 0) >= minimum
+  )),
+  detail: JSON.stringify({ expectedMinimums: expectedTraceMinimums, observed: traceCountsByOperation }),
 });
 checks.push({
   name: 'usa_modelo_esperado',
@@ -263,6 +276,7 @@ const output = {
     planLatencyMs,
     traceLatencyMs,
     tokenEstimate,
+    traceCount: currentTraces.length,
     recommendationCount: recommendations.length,
     persistedRecommendationsBefore,
     persistedRecommendationsAfter,

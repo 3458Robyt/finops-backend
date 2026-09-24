@@ -26,6 +26,10 @@ export class PrismaMetricCoveragePersistence {
     ingestionJobId: string,
     now = new Date(),
   ): Promise<number> {
+    await tx.$executeRaw`
+      DELETE FROM "resource_metric_coverage_windows"
+      WHERE "ingestion_job_id" = CAST(${ingestionJobId} AS text)
+    `;
     return this.refresh(tx, { ingestionJobId }, now);
   }
 
@@ -53,7 +57,8 @@ export class PrismaMetricCoveragePersistence {
             ${target.targetStart}::timestamptz AS "target_start",
             ${target.targetEnd}::timestamptz AS "target_end",
             ${target.configurationHash ?? ''}::varchar(64) AS "configuration_hash",
-            ${target.defaultGranularitySeconds ?? 1800}::int AS "default_granularity"
+            ${target.defaultGranularitySeconds ?? 1800}::int AS "default_granularity",
+            '{}'::jsonb AS "request_context"
         `
       : Prisma.sql`
           SELECT
@@ -63,7 +68,8 @@ export class PrismaMetricCoveragePersistence {
             j."target_start",
             j."target_end",
             COALESCE(NULLIF(j."configuration_hash", ''), '') AS "configuration_hash",
-            COALESCE(NULLIF(j."request_context"->>'resolutionSeconds', '')::int, 1800) AS "default_granularity"
+            COALESCE(NULLIF(j."request_context"->>'resolutionSeconds', '')::int, 1800) AS "default_granularity",
+            COALESCE(j."request_context", '{}'::jsonb) AS "request_context"
           FROM "ingestion_jobs" j
           WHERE j."id" = CAST(${target.ingestionJobId} AS text)
         `;
@@ -72,15 +78,60 @@ export class PrismaMetricCoveragePersistence {
       : Prisma.sql`${target.ingestionJobId}::text`;
 
     return tx.$executeRaw(Prisma.sql`
-      WITH job AS (${jobSource}), days AS (
+      WITH job AS (${jobSource}), filter_shape AS MATERIALIZED (
         SELECT
           job.*,
+          COALESCE(job."request_context" ? 'metricFilter', false) AS metric_filter_requested,
+          job."request_context"->'metricFilter' AS metric_filter,
+          CASE
+            WHEN jsonb_typeof(job."request_context"->'metricFilter') = 'object'
+              THEN job."request_context"->'metricFilter'
+            ELSE '{}'::jsonb
+          END AS metric_filter_object
+        FROM job
+      ), request_filter AS MATERIALIZED (
+        SELECT
+          filter_shape.*,
+          NULLIF(BTRIM(filter_shape.metric_filter_object->>'namespace'), '') AS filter_namespace,
+          NULLIF(BTRIM(filter_shape.metric_filter_object->>'metricName'), '') AS filter_metric_name,
+          NULLIF(BTRIM(filter_shape.metric_filter_object->>'resourceId'), '') AS filter_resource_id,
+          NULLIF(BTRIM(filter_shape.metric_filter_object->>'regionId'), '') AS filter_region_id,
+          NULLIF(UPPER(BTRIM(filter_shape.metric_filter_object->>'statistic')), '') AS filter_statistic,
+          CASE
+            WHEN NOT filter_shape.metric_filter_requested THEN true
+            WHEN jsonb_typeof(filter_shape.metric_filter) <> 'object' THEN false
+            WHEN NOT EXISTS (
+              SELECT 1
+              FROM jsonb_object_keys(filter_shape.metric_filter_object) AS field(key)
+              WHERE field.key IN ('namespace', 'metricName', 'resourceId', 'regionId', 'statistic')
+            ) THEN false
+            WHEN EXISTS (
+              SELECT 1
+              FROM jsonb_each(filter_shape.metric_filter_object) AS field(key, value)
+              WHERE jsonb_typeof(field.value) <> 'string'
+            ) THEN false
+            WHEN EXISTS (
+              SELECT 1
+              FROM jsonb_each(filter_shape.metric_filter_object) AS field(key, value)
+              WHERE field.key IN ('namespace', 'metricName', 'resourceId', 'regionId', 'statistic')
+                AND BTRIM(field.value #>> '{}') = ''
+            ) THEN false
+            WHEN filter_shape.metric_filter_object ? 'statistic'
+              AND UPPER(BTRIM(filter_shape.metric_filter_object->>'statistic'))
+                NOT IN ('MEAN', 'MIN', 'MAX', 'P50', 'P90', 'P95', 'P99', 'SUM', 'COUNT', 'RATE', 'LATEST')
+              THEN false
+            ELSE true
+          END AS metric_filter_valid
+        FROM filter_shape
+      ), days AS (
+        SELECT
+          request_filter.*,
           generate_series(
-            date_trunc('day', job."target_start"),
-            date_trunc('day', GREATEST(job."target_start", job."target_end" - interval '1 microsecond')),
+            date_trunc('day', request_filter."target_start"),
+            date_trunc('day', GREATEST(request_filter."target_start", request_filter."target_end" - interval '1 microsecond')),
             interval '1 day'
           ) AS window_start
-        FROM job
+        FROM request_filter
       ), data_range AS MATERIALIZED (
         SELECT
           MIN(days.window_start) AS range_start,
@@ -113,6 +164,25 @@ export class PrismaMetricCoveragePersistence {
           END
         ) AS statistic(value)
         WHERE upper(statistic.value) IN ('MEAN', 'MIN', 'MAX', 'P50', 'P90', 'P95', 'P99', 'SUM', 'COUNT', 'RATE', 'LATEST')
+          AND (
+            NOT days.metric_filter_requested
+            OR (
+              days.metric_filter_valid
+              AND (days.filter_namespace IS NULL OR COALESCE(definition."namespace", '') = days.filter_namespace)
+              AND (days.filter_metric_name IS NULL OR definition."metric_name" = days.filter_metric_name)
+              AND (
+                days.filter_resource_id IS NULL
+                OR CASE
+                  WHEN COALESCE(definition."external_resource_id", '') ILIKE 'ocid1.%'
+                    AND days.filter_resource_id ILIKE 'ocid1.%'
+                    THEN LOWER(definition."external_resource_id") = LOWER(days.filter_resource_id)
+                  ELSE COALESCE(definition."external_resource_id", '') = days.filter_resource_id
+                END
+              )
+              AND (days.filter_region_id IS NULL OR COALESCE(definition."region_id", '') = days.filter_region_id)
+              AND (days.filter_statistic IS NULL OR UPPER(statistic.value) = days.filter_statistic)
+            )
+          )
         GROUP BY days."tenant_id", days."cloud_connection_id", provider_namespace,
           region_id, external_resource_id, definition."metric_name", upper(statistic.value),
           days.default_granularity, dimensions_hash, days.window_start,
@@ -142,6 +212,25 @@ export class PrismaMetricCoveragePersistence {
         WHERE samples."source_type" = 'TECHNICAL_METRIC'::"IngestionSourceType"
           AND samples."sampled_at" >= data_range.range_start
           AND samples."sampled_at" < data_range.range_end
+          AND (
+            NOT days.metric_filter_requested
+            OR (
+              days.metric_filter_valid
+              AND (days.filter_namespace IS NULL OR samples."provider_namespace" = days.filter_namespace)
+              AND (days.filter_metric_name IS NULL OR samples."metric_name" = days.filter_metric_name)
+              AND (
+                days.filter_resource_id IS NULL
+                OR CASE
+                  WHEN samples."external_resource_id" ILIKE 'ocid1.%'
+                    AND days.filter_resource_id ILIKE 'ocid1.%'
+                    THEN LOWER(samples."external_resource_id") = LOWER(days.filter_resource_id)
+                  ELSE samples."external_resource_id" = days.filter_resource_id
+                END
+              )
+              AND (days.filter_region_id IS NULL OR samples."region_id" = days.filter_region_id)
+              AND (days.filter_statistic IS NULL OR UPPER(samples."statistic"::text) = days.filter_statistic)
+            )
+          )
         GROUP BY samples."cloud_connection_id", samples."provider_namespace",
           samples."region_id", samples."external_resource_id", samples."metric_name",
           samples."statistic", samples."granularity_seconds", samples."dimensions_hash",

@@ -83,6 +83,8 @@ describe('RecommendationReadinessGate', () => {
     expect(resourceCandidate?.readiness).toBe('GENERATABLE');
     expect(resourceCandidate?.requiresTechnicalValidation).toBe(true);
     expect(resourceCandidate?.evidenceLevelAllowed).toBe('COST_USAGE_AND_TECHNICAL');
+    expect(resourceCandidate?.maxEstimatedMonthlySavings).toBe(0);
+    expect(resourceCandidate?.savingsCalculation).toBeUndefined();
     expect(resourceCandidate?.technicalEvidenceRefs).toEqual([
       'resource_metric_samples:i-prod-1:CPUUtilization:2026-06',
     ]);

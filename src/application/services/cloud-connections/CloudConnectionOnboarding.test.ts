@@ -51,6 +51,7 @@ describe('CloudConnectionOnboarding staged credentials', () => {
       action: 'CLOUD_METRIC_DISCOVERY_PREVIEWED',
       metadata: { regionId: 'us-phoenix-1', definitions: 1, apiCallCount: 1, truncated: false },
     }));
+    expect(repository.configureMetricDefinitionsForConnection).not.toHaveBeenCalled();
   });
 
   test('reports inventory linkage only for an exact resource ID in the same tenant and connection', async () => {

@@ -17,7 +17,7 @@ describe('loadRuntimeConfig', () => {
       INGESTION_WORKER_ID: 'worker-test',
       INGESTION_WORKER_INTERVAL_MS: '1500',
       AI_MAX_RETRIES: '2',
-      AI_REASONING_EFFORT: 'minimal',
+      AI_REASONING_EFFORT: 'low',
       FINOPS_REQUIRED_TAG_KEYS: 'environment, owner',
       AUTH_CLEANUP_SCHEDULER_ENABLED: 'true',
       AUTH_CLEANUP_SCHEDULER_INTERVAL_MS: '120000',
@@ -43,7 +43,7 @@ describe('loadRuntimeConfig', () => {
       progressUpdateMs: 2000,
     });
     expect(config.ai.maxRetries).toBe(2);
-    expect(config.ai.reasoningEffort).toBe('minimal');
+    expect(config.ai.reasoningEffort).toBe('low');
     expect(config.email.timeoutMs).toBe(15_000);
     expect(config.telegram.timeoutMs).toBe(15_000);
     expect(config.schedulers.authCleanup).toEqual({ enabled: true, intervalMs: 120_000, batchSize: 25 });

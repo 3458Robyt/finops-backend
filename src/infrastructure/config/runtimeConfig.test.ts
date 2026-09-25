@@ -54,6 +54,23 @@ describe('validateRuntimeConfig', () => {
     warning.mockRestore();
   });
 
+  it('rejects minimal reasoning for GPT-5.6 Luna before provider requests fail', () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    for (const env of [
+      { NODE_ENV: 'development', AI_REASONING_EFFORT: 'minimal' },
+      { NODE_ENV: 'development', AI_MODEL: 'gpt-5.6-luna', AI_REASONING_EFFORT: 'minimal' },
+      {
+        NODE_ENV: 'development',
+        AI_MODEL: 'another-model',
+        AI_AUDITOR_MODEL: 'gpt-5.6-luna',
+        AI_REASONING_EFFORT: 'minimal',
+      },
+    ]) {
+      expect(() => validateRuntimeConfig(env)).toThrow('AI_REASONING_EFFORT');
+    }
+    warning.mockRestore();
+  });
+
   it.each(['yes', '1', 'enabled', ''])('rejects an invalid boolean configuration value: %s', (value) => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(() => validateRuntimeConfig({ NODE_ENV: 'development', EMAIL_ENABLED: value }))

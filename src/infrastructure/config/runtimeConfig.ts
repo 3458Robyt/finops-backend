@@ -47,7 +47,7 @@ const booleanConfigKeys = [
 export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): void {
   const issues: RuntimeValidationIssue[] = [];
   validateBooleanVariables(env, issues);
-  validateAiReasoningEffort(env['AI_REASONING_EFFORT'], issues);
+  validateAiReasoningEffort(env['AI_REASONING_EFFORT'], env, issues);
   const isProduction = env['NODE_ENV'] === 'production';
 
   // An omitted role is a valid development shorthand for `all`, but an
@@ -222,11 +222,24 @@ function validateProcessRole(value: string | undefined, issues: RuntimeValidatio
   }
 }
 
-function validateAiReasoningEffort(value: string | undefined, issues: RuntimeValidationIssue[]): void {
+function validateAiReasoningEffort(
+  value: string | undefined,
+  env: NodeJS.ProcessEnv,
+  issues: RuntimeValidationIssue[],
+): void {
   if (isBlank(value)) return;
   const normalized = value!.trim().toLowerCase();
   if (!['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(normalized)) {
     issues.push({ key: 'AI_REASONING_EFFORT', message: 'Debe ser none, minimal, low, medium, high o xhigh.' });
+    return;
+  }
+  const mainModel = env['AI_MODEL']?.trim().toLowerCase() || 'gpt-5.6-luna';
+  const auditorModel = env['AI_AUDITOR_MODEL']?.trim().toLowerCase() || mainModel;
+  if (normalized === 'minimal' && [mainModel, auditorModel].includes('gpt-5.6-luna')) {
+    issues.push({
+      key: 'AI_REASONING_EFFORT',
+      message: 'GPT-5.6 Luna no admite minimal; usa none, low, medium, high o xhigh.',
+    });
   }
 }
 

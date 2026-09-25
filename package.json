@@ -76,6 +76,7 @@
     "metrics:rebuild-stream-summaries": "tsx scripts/rebuild-metric-stream-summaries.ts",
     "metrics:rebuild-rollups": "tsx scripts/rebuild-resource-metric-rollups.ts",
     "metrics:rebuild-coverage": "tsx scripts/rebuild-metric-coverage.ts",
+    "metrics:reproject-filtered-coverage": "tsx scripts/reproject-filtered-metric-coverage.ts",
     "oci:reconcile-credentials": "tsx scripts/reconcile-cloud-credential-validation.ts",
     "oci:reconcile-fingerprints": "tsx scripts/reconcile-cloud-credential-fingerprints.ts",
     "telegram:set-webhook": "tsx scripts/telegram-set-webhook.ts",

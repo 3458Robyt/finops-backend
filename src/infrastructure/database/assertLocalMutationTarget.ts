@@ -1,5 +1,26 @@
 const LOCAL_DATABASE_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
+/** Maintenance commands that repair local FinOps data may only target its configured dev database. */
+export function assertLocalFinopsDatabaseTarget(connectionString: string | undefined): void {
+  if (connectionString === undefined || connectionString.trim() === '') {
+    throw new Error('DATABASE_URL debe apuntar a PostgreSQL local 127.0.0.1:5433/finops_local.');
+  }
+
+  let url: URL;
+  try {
+    url = new URL(connectionString);
+  } catch {
+    throw new Error('DATABASE_URL debe apuntar a PostgreSQL local 127.0.0.1:5433/finops_local.');
+  }
+
+  if (!['postgres:', 'postgresql:'].includes(url.protocol)
+    || url.hostname.toLowerCase() !== '127.0.0.1'
+    || url.port !== '5433'
+    || url.pathname !== '/finops_local') {
+    throw new Error('DATABASE_URL debe apuntar a PostgreSQL local 127.0.0.1:5433/finops_local.');
+  }
+}
+
 /**
  * Manual maintenance scripts are local-development tools. Refuse to mutate a
  * remote database unless the operator opts in explicitly.

@@ -88,6 +88,39 @@ describe('RecommendationReadinessGate', () => {
     ]);
   });
 
+  it('keeps canonical cost scope server-side and out of the model prompt', () => {
+    const snapshot = buildSnapshot();
+    const technicalEvidenceSnapshot = buildEvidenceSnapshot();
+    const report = buildRecommendationReadinessReport({
+      snapshot: {
+        ...snapshot,
+        topResources: [{
+          ...snapshot.topResources[0]!,
+          cloudResourceId: 'cloud-resource-1',
+          cloudConnectionId: 'connection-1',
+        }],
+      },
+      technicalEvidenceSnapshot: {
+        ...technicalEvidenceSnapshot,
+        resources: [{
+          ...technicalEvidenceSnapshot.resources[0]!,
+          cloudResourceId: 'cloud-resource-1',
+          cloudConnectionId: 'connection-1',
+        }],
+      },
+    });
+    const candidate = report.candidates.find((item) => item.id === 'resource-1')!;
+
+    expect(candidate.costEvidenceScope).toMatchObject({
+      cloudAccountId: 'aws-prod',
+      cloudResourceId: 'cloud-resource-1',
+      cloudConnectionId: 'connection-1',
+      expectedMetricCount: 80,
+    });
+    expect(JSON.parse(formatRecommendationReadinessForPrompt(report)).candidates[0])
+      .not.toHaveProperty('costEvidenceScope');
+  });
+
   it('blocks service cost reviews without a deterministic savings basis', () => {
     const report = buildRecommendationReadinessReport({ snapshot: buildSnapshot() });
     const serviceCandidate = report.blocked.find((candidate) => candidate.id === 'service-1');

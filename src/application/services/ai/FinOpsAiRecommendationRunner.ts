@@ -173,6 +173,9 @@ export class FinOpsAiRecommendationRunner {
             blockingIssues: candidateAudit.audit.blockingIssues,
             requiredChanges: candidateAudit.audit.requiredChanges,
           };
+      const readinessCandidate = readinessReport.candidates.find(
+        (candidate) => candidate.id === candidateId,
+      );
       return {
         ...applyAuditEvidence(
           draft,
@@ -181,6 +184,9 @@ export class FinOpsAiRecommendationRunner {
           technicalEvidenceSnapshot,
           input.analysisRunId,
         ),
+        ...(input.persist !== true || readinessCandidate?.costEvidenceScope === undefined
+          ? {}
+          : { costEvidenceScope: readinessCandidate.costEvidenceScope }),
         deduplicationKey: buildRecommendationDeduplicationKey(draft, snapshot.periodStart, snapshot.periodEnd),
       };
     });

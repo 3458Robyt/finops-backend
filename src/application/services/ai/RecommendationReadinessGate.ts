@@ -1,4 +1,5 @@
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
+import type { RecommendationCostEvidenceScope } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type {
   RecommendationEvidenceResource,
   RecommendationEvidenceSnapshot,
@@ -29,6 +30,7 @@ export interface RecommendationOpportunityCandidate {
   readonly sourceFacts: readonly string[];
   /** Referencias agregadas canónicas a la fuente FOCUS/costos usada por el candidato. */
   readonly costEvidenceRefs: readonly string[];
+  readonly costEvidenceScope?: RecommendationCostEvidenceScope;
   readonly technicalEvidenceRefs: readonly string[];
   readonly evidenceStrength?: 'LOW' | 'MEDIUM' | 'HIGH';
   /** Permite distinguir una revisión financiera de una validación técnica. */
@@ -107,7 +109,7 @@ export function formatRecommendationReadinessForPrompt(report: RecommendationRea
 }
 
 function compactCandidate(candidate: RecommendationOpportunityCandidate): Readonly<Record<string, unknown>> {
-  const { metricSummary: _metricSummary, ...compact } = candidate;
+  const { metricSummary: _metricSummary, costEvidenceScope: _costEvidenceScope, ...compact } = candidate;
   return compact;
 }
 
@@ -228,6 +230,23 @@ function buildResourceCandidates(
         ...(ruleEvaluation?.sourceFacts ?? []),
       ],
       costEvidenceRefs: [costEvidenceRef(snapshot, 'resource', resource.provider, resource.resourceId, resolvedAccountId)],
+      ...(readiness === 'GENERATABLE'
+        && linkedCloudResourceId !== undefined
+        && resolvedAccountId !== 'unknown-account'
+        ? {
+            costEvidenceScope: {
+              provider: resource.provider as RecommendationCostEvidenceScope['provider'],
+              cloudAccountId: resolvedAccountId,
+              cloudResourceId: linkedCloudResourceId,
+              resourceId: resource.resourceId,
+              serviceName: resource.serviceName,
+              expectedMetricCount: resource.metricCount,
+              ...(linkedCloudConnectionId === undefined ? {} : { cloudConnectionId: linkedCloudConnectionId }),
+              periodStart: snapshot.periodStart,
+              periodEnd: snapshot.periodEnd,
+            },
+          }
+        : {}),
       technicalEvidenceRefs: ruleEvaluation?.technicalEvidenceRefs ?? refsForResource,
       ...(ruleEvaluation?.evidenceStrength !== undefined ? { evidenceStrength: ruleEvaluation.evidenceStrength } : {}),
       ...(ruleEvaluation?.ruleMatches !== undefined ? { ruleMatches: ruleEvaluation.ruleMatches } : {}),

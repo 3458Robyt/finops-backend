@@ -168,25 +168,32 @@ export class RecommendationAnalysisRunProcessor {
       },
     });
     await this.ensureActive(run.id, startedAt);
-    const recommendationInputs = result.recommendations.map((recommendation) => ({
-      tenantId: run.tenantId,
-      cloudAccountId: recommendation.cloudAccountId,
-      ...(recommendation.cloudResourceId === undefined ? {} : { cloudResourceId: recommendation.cloudResourceId }),
-      ...(recommendation.resourceLinkReason === undefined ? {} : { resourceLinkReason: recommendation.resourceLinkReason }),
-      deduplicationKey: buildRecommendationDeduplicationKey(
-        { ...recommendation, tenantId: run.tenantId },
-        prepared.snapshot.periodStart,
-        prepared.snapshot.periodEnd,
-      ),
-      type: recommendation.type,
-      origin: recommendation.origin,
-      severity: recommendation.severity,
-      title: recommendation.title,
-      description: recommendation.description,
-      evidence: recommendation.evidence,
-      ...(recommendation.estimatedMonthlySavings === undefined ? {} : { estimatedMonthlySavings: recommendation.estimatedMonthlySavings }),
-      currency: recommendation.currency,
-    } satisfies CreateRecommendationInput));
+    const recommendationInputs = result.recommendations.map((recommendation) => {
+      const candidateId = readCandidateId(recommendation.evidence);
+      const costEvidenceScope = prepared.readinessReport.candidates.find(
+        (candidate) => candidate.id === candidateId,
+      )?.costEvidenceScope;
+      return {
+        tenantId: run.tenantId,
+        ...(costEvidenceScope === undefined ? {} : { costEvidenceScope }),
+        cloudAccountId: recommendation.cloudAccountId,
+        ...(recommendation.cloudResourceId === undefined ? {} : { cloudResourceId: recommendation.cloudResourceId }),
+        ...(recommendation.resourceLinkReason === undefined ? {} : { resourceLinkReason: recommendation.resourceLinkReason }),
+        deduplicationKey: buildRecommendationDeduplicationKey(
+          { ...recommendation, tenantId: run.tenantId },
+          prepared.snapshot.periodStart,
+          prepared.snapshot.periodEnd,
+        ),
+        type: recommendation.type,
+        origin: recommendation.origin,
+        severity: recommendation.severity,
+        title: recommendation.title,
+        description: recommendation.description,
+        evidence: recommendation.evidence,
+        ...(recommendation.estimatedMonthlySavings === undefined ? {} : { estimatedMonthlySavings: recommendation.estimatedMonthlySavings }),
+        currency: recommendation.currency,
+      } satisfies CreateRecommendationInput;
+    });
     // The production composition supplies the recommendation port so
     // persistence happens only after the cancellation fence. The fallback is
     // kept for isolated processor tests that provide a pre-persisted fixture.

@@ -444,6 +444,7 @@ model Tenant {
   ingestionRuns                 IngestionRun[]
   costMetrics                   CostMetric[]
   recommendations               Recommendation[]
+  recommendationCostEvidence    RecommendationCostEvidence[]
   auditEvents                   AuditEvent[]
   operatorOrganization          OperatorOrganization?              @relation(fields: [operatorOrganizationId], references: [id], onDelete: SetNull)
   accessAssignments             TenantAccessAssignment[]
@@ -1453,6 +1454,7 @@ model Recommendation {
   outboundMessageDeliveries OutboundMessageDelivery[]
   analysisRunLinks          RecommendationAnalysisRunRecommendation[]
   candidateAudits           RecommendationAnalysisCandidateAudit[]      @relation("RecommendationCandidateAudits")
+  costEvidenceLines         RecommendationCostEvidence[]
 
   @@unique([tenantId, deduplicationKey])
   @@index([tenantId, createdAt, id], map: "recommendations_tenant_id_created_at_id_idx")
@@ -1462,6 +1464,32 @@ model Recommendation {
   @@index([cloudResourceId], map: "recommendations_cloud_resource_id_idx")
   @@index([sourceChargePeriodStart, sourceMetricIdentityHash])
   @@map("recommendations")
+}
+
+/// Immutable normalized cost facts used as evidence for a recommendation.
+/// Deliberately has no FK to cost_metrics so later source cleanup cannot erase audit lineage.
+model RecommendationCostEvidence {
+  id                 String         @id @default(cuid())
+  tenantId           String         @map("tenant_id")
+  recommendationId   String         @map("recommendation_id")
+  cloudAccountId     String         @map("cloud_account_id")
+  cloudConnectionId  String?        @map("cloud_connection_id")
+  cloudResourceId    String         @map("cloud_resource_id")
+  provider           CloudProvider
+  resourceId         String         @map("resource_id")
+  serviceName        String         @map("service_name")
+  chargePeriodStart  DateTime       @map("charge_period_start") @db.Timestamptz(6)
+  metricIdentityHash String         @map("metric_identity_hash")
+  billingCurrency    String         @map("billing_currency") @db.VarChar(3)
+  billedCost         Decimal        @map("billed_cost") @db.Decimal(18, 6)
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant             Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  recommendation     Recommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+
+  @@unique([recommendationId, chargePeriodStart, metricIdentityHash])
+  @@index([tenantId, recommendationId])
+  @@index([tenantId, chargePeriodStart, metricIdentityHash])
+  @@map("recommendation_cost_evidence")
 }
 
 model RecommendationAnalysisRun {

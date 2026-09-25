@@ -39,6 +39,7 @@ const integrationTests = [
   'src/testing/metricDefinitionCatalog.integration.test.ts',
   'src/testing/technicalMetrics.integration.test.ts',
   'src/testing/recommendationAnalysis.integration.test.ts',
+  'src/testing/recommendationCostEvidence.integration.test.ts',
   'src/testing/verifiedSavingsMeasurement.integration.test.ts',
   'src/testing/valueRealization.integration.test.ts',
   'src/testing/tenantContext.integration.test.ts',

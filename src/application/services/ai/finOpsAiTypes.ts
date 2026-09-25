@@ -126,4 +126,4 @@ export interface GenerateExecutionPlanInput {
 }
 
 /** Borrador de recomendación generado por IA, sin el `tenantId` (se inyecta después). */
-export type AiRecommendationDraft = Omit<CreateRecommendationInput, 'tenantId'>;
+export type AiRecommendationDraft = Omit<CreateRecommendationInput, 'tenantId' | 'costEvidenceScope'>;

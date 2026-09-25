@@ -143,4 +143,76 @@ describe('FinOpsAiRecommendationRunner no-op readiness', () => {
     expect((rejection as AiAuditRejectedError).diagnosticId).toMatch(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i);
     expect((rejection as AiAuditRejectedError).diagnosticId).not.toContain('tenant-private-id');
   });
+
+  test('attaches server cost scope only for persistence, never to preview output', async () => {
+    const costEvidenceScope = {
+      provider: 'AWS' as const,
+      cloudAccountId: 'aws-prod',
+      cloudResourceId: 'cloud-resource-1',
+      resourceId: 'i-prod-1',
+      serviceName: 'Amazon EC2',
+      expectedMetricCount: 80,
+      periodStart: snapshot.periodStart,
+      periodEnd: snapshot.periodEnd,
+    };
+    const draft = {
+      cloudAccountId: 'aws-prod',
+      cloudResourceId: 'cloud-resource-1',
+      type: 'RIGHTSIZING',
+      severity: 'MEDIUM' as const,
+      title: 'Revisar capacidad de instancia',
+      description: 'Validar una alternativa de menor capacidad.',
+      evidence: { candidateId: 'resource-1' },
+      estimatedMonthlySavings: 25,
+      currency: 'USD',
+    };
+    const prepared: PreparedRecommendationAnalysis = {
+      snapshot,
+      readinessReport: {
+        candidates: [{ id: 'resource-1', costEvidenceScope } as never],
+        blocked: [],
+        deferred: [],
+        summary: 'candidate',
+      },
+      evidenceHash: 'hash',
+      deterministicAnalysis: { trends: [], summary: 'none' } as never,
+      model: 'model',
+      auditorModel: 'auditor',
+    };
+    const recommendationRepository = { createMany: vi.fn().mockResolvedValue([]) } as unknown as IRecommendationRepository;
+    const runner = new FinOpsAiRecommendationRunner(
+      recommendationRepository,
+      {
+        assembleRecommendationContext: vi.fn().mockResolvedValue({
+          systemPrompt: 'prompt',
+          learningContext: { memoryIds: [], caseIds: [], summary: '' },
+        }),
+      } as never,
+      {
+        generateAuditedDrafts: vi.fn().mockResolvedValue({
+          drafts: [draft],
+          approvedDrafts: [draft],
+          rejectedDrafts: [],
+          candidateAudits: [{
+            audit: { candidateId: 'resource-1', verdict: 'APPROVED', score: 95, checks: [], blockingIssues: [], requiredChanges: [] },
+          }],
+          auditReport: { verdict: 'APPROVED', score: 95, checks: [], blockingIssues: [], requiredChanges: [] },
+          firstRawResponse: '{}',
+        }),
+      } as never,
+      { record: vi.fn().mockResolvedValue(undefined) } as never,
+      { prepare: vi.fn() } as never,
+      'model',
+      'auditor',
+    );
+
+    await runner.run({ tenantId: 'tenant-1', persist: true, prepared });
+    expect(recommendationRepository.createMany).toHaveBeenLastCalledWith([
+      expect.objectContaining({ costEvidenceScope }),
+    ]);
+
+    const preview = await runner.run({ tenantId: 'tenant-1', persist: false, prepared });
+    expect(recommendationRepository.createMany).toHaveBeenCalledTimes(1);
+    expect(preview.recommendations[0]).not.toHaveProperty('costEvidenceScope');
+  });
 });

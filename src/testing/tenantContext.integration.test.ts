@@ -1,6 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { PrismaClient } from '../generated/prisma/client.js';
+import { FinOpsContextAssembler } from '../application/services/ai/finOpsContextAssembler.js';
 import { createTenantAwarePool, runWithDatabaseContext } from '../infrastructure/database/tenantContext.js';
+import { PrismaCostAnalyticsRepository } from '../infrastructure/repositories/PrismaCostAnalyticsRepository.js';
 import {
   cleanupE2eFixtures,
   createE2eFixtures,
@@ -13,6 +17,7 @@ const integrationEnabled = process.env['RUN_DB_INTEGRATION_TESTS'] === 'true';
 describe.skipIf(!integrationEnabled)('runtime tenant context', () => {
   let pool: Pool;
   let fixturePrisma: ReturnType<typeof createTestingPrismaClient>;
+  let runtimePrisma: PrismaClient;
   let fixtures: E2eFixtureManifest;
 
   beforeAll(() => {
@@ -26,6 +31,9 @@ describe.skipIf(!integrationEnabled)('runtime tenant context', () => {
     process.env['DB_RUNTIME_ROLE'] = 'finops_runtime';
     pool = createTenantAwarePool(connectionString, schema ?? undefined);
     fixturePrisma = createTestingPrismaClient();
+    runtimePrisma = new PrismaClient({
+      adapter: new PrismaPg(pool, schema === undefined ? undefined : { schema }),
+    });
     return createE2eFixtures(fixturePrisma, `tenant-context-${Date.now()}`).then((created) => { fixtures = created; });
   }, 120_000);
 
@@ -34,6 +42,7 @@ describe.skipIf(!integrationEnabled)('runtime tenant context', () => {
       await cleanupE2eFixtures(fixturePrisma, fixtures.runId);
       await fixturePrisma.$disconnect();
     }
+    await runtimePrisma?.$disconnect();
     await pool?.end();
   }, 120_000);
 
@@ -68,6 +77,34 @@ describe.skipIf(!integrationEnabled)('runtime tenant context', () => {
 
     const unscopedRows = await runWithDatabaseContext({}, () => pool.query('select count(*)::int as visible_rows from recommendations'));
     expect(unscopedRows.rows[0]?.visible_rows).toBe(0);
+  });
+
+  it('keeps the AI chat cost snapshot within the authenticated tenant RLS context', async () => {
+    const [tenantA, tenantB] = fixtures.tenants as [{ id: string }, { id: string }];
+    const analytics = new PrismaCostAnalyticsRepository(runtimePrisma);
+    const tenantContext = { tenantId: tenantA.id, userId: 'runtime-ai-chat-test', role: 'ADMIN' as const };
+    const ownSnapshot = await runWithDatabaseContext(
+      tenantContext,
+      () => analytics.getLatestTenantSnapshot(tenantA.id),
+    );
+    const otherTenantSnapshot = await runWithDatabaseContext(
+      tenantContext,
+      () => analytics.getLatestTenantSnapshot(tenantB.id),
+    );
+    const assembled = await new FinOpsContextAssembler('integration-test').assembleChatContext({
+      tenantId: tenantA.id,
+      userId: tenantContext.userId,
+      message: 'Resume los costos facturados del periodo.',
+      snapshot: ownSnapshot,
+    });
+
+    expect(ownSnapshot.metricCount).toBe(14);
+    expect(ownSnapshot.services.map((service) => service.serviceName)).toContain('Amazon Elastic Compute Cloud');
+    expect(otherTenantSnapshot.metricCount).toBe(0);
+    expect(otherTenantSnapshot.providers).toEqual([]);
+    expect(assembled.systemPrompt).toContain(`e2e-ec2-${fixtures.runId}`);
+    expect(assembled.systemPrompt).not.toContain(`e2e-oci-${fixtures.runId}`);
+    expect(assembled.systemPrompt).not.toContain('Oracle Compute');
   });
 
   it('lets master admins inspect jobs and their connections across tenants', async () => {

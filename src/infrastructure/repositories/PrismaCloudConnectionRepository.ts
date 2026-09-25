@@ -359,8 +359,15 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     return this.ingestionReadRepository.listFailedIngestionJobsForConnection(tenantId, cloudConnectionId, sourceType);
   }
 
-  public cancelPendingIngestionJobs(tenantId: string, cloudConnectionId: string, sourceType: IngestionSourceType): Promise<number> {
-    return this.ingestionReadRepository.cancelPendingIngestionJobs(tenantId, cloudConnectionId, sourceType);
+  public cancelPendingIngestionJobs(
+    tenantId: string,
+    cloudConnectionId: string,
+    sourceType: IngestionSourceType,
+    actorUserId: string,
+  ): Promise<number> {
+    return this.ingestionReadRepository.cancelPendingIngestionJobs(
+      tenantId, cloudConnectionId, sourceType, actorUserId,
+    );
   }
 
   public listIngestionReadinessForTenant(tenantId: string): Promise<IngestionReadinessSummary> {

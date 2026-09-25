@@ -207,10 +207,23 @@ export class PrismaCloudIngestionReadRepository {
     tenantId: string,
     cloudConnectionId: string,
     sourceType: IngestionSourceType,
+    actorUserId: string,
   ): Promise<number> {
+    const now = new Date();
     const result = await this.prisma.ingestionJob.updateMany({
       where: { tenantId, cloudConnectionId, sourceType, status: 'PENDING' },
-      data: { status: 'CANCELLED', completedAt: new Date(), errorMessage: 'Cancelado por el usuario.' },
+      data: {
+        status: 'CANCELLED',
+        completedAt: now,
+        cancelRequestedAt: now,
+        cancelRequestedByUserId: actorUserId,
+        errorMessage: 'Cancelado por el usuario.',
+        progress: {
+          phase: 'CANCELLED',
+          message: 'Trabajo cancelado antes de iniciar.',
+          updatedAt: now.toISOString(),
+        },
+      },
     });
     return result.count;
   }

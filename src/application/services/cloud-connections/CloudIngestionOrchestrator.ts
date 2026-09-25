@@ -169,6 +169,7 @@ export class CloudIngestionOrchestrator {
       input.tenantId,
       input.cloudConnectionId,
       input.sourceType,
+      input.userId,
     );
     await this.repository.createCloudAuditEvent({
       tenantId: input.tenantId,

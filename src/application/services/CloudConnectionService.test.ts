@@ -101,6 +101,7 @@ class FakeCloudConnectionRepository implements ICloudConnectionRepository {
   public rangeQuery: IngestionJobRangeQuery | null = null;
   public rangeJobs: IngestionJobWindowItem[] = [];
   public failedJobs: IngestionJobWindowItem[] = [];
+  public cancelActorUserId: string | null = null;
   public ingestionHistoryQuery: { tenantId: string; limit: number } | null = null;
   public dataQualityQuery: { tenantId: string; limit: number } | null = null;
   public ingestionHistory: readonly IngestionJobHistoryItem[] = [
@@ -382,7 +383,9 @@ class FakeCloudConnectionRepository implements ICloudConnectionRepository {
     _tenantId: string,
     _connectionId: string,
     sourceType: IngestionJobWindowItem['sourceType'],
+    actorUserId: string,
   ): Promise<number> {
+    this.cancelActorUserId = actorUserId;
     const pending = this.rangeJobs.filter((job) => job.sourceType === sourceType && job.status === 'PENDING');
     this.rangeJobs = this.rangeJobs.map((job) => pending.some((item) => item.id === job.id)
       ? { ...job, status: 'CANCELLED' }
@@ -712,6 +715,7 @@ describe('CloudConnectionService', () => {
 
     expect(retried).toHaveLength(1);
     expect(cancelled).toBe(1);
+    expect(repository.cancelActorUserId).toBe('user-1');
     expect(repository.auditEvents.map((item) => item.action)).toEqual([
       'CLOUD_INGESTION_FAILED_RETRIED', 'CLOUD_INGESTION_PENDING_CANCELLED',
     ]);

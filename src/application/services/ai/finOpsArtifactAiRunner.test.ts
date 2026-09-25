@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
+import { ProviderTimeoutError } from '../../../domain/errors/errors.js';
 import type { IAiGateway } from '../../../domain/interfaces/IAiGateway.js';
 import { FinOpsArtifactAiRunner } from './finOpsArtifactAiRunner.js';
 
@@ -71,6 +72,64 @@ describe('FinOpsArtifactAiRunner', () => {
     expect(userPrompt).toContain('Validar capacidad.');
   });
 
+  test('records an auditor failure trace without replacing provider errors', async () => {
+    const providerError = new ProviderTimeoutError('Audit provider timed out');
+    const aiGateway = { generateText: vi.fn().mockRejectedValue(providerError) } as unknown as IAiGateway;
+    const traceRecorder = { record: vi.fn().mockRejectedValue(new Error('trace sink unavailable')) };
+    const runner = new FinOpsArtifactAiRunner(aiGateway, traceRecorder, 'generator', 'auditor');
+
+    await expect(runner.auditArtifact({
+      artifactType: 'recommendations',
+      tenantId: 'tenant-1',
+      userId: 'user-1',
+      snapshot: {
+        tenantId: 'tenant-1',
+        periodStart: '2026-09-01',
+        periodEnd: '2026-10-01',
+        totalCost: 0,
+        currency: 'COP',
+        metricCount: 0,
+        providers: [],
+        accounts: [],
+        services: [],
+        environments: [],
+        topResources: [],
+      } as never,
+      artifact: { recommendations: [] },
+    })).rejects.toBe(providerError);
+
+    expect(traceRecorder.record).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: 'tenant-1',
+      userId: 'user-1',
+      operation: 'AUDIT',
+      model: 'auditor',
+      startedAt: expect.any(Number),
+      error: providerError,
+    }));
+  });
+
+  test('records invalid auditor output as an audit error', async () => {
+    const aiGateway = { generateText: vi.fn().mockResolvedValue('not-json') } as unknown as IAiGateway;
+    const traceRecorder = { record: vi.fn().mockResolvedValue(undefined) };
+    const runner = new FinOpsArtifactAiRunner(aiGateway, traceRecorder, 'generator', 'auditor');
+
+    await expect(runner.auditArtifact({
+      artifactType: 'recommendations',
+      tenantId: 'tenant-1',
+      snapshot: {
+        tenantId: 'tenant-1', periodStart: '2026-09-01', periodEnd: '2026-10-01',
+        totalCost: 0, currency: 'COP', metricCount: 0, providers: [], accounts: [],
+        services: [], environments: [], topResources: [],
+      } as never,
+      artifact: { recommendations: [] },
+    })).rejects.toThrow();
+
+    expect(traceRecorder.record).toHaveBeenCalledWith(expect.objectContaining({
+      operation: 'AUDIT',
+      error: expect.any(Error),
+    }));
+  });
+
   test('passes the configured low reasoning effort to the auditor', async () => {
     const aiGateway = {
       generateText: vi.fn().mockResolvedValue(JSON.stringify({
@@ -81,7 +140,7 @@ describe('FinOpsArtifactAiRunner', () => {
         requiredChanges: [],
       })),
     } as unknown as IAiGateway;
-    const traceRecorder = { record: vi.fn().mockResolvedValue(undefined) };
+    const traceRecorder = { record: vi.fn().mockRejectedValue(new Error('trace sink unavailable')) };
     const runner = new FinOpsArtifactAiRunner(
       aiGateway,
       traceRecorder,
@@ -90,7 +149,7 @@ describe('FinOpsArtifactAiRunner', () => {
       { timeoutMs: 90_000, maxRetries: 0, reasoningEffort: 'low' },
     );
 
-    await runner.auditArtifact({
+    const auditReport = await runner.auditArtifact({
       artifactType: 'recommendations',
       snapshot: {
         tenantId: 'tenant-1',
@@ -117,5 +176,6 @@ describe('FinOpsArtifactAiRunner', () => {
       reasoningEffort: 'low',
       timeoutMs: 50_000,
     }));
+    expect(auditReport.verdict).toBe('APPROVED');
   });
 });

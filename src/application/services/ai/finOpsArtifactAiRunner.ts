@@ -200,10 +200,27 @@ export class FinOpsArtifactAiRunner {
         },
       ],
     };
-    const rawResponse = await this.aiGateway.generateText(request);
+    let rawResponse: string;
+    let auditReport: AiAuditReport;
+    try {
+      rawResponse = await this.aiGateway.generateText(request);
+      auditReport = parseAuditReport(rawResponse);
+    } catch (error) {
+      if (input.tenantId !== undefined) {
+        await this.recordAuditTrace({
+          tenantId: input.tenantId,
+          ...(input.userId === undefined ? {} : { userId: input.userId }),
+          operation: 'AUDIT',
+          model: this.auditorModel,
+          startedAt,
+          error,
+        });
+      }
+      throw error;
+    }
 
     if (input.tenantId !== undefined) {
-      await this.traceRecorder.record({
+      await this.recordAuditTrace({
         tenantId: input.tenantId,
         ...(input.userId === undefined ? {} : { userId: input.userId }),
         operation: 'AUDIT',
@@ -213,7 +230,15 @@ export class FinOpsArtifactAiRunner {
       });
     }
 
-    return parseAuditReport(rawResponse);
+    return auditReport;
+  }
+
+  private async recordAuditTrace(input: Parameters<AiTraceRecorder['record']>[0]): Promise<void> {
+    try {
+      await this.traceRecorder.record(input);
+    } catch {
+      // Audit trace persistence is observability and must not change the audit result.
+    }
   }
 
   private getRequestTimeout(maxRequestMs: number, deadlineAt?: number): number {

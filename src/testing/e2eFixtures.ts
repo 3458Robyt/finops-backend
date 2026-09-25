@@ -9,6 +9,8 @@ import {
   Prisma,
   PrismaClient,
 } from '../generated/prisma/client.js';
+import type { TechnicalMetricSummaryItem } from '../domain/interfaces/IResourceMetricRepository.js';
+import { evaluateTechnicalOptimizationRules } from '../application/services/ai/TechnicalOptimizationRuleEngine.js';
 import { buildPostgresSessionOptions } from '../infrastructure/database/tenantContext.js';
 
 export interface E2eFixtureManifest {
@@ -383,7 +385,6 @@ async function seedTenantData(
   const { periodStart } = input;
   const latestTechnicalSampleAt = new Date(periodStart);
   latestTechnicalSampleAt.setUTCMinutes((14 * 48 - 1) * 30);
-  const technicalEvidenceRef = `resource_metric_samples:${input.resourceId}:CPUUtilization:${latestTechnicalSampleAt.toISOString()}`;
   const connection = await prisma.cloudConnection.create({
     data: {
       tenantId: input.tenantId,
@@ -448,6 +449,48 @@ async function seedTenantData(
     data: buildMetricSamples(input, connection.id, resource.id, periodStart),
   });
 
+  const technicalMetricSummaries: TechnicalMetricSummaryItem[] = [
+    { metricName: 'CPUUtilization', metricUnit: 'Percent', base: 8, offset: 0 },
+    { metricName: 'MemoryUtilization', metricUnit: 'Percent', base: 20, offset: 1 },
+    { metricName: 'NetworkIn', metricUnit: 'Bytes', base: 1024, offset: 2 },
+  ].map((metric) => ({
+    provider: input.provider,
+    externalResourceId: input.resourceId,
+    cloudResourceId: resource.id,
+    cloudConnectionId: connection.id,
+    resourceType: 'COMPUTE_INSTANCE',
+    serviceName: input.serviceName,
+    metricName: metric.metricName,
+    metricUnit: metric.metricUnit,
+    statistic: 'MEAN',
+    sampleCount: 14 * 48,
+    coverageDays: 14,
+    min: metric.base + metric.offset,
+    max: metric.base + metric.offset + 11,
+    avg: metric.base + metric.offset + 5.5,
+    p50: metric.base + metric.offset + 5.5,
+    p95: metric.base + metric.offset + 11,
+    p99: metric.base + metric.offset + 11,
+    latest: metric.base + metric.offset + 11,
+    highUtilizationSampleCount: 0,
+    highUtilizationRatio: 0,
+    firstSampledAt: periodStart,
+    latestSampledAt: latestTechnicalSampleAt,
+  }));
+  const [technicalRuleEvaluation] = evaluateTechnicalOptimizationRules({
+    summaries: technicalMetricSummaries,
+    referenceDate: now,
+  });
+  if (technicalRuleEvaluation === undefined) {
+    throw new Error('E2E fixture technical rule evaluation returned no resource result.');
+  }
+  const technicalRuleJson = technicalRuleEvaluation as unknown as Prisma.InputJsonValue;
+  const technicalEvidenceRefs = technicalRuleEvaluation.technicalEvidenceRefs;
+  const technicalMetricEvidence = technicalRuleEvaluation.metricSummary.map((summary, index) => ({
+    ...summary,
+    evidenceRef: technicalEvidenceRefs[index]!,
+  }));
+
   const recommendation = await prisma.recommendation.create({
     data: {
       tenantId: input.tenantId,
@@ -455,7 +498,7 @@ async function seedTenantData(
       type: 'RIGHTSIZING',
       status: 'PENDING',
       severity: 'HIGH',
-      title: `Reducir capacidad de ${input.resourceName}`,
+      title: `Revisar capacidad de ${input.resourceName}`,
       description: 'Las métricas sugieren revisar la capacidad. Validar la ventana de carga y el rendimiento antes de considerar un cambio.',
       estimatedMonthlySavings: new Prisma.Decimal(0),
       currency: 'USD',
@@ -465,8 +508,9 @@ async function seedTenantData(
         maxEstimatedMonthlySavings: 0,
         cloudResourceId: resource.id,
         externalResourceId: input.resourceId,
+        deterministicRules: technicalRuleJson,
         costEvidenceRefs: [`cost_metrics:e2e-fixture:${input.runId}:${input.resourceId}`],
-        technicalEvidenceRefs: [technicalEvidenceRef],
+        technicalEvidenceRefs,
         technicalSampleCount: 14 * 48,
         technicalCoverageDays: 14,
         latestTechnicalSampleAt: latestTechnicalSampleAt.toISOString(),
@@ -485,22 +529,10 @@ async function seedTenantData(
             linkQuality: 'COST_AND_TECHNICAL',
             cost: { totalCost: 157.5, currency: 'USD', focusMetricCount: 14 },
             usage: [],
-            metrics: [{
-              metricName: 'CPUUtilization', metricUnit: 'Percent', sampleCount: 14 * 48, coverageDays: 14,
-              min: 8, max: 19, avg: 13.5, p50: 13.5, p95: 19, p99: 19, latest: 19,
-              firstSampledAt: periodStart.toISOString(), latestSampledAt: latestTechnicalSampleAt.toISOString(),
-              evidenceRef: technicalEvidenceRef,
-            }],
-            ruleEvaluation: {
-              externalResourceId: input.resourceId, cloudResourceId: resource.id, provider: input.provider,
-              readiness: 'VALIDATION_ONLY', evidenceStrength: 'MEDIUM', recommendedActionType: 'TECHNICAL_VALIDATION_REQUIRED',
-              ruleMatches: ['CPU_STRONG_UNDERUTILIZATION'], blockers: ['INSUFFICIENT_TECHNICAL_COVERAGE'],
-              sourceFacts: ['Fixture con cobertura limitada para exigir validación técnica.'],
-              technicalEvidenceRefs: [`resource_metric_samples:${input.resourceId}:CPUUtilization:2026-05`],
-              metricSummary: [], maxTechnicalSavingsRate: 0,
-            },
+            metrics: technicalMetricEvidence,
+            ruleEvaluation: technicalRuleJson,
           }],
-          deterministicRules: [],
+          deterministicRules: [technicalRuleJson],
         },
         aiAudit: { verdict: 'APPROVED', score: 94, checks: [], blockingIssues: [], requiredChanges: [] },
         aiLearning: { memoryIds: ['e2e-memory-1'], caseIds: ['e2e-case-1'], summary: 'Fixture de aprendizaje auditado.' },

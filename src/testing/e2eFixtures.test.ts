@@ -43,6 +43,40 @@ describe('e2e fixture utilities', () => {
         where: { tenantId: manifest.tenants[0]?.id },
       });
       expect(metricCount).toBeGreaterThan(0);
+
+      const recommendationId = manifest.recommendationIds[0];
+      if (recommendationId === undefined) throw new Error('Fixture recommendation is required.');
+      const recommendation = await prisma.recommendation.findUnique({
+        where: { id: recommendationId },
+        select: { evidence: true, estimatedMonthlySavings: true },
+      });
+      expect(recommendation?.estimatedMonthlySavings.toNumber()).toBe(0);
+      expect(recommendation?.evidence).toMatchObject({
+        deterministicRules: {
+          readiness: 'GENERATABLE',
+          evidenceStrength: 'HIGH',
+          recommendedActionType: 'RIGHTSIZING',
+          ruleMatches: expect.arrayContaining([
+            'CPU_MODERATE_UNDERUTILIZATION',
+            'MEMORY_LOW_UTILIZATION',
+          ]),
+          blockers: [],
+          maxTechnicalSavingsRate: 0,
+        },
+        recommendationEvidenceSnapshot: {
+          resources: [{
+            ruleEvaluation: {
+              readiness: 'GENERATABLE',
+              evidenceStrength: 'HIGH',
+              ruleMatches: expect.arrayContaining([
+                'CPU_MODERATE_UNDERUTILIZATION',
+                'MEMORY_LOW_UTILIZATION',
+              ]),
+              blockers: [],
+            },
+          }],
+        },
+      });
     } finally {
       const deleted = await cleanupE2eFixtures(prisma, runId);
       await prisma.$disconnect();

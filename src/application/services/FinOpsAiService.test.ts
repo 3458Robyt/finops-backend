@@ -47,9 +47,12 @@ class FakeAiGateway implements IAiGateway {
 }
 
 class FakeCostAnalyticsRepository implements ICostAnalyticsRepository {
-  public async getLatestTenantSnapshot(): Promise<CostAnalyticsSnapshot> {
+  public readonly requestedTenantIds: string[] = [];
+
+  public async getLatestTenantSnapshot(tenantId: string): Promise<CostAnalyticsSnapshot> {
+    this.requestedTenantIds.push(tenantId);
     return {
-      tenantId: 'tenant-1',
+      tenantId,
       periodStart: '2024-09-01',
       periodEnd: '2024-10-01',
       totalCost: 117.35,
@@ -289,8 +292,9 @@ describe('FinOpsAiService', () => {
 
   test('answers chat using a compact FinOps cost snapshot', async () => {
     const gateway = new FakeAiGateway('EC2 concentra el mayor gasto del periodo.');
+    const analytics = new FakeCostAnalyticsRepository();
     const service = new FinOpsAiService(
-      new FakeCostAnalyticsRepository(),
+      analytics,
       new FakeRecommendationRepository(),
       gateway,
     );
@@ -307,6 +311,7 @@ describe('FinOpsAiService', () => {
 
     expect(response.answer).toBe('EC2 concentra el mayor gasto del periodo.');
     expect(response.snapshot.totalCost).toBe(117.35);
+    expect(analytics.requestedTenantIds).toEqual(['tenant-1']);
     expect(gateway.lastRequest?.messages[0]?.content).toContain('Amazon Elastic Compute Cloud');
     expect(gateway.lastRequest?.messages[0]?.content).toContain('español');
     expect(gateway.lastRequest?.messages.at(-1)?.content).toBe('Explicame donde esta el mayor costo');

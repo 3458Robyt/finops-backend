@@ -91,6 +91,8 @@ describe('FinOps AI prompt boundaries', () => {
     expect(prompt).toContain('Incluye cloudResourceId y externalResourceId cuando estén presentes');
     expect(prompt).toContain('Prioriza solo métricas presentes y pertinentes');
     expect(prompt).toContain('ni presentes una métrica ausente como si ya estuviera medida');
+    expect(prompt).toContain('No añadas métricas de aplicación como latencia o errores');
+    expect(prompt).toContain('define un NO-GO explícito');
     expect(prompt).not.toContain('"status": "PENDING"');
     expect(prompt).not.toContain('Conserva el estado de gestion original');
   });
@@ -117,6 +119,13 @@ describe('FinOps AI prompt boundaries', () => {
     expect(prompt).toContain('No rechaces un candidateId válido solo porque no sea un campo de un recurso técnico');
     expect(prompt).toContain('Un candidato VALIDATION_ONLY puede no tener technicalEvidenceRefs suficientes');
     expect(prompt).toContain('resourceLinkReason=INVENTORY_RESOURCE_NOT_FOUND puede ser el estado honesto de trazabilidad');
+  });
+
+  test('lets the execution-plan auditor accept safe no-go criteria without invented thresholds', () => {
+    const prompt = buildAuditSystemPrompt('execution_plan');
+
+    expect(prompt).toContain('No exijas al plan inventar umbrales ausentes');
+    expect(prompt).toContain('objetivo, fuente y ventana');
   });
 
   test('excludes conflicting cost totals and server savings from execution-plan prompts', () => {

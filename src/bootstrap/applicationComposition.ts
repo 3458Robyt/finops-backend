@@ -182,7 +182,7 @@ export function createApplicationComposition(
     emailClient,
   );
   const ingestionProviders = [new AwsSdkIngestionProvider(), new OciSdkIngestionProvider()];
-  const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository, ingestionProviders);
+  const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository, ingestionProviders, resourceMetricRepository);
   const technicalMetricsService = new TechnicalMetricsService(resourceMetricRepository);
   const resourceLinkageReadinessService = new ResourceLinkageReadinessService(
     resourceLinkageReadinessRepository,

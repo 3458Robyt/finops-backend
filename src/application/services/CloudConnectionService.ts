@@ -22,6 +22,7 @@ import type {
   ProviderCatalogEntry,
 } from '../../domain/models/CloudConnection.js';
 import { CloudConnectionOnboarding } from './cloud-connections/CloudConnectionOnboarding.js';
+import type { MetricDiscoveryInventoryReader } from './cloud-connections/CloudConnectionMetricDiscovery.js';
 import { CloudIngestionOrchestrator } from './cloud-connections/CloudIngestionOrchestrator.js';
 import { CloudConnectionSourceConfiguration } from './cloud-connections/CloudConnectionSourceConfiguration.js';
 import type {
@@ -60,8 +61,9 @@ export class CloudConnectionService {
   constructor(
     repository: ICloudConnectionRepository,
     providers: readonly CloudIngestionProvider[] = [],
+    inventoryReader?: MetricDiscoveryInventoryReader,
   ) {
-    this.onboarding = new CloudConnectionOnboarding(repository, providers);
+    this.onboarding = new CloudConnectionOnboarding(repository, providers, inventoryReader);
     this.ingestion = new CloudIngestionOrchestrator(repository);
     this.sourceConfiguration = new CloudConnectionSourceConfiguration(repository);
   }

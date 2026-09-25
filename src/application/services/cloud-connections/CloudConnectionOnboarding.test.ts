@@ -44,13 +44,52 @@ describe('CloudConnectionOnboarding staged credentials', () => {
       tenantId: 'tenant-1', userId: 'user-1', cloudConnectionId: connection.id, scope,
     });
 
-    expect(result).toBe(discovery);
+    expect(result).toMatchObject(discovery);
     expect(repository.getIngestionConnectionForTenant).toHaveBeenCalledWith('tenant-1', connection.id);
     expect(discoverMetricDefinitions).toHaveBeenCalledWith(candidateConnection, scope, expect.any(AbortSignal));
     expect(repository.createCloudAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
       action: 'CLOUD_METRIC_DISCOVERY_PREVIEWED',
       metadata: { regionId: 'us-phoenix-1', definitions: 1, apiCallCount: 1, truncated: false },
     }));
+  });
+
+  test('reports inventory linkage only for an exact resource ID in the same tenant and connection', async () => {
+    const repository = buildRepository();
+    const discovery: CloudMetricDiscoveryResult = {
+      definitions: [
+        { compartmentId: 'compartment-1', namespace: 'oci_computeagent', metricName: 'CpuUtilization', resourceId: 'instance-exact' },
+        { compartmentId: 'compartment-1', namespace: 'oci_computeagent', metricName: 'MemoryUtilization', resourceId: 'instance-missing' },
+        { compartmentId: 'compartment-1', namespace: 'oci_computeagent', metricName: 'DiskBytesRead', resourceId: '' },
+      ],
+      regions: ['us-phoenix-1'], compartments: ['compartment-1'], apiCallCount: 1, truncated: false, warnings: [],
+    };
+    const provider = {
+      ...buildProvider({ status: 'VERIFIED' }),
+      discoverMetricDefinitions: vi.fn(async () => discovery),
+    } as unknown as CloudIngestionProvider;
+    const inventoryReader = {
+      listResourcesForTenantByIdentities: vi.fn(async () => [{
+        id: 'resource-1', cloudConnectionId: connection.id, provider: 'oci',
+        externalResourceId: 'instance-exact', name: 'Producción API', resourceType: 'Compute Instance',
+        serviceName: 'Compute', status: 'ACTIVE', firstSeenAt: new Date(), lastSeenAt: new Date(),
+      }]),
+    };
+    const service = new CloudConnectionService(repository, [provider], inventoryReader);
+
+    const result = await service.previewMetricDefinitions({
+      tenantId: 'tenant-1', userId: 'user-1', cloudConnectionId: connection.id,
+      scope: { regionId: 'us-phoenix-1', compartmentId: 'compartment-1' },
+    });
+
+    expect(inventoryReader.listResourcesForTenantByIdentities).toHaveBeenCalledWith('tenant-1', [
+      { cloudConnectionId: connection.id, externalResourceId: 'instance-exact' },
+      { cloudConnectionId: connection.id, externalResourceId: 'instance-missing' },
+    ]);
+    expect(result.definitions.map((item) => item.inventoryLinkage)).toEqual([
+      { status: 'MATCHED', resourceName: 'Producción API' },
+      { status: 'NOT_FOUND' },
+      { status: 'MISSING_RESOURCE_ID' },
+    ]);
   });
 
   test('rejects malformed discovery scope before calling OCI', async () => {

@@ -111,6 +111,16 @@ describe.skipIf(!integrationEnabled)('normalized resource lineage integration', 
       },
     });
 
+    const exactInventoryMatches = await new PrismaResourceMetricRepository(prisma).listResourcesForTenantByIdentities!(tenantId, [
+      { cloudConnectionId: original.cloudConnectionId, externalResourceId: original.externalResourceId },
+      { cloudConnectionId: secondConnection.id, externalResourceId: original.externalResourceId },
+      { cloudConnectionId: secondConnection.id, externalResourceId: 'resource-not-in-inventory' },
+    ]);
+    expect(exactInventoryMatches.map(({ id, cloudConnectionId }) => [id, cloudConnectionId]).sort()).toEqual([
+      [original.id, original.cloudConnectionId],
+      [secondResource.id, secondConnection.id],
+    ].sort());
+
     const links = new Map([
       [resourceLookupKey(original.cloudConnectionId, original.externalResourceId), [original.id]],
       [resourceLookupKey(secondConnection.id, original.externalResourceId), [secondResource.id]],

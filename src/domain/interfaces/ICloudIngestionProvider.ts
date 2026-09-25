@@ -253,6 +253,11 @@ export interface CloudMetricDefinitionCandidate {
   readonly dimensions?: Readonly<Record<string, string>>;
   readonly statistics?: readonly MetricStatistic[];
   readonly unit?: string;
+  /** Exact tenant+connection inventory match; attached only to read-only previews. */
+  readonly inventoryLinkage?: {
+    readonly status: 'MATCHED' | 'NOT_FOUND' | 'NOT_VERIFIED' | 'MISSING_RESOURCE_ID';
+    readonly resourceName?: string;
+  };
 }
 
 export interface CloudMetricDiscoveryResult {

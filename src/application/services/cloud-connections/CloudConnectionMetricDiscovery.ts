@@ -1,4 +1,5 @@
 import type { ICloudConnectionRepository } from '../../../domain/interfaces/ICloudConnectionRepository.js';
+import type { IResourceMetricRepository } from '../../../domain/interfaces/IResourceMetricRepository.js';
 import type {
   CloudIngestionProvider,
   CloudMetricDiscoveryResult,
@@ -8,12 +9,15 @@ import { withTimeout } from '../cloudConnectionPolicies.js';
 import { requireNonEmpty } from './CloudConnectionInputPolicy.js';
 import type { PreviewMetricDefinitionsInput } from './CloudConnectionContracts.js';
 
+export type MetricDiscoveryInventoryReader = Pick<IResourceMetricRepository, 'listResourcesForTenantByIdentities'>;
+
 export class CloudConnectionMetricDiscovery {
   private readonly providers: ReadonlyMap<string, CloudIngestionProvider>;
 
   constructor(
     private readonly repository: ICloudConnectionRepository,
     providers: readonly CloudIngestionProvider[],
+    private readonly inventoryReader?: MetricDiscoveryInventoryReader,
   ) {
     this.providers = new Map(providers.map((provider) => [provider.providerCode, provider]));
   }
@@ -40,6 +44,22 @@ export class CloudConnectionMetricDiscovery {
       controller.abort();
       throw error;
     }
+    const inventoryLinkageById = await this.findInventoryLinkage(input.tenantId, input.cloudConnectionId, result.definitions);
+    const discovery: CloudMetricDiscoveryResult = {
+      ...result,
+      definitions: result.definitions.map((definition) => {
+        const resourceId = definition.resourceId.trim();
+        const match = inventoryLinkageById?.get(resourceId);
+        const inventoryLinkage = resourceId === ''
+          ? { status: 'MISSING_RESOURCE_ID' as const }
+          : inventoryLinkageById === null
+            ? { status: 'NOT_VERIFIED' as const }
+            : match === undefined
+              ? { status: 'NOT_FOUND' as const }
+              : { status: 'MATCHED' as const, ...(match.name === undefined ? {} : { resourceName: match.name }) };
+        return { ...definition, inventoryLinkage };
+      }),
+    };
     await this.repository.createCloudAuditEvent({
       tenantId: input.tenantId,
       actorUserId: input.userId,
@@ -48,12 +68,26 @@ export class CloudConnectionMetricDiscovery {
       entityId: input.cloudConnectionId,
       metadata: {
         regionId: scope.regionId,
-        definitions: result.definitions.length,
+        definitions: discovery.definitions.length,
         apiCallCount: result.apiCallCount,
         truncated: result.truncated,
       },
     });
-    return result;
+    return discovery;
+  }
+
+  private async findInventoryLinkage(
+    tenantId: string,
+    cloudConnectionId: string,
+    definitions: CloudMetricDiscoveryResult['definitions'],
+  ): Promise<Map<string, { readonly name?: string }> | null> {
+    const listByIdentities = this.inventoryReader?.listResourcesForTenantByIdentities;
+    if (listByIdentities === undefined) return null;
+    const identities = [...new Set(definitions.map((item) => item.resourceId.trim()).filter(Boolean))]
+      .map((externalResourceId) => ({ cloudConnectionId, externalResourceId }));
+    if (identities.length === 0) return new Map();
+    const resources = await listByIdentities.call(this.inventoryReader, tenantId, identities);
+    return new Map(resources.map((resource) => [resource.externalResourceId, { ...(resource.name === undefined ? {} : { name: resource.name }) }]));
   }
 }
 

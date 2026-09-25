@@ -30,6 +30,7 @@ import {
 } from './CloudConnectionInputPolicy.js';
 import { CloudCredentialValidationService } from './CloudCredentialValidationService.js';
 import { CloudConnectionMetricDiscovery } from './CloudConnectionMetricDiscovery.js';
+import type { MetricDiscoveryInventoryReader } from './CloudConnectionMetricDiscovery.js';
 
 export class CloudConnectionOnboarding {
   private readonly providers: ReadonlyMap<string, CloudIngestionProvider>;
@@ -39,10 +40,11 @@ export class CloudConnectionOnboarding {
   constructor(
     private readonly repository: ICloudConnectionRepository,
     providers: readonly CloudIngestionProvider[] = [],
+    inventoryReader?: MetricDiscoveryInventoryReader,
   ) {
     this.providers = new Map(providers.map((provider) => [provider.providerCode, provider]));
     this.credentialValidation = new CloudCredentialValidationService(repository, providers);
-    this.metricDiscovery = new CloudConnectionMetricDiscovery(repository, providers);
+    this.metricDiscovery = new CloudConnectionMetricDiscovery(repository, providers, inventoryReader);
   }
 
   public listProviders(): Promise<readonly ProviderCatalogEntry[]> {

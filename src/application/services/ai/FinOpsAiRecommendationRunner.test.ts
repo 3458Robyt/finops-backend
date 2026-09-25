@@ -4,6 +4,7 @@ import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnal
 import type { RecommendationReadinessReport } from './RecommendationReadinessGate.js';
 import type { PreparedRecommendationAnalysis } from './finOpsAiTypes.js';
 import { FinOpsAiRecommendationRunner } from './FinOpsAiRecommendationRunner.js';
+import { AiAuditRejectedError } from '../../../domain/errors/errors.js';
 
 const snapshot: CostAnalyticsSnapshot = {
   tenantId: 'tenant-1',
@@ -110,5 +111,36 @@ describe('FinOpsAiRecommendationRunner no-op readiness', () => {
       responseText: '{"recommendations":[]}',
     }));
     expect(onStage).toHaveBeenCalledWith('PERSISTENCE');
+  });
+
+  test('uses an opaque diagnostic id when the auditor rejects a recommendation', async () => {
+    const prepared: PreparedRecommendationAnalysis = {
+      snapshot,
+      readinessReport: { candidates: [{ readiness: 'GENERATABLE' } as never], blocked: [], deferred: [], summary: 'candidate' },
+      evidenceHash: 'hash',
+      deterministicAnalysis: { trends: [], summary: 'none' } as never,
+      model: 'model',
+      auditorModel: 'auditor',
+    };
+    const runner = new FinOpsAiRecommendationRunner(
+      { createMany: vi.fn() } as unknown as IRecommendationRepository,
+      { assembleRecommendationContext: vi.fn().mockResolvedValue({ systemPrompt: 'prompt' }) } as never,
+      {
+        generateAuditedDrafts: vi.fn().mockResolvedValue({
+          drafts: [{}], approvedDrafts: [], rejectedDrafts: [{}], candidateAudits: [],
+          auditReport: { verdict: 'REJECTED', score: 10 }, firstRawResponse: '{}',
+        }),
+      } as never,
+      { record: vi.fn().mockResolvedValue(undefined) } as never,
+      { prepare: vi.fn() } as never,
+      'model',
+      'auditor',
+    );
+
+    const rejection = await runner.run({ tenantId: 'tenant-private-id', persist: false, prepared }).catch((error: unknown) => error);
+
+    expect(rejection).toBeInstanceOf(AiAuditRejectedError);
+    expect((rejection as AiAuditRejectedError).diagnosticId).toMatch(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i);
+    expect((rejection as AiAuditRejectedError).diagnosticId).not.toContain('tenant-private-id');
   });
 });

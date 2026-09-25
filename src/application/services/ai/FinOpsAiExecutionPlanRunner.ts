@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { AiAuditRejectedError, FinOpsBaseError } from '../../../domain/errors/errors.js';
 import type { ICostAnalyticsRepository } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { IRecommendationRepository } from '../../../domain/interfaces/IRecommendationRepository.js';
@@ -59,7 +60,7 @@ export class FinOpsAiExecutionPlanRunner {
 
     if (auditReport.verdict !== approvedAuditVerdict || !isAuditApproved(auditReport)) {
       throw new AiAuditRejectedError('AI audit rejected execution plan output', {
-        diagnosticId: `audit-${input.tenantId}-${Date.now().toString(36)}`,
+        diagnosticId: randomUUID(),
         audit: auditReport,
       });
     }

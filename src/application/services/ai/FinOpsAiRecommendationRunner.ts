@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { AiAuditRejectedError, FinOpsBaseError } from '../../../domain/errors/errors.js';
 import type { IRecommendationRepository } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { AiTraceRecorder } from './aiTraceRecorder.js';
@@ -127,7 +128,7 @@ export class FinOpsAiRecommendationRunner {
 
     if (drafts.length > 0 && approvedDrafts.length === 0) {
       const rejection = new AiAuditRejectedError('AI audit rejected recommendation output', {
-        diagnosticId: `audit-${input.tenantId}-${Date.now().toString(36)}`,
+        diagnosticId: randomUUID(),
         audit: {
           ...auditReport,
           generatedCount: drafts.length,

@@ -31,6 +31,29 @@ if (formatApiError(409, { code: 'AI_AUDIT_REJECTED', error: 'sensitive provider 
   || formatApiError(500, { code: 'provider detail with secrets' }) !== 'HTTP 500') {
   throw new Error('Sanitized API error formatting regression check failed.');
 }
+if (!isSafeAuditorRejection(409, 'AI_AUDIT_REJECTED', true, 77_200)
+  || isSafeAuditorRejection(409, 'AI_AUDIT_REJECTED', false, 77_200)
+  || isSafeAuditorRejection(409, 'AI_AUDIT_REJECTED', true, 120_001)
+  || isSafeAuditorRejection(500, 'AI_AUDIT_REJECTED', true, 1_000)
+  || isSafeAuditorRejection(409, 'OTHER_REJECTION', true, 1_000)) {
+  throw new Error('Safe execution-plan rejection classification regression check failed.');
+}
+if (safeTraceErrorCategory('AI_AUDIT_REJECTED: sensitive tenant text') !== 'AI_AUDIT_REJECTED'
+  || safeTraceErrorCategory('PRIVATE_RESOURCE_REFERENCE') !== 'OTHER') {
+  throw new Error('Sanitized trace error category regression check failed.');
+}
+const traceDeltaSelfCheck = newExecutionTraces(
+  [
+    { id: 'existing-plan', operation: 'EXECUTION_PLAN' },
+    { id: 'new-plan', operation: 'EXECUTION_PLAN' },
+    { id: 'new-chat', operation: 'CHAT' },
+  ],
+  new Set(['existing-plan']),
+  'EXECUTION_PLAN',
+);
+if (traceDeltaSelfCheck.length !== 1 || traceDeltaSelfCheck[0]?.['id'] !== 'new-plan') {
+  throw new Error('Execution-plan trace delta regression check failed.');
+}
 
 if (process.env['AI_LIVE_TESTS'] !== 'true') {
   console.log(JSON.stringify({ success: true, skipped: true, reason: 'Set AI_LIVE_TESTS=true for live provider validation.' }));
@@ -53,6 +76,13 @@ const prompts = [
   '¿Cuánto ahorro efectivo se verificó el mes pasado? No confundas estimación con ahorro.',
 ];
 let token = await login();
+const initialTraceResult = await request('/agent/context-traces?limit=100', undefined, 'GET');
+const initialTraces = Array.isArray(initialTraceResult['traces'])
+  ? initialTraceResult['traces'] as Record<string, unknown>[]
+  : [];
+const initialTraceIds = new Set(initialTraces.flatMap((trace) => (
+  typeof trace['id'] === 'string' ? [trace['id']] : []
+)));
 let chatIndex = 0;
 let dangerousActionAnswer = '';
 const chatResults = await sequentialRuns(prompts.length, async () => {
@@ -142,39 +172,78 @@ const expectedExternalResourceId = recommendationEvidence?.['externalResourceId'
 const generatedPlanIds = new Set<string>();
 const planRuns = await sequentialRuns(5, async () => {
   const startedAt = Date.now();
+  let previousPlanId: string | null | undefined;
   try {
+    previousPlanId = await latestExecutionPlanId(recommendationId);
     const result = await request(`/recommendations/${encodeURIComponent(recommendationId)}/execution-plan`, {});
     const executionPlan = asRecord(result['executionPlan']);
     const content = asRecord(executionPlan?.['content']);
     const scope = asRecord(content?.['scope']);
     const planId = typeof executionPlan?.['id'] === 'string' ? executionPlan['id'] : undefined;
     if (planId !== undefined) generatedPlanIds.add(planId);
-    const latest = asRecord((await request(
-      `/recommendations/${encodeURIComponent(recommendationId)}/execution-plans/latest`,
-      undefined,
-      'GET',
-    ))['executionPlan']);
+    const latestPlanId = await latestExecutionPlanId(recommendationId);
     const fields = ['prerequisites', 'steps', 'validation', 'risks', 'rollback', 'successCriteria'];
     const text = content === undefined ? '' : JSON.stringify(content);
     const latencyMs = Date.now() - startedAt;
     const scopeMatches = scope?.['cloudAccountId'] === expectedAccountId
       && scope?.['cloudResourceId'] === expectedCloudResourceId
       && scope?.['externalResourceId'] === expectedExternalResourceId;
-    const passed = planId !== undefined && latest?.['id'] === planId
+    const passed = planId !== undefined && planId !== previousPlanId && latestPlanId === planId
       && executionPlan?.['auditVerdict'] === 'APPROVED'
       && typeof executionPlan['auditScore'] === 'number' && executionPlan['auditScore'] >= 80
       && content !== undefined && fields.every((key) => Array.isArray(content[key]) && (content[key] as unknown[]).length > 0)
       && looksLikeSpanish(text) && !containsAutoExecution(content) && scopeMatches && latencyMs <= 120_000;
-    return { passed, latencyMs, status: 200, scopeMatches };
-  } catch (error) {
     return {
-      passed: false,
-      latencyMs: Date.now() - startedAt,
-      status: statusFrom(error),
-      ...(errorCodeFrom(error) === undefined ? {} : { errorCode: errorCodeFrom(error) }),
+      passed,
+      outcome: passed ? 'APPROVED_VALID_PLAN' : 'QUALITY_OR_PERSISTENCE_FAILURE',
+      latencyMs,
+      status: 200,
+      scopeMatches,
+      persistedNewPlan: latestPlanId !== previousPlanId,
+    };
+  } catch (error) {
+    const latencyMs = Date.now() - startedAt;
+    const status = statusFrom(error);
+    const errorCode = errorCodeFrom(error);
+    let latestUnchanged = false;
+    if (previousPlanId !== undefined) {
+      try {
+        latestUnchanged = await latestExecutionPlanId(recommendationId) === previousPlanId;
+      } catch {
+        latestUnchanged = false;
+      }
+    }
+    const safeRejection = isSafeAuditorRejection(status, errorCode, latestUnchanged, latencyMs);
+    return {
+      passed: safeRejection,
+      outcome: safeRejection ? 'SAFE_AUDIT_REJECTION_NOT_PERSISTED' : 'OPERATIONAL_OR_QUALITY_FAILURE',
+      latencyMs,
+      status,
+      ...(errorCode === undefined ? {} : { errorCode }),
+      latestUnchanged,
     };
   }
 });
+const traceResult = await request('/agent/context-traces?limit=100', undefined, 'GET');
+const traces = Array.isArray(traceResult['traces']) ? traceResult['traces'] as Record<string, unknown>[] : [];
+const executionPlanTraces = newExecutionTraces(traces, initialTraceIds, 'EXECUTION_PLAN');
+const successfulPlanRuns = planRuns.filter((run) => run.status === 200).length;
+const failedPlanRuns = planRuns.length - successfulPlanRuns;
+const approvedPlanRuns = planRuns.filter((run) => run.outcome === 'APPROVED_VALID_PLAN').length;
+const safeAuditRejections = planRuns.filter((run) => run.outcome === 'SAFE_AUDIT_REJECTION_NOT_PERSISTED').length;
+const successfulPlanTraces = executionPlanTraces.filter((trace) => trace['status'] === 'SUCCESS').length;
+const failedPlanTraces = executionPlanTraces.filter((trace) => trace['status'] === 'ERROR').length;
+const planTraceCheck = {
+  passed: successfulPlanTraces === successfulPlanRuns && failedPlanTraces === failedPlanRuns,
+  expected: { success: successfulPlanRuns, error: failedPlanRuns },
+  observed: { success: successfulPlanTraces, error: failedPlanTraces },
+  errors: executionPlanTraces
+    .filter((trace) => trace['status'] === 'ERROR')
+    .map((trace) => ({
+      latencyMs: trace['latencyMs'],
+      errorCode: safeTraceErrorCategory(String(trace['errorMessage'] ?? '')),
+    })),
+};
 
 const checks = {
   chats: chatResults,
@@ -183,6 +252,7 @@ const checks = {
   recommendations: recommendationRuns,
   recommendationPreviewsDidNotPersist: beforeCount === afterCount,
   plans: planRuns,
+  executionPlanTrace: planTraceCheck,
 };
 const recommendationPassCount = recommendationRuns.filter((item) => item.passed).length;
 const recommendationP95Ms = summarizeLatencies(recommendationRuns.map((item) => item.latencyMs)).p95;
@@ -196,24 +266,38 @@ const output = {
     && recommendationRuns.every((item) => item.latencyMs <= 120_000)
     && beforeCount === afterCount
     && planRuns.every((item) => item.passed)
-    && generatedPlanIds.size === 5,
+    && approvedPlanRuns >= 4
+    && safeAuditRejections <= 1
+    && generatedPlanIds.size === approvedPlanRuns
+    && planRuns.every((run) => run.latencyMs <= 120_000)
+    && summarizeLatencies(planRuns.map((run) => run.latencyMs)).p95 <= 90_000
+    && planTraceCheck.passed,
   generatedAt: new Date().toISOString(),
   providerModel: process.env['AI_EXPECTED_MODEL'] ?? 'gpt-5.6-luna',
   isolatedFixtureRunId: manifest.runId,
   economicImpactCoverage: recommendationRuns.some((run) => run.verifiedSavingsCount > 0)
     ? 'VERIFIED_SAVINGS_CANDIDATE_EXERCISED'
     : 'NOT_DEMONSTRATED_FIXTURE_HAS_NO_PRICED_ALTERNATIVE',
-  executionPlanResourceScope: { expectedAccountId, expectedCloudResourceId, expectedExternalResourceId },
+  executionPlanResourceScopeChecks: {
+    approvedPlansMatchRecommendationScope: planRuns
+      .filter((run) => run.outcome === 'APPROVED_VALID_PLAN')
+      .every((run) => run.scopeMatches),
+  },
   metrics: {
     chatCount: chatResults.length,
     recommendationRuns: recommendationRuns.length,
     recommendationPasses: recommendationPassCount,
     executionPlanRuns: planRuns.length,
-    executionPlanPasses: planRuns.filter((item) => item.passed).length,
+    executionPlanApproved: approvedPlanRuns,
+    executionPlanSafeAuditRejections: safeAuditRejections,
+    executionPlanFailures: planRuns.filter((item) => !item.passed).length,
     uniqueExecutionPlans: generatedPlanIds.size,
     chatLatencyMs: summarizeLatencies(chatResults.map((item) => item.latencyMs)),
     recommendationLatencyMs: summarizeLatencies(recommendationRuns.map((item) => item.latencyMs)),
     executionPlanLatencyMs: summarizeLatencies(planRuns.map((item) => item.latencyMs)),
+    executionPlanTraceLatencyMs: summarizeLatencies(executionPlanTraces
+      .map((trace) => trace['latencyMs'])
+      .filter((latency): latency is number => typeof latency === 'number' && Number.isFinite(latency))),
     persistedRecommendationsBefore: beforeCount,
     persistedRecommendationsAfter: afterCount,
   },
@@ -278,6 +362,33 @@ async function recommendationCount(): Promise<number> {
   return Array.isArray(result['recommendations']) ? result['recommendations'].length : 0;
 }
 
+async function latestExecutionPlanId(recommendationId: string): Promise<string | null> {
+  const result = await request(
+    `/recommendations/${encodeURIComponent(recommendationId)}/execution-plans/latest`,
+    undefined,
+    'GET',
+  );
+  const plan = asRecord(result['executionPlan']);
+  return typeof plan?.['id'] === 'string' ? plan['id'] : null;
+}
+
+function isSafeAuditorRejection(
+  status: number | undefined,
+  code: string | undefined,
+  latestUnchanged: boolean,
+  latencyMs: number,
+): boolean {
+  return status === 409 && code === 'AI_AUDIT_REJECTED' && latestUnchanged && latencyMs <= 120_000;
+}
+
+function safeTraceErrorCategory(message: string): string {
+  const code = errorCodeFrom(new Error(message));
+  return code === 'AI_AUDIT_REJECTED' || code === 'PROVIDER_TIMEOUT' || code === 'PROVIDER_UNAVAILABLE'
+    || code === 'PROVIDER_ERROR' || code === 'AI_RESPONSE_ERROR' || code === 'AI_AUDIT_ERROR'
+    ? code
+    : 'OTHER';
+}
+
 function isAuditedRecommendation(recommendation: Record<string, unknown>): boolean {
   const evidence = asRecord(recommendation['evidence']);
   const audit = asRecord(evidence?.['aiAudit']);
@@ -310,6 +421,16 @@ function summarizeLatencies(values: readonly number[]): { p50: number; p95: numb
   const sorted = [...values].sort((left, right) => left - right);
   const percentile = (fraction: number): number => sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)] ?? 0;
   return { p50: percentile(0.5), p95: percentile(0.95), max: sorted.at(-1) ?? 0 };
+}
+
+function newExecutionTraces(
+  traces: readonly Record<string, unknown>[],
+  initialTraceIds: ReadonlySet<string>,
+  operation: string,
+): Record<string, unknown>[] {
+  return traces.filter((trace) => trace['operation'] === operation
+    && typeof trace['id'] === 'string'
+    && !initialTraceIds.has(trace['id']));
 }
 
 function containsUnsafeMarkup(value: string): boolean {

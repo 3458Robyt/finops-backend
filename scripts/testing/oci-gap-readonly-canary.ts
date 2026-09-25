@@ -1,6 +1,5 @@
 import 'dotenv/config';
 
-import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import type { CloudIngestionJobContext, MetricStatistic } from '../../src/domain/interfaces/ICloudIngestionProvider.js';
@@ -46,7 +45,7 @@ try {
         new CredentialCipher(process.env['CREDENTIAL_ENCRYPTION_KEY'], process.env['CREDENTIAL_KEY_VERSION'] ?? 'v1'),
       );
       const record = await support.findJobContext(args.jobId);
-      if (record === null) throw new Error(`No existe el job ${args.jobId}.`);
+      if (record === null) throw new Error('No existe el job solicitado para el canary.');
       return support.toJobContext(record);
     },
   );
@@ -61,24 +60,14 @@ try {
       generatedAt: new Date().toISOString(),
       mode: 'read-only',
       persisted: false,
-      jobId: args.jobId,
-      connectionId: job.cloudConnectionId,
-      tenantId: job.tenantId,
-      candidate: {
-        namespace: args.namespace ?? 'from-definition',
-        metricName: args.metricName ?? 'from-definition',
-        resourceId: args.resourceId ?? 'from-definition',
+      request: {
         statistic: args.statistic,
-        regionId: args.regionId ?? job.connection.defaultRegion ?? 'default',
         interval: args.interval,
-        start: args.start.toISOString(),
-        end: args.end.toISOString(),
-        configuredDimensionsHash: hashDimensions(readOciMetricDefinitions(job)[0]?.dimensions ?? {}),
+        windowHours: (args.end.getTime() - args.start.getTime()) / (60 * 60 * 1000),
       },
       provider: {
         apiCallCount: result.apiCallCount,
-        warnings: result.warnings,
-        coverage: result.coverage,
+        warningCount: result.warnings.length,
         ...summary,
       },
     };
@@ -136,34 +125,12 @@ function buildReadOnlyJob(source: CloudIngestionJobContext, input: Arguments): C
 
 async function summarizeResult(result: Awaited<ReturnType<OciSdkIngestionProvider['collect']>>): Promise<Record<string, unknown>> {
   let samples = 0;
-  let minValue: number | undefined;
-  let maxValue: number | undefined;
-  let firstSampledAt: Date | undefined;
-  let lastSampledAt: Date | undefined;
-  const dimensionHashes = new Set<string>();
   if (result.metricBatches !== undefined) {
     for await (const batch of result.metricBatches) {
-      for (const sample of batch) {
-        samples += 1;
-        if (sample.dimensionsHash !== undefined) dimensionHashes.add(sample.dimensionsHash);
-        minValue = minValue === undefined ? sample.value : Math.min(minValue, sample.value);
-        maxValue = maxValue === undefined ? sample.value : Math.max(maxValue, sample.value);
-        firstSampledAt = firstSampledAt === undefined || sample.sampledAt < firstSampledAt ? sample.sampledAt : firstSampledAt;
-        lastSampledAt = lastSampledAt === undefined || sample.sampledAt > lastSampledAt ? sample.sampledAt : lastSampledAt;
-      }
+      samples += batch.length;
     }
   }
-  return {
-    returnedSamples: samples,
-    ...(minValue === undefined ? {} : { minValue, maxValue }),
-    ...(firstSampledAt === undefined ? {} : { firstSampledAt: firstSampledAt.toISOString(), lastSampledAt: lastSampledAt?.toISOString() }),
-    observedDimensionsHashes: [...dimensionHashes],
-  };
-}
-
-function hashDimensions(dimensions: Readonly<Record<string, string>>): string {
-  const canonical = Object.keys(dimensions).sort().map((key) => `${key}=${dimensions[key]}`).join('&');
-  return createHash('sha256').update(canonical).digest('hex');
+  return { returnedSamples: samples, hasSamples: samples > 0 };
 }
 
 function readArguments(argv: readonly string[]): Arguments {

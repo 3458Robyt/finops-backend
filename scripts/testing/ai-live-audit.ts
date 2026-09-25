@@ -257,6 +257,13 @@ const currentTraces = traces.filter((trace) => {
   const createdAt = Date.parse(String(trace['createdAt'] ?? ''));
   return Number.isFinite(createdAt) && createdAt >= auditStartedAt - 1_000;
 });
+const executionPlanTraces = currentTraces.filter((trace) => trace['operation'] === 'EXECUTION_PLAN');
+const expectedPlanTraceStatus = planResult.ok ? 'SUCCESS' : 'ERROR';
+checks.push({
+  name: 'traza_plan_refleja_resultado_real',
+  passed: executionPlanTraces.some((trace) => trace['status'] === expectedPlanTraceStatus),
+  detail: JSON.stringify({ expected: expectedPlanTraceStatus, observed: executionPlanTraces.map((trace) => trace['status']) }),
+});
 const traceCountsByOperation = currentTraces.reduce<Record<string, number>>((counts, trace) => {
   const operation = String(trace['operation'] ?? 'UNKNOWN');
   counts[operation] = (counts[operation] ?? 0) + 1;

@@ -198,9 +198,20 @@ async function stopProcess(child: ReturnType<typeof spawn> | undefined): Promise
   if (child === undefined || child.exitCode !== null) return;
   if (process.platform === 'win32') {
     await execFileAsync('taskkill', ['/PID', String(child.pid), '/T', '/F']).catch(() => undefined);
-    return;
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+  } else {
+    child.kill('SIGTERM');
   }
-  child.kill('SIGTERM');
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise<void>((resolvePromise) => {
+    const finish = (): void => {
+      clearTimeout(timeout);
+      child.off('exit', finish);
+      resolvePromise();
+    };
+    const timeout = setTimeout(finish, 5_000);
+    child.once('exit', finish);
+  });
 }
 
 function appendOutput(buffer: string[], chunk: Buffer): void {

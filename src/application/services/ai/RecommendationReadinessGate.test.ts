@@ -91,12 +91,52 @@ describe('RecommendationReadinessGate', () => {
   it('blocks service cost reviews without a deterministic savings basis', () => {
     const report = buildRecommendationReadinessReport({ snapshot: buildSnapshot() });
     const serviceCandidate = report.blocked.find((candidate) => candidate.id === 'service-1');
+    const usageCandidate = report.blocked.find((candidate) => candidate.id === 'usage-1');
 
     expect(serviceCandidate?.readiness).toBe('BLOCKED_NO_EVIDENCE');
     expect(serviceCandidate?.requiresTechnicalValidation).toBe(false);
     expect(serviceCandidate?.evidenceLevelAllowed).toBe('COST_ONLY');
     expect(serviceCandidate?.reviewScope).toBe('FINANCIAL');
-    expect(serviceCandidate?.costEvidenceRefs[0]).toContain('cost_metrics:aggregate:');
+    expect(serviceCandidate?.costEvidenceRefs[0]).toContain(':service:AWS:aws-prod:Amazon EC2');
+    expect(usageCandidate?.costEvidenceRefs[0]).toContain(':usage:AWS:aws-prod:Amazon EC2');
+  });
+
+  it('does not assign provider-aggregated candidates to an arbitrary account when multiple accounts match', () => {
+    const snapshot = buildSnapshot();
+    const report = buildRecommendationReadinessReport({
+      snapshot: {
+        ...snapshot,
+        accounts: [
+          ...snapshot.accounts,
+          { ...snapshot.accounts[0]!, cloudAccountId: 'aws-dev', name: 'AWS Desarrollo' },
+        ],
+      },
+    });
+
+    for (const id of ['usage-1', 'service-1']) {
+      const candidate = report.blocked.find((item) => item.id === id)!;
+      expect(candidate.cloudAccountId).toBe('unknown-account');
+      expect(candidate.reasons.join(' ')).toContain('cuenta cloud única');
+      expect(candidate.costEvidenceRefs[0]).toContain(':unknown-account:');
+    }
+  });
+
+  it('does not fall back to an unrelated provider account for aggregate candidates', () => {
+    const snapshot = buildSnapshot();
+    const report = buildRecommendationReadinessReport({
+      snapshot: {
+        ...snapshot,
+        services: snapshot.services.map((item) => ({ ...item, provider: 'OCI' })),
+        topUsage: snapshot.topUsage?.map((item) => ({ ...item, provider: 'OCI' })),
+      },
+    });
+
+    for (const id of ['usage-1', 'service-1']) {
+      const candidate = report.blocked.find((item) => item.id === id)!;
+      expect(candidate.cloudAccountId).toBe('unknown-account');
+      expect(candidate.reasons.join(' ')).toContain('cuenta cloud única');
+      expect(candidate.costEvidenceRefs[0]).toContain(':OCI:unknown-account:');
+    }
   });
 
   it('blocks duplicate external ids until a canonical resource is selected', () => {

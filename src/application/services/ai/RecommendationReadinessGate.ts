@@ -58,9 +58,9 @@ export function buildRecommendationReadinessReport(input: {
   const evidenceResources = input.technicalEvidenceSnapshot?.resources ?? [];
 
   const prioritized = [
-    ...buildUsageCandidates(input.snapshot, accountById),
+    ...buildUsageCandidates(input.snapshot),
     ...buildResourceCandidates(input.snapshot, accountById, evidenceResources),
-    ...buildServiceCandidates(input.snapshot, accountById),
+    ...buildServiceCandidates(input.snapshot),
   ]
     .sort((left, right) => right.maxEstimatedMonthlySavings - left.maxEstimatedMonthlySavings);
 
@@ -113,14 +113,16 @@ function compactCandidate(candidate: RecommendationOpportunityCandidate): Readon
 
 function buildUsageCandidates(
   snapshot: CostAnalyticsSnapshot,
-  accountById: ReadonlyMap<string, { readonly cloudAccountId: string; readonly provider: string }>,
 ): RecommendationOpportunityCandidate[] {
   return (snapshot.topUsage ?? []).map((usage, index) => {
-    const account = pickAccountForProvider(snapshot, accountById, usage.provider);
+    const account = findUniqueAccountForProvider(snapshot, usage.provider);
+    const accountScopeReason = account === undefined
+      ? 'El análisis agregado no identifica una cuenta cloud única para este proveedor.'
+      : undefined;
     return {
       id: `usage-${index + 1}`,
       readiness: 'BLOCKED_NO_EVIDENCE',
-      cloudAccountId: account.cloudAccountId,
+      cloudAccountId: account?.cloudAccountId ?? 'unknown-account',
       provider: usage.provider,
       serviceName: usage.serviceName,
       opportunityType: 'USAGE_OPTIMIZATION',
@@ -137,10 +139,16 @@ function buildUsageCandidates(
         `Costo mensual normalizado: ${round(normalizeMonthlyAmount(usage.totalCost, snapshot))} ${usage.currency}.`,
         `Costo unitario observado: ${usage.unitCost ?? 'no disponible'} ${usage.currency}/${usage.consumedUnit}.`,
       ],
-      costEvidenceRefs: [costEvidenceRef(snapshot, 'usage', usage.provider, usage.serviceName)],
+      costEvidenceRefs: [costEvidenceRef(snapshot, 'usage', usage.provider, usage.serviceName, account?.cloudAccountId)],
       technicalEvidenceRefs: [],
-      reasons: ['El costo y la cantidad facturados describen consumo, pero sin una alternativa tarifada, línea base o regla de desperdicio no demuestran ahorro posible.'],
-      forbiddenClaims: ['No presentes el mayor consumo como desperdicio ni cuantifiques ahorro sin comparar una alternativa verificable.'],
+      reasons: [
+        ...(accountScopeReason === undefined ? [] : [accountScopeReason]),
+        'El costo y la cantidad facturados describen consumo, pero sin una alternativa tarifada, línea base o regla de desperdicio no demuestran ahorro posible.',
+      ],
+      forbiddenClaims: [
+        'No presentes el mayor consumo como desperdicio ni cuantifiques ahorro sin comparar una alternativa verificable.',
+        ...(accountScopeReason === undefined ? [] : ['No atribuyas este gasto a una cuenta cloud mientras su alcance sea ambiguo.']),
+      ],
     };
   });
 }
@@ -247,15 +255,17 @@ function buildResourceCandidates(
 
 function buildServiceCandidates(
   snapshot: CostAnalyticsSnapshot,
-  accountById: ReadonlyMap<string, { readonly cloudAccountId: string; readonly provider: string }>,
 ): RecommendationOpportunityCandidate[] {
   return snapshot.services.map((service, index) => {
-    const account = pickAccountForProvider(snapshot, accountById, service.provider);
+    const account = findUniqueAccountForProvider(snapshot, service.provider);
+    const accountScopeReason = account === undefined
+      ? 'El análisis agregado no identifica una cuenta cloud única para este proveedor.'
+      : undefined;
     return {
       id: `service-${index + 1}`,
       // Service spend alone is descriptive; no savings basis exists without a priced alternative.
       readiness: 'BLOCKED_NO_EVIDENCE',
-      cloudAccountId: account.cloudAccountId,
+      cloudAccountId: account?.cloudAccountId ?? 'unknown-account',
       provider: service.provider,
       serviceName: service.serviceName,
       opportunityType: 'SERVICE_COST_REVIEW',
@@ -271,23 +281,26 @@ function buildServiceCandidates(
         `Costo mensual normalizado: ${round(normalizeMonthlyAmount(service.totalCost, snapshot))} ${snapshot.currency}.`,
         `Cantidad de registros FOCUS asociados: ${service.metricCount}.`,
       ],
-      costEvidenceRefs: [costEvidenceRef(snapshot, 'service', service.provider, service.serviceName)],
+      costEvidenceRefs: [costEvidenceRef(snapshot, 'service', service.provider, service.serviceName, account?.cloudAccountId)],
       technicalEvidenceRefs: [],
-      reasons: ['El costo agregado identifica gasto, pero no demuestra desperdicio ni ahorro sin una oportunidad de precio/capacidad calculable.'],
-      forbiddenClaims: ['No presentes concentración de costo como ahorro ni propongas una reducción sin evidencia calculada.'],
+      reasons: [
+        ...(accountScopeReason === undefined ? [] : [accountScopeReason]),
+        'El costo agregado identifica gasto, pero no demuestra desperdicio ni ahorro sin una oportunidad de precio/capacidad calculable.',
+      ],
+      forbiddenClaims: [
+        'No presentes concentración de costo como ahorro ni propongas una reducción sin evidencia calculada.',
+        ...(accountScopeReason === undefined ? [] : ['No atribuyas este gasto a una cuenta cloud mientras su alcance sea ambiguo.']),
+      ],
     };
   });
 }
 
-function pickAccountForProvider(
+function findUniqueAccountForProvider(
   snapshot: CostAnalyticsSnapshot,
-  accountById: ReadonlyMap<string, { readonly cloudAccountId: string; readonly provider: string }>,
   provider: string,
-): { readonly cloudAccountId: string; readonly provider: string } {
-  return (
-    snapshot.accounts.find((account) => account.provider === provider) ??
-    [...accountById.values()][0] ?? { cloudAccountId: 'unknown-account', provider }
-  );
+): CostAnalyticsSnapshot['accounts'][number] | undefined {
+  const matches = snapshot.accounts.filter((account) => account.provider === provider);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function round(value: number): number {

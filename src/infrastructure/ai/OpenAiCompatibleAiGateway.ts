@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import OpenAI, { APIConnectionTimeoutError } from 'openai';
 
 import { ConfigurationError, FinOpsBaseError, ProviderError, ProviderTimeoutError, ProviderUnavailableError } from '../../domain/errors/errors.js';
 import type { AiGatewayRequest, IAiGateway } from '../../domain/interfaces/IAiGateway.js';
@@ -116,6 +116,9 @@ export class OpenAiCompatibleAiGateway implements IAiGateway {
     } catch (error) {
       this.metrics?.increment('ai_requests_total', { model, outcome: 'error' });
       this.metrics?.observe('ai_request_duration_ms', Date.now() - startedAt, { model, outcome: 'error' });
+      if (error instanceof APIConnectionTimeoutError) {
+        throw new ProviderTimeoutError('La solicitud al proveedor de IA excedió el tiempo máximo configurado');
+      }
       if (error instanceof FinOpsBaseError) throw error;
       const providerStatus = readProviderStatus(error);
       if (isTransientProviderFailure(error, providerStatus)) {

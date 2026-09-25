@@ -6,6 +6,11 @@ const { openAiConstructor, completionCreate } = vi.hoisted(() => ({
 }));
 
 vi.mock('openai', () => ({
+  APIConnectionTimeoutError: class FakeAPIConnectionTimeoutError extends Error {
+    public constructor(options?: { message?: string }) {
+      super(options?.message ?? 'Request timed out.');
+    }
+  },
   default: class FakeOpenAI {
     public constructor(options: unknown) {
       openAiConstructor(options);
@@ -178,6 +183,22 @@ describe('OpenAiCompatibleAiGateway', () => {
       .rejects.toMatchObject({
         code: 'PROVIDER_UNAVAILABLE',
         details: { providerStatus: 503, retryable: true },
+      });
+  });
+
+  test('classifies the OpenAI SDK timeout as a provider timeout instead of a generic provider error', async () => {
+    process.env['AI_API_KEY'] = 'test-ai-key';
+    process.env['AI_BASE_URL'] = 'https://api.example.test/v1';
+    const { APIConnectionTimeoutError } = await import('openai');
+    completionCreate.mockRejectedValue(new APIConnectionTimeoutError());
+
+    const { OpenAiCompatibleAiGateway } = await import('./OpenAiCompatibleAiGateway.js');
+    const gateway = new OpenAiCompatibleAiGateway();
+
+    await expect(gateway.generateText({ messages: [{ role: 'user', content: 'hola' }] }))
+      .rejects.toMatchObject({
+        code: 'PROVIDER_TIMEOUT',
+        message: 'La solicitud al proveedor de IA excedió el tiempo máximo configurado',
       });
   });
 });

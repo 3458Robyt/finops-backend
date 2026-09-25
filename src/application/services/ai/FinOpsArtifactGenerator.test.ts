@@ -1,7 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
-import type { IAiGateway } from '../../../domain/interfaces/IAiGateway.js';
+import type { AiGatewayRequest, IAiGateway } from '../../../domain/interfaces/IAiGateway.js';
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
+import { ProviderTimeoutError } from '../../../domain/errors/errors.js';
 import { FinOpsArtifactGenerator } from './FinOpsArtifactGenerator.js';
 
 const snapshot: CostAnalyticsSnapshot = {
@@ -64,6 +65,47 @@ function approvedAudit(): string {
 }
 
 describe('FinOpsArtifactGenerator execution plans', () => {
+  test('bounds generation, audit, and repair to one end-to-end deadline', async () => {
+    let clock = 0;
+    let call = 0;
+    const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const generateText = vi.fn(async (_request: AiGatewayRequest) => {
+      call += 1;
+      if (call === 1) {
+        clock = 55_000;
+        return plan(['Solo despues de la aprobacion externa explicita del responsable, la persona autorizada podra ejecutar manualmente el cambio.']);
+      }
+      if (call === 2) {
+        clock = 110_000;
+        return JSON.stringify({ verdict: 'NEEDS_REVISION', score: 70, checks: [], blockingIssues: [], requiredChanges: ['Aclarar aprobacion externa.'] });
+      }
+      clock = 120_000;
+      return plan(['Solo despues de la aprobacion externa explicita del responsable, la persona autorizada podra ejecutar manualmente el cambio.']);
+    });
+    const generator = new FinOpsArtifactGenerator(
+      { generateText } as unknown as IAiGateway,
+      { record: vi.fn().mockResolvedValue(undefined) },
+      'generator-model',
+      'auditor-model',
+      { timeoutMs: 90_000, maxRetries: 0, reasoningEffort: 'low' },
+    );
+
+    try {
+      await expect(generator.generateAuditedPlan(
+        'tenant-demo',
+        'user-demo',
+        snapshot,
+        recommendation,
+        'prompt de prueba',
+        120_000,
+      )).rejects.toBeInstanceOf(ProviderTimeoutError);
+      expect(generateText).toHaveBeenCalledTimes(3);
+      expect(generateText.mock.calls.map(([request]) => request.timeoutMs)).toEqual([70_000, 50_000, 10_000]);
+    } finally {
+      dateNow.mockRestore();
+    }
+  });
+
   test('repairs a plan rejected by deterministic manual-governance checks before persistence', async () => {
     const generateText = vi.fn()
       .mockResolvedValueOnce(plan(['Ejecutar manualmente el cambio autorizado.']))

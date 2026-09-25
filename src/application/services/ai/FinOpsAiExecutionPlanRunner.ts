@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { AiAuditRejectedError, FinOpsBaseError } from '../../../domain/errors/errors.js';
+import { AiAuditRejectedError, FinOpsBaseError, ProviderTimeoutError } from '../../../domain/errors/errors.js';
 import type { ICostAnalyticsRepository } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { IRecommendationRepository } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { RecommendationExecutionPlan } from '../../../domain/models/RecommendationExecutionPlan.js';
@@ -10,6 +10,7 @@ import type { GenerateExecutionPlanInput } from './finOpsAiTypes.js';
 import { isAuditApproved } from './auditApprovalPolicy.js';
 
 const approvedAuditVerdict = 'APPROVED';
+const executionPlanDeadlineMs = 120_000;
 
 /** Generates and persists one audited, manual execution plan for one recommendation. */
 export class FinOpsAiExecutionPlanRunner {
@@ -24,6 +25,8 @@ export class FinOpsAiExecutionPlanRunner {
   ) {}
 
   public async run(input: GenerateExecutionPlanInput): Promise<RecommendationExecutionPlan> {
+    const startedAt = Date.now();
+    const deadlineAt = startedAt + executionPlanDeadlineMs;
     const recommendation = await this.recommendationRepository.findById(
       input.tenantId,
       input.recommendationId,
@@ -39,13 +42,13 @@ export class FinOpsAiExecutionPlanRunner {
       snapshot,
       recommendation,
     });
-    const startedAt = Date.now();
     const { content, auditReport, firstRawResponse } = await this.artifactGenerator.generateAuditedPlan(
       input.tenantId,
       input.userId,
       snapshot,
       recommendation,
       systemPrompt,
+      deadlineAt,
     );
 
     await this.traceRecorder.record({
@@ -63,6 +66,10 @@ export class FinOpsAiExecutionPlanRunner {
         diagnosticId: randomUUID(),
         audit: auditReport,
       });
+    }
+
+    if (Date.now() >= deadlineAt) {
+      throw new ProviderTimeoutError('La generación del plan excedió el límite total de 120 segundos.');
     }
 
     return this.recommendationRepository.createExecutionPlan({

@@ -1,4 +1,5 @@
 import type { AiGatewayRequest, AiReasoningEffort, IAiGateway } from '../../../domain/interfaces/IAiGateway.js';
+import { ProviderTimeoutError } from '../../../domain/errors/errors.js';
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
 import type { AiAuditReport } from '../../../domain/models/RecommendationExecutionPlan.js';
@@ -24,6 +25,7 @@ export interface ArtifactAuditInput {
   readonly technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot;
   readonly deterministicAnalysis?: DeterministicTrendAnalysis;
   readonly readinessReport?: RecommendationReadinessReport;
+  readonly deadlineAt?: number;
 }
 
 export interface AiArtifactRequestPolicy {
@@ -95,11 +97,11 @@ export class FinOpsArtifactAiRunner {
     });
   }
 
-  public generateExecutionPlan(systemPrompt: string): Promise<string> {
+  public generateExecutionPlan(systemPrompt: string, deadlineAt?: number): Promise<string> {
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
-      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 70_000),
+      timeoutMs: this.getRequestTimeout(70_000, deadlineAt),
       maxRetries: 0,
       ...(this.requestPolicy.reasoningEffort === undefined ? {} : { reasoningEffort: this.requestPolicy.reasoningEffort }),
       temperature: 0,
@@ -118,12 +120,13 @@ export class FinOpsArtifactAiRunner {
     systemPrompt: string,
     requiredChanges: readonly string[],
     currentPlan?: Record<string, unknown>,
+    deadlineAt?: number,
   ): Promise<string> {
     const planForRepair = currentPlan === undefined ? undefined : omitEstimatedSavings(currentPlan);
     return this.aiGateway.generateText({
       model: this.mainModel,
       responseFormat: 'json',
-      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 70_000),
+      timeoutMs: this.getRequestTimeout(70_000, deadlineAt),
       maxRetries: 0,
       ...(this.requestPolicy.reasoningEffort === undefined ? {} : { reasoningEffort: this.requestPolicy.reasoningEffort }),
       temperature: 0,
@@ -157,7 +160,7 @@ export class FinOpsArtifactAiRunner {
       responseFormat: 'json',
       // The auditor is a mandatory gate, but a failed provider must not turn a
       // recommendation run into a multi-minute retry chain.
-      timeoutMs: Math.min(this.requestPolicy.timeoutMs, 50_000),
+      timeoutMs: this.getRequestTimeout(50_000, input.deadlineAt),
       maxRetries: 0,
       ...(this.requestPolicy.reasoningEffort === undefined ? {} : { reasoningEffort: this.requestPolicy.reasoningEffort }),
       temperature: 0,
@@ -211,6 +214,17 @@ export class FinOpsArtifactAiRunner {
     }
 
     return parseAuditReport(rawResponse);
+  }
+
+  private getRequestTimeout(maxRequestMs: number, deadlineAt?: number): number {
+    const requestLimit = Math.min(this.requestPolicy.timeoutMs, maxRequestMs);
+    if (deadlineAt === undefined) return requestLimit;
+
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      throw new ProviderTimeoutError('La generación del plan excedió el plazo total permitido.');
+    }
+    return Math.min(requestLimit, remainingMs);
   }
 }
 

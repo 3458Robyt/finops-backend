@@ -243,8 +243,9 @@ export class FinOpsArtifactGenerator {
     snapshot: CostAnalyticsSnapshot,
     recommendation: FinOpsRecommendation,
     systemPrompt: string,
+    deadlineAt?: number,
   ): Promise<AuditedPlanResult> {
-    const firstRawResponse = await this.aiRunner.generateExecutionPlan(systemPrompt);
+    const firstRawResponse = await this.aiRunner.generateExecutionPlan(systemPrompt, deadlineAt);
     let content = parseExecutionPlan(firstRawResponse, recommendation);
     let deterministicQuality = evaluateExecutionPlan(content, snapshot, recommendation);
     let auditReport = await this.aiRunner.auditArtifact({
@@ -254,6 +255,7 @@ export class FinOpsArtifactGenerator {
       tenantId,
       userId,
       artifact: content,
+      ...(deadlineAt === undefined ? {} : { deadlineAt }),
     });
 
     const repairInstructions = [
@@ -266,7 +268,7 @@ export class FinOpsArtifactGenerator {
       repairInstructions.length > 0
       && (!deterministicQuality.passed || auditReport.verdict === 'NEEDS_REVISION' || auditReport.verdict === 'REJECTED')
     ) {
-      const revisedRaw = await this.aiRunner.reviseExecutionPlan(systemPrompt, repairInstructions, content);
+      const revisedRaw = await this.aiRunner.reviseExecutionPlan(systemPrompt, repairInstructions, content, deadlineAt);
       content = parseExecutionPlan(revisedRaw, recommendation);
       deterministicQuality = evaluateExecutionPlan(content, snapshot, recommendation);
       auditReport = await this.aiRunner.auditArtifact({
@@ -276,6 +278,7 @@ export class FinOpsArtifactGenerator {
         tenantId,
         userId,
         artifact: content,
+        ...(deadlineAt === undefined ? {} : { deadlineAt }),
       });
     }
 

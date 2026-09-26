@@ -241,6 +241,14 @@ describe('FinOps AI prompt boundaries', () => {
     expect(prompt).toContain('Un snapshot agregado de un único periodo no demuestra una tendencia');
   });
 
+  test('does not substitute another provider total for missing provider-specific data', () => {
+    const prompt = buildChatSystemPrompt(snapshot);
+
+    expect(prompt).toContain('no hay datos verificables de ese proveedor');
+    expect(prompt).toContain('no respondas con importes de otro proveedor');
+    expect(prompt).toContain('no infieras costo cero');
+  });
+
   test('excludes stale stored opportunities from chat context and reports the stale count', () => {
     const prompt = buildChatSystemPrompt({
       ...snapshot,

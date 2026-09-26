@@ -35,6 +35,7 @@ const tsxCli = resolve('node_modules/tsx/dist/cli.mjs');
 const integrationTests = [
   'src/testing/e2eFixtures.test.ts',
   'src/testing/ingestionJobCancellation.integration.test.ts',
+  'src/testing/ingestionJobLeaseRecovery.integration.test.ts',
   'src/testing/metricCoverageFilters.integration.test.ts',
   'src/testing/metricDefinitionCatalog.integration.test.ts',
   'src/testing/technicalMetrics.integration.test.ts',

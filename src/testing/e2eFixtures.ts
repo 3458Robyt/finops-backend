@@ -25,6 +25,18 @@ export interface E2eFixtureManifest {
     readonly email: string;
     readonly name: string;
   };
+  readonly technician: {
+    readonly email: string;
+    readonly name: string;
+  };
+  readonly clientApprover: {
+    readonly email: string;
+    readonly name: string;
+  };
+  readonly clientViewer: {
+    readonly email: string;
+    readonly name: string;
+  };
   readonly tenants: readonly {
     readonly id: string;
     readonly name: string;
@@ -212,6 +224,36 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
       status: 'ACTIVE',
     },
   });
+  const technician = await prisma.user.create({
+    data: {
+      tenantId: tenantA.id,
+      email: `${fixturePrefix}-technician-${runId}@example.test`,
+      name: `E2E Technician ${runId}`,
+      passwordHash,
+      role: 'FINOPS_TECHNICIAN',
+      status: 'ACTIVE',
+    },
+  });
+  const clientApprover = await prisma.user.create({
+    data: {
+      tenantId: tenantA.id,
+      email: `${fixturePrefix}-approver-${runId}@example.test`,
+      name: `E2E Client Approver ${runId}`,
+      passwordHash,
+      role: 'CLIENT_APPROVER',
+      status: 'ACTIVE',
+    },
+  });
+  const clientViewer = await prisma.user.create({
+    data: {
+      tenantId: tenantA.id,
+      email: `${fixturePrefix}-client-viewer-${runId}@example.test`,
+      name: `E2E Client Viewer ${runId}`,
+      passwordHash,
+      role: 'CLIENT_VIEWER',
+      status: 'ACTIVE',
+    },
+  });
 
   const tenantAFixture = await seedTenantData(prisma, {
     runId,
@@ -325,6 +367,9 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
       email: viewer.email,
       name: viewer.name,
     },
+    technician: { email: technician.email, name: technician.name },
+    clientApprover: { email: clientApprover.email, name: clientApprover.name },
+    clientViewer: { email: clientViewer.email, name: clientViewer.name },
     tenants: [
       { id: tenantA.id, name: tenantA.name, slug: tenantA.slug },
       { id: tenantB.id, name: tenantB.name, slug: tenantB.slug },

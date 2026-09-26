@@ -65,7 +65,7 @@ export class AuthSessionController {
     const refreshToken = readRefreshCookie(req.header('cookie'));
     if (refreshToken === undefined) {
       clearRefreshCookie(res, this.cookieConfig);
-      res.status(401).json({ success: false, error: 'La sesión de renovación no está disponible.', code: 'AUTHENTICATION_REQUIRED' });
+      res.status(204).end();
       return;
     }
     try {

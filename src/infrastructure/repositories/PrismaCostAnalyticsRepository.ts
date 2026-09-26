@@ -98,7 +98,7 @@ export class PrismaCostAnalyticsRepository implements ICostAnalyticsRepository {
   ): Promise<CostAnalyticsSnapshot> {
     const reportingCurrency = normalizeCurrencyCode(await this.getReportingCurrency(tenantId));
     const aggregations = await runSnapshotAggregations(this.prisma, tenantId, periodStart, periodEnd);
-    const projected = await projectSnapshotAggregations(aggregations, periodStart, reportingCurrency, this.currencyConverter);
+    const projected = await projectSnapshotAggregations(aggregations, reportingCurrency, this.currencyConverter);
 
     const [anomalies, forecasts] = await Promise.all([
       this.findAnomalies(tenantId),

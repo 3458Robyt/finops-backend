@@ -27,6 +27,7 @@ const COST_PERIOD_BOUNDARY_GRACE_MS = 24 * 60 * 60 * 1000;
  * `total_cost` se castea a `float8` en SQL para evitar el tipo `Decimal`.
  */
 export interface ProviderRow {
+  readonly conversion_date: Date;
   readonly provider: string;
   readonly metric_count: number;
   readonly total_cost: number;
@@ -34,6 +35,7 @@ export interface ProviderRow {
 }
 
 export interface AccountRow {
+  readonly conversion_date: Date;
   readonly cloud_account_id: string;
   readonly provider: string;
   readonly name: string;
@@ -43,6 +45,7 @@ export interface AccountRow {
 }
 
 export interface ServiceRow {
+  readonly conversion_date: Date;
   readonly service_name: string;
   readonly provider: string;
   readonly metric_count: number;
@@ -51,6 +54,7 @@ export interface ServiceRow {
 }
 
 export interface EnvironmentRow {
+  readonly conversion_date: Date;
   readonly environment: string;
   readonly metric_count: number;
   readonly total_cost: number;
@@ -58,6 +62,7 @@ export interface EnvironmentRow {
 }
 
 export interface ResourceRow {
+  readonly conversion_date: Date;
   readonly resource_id: string;
   readonly cloud_account_id: string;
   readonly cloud_connection_id: string | null;
@@ -76,6 +81,7 @@ export interface CurrencyRow {
 
 export interface MonthlyCostRow {
   readonly month: Date;
+  readonly conversion_date: Date;
   readonly group_by: string;
   readonly group_key: string;
   readonly provider: string | null;
@@ -90,6 +96,7 @@ export interface MonthlyCostRow {
 
 export interface MonthlyUsageRow {
   readonly month: Date;
+  readonly conversion_date: Date;
   readonly group_by: string;
   readonly group_key: string;
   readonly provider: string | null;
@@ -105,6 +112,7 @@ export interface MonthlyUsageRow {
 }
 
 export interface TopUsageRow {
+  readonly conversion_date: Date;
   readonly service_name: string;
   readonly provider: string;
   readonly consumed_unit: string;

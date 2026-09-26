@@ -31,7 +31,7 @@ interface ProjectedAmount {
 }
 
 export interface ProjectedSnapshotAggregations {
-  readonly summary: SnapshotSummary & { readonly conversionIssueCount: number };
+  readonly summary: Omit<SnapshotSummary, 'byCurrencyByDay'> & { readonly conversionIssueCount: number };
   readonly providers: readonly CostAnalyticsProviderItem[];
   readonly accounts: readonly CostAnalyticsAccountItem[];
   readonly services: readonly CostAnalyticsServiceItem[];
@@ -42,12 +42,11 @@ export interface ProjectedSnapshotAggregations {
 
 export async function projectSnapshotAggregations(
   aggregations: SnapshotAggregations,
-  periodStart: Date,
   reportingCurrency: string,
   converter?: CurrencyConverter,
 ): Promise<ProjectedSnapshotAggregations> {
   const summaryProjection = await projectAmounts(
-    aggregations.summary.byCurrency.map((row) => ({ amount: row.totalCost, currency: row.currency, at: periodStart })),
+    aggregations.summary.byCurrencyByDay.map((row) => ({ amount: row.totalCost, currency: row.currency, at: row.conversion_date })),
     reportingCurrency,
     converter,
   );
@@ -56,7 +55,7 @@ export async function projectSnapshotAggregations(
     .reduce((total, item) => total + item.amount, 0);
   const issueCount = summaryProjection.filter((item) => !item.comparable).length;
   const summaryByCurrency = new Map<string, { metricCount: number; totalCost: number }>();
-  aggregations.summary.byCurrency.forEach((row, index) => {
+  aggregations.summary.byCurrencyByDay.forEach((row, index) => {
     const projected = summaryProjection[index]!;
     const current = summaryByCurrency.get(projected.currency) ?? { metricCount: 0, totalCost: 0 };
     summaryByCurrency.set(projected.currency, {
@@ -66,12 +65,12 @@ export async function projectSnapshotAggregations(
   });
 
   const [providers, accounts, services, environments, topResources, topUsage] = await Promise.all([
-    projectAggregateRows<ProviderRow, CostAnalyticsProviderItem>(aggregations.providers, periodStart, reportingCurrency, converter, (row) => row.provider, (row, amount, currency, status) => ({ provider: row.provider, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
-    projectAggregateRows<AccountRow, CostAnalyticsAccountItem>(aggregations.accounts, periodStart, reportingCurrency, converter, (row) => `${row.cloud_account_id}:${row.provider}`, (row, amount, currency, status) => ({ cloudAccountId: row.cloud_account_id, provider: row.provider, name: row.name, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
-    projectAggregateRows<ServiceRow, CostAnalyticsServiceItem>(aggregations.services, periodStart, reportingCurrency, converter, (row) => `${row.service_name}:${row.provider}`, (row, amount, currency, status) => ({ serviceName: row.service_name, provider: row.provider, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
-    projectAggregateRows<EnvironmentRow, CostAnalyticsEnvironmentItem>(aggregations.environments, periodStart, reportingCurrency, converter, (row) => row.environment, (row, amount, currency, status) => ({ environment: row.environment, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
-    projectAggregateRows<ResourceRow, CostAnalyticsResourceItem>(aggregations.topResources, periodStart, reportingCurrency, converter, (row) => `${row.resource_id}:${row.cloud_account_id}:${row.service_name}:${row.provider}`, (row, amount, currency, status) => ({ resourceId: row.resource_id, cloudAccountId: row.cloud_account_id, ...(row.cloud_connection_id === null ? {} : { cloudConnectionId: row.cloud_connection_id }), ...(row.cloud_resource_id === null ? {} : { cloudResourceId: row.cloud_resource_id }), ...(row.resource_name === null ? {} : { resourceName: row.resource_name }), serviceName: row.service_name, provider: row.provider, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
-    projectUsageRows(aggregations.topUsage, periodStart, reportingCurrency, converter),
+    projectAggregateRows<ProviderRow, CostAnalyticsProviderItem>(aggregations.providers, reportingCurrency, converter, (row) => row.provider, (row, amount, currency, status) => ({ provider: row.provider, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
+    projectAggregateRows<AccountRow, CostAnalyticsAccountItem>(aggregations.accounts, reportingCurrency, converter, (row) => `${row.cloud_account_id}:${row.provider}`, (row, amount, currency, status) => ({ cloudAccountId: row.cloud_account_id, provider: row.provider, name: row.name, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
+    projectAggregateRows<ServiceRow, CostAnalyticsServiceItem>(aggregations.services, reportingCurrency, converter, (row) => `${row.service_name}:${row.provider}`, (row, amount, currency, status) => ({ serviceName: row.service_name, provider: row.provider, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
+    projectAggregateRows<EnvironmentRow, CostAnalyticsEnvironmentItem>(aggregations.environments, reportingCurrency, converter, (row) => row.environment, (row, amount, currency, status) => ({ environment: row.environment, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
+    projectAggregateRows<ResourceRow, CostAnalyticsResourceItem>(aggregations.topResources, reportingCurrency, converter, (row) => `${row.resource_id}:${row.cloud_account_id}:${row.service_name}:${row.provider}`, (row, amount, currency, status) => ({ resourceId: row.resource_id, cloudAccountId: row.cloud_account_id, ...(row.cloud_connection_id === null ? {} : { cloudConnectionId: row.cloud_connection_id }), ...(row.cloud_resource_id === null ? {} : { cloudResourceId: row.cloud_resource_id }), ...(row.resource_name === null ? {} : { resourceName: row.resource_name }), serviceName: row.service_name, provider: row.provider, totalCost: amount, metricCount: row.metric_count, currency, conversionStatus: status })),
+    projectUsageRows(aggregations.topUsage, reportingCurrency, converter),
   ]);
 
   return {
@@ -83,10 +82,10 @@ export async function projectSnapshotAggregations(
     },
     providers,
     accounts,
-    services,
+    services: services.slice(0, 10),
     environments,
-    topResources,
-    topUsage: topUsage.map(toUsageItem),
+    topResources: topResources.slice(0, 10),
+    topUsage: topUsage.slice(0, 10).map(toUsageItem),
   };
 }
 
@@ -96,7 +95,7 @@ export async function projectMonthlyCostRows(
   reportingCurrency: string,
   converter?: CurrencyConverter,
 ): Promise<readonly MonthlyCostPoint[]> {
-  const projected = await projectAmounts(rows.map((row) => ({ amount: row.total_cost, currency: row.currency, at: row.month })), reportingCurrency, converter);
+  const projected = await projectAmounts(rows.map((row) => ({ amount: row.total_cost, currency: row.currency, at: row.conversion_date })), reportingCurrency, converter);
   const values = new Map<string, MonthlyCostPoint>();
   rows.forEach((row, index) => {
     const amount = projected[index]!;
@@ -118,7 +117,7 @@ export async function projectMonthlyUsageRows(
   reportingCurrency: string,
   converter?: CurrencyConverter,
 ): Promise<readonly MonthlyUsagePoint[]> {
-  const projected = await projectAmounts(rows.map((row) => ({ amount: row.total_cost, currency: row.currency, at: row.month })), reportingCurrency, converter);
+  const projected = await projectAmounts(rows.map((row) => ({ amount: row.total_cost, currency: row.currency, at: row.conversion_date })), reportingCurrency, converter);
   const values = new Map<string, MonthlyUsagePoint>();
   rows.forEach((row, index) => {
     const amount = projected[index]!;
@@ -151,15 +150,14 @@ export function mergeCurrencyStatus(
   return 'NOT_REQUIRED';
 }
 
-async function projectAggregateRows<TRow extends { readonly currency: string; readonly total_cost: number; readonly metric_count: number }, TItem extends { readonly totalCost: number; readonly metricCount: number; readonly currency?: string; readonly conversionStatus?: CurrencyConversionStatus }>(
+async function projectAggregateRows<TRow extends { readonly currency: string; readonly total_cost: number; readonly metric_count: number; readonly conversion_date: Date }, TItem extends { readonly totalCost: number; readonly metricCount: number; readonly currency?: string; readonly conversionStatus?: CurrencyConversionStatus }>(
   rows: readonly TRow[],
-  at: Date,
   reportingCurrency: string,
   converter: CurrencyConverter | undefined,
   groupKey: (row: TRow) => string,
   build: (row: TRow, amount: number, currency: string, status: CurrencyConversionStatus) => TItem,
 ): Promise<readonly TItem[]> {
-  const projected = await projectAmounts(rows.map((row) => ({ amount: row.total_cost, currency: row.currency, at })), reportingCurrency, converter);
+  const projected = await projectAmounts(rows.map((row) => ({ amount: row.total_cost, currency: row.currency, at: row.conversion_date })), reportingCurrency, converter);
   const values = new Map<string, TItem>();
   rows.forEach((row, index) => {
     const amount = projected[index]!;
@@ -181,11 +179,10 @@ async function projectAggregateRows<TRow extends { readonly currency: string; re
 
 async function projectUsageRows(
   rows: readonly TopUsageRow[],
-  at: Date,
   reportingCurrency: string,
   converter: CurrencyConverter | undefined,
 ): Promise<readonly TopUsageRow[]> {
-  const projected = await projectAmounts(rows.map((row) => ({ amount: row.total_cost, currency: row.currency, at })), reportingCurrency, converter);
+  const projected = await projectAmounts(rows.map((row) => ({ amount: row.total_cost, currency: row.currency, at: row.conversion_date })), reportingCurrency, converter);
   const values = new Map<string, TopUsageRow>();
   rows.forEach((row, index) => {
     const amount = projected[index]!;

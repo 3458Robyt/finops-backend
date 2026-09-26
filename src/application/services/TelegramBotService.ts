@@ -279,6 +279,7 @@ export class TelegramBotService {
     const response = await this.aiService.answerChat({
       tenantId: effectiveTelegramTenantId(link),
       userId: link.userId,
+      traceSource: 'TELEGRAM',
       message: trimmed,
       outputFormat: 'PLAIN_TEXT',
     });

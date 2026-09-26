@@ -8,6 +8,7 @@ describe('toTrace', () => {
       tenantId: 'tenant-1',
       userId: 'user-1',
       operation: 'RECOMMENDATION',
+      source: 'SYSTEM',
       model: 'fixture-model',
       status: 'SUCCESS',
       profileVersion: 2,
@@ -15,6 +16,7 @@ describe('toTrace', () => {
       responseTokenEstimate: 80,
       latencyMs: 500,
       artifactIds: ['artifact-1'],
+      source: 'SYSTEM',
       memoryIds: ['memory-global-1'],
       tenantRuleIds: ['rule-1'],
       conflicts: [],
@@ -36,6 +38,7 @@ describe('toTrace', () => {
       tenantId: 'tenant-1',
       userId: null,
       operation: 'CHAT',
+      source: 'EVALUATION',
       model: 'fixture-model',
       status: 'SUCCESS',
       profileVersion: null,
@@ -48,5 +51,6 @@ describe('toTrace', () => {
     });
 
     expect(trace.memoryIds).toBeUndefined();
+    expect(trace.source).toBe('EVALUATION');
   });
 });

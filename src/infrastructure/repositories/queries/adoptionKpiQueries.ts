@@ -22,7 +22,7 @@ export async function computeAdoptionEngagement(
   const range = dateRange(query);
   const [chatTraces, telegramInteractions, notifications, decisions, executions, outboundSent] = await Promise.all([
     prisma.aiContextTrace.findMany({
-      where: { tenantId, operation: 'CHAT', userId: { not: null }, ...range },
+      where: { tenantId, operation: 'CHAT', source: 'WEB', userId: { not: null }, ...range },
       select: { userId: true, createdAt: true },
     }).then((rows) => rows.filter((row) => row.userId !== null)),
     prisma.telegramInteractionLog.findMany({

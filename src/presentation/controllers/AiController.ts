@@ -86,6 +86,7 @@ export class AiController {
       const result = await this.aiService.answerChat({
         tenantId: req.auth.tenantId,
         userId: req.auth.userId,
+        traceSource: 'WEB',
         message: parsed.data.message,
         outputFormat: 'MARKDOWN',
         ...(parsed.data.history !== undefined ? { history: parsed.data.history } : {}),

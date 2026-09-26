@@ -1,5 +1,5 @@
 import type { IAgentContextRepository } from '../../domain/interfaces/IAgentContextRepository.js';
-import type { AiContextOperation } from '../../domain/models/AgentContext.js';
+import type { AiContextOperation, AiTraceSource } from '../../domain/models/AgentContext.js';
 
 /**
  * Servicio de aplicación encargado de la observabilidad de las operaciones del
@@ -50,6 +50,7 @@ export class AiObservabilityService {
     readonly tenantId: string;
     readonly userId?: string;
     readonly operation: AiContextOperation;
+    readonly source?: AiTraceSource;
     readonly model: string;
     readonly status: 'SUCCESS' | 'ERROR';
     readonly profileVersion?: number;
@@ -66,6 +67,7 @@ export class AiObservabilityService {
       tenantId: input.tenantId,
       ...(input.userId !== undefined ? { userId: input.userId } : {}),
       operation: input.operation,
+      ...(input.source !== undefined ? { source: input.source } : {}),
       model: input.model,
       status: input.status,
       ...(input.profileVersion !== undefined ? { profileVersion: input.profileVersion } : {}),

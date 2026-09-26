@@ -37,6 +37,10 @@ interface ActivityRow {
   readonly createdAt: Date;
 }
 
+interface ChatTraceRow extends ActivityRow {
+  readonly source: 'WEB' | 'TELEGRAM' | 'EVALUATION' | 'SYSTEM' | 'UNKNOWN';
+}
+
 function savingsEvidence(amount: number, currency = 'USD') {
   return {
     savingsCalculation: {
@@ -61,7 +65,7 @@ function createPrismaStub(input: {
   readonly executedGroups?: number;
   readonly pendingRecs?: readonly SavingsRecRow[];
   readonly statusCounts?: readonly StatusCountRow[];
-  readonly chatRows?: readonly ActivityRow[];
+  readonly chatRows?: readonly ChatTraceRow[];
   readonly telegramRows?: readonly ActivityRow[];
   readonly notificationRows?: readonly {
     readonly userId: string;
@@ -105,7 +109,11 @@ function createPrismaStub(input: {
         return { _sum: { costIncreaseMonthlyAmount: input.costIncreaseSum ?? null } };
       },
     },
-    aiContextTrace: { findMany: async () => [...(input.chatRows ?? [])] },
+    aiContextTrace: {
+      findMany: async (args: { readonly where?: { readonly source?: string } }) => (
+        input.chatRows ?? []
+      ).filter((row) => args.where?.source === undefined || row.source === args.where.source),
+    },
     telegramInteractionLog: { findMany: async () => [...(input.telegramRows ?? [])] },
     inAppNotification: { findMany: async () => [...(input.notificationRows ?? [])] },
     outboundMessageDelivery: { count: async () => input.outboundSent ?? 0 },
@@ -121,8 +129,8 @@ describe('computeAdoptionKpis', () => {
     const prisma = createPrismaStub({
       statusCounts: [{ status: 'APPROVED', _count: 1 }],
       chatRows: [
-        { userId: 'user-1', createdAt: may },
-        { userId: 'user-1', createdAt: june },
+        { userId: 'user-1', source: 'WEB', createdAt: may },
+        { userId: 'user-1', source: 'WEB', createdAt: june },
       ],
       telegramRows: [{ userId: 'user-2', createdAt: june }],
       notificationRows: [{
@@ -221,12 +229,15 @@ describe('computeAdoptionKpis', () => {
 });
 
 describe('computeAdoptionEngagement', () => {
-  it('excludes unattributed chat traces from engagement counts and series', async () => {
+  it('counts only attributed WEB chat, excluding legacy, Telegram, and evaluation traces', async () => {
     const createdAt = new Date('2026-09-23T10:00:00.000Z');
     const prisma = createPrismaStub({
       chatRows: [
-        { userId: 'user-1', createdAt },
-        { userId: null, createdAt },
+        { userId: 'user-1', source: 'WEB', createdAt },
+        { userId: 'user-1', source: 'EVALUATION', createdAt },
+        { userId: 'user-2', source: 'TELEGRAM', createdAt },
+        { userId: 'user-3', source: 'UNKNOWN', createdAt },
+        { userId: null, source: 'WEB', createdAt },
       ],
     });
 

@@ -42,6 +42,7 @@ function createRunner(latest: CostAnalyticsSnapshot, ranged: CostAnalyticsSnapsh
   return {
     repository,
     contextAssembler,
+    traceRecorder,
     runner: new FinOpsAiChatRunner(repository, gateway, contextAssembler, traceRecorder, 'test-model'),
   };
 }
@@ -74,5 +75,17 @@ describe('FinOpsAiChatRunner requested cost period', () => {
 
     expect(repository.getTenantSnapshotForPeriod).not.toHaveBeenCalled();
     expect(result.snapshot).toBe(latest);
+  });
+
+  test('records the trusted caller channel in the chat trace', async () => {
+    const latest = snapshot('2026-09-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z');
+    const { runner, traceRecorder } = createRunner(latest, latest);
+
+    await runner.run({ tenantId: 'tenant-1', userId: 'user-1', traceSource: 'WEB', message: 'Hola' });
+
+    expect(traceRecorder.record).toHaveBeenCalledWith(expect.objectContaining({
+      operation: 'CHAT',
+      source: 'WEB',
+    }));
   });
 });

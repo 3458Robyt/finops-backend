@@ -135,6 +135,7 @@ export function toTrace(row: {
   readonly tenantId: string;
   readonly userId: string | null;
   readonly operation: string;
+  readonly source?: string;
   readonly model: string;
   readonly status: string;
   readonly profileVersion: number | null;
@@ -153,6 +154,7 @@ export function toTrace(row: {
     tenantId: row.tenantId,
     ...(row.userId !== null ? { userId: row.userId } : {}),
     operation: row.operation as AiContextTrace['operation'],
+    ...(row.source !== undefined ? { source: row.source as NonNullable<AiContextTrace['source']> } : {}),
     model: row.model,
     status: row.status,
     ...(row.profileVersion !== null ? { profileVersion: row.profileVersion } : {}),

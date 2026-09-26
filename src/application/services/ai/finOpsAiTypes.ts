@@ -1,4 +1,5 @@
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
+import type { AiTraceSource } from '../../../domain/models/AgentContext.js';
 import type { CreateRecommendationInput } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
 import type { AiAuditReport, AiCandidateAuditArtifact } from '../../../domain/models/RecommendationExecutionPlan.js';
@@ -39,6 +40,8 @@ export interface AiChatInput {
   readonly tenantId: string;
   /** Usuario que origina la consulta (opcional; usado para trazas de observabilidad). */
   readonly userId?: string;
+  /** Origen interno de la llamada; el controlador web asigna WEB, no se toma del payload. */
+  readonly traceSource?: AiTraceSource;
   /** Pregunta del usuario; se valida que no esté vacía. */
   readonly message: string;
   /** Historial de conversación previo (se normaliza y limita a los últimos turnos). */

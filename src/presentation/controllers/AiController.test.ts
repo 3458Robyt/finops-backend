@@ -69,7 +69,7 @@ describe('AiController chat tenant scope', () => {
     const controller = new AiController({ answerChat } as unknown as FinOpsAiService);
     const req = {
       auth: { userId: 'viewer-1', tenantId: 'tenant-authorized', email: 'viewer@example.test', role: 'CLIENT_VIEWER', jwtId: 'jwt-3' },
-      body: { message: '¿Cuál es el mayor costo?', tenantId: 'tenant-attacker' },
+      body: { message: '¿Cuál es el mayor costo?', tenantId: 'tenant-attacker', traceSource: 'EVALUATION' },
       path: '/chat',
     } as unknown as Request;
     const res = {
@@ -79,7 +79,7 @@ describe('AiController chat tenant scope', () => {
 
     await controller.chat(req, res);
 
-    expect(answerChat).toHaveBeenCalledWith(expect.objectContaining({ tenantId: 'tenant-authorized' }));
+    expect(answerChat).toHaveBeenCalledWith(expect.objectContaining({ tenantId: 'tenant-authorized', traceSource: 'WEB' }));
     expect(answerChat).not.toHaveBeenCalledWith(expect.objectContaining({ tenantId: 'tenant-attacker' }));
     expect(res.status).toHaveBeenCalledWith(200);
   });

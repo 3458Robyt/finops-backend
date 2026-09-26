@@ -44,6 +44,7 @@ export async function createAiContextTrace(
       tenantId: input.tenantId,
       ...(input.userId !== undefined ? { userId: input.userId } : {}),
       operation: input.operation,
+      source: input.source ?? 'UNKNOWN',
       model: input.model,
       status: input.status,
       ...(input.profileVersion !== undefined ? { profileVersion: input.profileVersion } : {}),

@@ -374,6 +374,14 @@ enum AiContextOperation {
   LEARNING
 }
 
+enum AiTraceSource {
+  UNKNOWN
+  WEB
+  TELEGRAM
+  EVALUATION
+  SYSTEM
+}
+
 enum ContextBuildRunStatus {
   PENDING
   RUNNING
@@ -2171,6 +2179,7 @@ model AiContextTrace {
   tenantId              String             @map("tenant_id")
   userId                String?            @map("user_id")
   operation             AiContextOperation
+  source                AiTraceSource      @default(UNKNOWN)
   model                 String
   status                String
   profileVersion        Int?               @map("profile_version")

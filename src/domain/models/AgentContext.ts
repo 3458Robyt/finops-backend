@@ -27,6 +27,8 @@ export type TenantAgentRuleStatus = 'ACTIVE' | 'DISABLED';
  */
 export type AiContextOperation = 'CHAT' | 'RECOMMENDATION' | 'EXECUTION_PLAN' | 'AUDIT' | 'LEARNING';
 
+export type AiTraceSource = 'UNKNOWN' | 'WEB' | 'TELEGRAM' | 'EVALUATION' | 'SYSTEM';
+
 /**
  * Estado de una ejecución de construcción de contexto del agente.
  *
@@ -165,6 +167,8 @@ export interface AiContextTrace {
   readonly userId?: string | undefined;
   /** Tipo de operación de IA trazada. */
   readonly operation: AiContextOperation;
+  /** Canal/origen interno usado para separar interacción humana de pruebas. */
+  readonly source?: AiTraceSource | undefined;
   /** Identificador del modelo de IA utilizado. */
   readonly model: string;
   /** Estado resultante de la operación. */

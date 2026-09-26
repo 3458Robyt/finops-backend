@@ -69,6 +69,7 @@ describe('TelegramBotService', () => {
     expect(fixture.aiCalls).toEqual([{
       tenantId: 'tenant-1',
       userId: 'user-1',
+      traceSource: 'TELEGRAM',
       message: 'Que servicio tiene mayor ahorro?',
       outputFormat: 'PLAIN_TEXT',
     }]);
@@ -272,17 +273,17 @@ function createFixture(): {
   readonly client: FakeTelegramClient;
   readonly service: TelegramBotService;
   readonly aiFailure: { value: Error | undefined };
-  readonly aiCalls: { readonly tenantId: string; readonly userId?: string; readonly message: string; readonly outputFormat?: string }[];
+  readonly aiCalls: { readonly tenantId: string; readonly userId?: string; readonly traceSource?: string; readonly message: string; readonly outputFormat?: string }[];
   readonly reminderCalls: { readonly tenantId: string; readonly userId: string }[];
 } {
   const repository = new FakeTelegramRepository();
   const client = new FakeTelegramClient();
-  const aiCalls: { readonly tenantId: string; readonly userId?: string; readonly message: string; readonly outputFormat?: string }[] = [];
+  const aiCalls: { readonly tenantId: string; readonly userId?: string; readonly traceSource?: string; readonly message: string; readonly outputFormat?: string }[] = [];
   const reminderCalls: { readonly tenantId: string; readonly userId: string }[] = [];
   const aiFailure: { value: Error | undefined } = { value: undefined };
 
   const aiService = {
-    answerChat: async (input: { readonly tenantId: string; readonly userId?: string; readonly message: string; readonly outputFormat?: string }) => {
+    answerChat: async (input: { readonly tenantId: string; readonly userId?: string; readonly traceSource?: string; readonly message: string; readonly outputFormat?: string }) => {
       if (aiFailure.value !== undefined) throw aiFailure.value;
       aiCalls.push(input);
       return {

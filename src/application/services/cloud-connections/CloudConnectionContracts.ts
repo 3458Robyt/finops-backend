@@ -160,4 +160,5 @@ export interface PreviewMetricDefinitionsInput {
   readonly userId: string;
   readonly cloudConnectionId: string;
   readonly scope: CloudMetricDiscoveryScope;
+  readonly signal?: AbortSignal;
 }

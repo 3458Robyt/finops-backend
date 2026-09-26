@@ -236,7 +236,7 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
   });
   const clientApprover = await prisma.user.create({
     data: {
-      tenantId: tenantA.id,
+      tenantId: tenantB.id,
       email: `${fixturePrefix}-approver-${runId}@example.test`,
       name: `E2E Client Approver ${runId}`,
       passwordHash,
@@ -246,7 +246,7 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
   });
   const clientViewer = await prisma.user.create({
     data: {
-      tenantId: tenantA.id,
+      tenantId: tenantB.id,
       email: `${fixturePrefix}-client-viewer-${runId}@example.test`,
       name: `E2E Client Viewer ${runId}`,
       passwordHash,

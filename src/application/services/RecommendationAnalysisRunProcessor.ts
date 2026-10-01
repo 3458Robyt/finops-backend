@@ -1,7 +1,6 @@
 import { AiAuditRejectedError, FinOpsBaseError } from '../../domain/errors/errors.js';
 import type { INotificationRepository } from '../../domain/interfaces/INotificationRepository.js';
-import type { CreateRecommendationInput } from '../../domain/interfaces/IRecommendationRepository.js';
-import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
+import type { CreateRecommendationInput, IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
 import type { IRecommendationAnalysisRunRepository } from '../../domain/interfaces/IRecommendationAnalysisRunRepository.js';
 import type { RecommendationAnalysisRun } from '../../domain/models/RecommendationAnalysisRun.js';
 import type { FinOpsAiService } from './FinOpsAiService.js';
@@ -20,6 +19,13 @@ import {
 } from './recommendationAnalysisSupport.js';
 import { notifyAnalysisCompletion } from './recommendationAnalysisNotification.js';
 import { buildRecommendationDeduplicationKey } from './ai/recommendationEvidence.js';
+import {
+  AnalysisStageTimer,
+  buildReviewDraftCompletion,
+  readRejectedCandidateAudits,
+  RecommendationAnalysisCancelledError,
+  RecommendationAnalysisTimeoutError,
+} from './recommendationAnalysisReviewSupport.js';
 
 const maxAnalysisDurationMs = 120_000;
 
@@ -134,6 +140,9 @@ export class RecommendationAnalysisRunProcessor {
     await this.ensureActive(run.id, startedAt);
     await this.setStage(run.id, 'EVIDENCE_GATE', stageTimer);
     if (prepared.readinessReport.candidates.length === 0) {
+      if ((prepared.readinessReport.reviewCandidates?.length ?? 0) > 0) {
+        return this.processReviewDrafts(run, prepared, initialCandidateResults, startedAt, stageTimer);
+      }
       return this.repository.complete(run.id, {
         status: 'SKIPPED',
         recommendationsGenerated: 0,
@@ -289,6 +298,61 @@ export class RecommendationAnalysisRunProcessor {
     });
   }
 
+  private async processReviewDrafts(
+    run: RecommendationAnalysisRun,
+    prepared: Awaited<ReturnType<FinOpsAiService['prepareRecommendationAnalysis']>>,
+    initialCandidateResults: ReturnType<typeof buildInitialCandidateResults>,
+    startedAt: number,
+    stageTimer: AnalysisStageTimer,
+  ): Promise<RecommendationAnalysisRun> {
+    let generated: Awaited<ReturnType<FinOpsAiService['generateRecommendationReviewDrafts']>>;
+    try {
+      generated = await this.aiService.generateRecommendationReviewDrafts({
+        tenantId: run.tenantId,
+        ...(run.requestedByUserId === undefined ? {} : { userId: run.requestedByUserId }),
+        prepared,
+        deadlineAt: startedAt + maxAnalysisDurationMs,
+        onStage: async (stage) => {
+          await this.ensureActive(run.id, startedAt);
+          await this.setStage(run.id, stage, stageTimer);
+        },
+      });
+      await this.ensureActive(run.id, startedAt);
+    } catch (error: unknown) {
+      await this.ensureActive(run.id);
+      return this.repository.complete(run.id, {
+        status: 'PARTIAL',
+        recommendationsGenerated: 0,
+        recommendationsRejected: 0,
+        candidateResults: initialCandidateResults,
+        recommendationLinks: [],
+        promptTokenEstimate: 0,
+        responseTokenEstimate: 0,
+        latencyMs: Date.now() - startedAt,
+        stageTimings: stageTimer.snapshot(),
+        errorCode: error instanceof FinOpsBaseError ? error.code : 'REVIEW_DRAFT_GENERATION_FAILED',
+        errorMessage: 'No se pudieron generar o auditar borradores de revisión. Se conservaron los motivos determinísticos y no se publicó ninguna recomendación.',
+      });
+    }
+
+    const completion = buildReviewDraftCompletion({ run, prepared, generated, initialResults: initialCandidateResults });
+    await this.ensureActive(run.id);
+    return this.repository.complete(run.id, {
+      status: completion.status,
+      recommendationsGenerated: 0,
+      recommendationsRejected: 0,
+      candidateResults: completion.candidateResults,
+      recommendationLinks: [],
+      candidateAudits: completion.candidateAudits,
+      promptTokenEstimate: generated.promptTokenEstimate ?? 0,
+      responseTokenEstimate: generated.responseTokenEstimate ?? 0,
+      latencyMs: Date.now() - startedAt,
+      stageTimings: stageTimer.snapshot(),
+      ...(completion.errorCode === undefined ? {} : { errorCode: completion.errorCode }),
+      ...(completion.errorMessage === undefined ? {} : { errorMessage: completion.errorMessage }),
+    });
+  }
+
   private async setStage(
     runId: string,
     stage: Parameters<IRecommendationAnalysisRunRepository['updateStage']>[1],
@@ -323,6 +387,7 @@ export class RecommendationAnalysisRunProcessor {
       recommendationsRejected: candidateResults.length,
       candidateResults,
       recommendationLinks: [],
+      candidateAudits: readRejectedCandidateAudits(audit, run),
       promptTokenEstimate: summary.promptTokenEstimate,
       responseTokenEstimate: summary.responseTokenEstimate,
       latencyMs: Date.now() - startedAt,
@@ -330,35 +395,5 @@ export class RecommendationAnalysisRunProcessor {
       errorCode: 'AI_AUDIT_REJECTED',
       errorMessage: 'El auditor rechazó las recomendaciones generadas; no se publicó ninguna.',
     });
-  }
-}
-
-class RecommendationAnalysisCancelledError extends Error {}
-
-class RecommendationAnalysisTimeoutError extends FinOpsBaseError {
-  constructor() {
-    super('El análisis superó el límite de 120 segundos y fue detenido.', 'ANALYSIS_TIMEOUT');
-  }
-}
-
-class AnalysisStageTimer {
-  private activeStage: { readonly stage: string; readonly startedAt: number } | undefined;
-  private readonly durations = new Map<string, number>();
-
-  public start(stage: string): void {
-    this.finish();
-    this.activeStage = { stage, startedAt: Date.now() };
-  }
-
-  public snapshot(): Readonly<Record<string, number>> {
-    this.finish();
-    return Object.fromEntries(this.durations);
-  }
-
-  private finish(): void {
-    if (this.activeStage === undefined) return;
-    const elapsed = Math.max(0, Date.now() - this.activeStage.startedAt);
-    this.durations.set(this.activeStage.stage, (this.durations.get(this.activeStage.stage) ?? 0) + elapsed);
-    this.activeStage = undefined;
   }
 }

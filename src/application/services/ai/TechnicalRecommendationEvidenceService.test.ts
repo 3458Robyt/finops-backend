@@ -174,11 +174,11 @@ describe('TechnicalRecommendationEvidenceService', () => {
     vi.setSystemTime(new Date('2026-06-20T12:00:00.000Z'));
     try {
       const repository = new FakeResourceMetricRepository();
-      repository.summaries = [{
-        ...metricSummary('CpuUtilization', 8, 25),
-        firstSampledAt: new Date('2026-06-06T00:00:00.000Z'),
+      repository.summaries = ['CpuUtilization', 'MemoryUtilization'].map((metricName) => ({
+        ...metricSummary(metricName, 8, 25),
+        firstSampledAt: new Date('2026-06-13T12:00:00.000Z'),
         latestSampledAt: new Date('2026-06-19T23:30:00.000Z'),
-      }];
+      }));
       const service = new TechnicalRecommendationEvidenceService(repository);
 
       const evidence = await service.buildRecommendationEvidenceSnapshot({
@@ -209,6 +209,26 @@ describe('TechnicalRecommendationEvidenceService', () => {
     await service.buildRecommendationEvidenceSnapshot({ tenantId: 'tenant-1', snapshot });
 
     expect(repository.summaryFilters).toBeDefined();
+  });
+
+  test('does not attribute service-wide usage to a resource and queries the current evidence window', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-30T12:00:00.000Z'));
+    try {
+      const repository = new FakeResourceMetricRepository();
+      repository.summaries = [metricSummary('CpuUtilization', 8, 25)];
+      const service = new TechnicalRecommendationEvidenceService(repository);
+      const evidence = await service.buildRecommendationEvidenceSnapshot({
+        tenantId: 'tenant-1',
+        snapshot: { ...snapshot, topResources: [{ resourceId: 'ocid1.instance.oc1.test', provider: 'OCI', serviceName: 'Compute', totalCost: 42, metricCount: 2 }],
+          topUsage: [{ serviceName: 'Compute', provider: 'OCI', consumedQuantity: 100, consumedUnit: 'Hours', totalCost: 42, currency: 'USD', metricCount: 2 }] },
+      });
+      expect(evidence.resources[0]?.usage).toEqual([]);
+      expect(repository.summaryFilters?.startDate?.toISOString()).toBe('2026-06-23T12:00:00.000Z');
+      expect(repository.summaryFilters?.endDate?.toISOString()).toBe('2026-06-30T12:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -248,9 +268,12 @@ function metricSummary(metricName: string, avg: number, p95: number): TechnicalM
     resourceType: 'COMPUTE_INSTANCE',
     serviceName: 'Compute',
     metricName,
+    providerNamespace: 'oci_computeagent',
+    statistic: 'MEAN',
     metricUnit: 'Percent',
-    sampleCount: 96,
-    coverageDays: 14,
+    sampleCount: 168,
+    coverageDays: 7,
+    granularitySeconds: 3600,
     min: 1,
     max: 50,
     avg,

@@ -73,6 +73,25 @@ export class FinOpsArtifactAiRunner {
     });
   }
 
+  public generateReviewDrafts(systemPrompt: string, deadlineAt?: number): Promise<string> {
+    return this.aiGateway.generateText({
+      model: this.mainModel,
+      responseFormat: 'json',
+      timeoutMs: this.getRequestTimeout(70_000, deadlineAt),
+      maxRetries: 0,
+      ...(this.requestPolicy.reasoningEffort === undefined ? {} : { reasoningEffort: this.requestPolicy.reasoningEffort }),
+      temperature: 0,
+      maxTokens: 1200,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        {
+          role: 'user',
+          content: 'Redacta hasta cinco borradores provisionales de revisión técnica usando únicamente los candidatos proporcionados. Devuelve JSON estricto con la propiedad recommendations. No inventes uso, métricas, fallas ni ahorros; si no puedes aportar una revisión concreta, devuelve {"recommendations":[]}.',
+        },
+      ],
+    });
+  }
+
   public reviseRecommendations(systemPrompt: string, requiredChanges: readonly string[]): Promise<string> {
     return this.aiGateway.generateText({
       model: this.mainModel,

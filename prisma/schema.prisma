@@ -303,6 +303,7 @@ enum RecommendationAnalysisRecommendationDisposition {
 
 enum RecommendationAnalysisCandidateFinalDisposition {
   PUBLISHED
+  REVIEW_DRAFT
   REJECTED
   SKIPPED
 }

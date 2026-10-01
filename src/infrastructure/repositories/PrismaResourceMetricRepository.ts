@@ -13,6 +13,7 @@ import type {
   TechnicalMetricSampleFilters,
   TechnicalMetricSummaryFilters,
   TechnicalMetricSummaryItem,
+  MetricSourceDiagnostic,
 } from '../../domain/interfaces/IResourceMetricRepository.js';
 import type { MetricStatistic } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import type { PrismaClient } from '../../generated/prisma/client.js';
@@ -43,6 +44,51 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
   private readonly coverageReader: PrismaResourceMetricCoverageReader;
   private readonly costContextReader: PrismaResourceMetricCostContextReader;
   private readonly inventoryReader: PrismaCloudResourceInventoryReader;
+
+  public async listMetricSourceDiagnosticsForTenant(
+    tenantId: string,
+    resources: readonly { readonly externalResourceId: string; readonly cloudConnectionId?: string }[],
+  ): Promise<readonly MetricSourceDiagnostic[]> {
+    const scoped = [...new Map(resources
+      .filter((item): item is { externalResourceId: string; cloudConnectionId: string } =>
+        item.cloudConnectionId !== undefined && item.externalResourceId.trim() !== '')
+      .map((item) => [`${item.cloudConnectionId}\u0000${item.externalResourceId}`, item])).values()];
+    if (scoped.length === 0) return [];
+    const [definitions, jobs] = await Promise.all([
+      this.prisma.cloudMetricDefinition.findMany({
+        where: {
+          tenantId,
+          OR: scoped.map((item) => ({ cloudConnectionId: item.cloudConnectionId, externalResourceId: item.externalResourceId })),
+          metricName: { in: ['CpuUtilization', 'MemoryUtilization'] },
+        },
+        select: { cloudConnectionId: true, externalResourceId: true, metricName: true, enabled: true, lastSeenAt: true },
+      }),
+      this.prisma.$queryRaw<Array<{ cloud_connection_id: string; status: string }>>(Prisma.sql`
+        SELECT DISTINCT ON (cloud_connection_id) cloud_connection_id, status::text AS status
+        FROM ingestion_jobs
+        WHERE tenant_id = ${tenantId}
+          AND source_type = 'TECHNICAL_METRIC'
+          AND cloud_connection_id IN (${Prisma.join([...new Set(scoped.map((item) => item.cloudConnectionId))])})
+        ORDER BY cloud_connection_id, created_at DESC, id DESC
+      `),
+    ]);
+    const latestJob = new Map<string, string>();
+    for (const job of jobs) latestJob.set(job.cloud_connection_id, job.status);
+    return scoped.flatMap((resource) => (['CpuUtilization', 'MemoryUtilization'] as const).map((metricName) => {
+      const matches = definitions.filter((definition) => definition.cloudConnectionId === resource.cloudConnectionId
+        && definition.externalResourceId === resource.externalResourceId && definition.metricName === metricName);
+      const lastDiscoveredAt = matches.map((item) => item.lastSeenAt).sort((a, b) => b.getTime() - a.getTime())[0];
+      return {
+        externalResourceId: resource.externalResourceId,
+        cloudConnectionId: resource.cloudConnectionId,
+        metricName,
+        catalogStatus: matches.length === 0 ? 'NOT_DISCOVERED' as const
+          : matches.some((item) => item.enabled) ? 'ENABLED' as const : 'DISABLED' as const,
+        ...(lastDiscoveredAt === undefined ? {} : { lastDiscoveredAt }),
+        ...(latestJob.get(resource.cloudConnectionId) === undefined ? {} : { latestJobStatus: latestJob.get(resource.cloudConnectionId)! }),
+      };
+    }));
+  }
   private readonly summaryReader: PrismaResourceMetricSummaryReader;
 
   constructor(
@@ -209,8 +255,9 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
     tenantId: string,
     externalResourceIds: readonly string[],
     cloudResourceIds?: readonly string[],
+    period?: Readonly<{ readonly start: Date; readonly end: Date }>,
   ): Promise<readonly TechnicalCostContextItem[]> {
-    return this.costContextReader.listForResources(tenantId, externalResourceIds, cloudResourceIds);
+    return this.costContextReader.listForResources(tenantId, externalResourceIds, cloudResourceIds, period);
   }
 
   public async listMetricSummariesForTenant(
@@ -227,14 +274,16 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
         rms.cloud_connection_id,
         rms.provider_namespace,
         rms.region_id,
+        rms.compartment_id,
         rms.dimensions_hash,
         max(cr.name) AS resource_name,
         max(cr.resource_type) AS resource_type,
         max(cr.service_name) AS service_name,
         rms.metric_name,
         rms.statistic::text AS statistic,
-        max(rms.metric_unit) AS metric_unit,
-        count(*)::int AS sample_count,
+        rms.metric_unit,
+        rms.granularity_seconds::int AS granularity_seconds,
+        count(DISTINCT rms.sampled_at)::int AS sample_count,
         count(DISTINCT rms.sampled_at::date)::int AS coverage_days,
         min(rms.value)::float8 AS min_value,
         max(rms.value)::float8 AS max_value,
@@ -267,8 +316,10 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
       LEFT JOIN cloud_resources cr ON cr.id = rms.cloud_resource_id
       WHERE ${aliasedWhere}
       GROUP BY rms.provider, rms.external_resource_id, rms.cloud_resource_id, rms.cloud_connection_id,
-        rms.provider_namespace, rms.region_id, rms.dimensions_hash, rms.metric_name, rms.statistic
-      ORDER BY sample_count DESC, rms.external_resource_id ASC, rms.cloud_resource_id ASC NULLS LAST,
+        rms.provider_namespace, rms.region_id, rms.compartment_id, rms.dimensions_hash,
+        rms.metric_name, rms.metric_unit, rms.statistic, rms.granularity_seconds
+      ORDER BY CASE WHEN lower(replace(rms.metric_name, '_', '')) IN ('cpuutilization', 'memoryutilization') THEN 0 ELSE 1 END,
+        sample_count DESC, rms.external_resource_id ASC, rms.cloud_resource_id ASC NULLS LAST,
         rms.provider_namespace ASC, rms.region_id ASC, rms.metric_name ASC, rms.dimensions_hash ASC
       LIMIT ${filters.limit}
     `);
@@ -281,11 +332,13 @@ export class PrismaResourceMetricRepository implements IResourceMetricRepository
       ...(row.resource_name !== null ? { resourceName: row.resource_name } : {}),
       ...((row.provider_namespace ?? '') !== '' ? { providerNamespace: row.provider_namespace } : {}),
       ...((row.region_id ?? '') !== '' ? { regionId: row.region_id } : {}),
+      ...((row.compartment_id ?? '') !== '' ? { compartmentId: row.compartment_id } : {}),
       ...((row.dimensions_hash ?? '') !== '' ? { dimensionsHash: row.dimensions_hash } : {}),
       ...(row.resource_type !== null ? { resourceType: row.resource_type } : {}),
       ...(row.service_name !== null ? { serviceName: row.service_name } : {}),
       metricName: row.metric_name,
       statistic: row.statistic as MetricStatistic,
+      granularitySeconds: row.granularity_seconds,
       ...(row.metric_unit !== null ? { metricUnit: row.metric_unit } : {}),
       sampleCount: row.sample_count,
       coverageDays: row.coverage_days,

@@ -55,7 +55,9 @@ export class FinOpsAiRecommendationPreparer {
       : allUsageSeries.filter((point) => point.resourceId === input.externalResourceId);
     const deterministicAnalysis = buildDeterministicTrendAnalysis(costSeries, usageSeries);
     const evidenceHash = createHash('sha256').update(JSON.stringify({
+      recommendationPipelineVersion: 2,
       snapshot,
+      readinessReport: preparedEvidence.readinessReport,
       technicalEvidenceHash: preparedEvidence.technicalEvidenceSnapshot?.hash ?? null,
       deterministicAnalysis,
     })).digest('hex');

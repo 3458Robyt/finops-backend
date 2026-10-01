@@ -11,6 +11,7 @@ import { PrismaOperationalReadinessRepository } from '../../src/infrastructure/r
 import { createTenantAwarePool, runWithDatabaseContext } from '../../src/infrastructure/database/tenantContext.js';
 import type { RuntimeConfig } from '../../src/infrastructure/config/runtimeConfigTypes.js';
 import { assertIntegrationSchema, assertLocalIntegrationDatabase, createIntegrationPool, runIntegrationCommand } from './integrationRuntime.js';
+import { latestMigrationId } from './latestMigrationId.js';
 const sourceUrl = process.env['DATABASE_URL'];
 if (sourceUrl === undefined || sourceUrl.trim() === '') {
   throw new Error('DATABASE_URL is required for the isolated process heartbeat integration.');
@@ -69,7 +70,7 @@ try {
       database: {
         runtimeEnforce: true,
         runtimeRole: 'finops_runtime',
-        expectedMigration: '202609150001_readiness_summary_indexes',
+        expectedMigration: latestMigrationId(),
       },
       operations: { processHeartbeat: { enabled: true, intervalMs: 30_000, staleAfterMs: 30_000 } },
       ai: { apiKey: undefined },

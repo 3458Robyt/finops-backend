@@ -5,6 +5,10 @@ import type {
   RecommendationEvidenceSnapshot,
 } from './RecommendationEvidenceSnapshot.js';
 import type { VerifiedSavingsCalculation } from '../../../domain/models/recommendationEconomics.js';
+import { sourceDiagnosticIssue, technicalBlockerAction } from './recommendationEvidenceDiagnostics.js';
+import { selectTechnicalReviewCandidates } from './recommendationReviewCandidateSelection.js';
+import { normalizeMonthlyAmount } from './recommendationReadinessSupport.js';
+export { getRecommendationPeriodDays } from './recommendationReadinessSupport.js';
 
 export type RecommendationReadiness = 'GENERATABLE' | 'VALIDATION_ONLY' | 'BLOCKED_NO_EVIDENCE';
 
@@ -39,6 +43,8 @@ export interface RecommendationOpportunityCandidate {
   readonly blockers?: readonly string[];
   readonly metricSummary?: unknown;
   readonly reasons: readonly string[];
+  readonly evidenceIssues?: readonly { readonly code: string; readonly action: string }[];
+  readonly evidencePeriod?: Readonly<{ readonly costStart: string; readonly costEnd: string; readonly lastMetricAt?: string }>;
   readonly forbiddenClaims: readonly string[];
 }
 
@@ -46,22 +52,23 @@ export interface RecommendationReadinessReport {
   readonly candidates: readonly RecommendationOpportunityCandidate[];
   readonly blocked: readonly RecommendationOpportunityCandidate[];
   readonly deferred: readonly RecommendationOpportunityCandidate[];
+  /** Recurso con costo vigente y vínculo no ambiguo que puede producir solo un borrador de revisión. */
+  readonly reviewCandidates?: readonly RecommendationOpportunityCandidate[];
   readonly summary: string;
 }
 
 const maxCandidates = 6;
-const standardMonthDays = 30;
-
 export function buildRecommendationReadinessReport(input: {
   readonly snapshot: CostAnalyticsSnapshot;
   readonly technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot;
 }): RecommendationReadinessReport {
   const accountById = new Map(input.snapshot.accounts.map((account) => [account.cloudAccountId, account]));
   const evidenceResources = input.technicalEvidenceSnapshot?.resources ?? [];
-
   const prioritized = [
     ...buildUsageCandidates(input.snapshot),
-    ...buildResourceCandidates(input.snapshot, accountById, evidenceResources),
+    ...buildResourceCandidates(input.snapshot, accountById, evidenceResources,
+      input.technicalEvidenceSnapshot?.generatedAt, input.technicalEvidenceSnapshot?.sourceDiagnostics ?? [],
+      input.technicalEvidenceSnapshot?.summaryTruncated === true),
     ...buildServiceCandidates(input.snapshot),
   ]
     .sort((left, right) => right.maxEstimatedMonthlySavings - left.maxEstimatedMonthlySavings);
@@ -76,14 +83,18 @@ export function buildRecommendationReadinessReport(input: {
   }));
   const allowed = batch;
   const blocked = prioritized.filter((candidate) => candidate.readiness !== 'GENERATABLE');
+  const reviewCandidates = selectTechnicalReviewCandidates(blocked, input.snapshot);
 
   return {
     candidates: allowed,
     blocked,
     deferred,
+    reviewCandidates,
     summary:
       allowed.length === 0
-        ? 'No hay oportunidades con evidencia determinística suficiente para generar recomendaciones auditables.'
+        ? reviewCandidates.length > 0
+          ? `No hay recomendaciones publicables con la evidencia actual. Se pueden preparar hasta ${reviewCandidates.length} borradores de revisión técnica, sin ahorro cuantificado ni autorización operativa.`
+          : 'No hay oportunidades con evidencia determinística suficiente para generar recomendaciones auditables.'
         : `Hay ${allowed.length} candidatos auditables${deferred.length > 0 ? ` y ${deferred.length} aplazados para otro lote` : ''}: ${allowed
             .map((candidate) => `${candidate.id}:${candidate.readiness}`)
             .join(', ')}.`,
@@ -109,7 +120,8 @@ export function formatRecommendationReadinessForPrompt(report: RecommendationRea
 }
 
 function compactCandidate(candidate: RecommendationOpportunityCandidate): Readonly<Record<string, unknown>> {
-  const { metricSummary: _metricSummary, costEvidenceScope: _costEvidenceScope, ...compact } = candidate;
+  const { metricSummary: _metricSummary, costEvidenceScope: _costEvidenceScope, evidenceIssues: _evidenceIssues,
+    evidencePeriod: _evidencePeriod, ...compact } = candidate;
   return compact;
 }
 
@@ -159,6 +171,9 @@ function buildResourceCandidates(
   snapshot: CostAnalyticsSnapshot,
   accountById: ReadonlyMap<string, { readonly cloudAccountId: string; readonly provider: string }>,
   evidenceResources: readonly RecommendationEvidenceResource[],
+  generatedAt?: string,
+  sourceDiagnostics: NonNullable<RecommendationEvidenceSnapshot['sourceDiagnostics']> = [],
+  summaryTruncated = false,
 ): RecommendationOpportunityCandidate[] {
   return snapshot.topResources.map((resource, index) => {
     const providerAccounts = snapshot.accounts.filter((account) => account.provider === resource.provider);
@@ -196,11 +211,35 @@ function buildResourceCandidates(
     const ruleEvaluation = evidenceResource?.ruleEvaluation;
     const refsForResource = evidenceResource?.metrics.map((metric) => metric.evidenceRef) ?? [];
     const hasResourceTechnicalEvidence =
-      evidenceResource?.linkQuality === 'COST_AND_TECHNICAL' && refsForResource.length > 0;
+      evidenceResource?.linkQuality === 'COST_AND_TECHNICAL'
+      && linkedCloudResourceId !== undefined && refsForResource.length > 0;
+    const observedThrough = new Date(snapshot.observedThrough ?? snapshot.periodEnd);
+    const analysisAt = new Date(generatedAt ?? Date.now());
+    const costStale = Number.isFinite(observedThrough.getTime()) && Number.isFinite(analysisAt.getTime())
+      && analysisAt.getTime() - observedThrough.getTime() > 7 * 86400000;
+    const noChargeableCost = !Number.isFinite(resource.totalCost) || resource.totalCost <= 0;
     const readiness = ambiguous
       ? 'BLOCKED_NO_EVIDENCE'
-      : ruleEvaluation?.readiness ?? (hasResourceTechnicalEvidence ? 'GENERATABLE' : 'VALIDATION_ONLY');
+      : costStale || noChargeableCost || !hasResourceTechnicalEvidence || summaryTruncated
+        ? 'VALIDATION_ONLY'
+        : ruleEvaluation?.readiness ?? 'VALIDATION_ONLY';
     const normalizedMonthlyCost = normalizeMonthlyAmount(resource.totalCost, snapshot);
+    const lastMetricAt = evidenceResource?.metrics
+      .map((metric) => metric.latestSampledAt).sort().at(-1);
+    const evidenceIssues = [
+      ...(costStale ? [{ code: 'STALE_COST', action: 'Actualizar la ingesta FOCUS o Usage API antes de recomendar.' }] : []),
+      ...(noChargeableCost ? [{ code: 'NO_CHARGEABLE_COST', action: 'No hay costo positivo atribuible al recurso en este período. Verificar FOCUS/Usage API y el vínculo al inventario; no proyectar ahorro.' }] : []),
+      ...(summaryTruncated ? [{ code: 'EVIDENCE_QUERY_LIMIT_REACHED', action: 'El catálogo técnico superó el límite de series para este análisis. Acotar el recurso/scope y repetir la vista previa; no generar con evidencia parcial.' }] : []),
+      ...(ambiguous ? [{ code: 'AMBIGUOUS_RESOURCE_LINK', action: 'Revisar el vínculo exacto entre costo, inventario y métricas.' }] : []),
+      ...(!hasResourceTechnicalEvidence ? [{ code: 'NO_LINKED_TECHNICAL_METRICS', action: 'Descubrir CPU y memoria de esta instancia en OCI y comprobar su vínculo al inventario.' }] : []),
+      ...sourceDiagnostics
+        .filter((item) => item.externalResourceId === resource.resourceId
+          && item.cloudConnectionId === resource.cloudConnectionId
+          && !evidenceResource?.metrics.some((metric) => metric.metricName.toLowerCase() === item.metricName.toLowerCase()))
+        .map((item) => sourceDiagnosticIssue(item)),
+      ...(ruleEvaluation?.blockers ?? []).map((code) => ({ code, action: technicalBlockerAction(code) })),
+      ...(readiness === 'GENERATABLE' ? [{ code: 'UNPRICED_ALTERNATIVE', action: 'Identificar una configuración alternativa y verificar su tarifa antes de cuantificar ahorro.' }] : []),
+    ];
 
     return {
       id: `resource-${index + 1}`,
@@ -248,6 +287,12 @@ function buildResourceCandidates(
           }
         : {}),
       technicalEvidenceRefs: ruleEvaluation?.technicalEvidenceRefs ?? refsForResource,
+      evidenceIssues,
+      evidencePeriod: {
+        costStart: snapshot.periodStart,
+        costEnd: snapshot.periodEnd,
+        ...(lastMetricAt === undefined ? {} : { lastMetricAt }),
+      },
       ...(ruleEvaluation?.evidenceStrength !== undefined ? { evidenceStrength: ruleEvaluation.evidenceStrength } : {}),
       ...(ruleEvaluation?.ruleMatches !== undefined ? { ruleMatches: ruleEvaluation.ruleMatches } : {}),
       ...(ruleEvaluation?.blockers !== undefined ? { blockers: ruleEvaluation.blockers } : {}),
@@ -255,6 +300,12 @@ function buildResourceCandidates(
       reasons:
         ambiguous
           ? [identityReason]
+          : costStale
+          ? ['Los costos están desactualizados para una decisión operativa actual.']
+          : noChargeableCost
+          ? ['El recurso no tiene un costo positivo atribuible en el período analizado.']
+          : !hasResourceTechnicalEvidence
+          ? ['No hay un vínculo exacto entre el costo y las métricas técnicas del recurso.']
           : ruleEvaluation?.blockers !== undefined && ruleEvaluation.blockers.length > 0
           ? [`Reglas deterministicas detectaron bloqueos: ${ruleEvaluation.blockers.join(', ')}.`]
           : hasResourceTechnicalEvidence
@@ -324,21 +375,6 @@ function findUniqueAccountForProvider(
 
 function round(value: number): number {
   return Math.round(value * 100) / 100;
-}
-
-export function getRecommendationPeriodDays(snapshot: CostAnalyticsSnapshot): number {
-  const start = new Date(snapshot.periodStart).getTime();
-  const end = new Date(snapshot.periodEnd).getTime();
-  const elapsedDays = (end - start) / (24 * 60 * 60 * 1000);
-  return Number.isFinite(elapsedDays) && elapsedDays > 0
-    ? elapsedDays
-    : snapshot.coveredDays !== undefined && Number.isFinite(snapshot.coveredDays) && snapshot.coveredDays > 0
-      ? snapshot.coveredDays
-      : standardMonthDays;
-}
-
-function normalizeMonthlyAmount(amount: number, snapshot: CostAnalyticsSnapshot): number {
-  return amount * standardMonthDays / getRecommendationPeriodDays(snapshot);
 }
 
 /**

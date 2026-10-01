@@ -8,6 +8,7 @@ import type {
   ConfigureMetricDefinitionsForConnectionInput,
   ConfigureMetricDefinitionsForConnectionResult,
   CloudCredentialSummary,
+  CloudMetricDefinitionSummary,
   CreateCloudAuditEventInput,
   CreateCloudConnectionInput,
   CreateIngestionJobInput,
@@ -90,6 +91,10 @@ const awsValidator: CloudIngestionProvider = {
 };
 
 class FakeCloudConnectionRepository implements ICloudConnectionRepository {
+  public metricDefinitions: readonly CloudMetricDefinitionSummary[] = [];
+  public async listEnabledMetricDefinitions(): Promise<readonly CloudMetricDefinitionSummary[]> {
+    return this.metricDefinitions;
+  }
   public createdConnectionInput: CreateCloudConnectionInput | null = null;
   public createdJobInput: CreateIngestionJobInput | null = null;
   public createdJobInputs: CreateIngestionJobInput[] = [];
@@ -856,5 +861,23 @@ describe('CloudConnectionService', () => {
       lookbackDays: 91,
       windowHours: 24,
     })).rejects.toThrow('entre 1 y 90 días');
+  });
+
+  test('queues only a confirmed OCI resource metric and includes scope in job identity', async () => {
+    const repository = new FakeCloudConnectionRepository();
+    repository.connection = { ...repository.connection!, providerCode: 'oci', metadata: {} };
+    repository.metricDefinitions = [{ id: 'definition-1', compartmentId: 'compartment-test', namespace: 'oci_computeagent',
+      metricName: 'MemoryUtilization', externalResourceId: 'instance-test', regionId: 'us-ashburn-1', statistics: ['MEAN'] }];
+    const service = new CloudConnectionService(repository);
+    const metricFilter = { namespace: 'oci_computeagent', metricName: 'MemoryUtilization' as const,
+      resourceId: 'instance-test', regionId: 'us-ashburn-1' };
+    const result = await service.queueTechnicalMetricBackfill({ tenantId: 'tenant-1', cloudConnectionId: 'conn-1',
+      lookbackDays: 1, metricFilter });
+    expect(result.createdJobs.length).toBeGreaterThan(0);
+    expect(repository.createdJobInputs[0]?.requestContext).toMatchObject({ metricFilter });
+    expect(result.estimatedApiCalls).toBe(result.createdJobs.length * 4);
+    await expect(service.queueTechnicalMetricBackfill({ tenantId: 'tenant-1', cloudConnectionId: 'conn-1',
+      lookbackDays: 1, metricFilter: { ...metricFilter, resourceId: 'other' } }))
+      .rejects.toThrow('no está confirmada');
   });
 });

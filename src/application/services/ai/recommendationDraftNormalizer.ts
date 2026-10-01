@@ -18,13 +18,18 @@ export function normalizeRecommendationDrafts(
   technicalEvidenceSnapshot: RecommendationEvidenceSnapshot | undefined,
   cloudResourceId?: string,
   periodDays?: number,
+  options: {
+    readonly preserveValidationNarrative?: boolean;
+    readonly candidatePool?: readonly RecommendationOpportunityCandidate[];
+  } = {},
 ): readonly AiRecommendationDraft[] {
   if (readinessReport === undefined) return [];
+  const candidates = options.candidatePool ?? readinessReport.candidates;
 
   return drafts
-    .filter((draft) => findCandidate(draft, readinessReport.candidates) !== undefined)
+    .filter((draft) => findCandidate(draft, candidates) !== undefined)
     .map((draft) => {
-    const candidate = findCandidate(draft, readinessReport.candidates);
+    const candidate = findCandidate(draft, candidates);
     if (candidate === undefined) {
       return stripUnverifiedSavings(draft);
     }
@@ -143,8 +148,8 @@ export function normalizeRecommendationDrafts(
         ? { resourceLinkReason: 'INVENTORY_RESOURCE_NOT_FOUND' }
         : {}),
       type: safeType,
-      title: safeTitle,
-      description: safeDescription,
+      title: options.preserveValidationNarrative && technicalValidationOnly ? draft.title : safeTitle,
+      description: options.preserveValidationNarrative && technicalValidationOnly ? draft.description : safeDescription,
       evidence: {
         ...safeGeneratedEvidence,
         candidateId: candidate.id,

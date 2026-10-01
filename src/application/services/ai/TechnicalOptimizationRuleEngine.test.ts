@@ -46,6 +46,8 @@ describe('TechnicalOptimizationRuleEngine', () => {
     expect(result?.recommendedActionType).toBe('RIGHTSIZING');
     expect(result?.evidenceStrength).toBe('HIGH');
     expect(result?.maxTechnicalSavingsRate).toBe(0);
+    expect(result?.technicalEvidenceRefs[0]).toContain(':MEAN:');
+    expect(result?.metricSummary[0]).toMatchObject({ statistic: 'MEAN', granularitySeconds: 3600 });
     expect(result?.ruleMatches).toEqual(
       expect.arrayContaining(['CPU_STRONG_UNDERUTILIZATION', 'MEMORY_LOW_UTILIZATION']),
     );
@@ -122,7 +124,7 @@ describe('TechnicalOptimizationRuleEngine', () => {
       ],
     });
 
-    expect(result?.ruleVersion).toBe('technical-rules-2026-08-11.v1');
+    expect(result?.ruleVersion).toBe('technical-rules-2026-09-27.v2');
     expect(result?.appliedThresholds).toMatchObject({
       highUtilizationPercent: 80,
       minimumSamples: 48,
@@ -135,8 +137,8 @@ describe('TechnicalOptimizationRuleEngine', () => {
     const [result] = evaluateTechnicalOptimizationRules({
       referenceDate,
       summaries: [
-        summary('CpuSeconds', { metricUnit: 'Seconds', avg: 1, p95: 2, p99: 3 }),
-        summary('MemoryUsedBytes', { metricUnit: 'Bytes', avg: 10, p95: 20, p99: 30 }),
+        summary('CpuUtilization', { metricUnit: 'Seconds', avg: 1, p95: 2, p99: 3 }),
+        summary('MemoryUtilization', { metricUnit: 'Bytes', avg: 10, p95: 20, p99: 30 }),
       ],
     });
 
@@ -151,6 +153,65 @@ describe('TechnicalOptimizationRuleEngine', () => {
       'MEMORY_METRIC_UNIT_NOT_PERCENTAGE',
     ]));
   });
+
+  it('requires verified OCI namespace, MEAN statistic and percentage unit', () => {
+    const cpu = summary('CpuUtilization', { provider: 'OCI', providerNamespace: 'oci_computeagent', statistic: 'MEAN' });
+    const memory = summary('MemoryUtilization', { provider: 'OCI', providerNamespace: 'oci_computeagent', statistic: 'MEAN' });
+    const [wrongSource] = evaluateTechnicalOptimizationRules({ referenceDate, summaries: [
+      { ...cpu, providerNamespace: undefined }, memory,
+    ] });
+    expect(wrongSource?.blockers).toContain('MISSING_CPU_METRIC');
+    const [wrongStatistic] = evaluateTechnicalOptimizationRules({ referenceDate, summaries: [
+      { ...cpu, statistic: 'MAX' }, memory,
+    ] });
+    expect(wrongStatistic?.blockers).toContain('MISSING_CPU_METRIC');
+    const [unknownUnit] = evaluateTechnicalOptimizationRules({ referenceDate, summaries: [
+      { ...cpu, metricUnit: undefined }, memory,
+    ] });
+    expect(unknownUnit?.blockers).toContain('CPU_METRIC_UNIT_NOT_PERCENTAGE');
+    expect(unknownUnit?.readiness).toBe('VALIDATION_ONLY');
+  });
+
+  it('requires complete CPU and memory coverage separately', () => {
+    const [result] = evaluateTechnicalOptimizationRules({ referenceDate, summaries: [
+      summary('CpuUtilization', { avg: 8, p95: 25 }),
+      summary('MemoryUtilization', { avg: 20, p95: 35, sampleCount: 48, coverageDays: 7 }),
+    ] });
+    expect(result?.readiness).toBe('VALIDATION_ONLY');
+    expect(result?.blockers).toContain('INSUFFICIENT_TECHNICAL_COVERAGE');
+  });
+
+  it('rejects a nominally complete summary drawn from older than seven days or future data', () => {
+    const cpu = summary('CpuUtilization', { avg: 8, p95: 25 });
+    const memory = summary('MemoryUtilization', { avg: 20, p95: 35 });
+    const [old] = evaluateTechnicalOptimizationRules({ referenceDate, summaries: [
+      { ...cpu, firstSampledAt: new Date('2026-06-20T00:00:00.000Z') }, memory,
+    ] });
+    expect(old?.blockers).toContain('INSUFFICIENT_TECHNICAL_COVERAGE');
+    const [future] = evaluateTechnicalOptimizationRules({ referenceDate, summaries: [
+      { ...cpu, latestSampledAt: new Date('2026-07-02T00:00:00.000Z') }, memory,
+    ] });
+    expect(future?.readiness).toBe('VALIDATION_ONLY');
+  });
+
+  it('does not pick an arbitrary duplicate CPU stream or apply Compute rules to storage', () => {
+    const cpu = summary('CpuUtilization', { avg: 8, p95: 25 });
+    const memory = summary('MemoryUtilization', { avg: 20, p95: 35 });
+    const [ambiguous] = evaluateTechnicalOptimizationRules({ referenceDate, summaries: [
+      cpu, { ...cpu, dimensionsHash: 'other' }, memory,
+    ] });
+    expect(ambiguous?.blockers).toContain('AMBIGUOUS_CPU_STREAM');
+    expect(ambiguous?.readiness).toBe('VALIDATION_ONLY');
+    const [storage] = evaluateTechnicalOptimizationRules({ referenceDate, summaries: [
+      { ...cpu, resourceType: 'BLOCK_VOLUME' }, { ...memory, resourceType: 'BLOCK_VOLUME' },
+    ] });
+    expect(storage?.blockers).toContain('UNSUPPORTED_RESOURCE_TYPE');
+    expect(storage?.blockers).not.toContain('MISSING_CPU_METRIC');
+    const [storageWithoutCpu] = evaluateTechnicalOptimizationRules({ referenceDate, summaries: [
+      { ...memory, resourceType: 'BLOCK_VOLUME' },
+    ] });
+    expect(storageWithoutCpu?.blockers).toEqual(['UNSUPPORTED_RESOURCE_TYPE']);
+  });
 });
 
 function summary(
@@ -164,9 +225,11 @@ function summary(
     resourceType: 'COMPUTE_INSTANCE',
     serviceName: 'Amazon EC2',
     metricName,
+    statistic: 'MEAN',
     metricUnit: 'Percent',
-    sampleCount: 96,
-    coverageDays: 14,
+    sampleCount: 168,
+    coverageDays: 7,
+    granularitySeconds: 3600,
     min: 1,
     max: overrides.p99 ?? 40,
     avg: overrides.avg ?? 10,
@@ -174,7 +237,7 @@ function summary(
     p95: overrides.p95 ?? 25,
     p99: overrides.p99 ?? 35,
     latest: overrides.avg ?? 10,
-    firstSampledAt: new Date('2026-06-16T00:00:00.000Z'),
+    firstSampledAt: new Date('2026-06-23T00:00:00.000Z'),
     latestSampledAt: new Date('2026-06-29T00:00:00.000Z'),
     ...overrides,
   };

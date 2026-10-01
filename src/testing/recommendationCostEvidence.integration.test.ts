@@ -138,12 +138,15 @@ describe('recommendation cost evidence PostgreSQL integration', () => {
             1,
           ),
         );
+        const nextMonth = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1));
+        const periodRows = sourceRows.filter((row) => row.chargePeriodStart >= monthStart && row.chargePeriodStart < nextMonth);
+        expect(periodRows.length).toBeGreaterThan(1);
         await createClosure(
           prisma,
           tenantId,
           user.id,
           monthStart,
-          sourceRows,
+          periodRows,
           1,
         );
         const allocations = new PrismaValueRealizationAllocationRepository(
@@ -170,7 +173,7 @@ describe('recommendation cost evidence PostgreSQL integration', () => {
           tenantId,
           user.id,
           monthStart,
-          sourceRows.slice(0, -1),
+          periodRows.slice(0, -1),
           2,
         );
         await expect(
@@ -186,8 +189,8 @@ describe('recommendation cost evidence PostgreSQL integration', () => {
             tenantId,
             cloudAccountId: first.cloudAccountId,
             cloudResourceId: fixtures.resourceIds[0]!,
-            sourceChargePeriodStart: last.chargePeriodStart,
-            sourceMetricIdentityHash: last.metricIdentityHash,
+            sourceChargePeriodStart: periodRows.at(-1)!.chargePeriodStart,
+            sourceMetricIdentityHash: periodRows.at(-1)!.metricIdentityHash,
             type: 'RIGHTSIZING',
             origin: 'LEGACY_UNKNOWN',
             status: 'APPROVED',
@@ -204,7 +207,7 @@ describe('recommendation cost evidence PostgreSQL integration', () => {
           tenantId,
           user.id,
           monthStart,
-          sourceRows,
+          periodRows,
           3,
         );
         const legacySummary = await allocations.listDestinationSummary({
@@ -222,7 +225,7 @@ describe('recommendation cost evidence PostgreSQL integration', () => {
           tenantId,
           user.id,
           monthStart,
-          sourceRows.slice(0, -1),
+          periodRows.slice(0, -1),
           4,
         );
         await expect(

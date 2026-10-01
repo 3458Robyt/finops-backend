@@ -1,5 +1,6 @@
 FROM node:22-bookworm-slim AS dependencies
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
 RUN npm ci
 
@@ -10,6 +11,10 @@ COPY prisma ./prisma
 COPY prisma.config.ts tsconfig.json ./
 COPY src ./src
 RUN npm run build
+
+# One-shot release job. Keep Prisma CLI in this image, not in the API runtime.
+FROM build AS migrate
+CMD ["./node_modules/.bin/prisma", "migrate", "deploy", "--config", "prisma.config.ts"]
 
 FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production

@@ -39,12 +39,14 @@ export interface RawMetricSummaryRow {
   readonly resource_name: string | null;
   readonly provider_namespace?: string;
   readonly region_id?: string;
+  readonly compartment_id?: string;
   readonly dimensions_hash?: string;
   readonly resource_type: string | null;
   readonly service_name: string | null;
   readonly metric_name: string;
   readonly metric_unit: string | null;
   readonly statistic: string;
+  readonly granularity_seconds: number;
   readonly sample_count: number;
   readonly coverage_days: number;
   readonly min_value: number;

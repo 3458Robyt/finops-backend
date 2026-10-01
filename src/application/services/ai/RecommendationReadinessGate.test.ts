@@ -90,6 +90,83 @@ describe('RecommendationReadinessGate', () => {
     ]);
   });
 
+  it('blocks technical-only or stale cost evidence and explains the missing price', () => {
+    const evidence = buildEvidenceSnapshot();
+    const technicalOnly = buildRecommendationReadinessReport({
+      snapshot: buildSnapshot(),
+      technicalEvidenceSnapshot: { ...evidence, resources: [{ ...evidence.resources[0]!, linkQuality: 'TECHNICAL_ONLY' }] },
+    });
+    expect(technicalOnly.candidates).toHaveLength(0);
+    expect(technicalOnly.blocked.find((item) => item.id === 'resource-1')?.evidenceIssues)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ code: 'NO_LINKED_TECHNICAL_METRICS' })]));
+
+    const stale = buildRecommendationReadinessReport({
+      snapshot: { ...buildSnapshot(), periodEnd: '2026-06-01T00:00:00.000Z' },
+      technicalEvidenceSnapshot: evidence,
+    });
+    expect(stale.blocked.find((item) => item.id === 'resource-1')?.evidenceIssues)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ code: 'STALE_COST' })]));
+    const priced = buildRecommendationReadinessReport({ snapshot: buildSnapshot(), technicalEvidenceSnapshot: evidence });
+    expect(priced.candidates[0]?.evidenceIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'UNPRICED_ALTERNATIVE' }),
+    ]));
+    expect(priced.candidates[0]?.maxEstimatedMonthlySavings).toBe(0);
+  });
+
+  it('fails closed when the raw technical stream catalog is truncated', () => {
+    const report = buildRecommendationReadinessReport({
+      snapshot: buildSnapshot(),
+      technicalEvidenceSnapshot: { ...buildEvidenceSnapshot(), summaryTruncated: true },
+    });
+    expect(report.candidates).toHaveLength(0);
+    expect(report.blocked.find((item) => item.id === 'resource-1')?.evidenceIssues)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ code: 'EVIDENCE_QUERY_LIMIT_REACHED' })]));
+  });
+
+  it('does not offer savings for a resource without positive attributable cost', () => {
+    const snapshot = buildSnapshot();
+    const report = buildRecommendationReadinessReport({
+      snapshot: { ...snapshot, topResources: [{ ...snapshot.topResources[0]!, totalCost: 0 }] },
+      technicalEvidenceSnapshot: buildEvidenceSnapshot(),
+    });
+    expect(report.candidates).toHaveLength(0);
+    expect(report.blocked.find((item) => item.id === 'resource-1')?.evidenceIssues)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ code: 'NO_CHARGEABLE_COST' })]));
+  });
+
+  it('prioritizes at most five review-only candidates by deterministic signals and normalized spend', () => {
+    const now = new Date();
+    const periodStart = new Date(now.getTime() - 30 * 86400000).toISOString();
+    const periodEnd = now.toISOString();
+    const resources = Array.from({ length: 7 }, (_, index) => ({
+      ...buildSnapshot().topResources[0]!,
+      resourceId: `instance-${index + 1}`,
+      cloudAccountId: 'aws-prod',
+      totalCost: 700 - index * 100,
+    }));
+    const report = buildRecommendationReadinessReport({
+      snapshot: { ...buildSnapshot(), periodStart, periodEnd, observedThrough: periodEnd, topResources: resources },
+    });
+
+    expect(report.candidates).toHaveLength(0);
+    expect(report.reviewCandidates).toHaveLength(5);
+    expect(report.reviewCandidates.map((candidate) => candidate.resourceId)).toEqual([
+      'instance-1', 'instance-2', 'instance-3', 'instance-4', 'instance-5',
+    ]);
+    expect(report.reviewCandidates.every((candidate) => candidate.maxEstimatedMonthlySavings === 0)).toBe(true);
+    expect(report.summary).toContain('borradores de revisión técnica');
+  });
+
+  it('does not suggest CPU or memory review drafts for non-Compute resources', () => {
+    const snapshot = buildSnapshot();
+    const report = buildRecommendationReadinessReport({
+      snapshot: { ...snapshot, topResources: [{ ...snapshot.topResources[0]!, serviceName: 'Amazon S3' }] },
+    });
+
+    expect(report.blocked.find((candidate) => candidate.id === 'resource-1')).toBeDefined();
+    expect(report.reviewCandidates).toEqual([]);
+  });
+
   it('keeps canonical cost scope server-side and out of the model prompt', () => {
     const snapshot = buildSnapshot();
     const technicalEvidenceSnapshot = buildEvidenceSnapshot();
@@ -234,6 +311,8 @@ describe('RecommendationReadinessGate', () => {
       return {
         ...evidenceResource,
         externalResourceId: resourceId,
+        cloudResourceId: `cloud-resource-${index + 1}`,
+        cost: { ...evidenceResource.cost!, cloudResourceId: `cloud-resource-${index + 1}` },
         ruleEvaluation,
         metrics: evidenceResource.metrics.map((metric) => ({
           ...metric,
@@ -247,6 +326,7 @@ describe('RecommendationReadinessGate', () => {
         topResources: Array.from({ length: 8 }, (_, index) => ({
           ...base.topResources[0]!,
           resourceId: `i-prod-${index + 1}`,
+          cloudResourceId: `cloud-resource-${index + 1}`,
           resourceName: `worker-${index + 1}`,
           totalCost: 500 - index,
         })),
@@ -342,9 +422,10 @@ function buildEvidenceSnapshot(
     availability: 'COST_USAGE_AND_TECHNICAL_AVAILABLE',
     resources: [{
       externalResourceId: 'i-prod-1',
+      cloudResourceId: 'cloud-resource-1',
       provider: 'AWS',
       linkQuality: 'COST_AND_TECHNICAL',
-      cost: { totalCost: 300, currency: 'USD', focusMetricCount: 80 },
+      cost: { cloudResourceId: 'cloud-resource-1', totalCost: 300, currency: 'USD', focusMetricCount: 80 },
       usage: [],
       metrics: [{
         metricName: 'CPUUtilization',

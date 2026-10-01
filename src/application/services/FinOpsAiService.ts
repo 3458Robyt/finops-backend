@@ -12,6 +12,7 @@ import type { TechnicalRecommendationEvidenceProvider } from './ai/TechnicalReco
 import { FinOpsAiChatRunner } from './ai/FinOpsAiChatRunner.js';
 import { FinOpsAiExecutionPlanRunner } from './ai/FinOpsAiExecutionPlanRunner.js';
 import { FinOpsAiRecommendationRunner } from './ai/FinOpsAiRecommendationRunner.js';
+import type { AuditedDraftsResult } from './ai/finOpsArtifactGenerator.js';
 import { FinOpsAiRecommendationPreparer } from './ai/FinOpsAiRecommendationPreparer.js';
 import { loadRuntimeConfig } from '../../infrastructure/config/runtimeConfigReader.js';
 import type { RuntimeConfig } from '../../infrastructure/config/runtimeConfigTypes.js';
@@ -198,6 +199,16 @@ export class FinOpsAiService {
     input: Pick<GenerateAiRecommendationsInput, 'tenantId' | 'externalResourceId' | 'cloudResourceId'>,
   ): Promise<PreparedRecommendationAnalysis> {
     return this.recommendationPreparer.prepare(input);
+  }
+
+  public async generateRecommendationReviewDrafts(input: {
+    readonly tenantId: string;
+    readonly userId?: string;
+    readonly prepared: PreparedRecommendationAnalysis;
+    readonly deadlineAt: number;
+    readonly onStage?: GenerateAiRecommendationsInput['onStage'];
+  }): Promise<AuditedDraftsResult & { readonly model: string; readonly auditorModel: string }> {
+    return this.recommendationRunner.generateReviewDrafts(input);
   }
 
   public getModelNames(): { readonly model: string; readonly auditorModel: string } {

@@ -4,6 +4,7 @@ import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnal
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
 import { ProviderTimeoutError } from '../../../domain/errors/errors.js';
 import { FinOpsArtifactGenerator } from './FinOpsArtifactGenerator.js';
+import type { RecommendationReadinessReport } from './RecommendationReadinessGate.js';
 
 const snapshot: CostAnalyticsSnapshot = {
   tenantId: 'tenant-demo',
@@ -162,5 +163,92 @@ describe('FinOpsArtifactGenerator recommendation abstention', () => {
     expect(result.auditReport).toBeUndefined();
     expect(result.firstRawResponse).toBe('{"recommendations":[]}');
     expect(generateText).toHaveBeenCalledTimes(1);
+  });
+
+  test('audits a technical review draft but removes model savings and keeps it non-publishable', async () => {
+    const candidate = {
+      id: 'resource-review-1',
+      readiness: 'VALIDATION_ONLY' as const,
+      cloudAccountId: 'acc-prod-aws',
+      provider: 'AWS',
+      serviceName: 'Amazon EC2',
+      resourceId: 'i-review-1',
+      resourceName: 'web-prod-review',
+      opportunityType: 'RIGHTSIZING',
+      evidenceLevelAllowed: 'COST_ONLY' as const,
+      requiresTechnicalValidation: true,
+      observedCost: 500,
+      maxEstimatedMonthlySavings: 0,
+      currency: 'USD',
+      sourceFacts: ['Costo observado del recurso: 500 USD.'],
+      costEvidenceRefs: ['cost_metrics:aggregate:fixture'],
+      technicalEvidenceRefs: [],
+      evidenceIssues: [{ code: 'NO_LINKED_TECHNICAL_METRICS', action: 'Verificar telemetría.' }],
+      reasons: ['No hay métricas técnicas enlazadas.'],
+      forbiddenClaims: ['No afirmes uso ni ahorro.'],
+    };
+    const readinessReport: RecommendationReadinessReport = {
+      candidates: [candidate],
+      blocked: [],
+      deferred: [],
+      reviewCandidates: [],
+      summary: 'Revisión técnica provisional.',
+    };
+    const generation = JSON.stringify({ recommendations: [{
+      cloudAccountId: 'acc-prod-aws',
+      type: 'TECHNICAL_VALIDATION_REQUIRED',
+      severity: 'LOW',
+      title: 'Validar telemetría del recurso web-prod-review',
+      description: 'Confirmar en Monitoring si la métrica de memoria está habilitada y vinculada a esta instancia antes de revisar su capacidad.',
+      estimatedMonthlySavings: 250,
+      currency: 'USD',
+      evidence: {
+        candidateId: candidate.id,
+        evidenceLevel: 'COST_ONLY',
+        sourceFacts: candidate.sourceFacts,
+        assumptions: [],
+        confidence: 0.6,
+        requiresTechnicalValidation: true,
+      },
+    }] });
+    const audit = JSON.stringify({
+      verdict: 'APPROVED',
+      score: 95,
+      checks: [{ name: 'review-only', passed: true, notes: 'No afirma uso ni ahorro.' }],
+      blockingIssues: [],
+      requiredChanges: [],
+      candidateAudits: [{
+        index: 0, candidateId: candidate.id, verdict: 'APPROVED', score: 95,
+        checks: [{ name: 'review-only', passed: true, notes: 'Sin autorización operativa.' }],
+        blockingIssues: [], requiredChanges: [],
+      }],
+    });
+    const generateText = vi.fn().mockResolvedValueOnce(generation).mockResolvedValueOnce(audit);
+    const generator = new FinOpsArtifactGenerator(
+      { generateText } as unknown as IAiGateway,
+      { record: vi.fn().mockResolvedValue(undefined) },
+      'generator-model',
+      'auditor-model',
+    );
+
+    const result = await generator.generateAuditedReviewDrafts(
+      'tenant-demo', undefined, snapshot, 'review prompt', readinessReport,
+    );
+
+    expect(result.approvedDrafts).toHaveLength(1);
+    expect(result.approvedDrafts[0]).toMatchObject({
+      type: 'TECHNICAL_VALIDATION_REQUIRED',
+      title: 'Validar telemetría del recurso web-prod-review',
+      evidence: {
+        candidateId: candidate.id,
+        requiresTechnicalValidation: true,
+        operationalAuthorization: 'NONE',
+        requiresManualValidation: true,
+        maxEstimatedMonthlySavings: 0,
+      },
+    });
+    expect(result.approvedDrafts[0]).not.toHaveProperty('estimatedMonthlySavings');
+    expect(result.candidateAudits[0]?.audit.verdict).toBe('APPROVED');
+    expect(generateText).toHaveBeenCalledTimes(2);
   });
 });

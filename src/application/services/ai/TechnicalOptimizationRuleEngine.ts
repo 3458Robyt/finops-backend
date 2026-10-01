@@ -13,8 +13,8 @@ export type TechnicalRecommendedActionType =
   | 'PERFORMANCE_CAPACITY_REVIEW'
   | 'TECHNICAL_VALIDATION_REQUIRED';
 
-export function technicalMetricEvidenceRef(summary: Pick<TechnicalMetricSummaryItem, 'cloudResourceId' | 'cloudConnectionId' | 'externalResourceId' | 'metricName' | 'latestSampledAt'>): string {
-  return `resource_metric_samples:${summary.cloudResourceId ?? summary.cloudConnectionId ?? 'unresolved'}:${summary.externalResourceId}:${summary.metricName}:${summary.latestSampledAt.toISOString()}`;
+export function technicalMetricEvidenceRef(summary: Pick<TechnicalMetricSummaryItem, 'cloudResourceId' | 'cloudConnectionId' | 'externalResourceId' | 'metricName' | 'providerNamespace' | 'regionId' | 'compartmentId' | 'dimensionsHash' | 'statistic' | 'granularitySeconds' | 'latestSampledAt'>): string {
+  return `resource_metric_samples:${summary.cloudResourceId ?? summary.cloudConnectionId ?? 'unresolved'}:${summary.externalResourceId}:${summary.metricName}:${summary.latestSampledAt.toISOString()}:${summary.providerNamespace ?? 'unknown'}:${summary.regionId ?? 'unknown'}:${summary.compartmentId ?? 'unknown'}:${summary.statistic}:${summary.dimensionsHash ?? 'unknown'}:${summary.granularitySeconds ?? 'unknown'}`;
 }
 
 export interface TechnicalResourceRuleEvaluation {
@@ -48,7 +48,13 @@ export interface TechnicalResourceRuleEvaluation {
 export interface TechnicalMetricRuleSummary {
   readonly metricName: string;
   readonly metricUnit?: string;
+  readonly providerNamespace?: string;
+  readonly regionId?: string;
+  readonly compartmentId?: string;
+  readonly dimensionsHash?: string;
+  readonly statistic?: string;
   readonly sampleCount: number;
+  readonly granularitySeconds?: number;
   readonly coverageDays: number;
   readonly avg: number;
   readonly min: number;
@@ -88,8 +94,10 @@ function evaluateResource(
   ruleConfig: TechnicalOptimizationRuleConfig,
 ): TechnicalResourceRuleEvaluation {
   const first = summaries[0];
-  const cpu = findMetric(summaries, 'cpu');
-  const memory = findMetric(summaries, 'memory');
+  const cpuSelection = selectUtilizationMetric(summaries, 'cpu', referenceDate, ruleConfig);
+  const memorySelection = selectUtilizationMetric(summaries, 'memory', referenceDate, ruleConfig);
+  const cpu = cpuSelection.summary;
+  const memory = memorySelection.summary;
   const network = findMetric(summaries, 'network');
   const disk = findMetric(summaries, 'disk');
   const iops = findMetric(summaries, 'iops');
@@ -97,61 +105,71 @@ function evaluateResource(
   const ruleMatches: string[] = [];
   const sourceFacts: string[] = [];
 
-  const coverageOk = summaries.some((summary) => hasEnoughCoverage(summary, referenceDate, ruleConfig));
-  if (!coverageOk) {
-    blockers.push('INSUFFICIENT_TECHNICAL_COVERAGE');
+  const isCompute = first?.resourceType === 'COMPUTE_INSTANCE';
+  if (!isCompute) {
+    blockers.push('UNSUPPORTED_RESOURCE_TYPE');
   }
-
-  if (cpu === undefined) {
-    blockers.push('MISSING_CPU_METRIC');
-  } else if (!isPercentMetric(cpu)) {
-    blockers.push('CPU_METRIC_UNIT_NOT_PERCENTAGE');
-  } else {
-    sourceFacts.push(metricFact('CPU', cpu));
-    if (isHighUtilization(cpu, ruleConfig) || cpu.p99 >= ruleConfig.cpuCriticalP99Percent) {
-      blockers.push('CPU_SATURATION_RISK');
-      ruleMatches.push('CPU_HIGH_UTILIZATION');
-    } else if (cpu.avg <= ruleConfig.cpuIdleAveragePercent && cpu.p95 <= ruleConfig.cpuIdleP95Percent) {
-      ruleMatches.push('CPU_IDLE_CANDIDATE');
-    } else if (cpu.avg <= ruleConfig.cpuStrongAveragePercent && cpu.p95 <= ruleConfig.cpuStrongP95Percent) {
-      ruleMatches.push('CPU_STRONG_UNDERUTILIZATION');
-    } else if (cpu.avg <= ruleConfig.cpuModerateAveragePercent && cpu.p95 <= ruleConfig.cpuModerateP95Percent) {
-      ruleMatches.push('CPU_MODERATE_UNDERUTILIZATION');
+  if (isCompute) {
+    if (cpuSelection.ambiguous) blockers.push('AMBIGUOUS_CPU_STREAM');
+    if (memorySelection.ambiguous) blockers.push('AMBIGUOUS_MEMORY_STREAM');
+    const coverageOk = cpu !== undefined && memory !== undefined
+      && hasEnoughCoverage(cpu, referenceDate, ruleConfig)
+      && hasEnoughCoverage(memory, referenceDate, ruleConfig);
+    if (!coverageOk) {
+      blockers.push('INSUFFICIENT_TECHNICAL_COVERAGE');
     }
-  }
 
-  if (memory === undefined) {
-    blockers.push('MISSING_MEMORY_METRIC');
-  } else if (!isPercentMetric(memory)) {
-    blockers.push('MEMORY_METRIC_UNIT_NOT_PERCENTAGE');
-  } else {
-    sourceFacts.push(metricFact('Memoria', memory));
-    if (isHighUtilization(memory, ruleConfig)) {
-      blockers.push('MEMORY_SATURATION_RISK');
-      ruleMatches.push('MEMORY_HIGH_UTILIZATION');
-    } else if (memory.avg <= ruleConfig.memoryLowAveragePercent && memory.p95 <= ruleConfig.memoryLowP95Percent) {
-      ruleMatches.push('MEMORY_LOW_UTILIZATION');
+    if (cpu === undefined) {
+      blockers.push('MISSING_CPU_METRIC');
+    } else if (!isPercentMetric(cpu)) {
+      blockers.push('CPU_METRIC_UNIT_NOT_PERCENTAGE');
+    } else {
+      sourceFacts.push(metricFact('CPU', cpu));
+      if (isHighUtilization(cpu, ruleConfig) || cpu.p99 >= ruleConfig.cpuCriticalP99Percent) {
+        blockers.push('CPU_SATURATION_RISK');
+        ruleMatches.push('CPU_HIGH_UTILIZATION');
+      } else if (cpu.avg <= ruleConfig.cpuIdleAveragePercent && cpu.p95 <= ruleConfig.cpuIdleP95Percent) {
+        ruleMatches.push('CPU_IDLE_CANDIDATE');
+      } else if (cpu.avg <= ruleConfig.cpuStrongAveragePercent && cpu.p95 <= ruleConfig.cpuStrongP95Percent) {
+        ruleMatches.push('CPU_STRONG_UNDERUTILIZATION');
+      } else if (cpu.avg <= ruleConfig.cpuModerateAveragePercent && cpu.p95 <= ruleConfig.cpuModerateP95Percent) {
+        ruleMatches.push('CPU_MODERATE_UNDERUTILIZATION');
+      }
     }
-  }
 
-  for (const [label, code, summary] of [
-    ['Red', 'NETWORK', network],
-    ['Disco', 'DISK', disk],
-    ['IOPS', 'IOPS', iops],
-  ] as const) {
-    if (summary === undefined) {
-      continue;
+    if (memory === undefined) {
+      blockers.push('MISSING_MEMORY_METRIC');
+    } else if (!isPercentMetric(memory)) {
+      blockers.push('MEMORY_METRIC_UNIT_NOT_PERCENTAGE');
+    } else {
+      sourceFacts.push(metricFact('Memoria', memory));
+      if (isHighUtilization(memory, ruleConfig)) {
+        blockers.push('MEMORY_SATURATION_RISK');
+        ruleMatches.push('MEMORY_HIGH_UTILIZATION');
+      } else if (memory.avg <= ruleConfig.memoryLowAveragePercent && memory.p95 <= ruleConfig.memoryLowP95Percent) {
+        ruleMatches.push('MEMORY_LOW_UTILIZATION');
+      }
     }
-    sourceFacts.push(metricFact(label, summary));
-    if (isPercentMetric(summary)) {
-      if (isHighUtilization(summary, ruleConfig)) {
-        blockers.push(`${code}_SATURATION_RISK`);
-        ruleMatches.push(`${code}_HIGH_UTILIZATION`);
-      } else if (
-        summary.avg <= ruleConfig.auxiliaryLowAveragePercent
-        && summary.p95 <= ruleConfig.auxiliaryLowP95Percent
-      ) {
-        ruleMatches.push(`${code}_LOW_UTILIZATION`);
+
+    for (const [label, code, summary] of [
+      ['Red', 'NETWORK', network],
+      ['Disco', 'DISK', disk],
+      ['IOPS', 'IOPS', iops],
+    ] as const) {
+      if (summary === undefined) {
+        continue;
+      }
+      sourceFacts.push(metricFact(label, summary));
+      if (isPercentMetric(summary)) {
+        if (isHighUtilization(summary, ruleConfig)) {
+          blockers.push(`${code}_SATURATION_RISK`);
+          ruleMatches.push(`${code}_HIGH_UTILIZATION`);
+        } else if (
+          summary.avg <= ruleConfig.auxiliaryLowAveragePercent
+          && summary.p95 <= ruleConfig.auxiliaryLowP95Percent
+        ) {
+          ruleMatches.push(`${code}_LOW_UTILIZATION`);
+        }
       }
     }
   }
@@ -182,7 +200,9 @@ function evaluateResource(
           ? 'RIGHTSIZING'
           : 'TECHNICAL_VALIDATION_REQUIRED';
 
-  const evidenceStrength = toEvidenceStrength(summaries, blockers, readiness, referenceDate, ruleConfig);
+  const evidenceStrength = isCompute
+    ? toEvidenceStrength(summaries, blockers, readiness, referenceDate, ruleConfig)
+    : 'LOW';
 
   return {
     externalResourceId,
@@ -219,9 +239,18 @@ function hasEnoughCoverage(
   referenceDate: Date,
   ruleConfig: TechnicalOptimizationRuleConfig,
 ): boolean {
+  const resolutionSeconds = summary.granularitySeconds;
+  // An unknown or invalid source resolution cannot prove 80% coverage.
+  if (resolutionSeconds === undefined || resolutionSeconds < 60 || resolutionSeconds > 86400) return false;
+  const expected = Math.ceil(7 * 86400 / resolutionSeconds);
+  const ageOfFirstMs = referenceDate.getTime() - summary.firstSampledAt.getTime();
+  const ageOfLatestMs = referenceDate.getTime() - summary.latestSampledAt.getTime();
   return (
+    ageOfFirstMs >= 0 && ageOfFirstMs <= 7 * 86400000 &&
+    ageOfLatestMs >= -120000 &&
     summary.sampleCount >= ruleConfig.minimumSamples &&
     summary.coverageDays >= ruleConfig.minimumCoverageDays &&
+    summary.sampleCount >= Math.ceil(expected * 0.8) &&
     sampleAgeDays(summary.latestSampledAt, referenceDate) <= ruleConfig.recentSampleMaxAgeDays
   );
 }
@@ -250,17 +279,36 @@ function findMetric(
   return summaries.find((summary) => normalizeMetricName(summary.metricName).includes(family));
 }
 
+function selectUtilizationMetric(
+  summaries: readonly TechnicalMetricSummaryItem[],
+  family: 'cpu' | 'memory',
+  referenceDate: Date,
+  ruleConfig: TechnicalOptimizationRuleConfig,
+): { readonly summary?: TechnicalMetricSummaryItem; readonly ambiguous: boolean } {
+  const name = family === 'cpu' ? 'cpuutilization' : 'memoryutilization';
+  const candidates = summaries.filter((item) =>
+    normalizeMetricName(item.metricName) === name
+    && item.statistic === 'MEAN'
+    && (item.provider !== 'OCI'
+      || item.providerNamespace === 'oci_computeagent'
+      || (family === 'cpu' && item.providerNamespace === 'oci_vmi_resource_utilization')),
+  );
+  const covered = candidates.filter((item) => hasEnoughCoverage(item, referenceDate, ruleConfig));
+  const pool = covered.length > 0 ? covered : candidates;
+  const agent = pool.filter((item) => item.providerNamespace === 'oci_computeagent');
+  const preferred = agent.length > 0 ? agent : pool;
+  const bestResolution = Math.min(...preferred.map((item) => item.granularitySeconds ?? Number.POSITIVE_INFINITY));
+  const available = preferred.filter((item) => (item.granularitySeconds ?? Number.POSITIVE_INFINITY) === bestResolution);
+  return { ...(available.length === 1 ? { summary: available[0]! } : {}), ambiguous: available.length > 1 };
+}
+
 function normalizeMetricName(metricName: string): string {
   return metricName.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 function isPercentMetric(summary: TechnicalMetricSummaryItem): boolean {
   const unit = summary.metricUnit?.toLowerCase().replace(/\s+/g, '') ?? '';
-  const name = normalizeMetricName(summary.metricName);
-  return unit === '%'
-    || unit.includes('percent')
-    || unit.includes('percentage')
-    || /utilization|util|percent|percentage|pct/.test(name);
+  return unit === '%' || unit === 'percent' || unit === 'percentage';
 }
 
 function isHighUtilization(
@@ -282,7 +330,13 @@ function toMetricRuleSummary(summary: TechnicalMetricSummaryItem): TechnicalMetr
   return {
     metricName: summary.metricName,
     ...(summary.metricUnit !== undefined ? { metricUnit: summary.metricUnit } : {}),
+    ...(summary.providerNamespace !== undefined ? { providerNamespace: summary.providerNamespace } : {}),
+    ...(summary.regionId !== undefined ? { regionId: summary.regionId } : {}),
+    ...(summary.compartmentId !== undefined ? { compartmentId: summary.compartmentId } : {}),
+    ...(summary.dimensionsHash !== undefined ? { dimensionsHash: summary.dimensionsHash } : {}),
+    statistic: summary.statistic,
     sampleCount: summary.sampleCount,
+    ...(summary.granularitySeconds !== undefined ? { granularitySeconds: summary.granularitySeconds } : {}),
     coverageDays: summary.coverageDays,
     avg: round(summary.avg),
     min: round(summary.min),

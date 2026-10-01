@@ -11,6 +11,12 @@ export type RecommendationEvidenceAvailability =
 export interface RecommendationEvidenceMetric {
   readonly metricName: string;
   readonly metricUnit?: string;
+  readonly providerNamespace?: string;
+  readonly regionId?: string;
+  readonly compartmentId?: string;
+  readonly dimensionsHash?: string;
+  readonly statistic?: string;
+  readonly granularitySeconds?: number;
   readonly sampleCount: number;
   readonly coverageDays: number;
   readonly min: number;
@@ -61,8 +67,18 @@ export interface RecommendationEvidenceSnapshot {
   readonly periodEnd: string;
   readonly generatedAt: string;
   readonly availability: RecommendationEvidenceAvailability;
+  /** Fail closed when the bounded raw query cannot include every stream. */
+  readonly summaryTruncated?: boolean;
   readonly resources: readonly RecommendationEvidenceResource[];
   readonly deterministicRules: readonly TechnicalResourceRuleEvaluation[];
+  readonly sourceDiagnostics?: readonly {
+    readonly externalResourceId: string;
+    readonly cloudConnectionId: string;
+    readonly metricName: 'CpuUtilization' | 'MemoryUtilization';
+    readonly catalogStatus: 'NOT_DISCOVERED' | 'DISABLED' | 'ENABLED';
+    readonly lastDiscoveredAt?: string;
+    readonly latestJobStatus?: string;
+  }[];
 }
 
 export function hashRecommendationEvidenceSnapshot(
@@ -99,6 +115,7 @@ export function compactRecommendationEvidenceSnapshot(
   snapshot: RecommendationEvidenceSnapshot,
   candidateResources?: readonly Readonly<{ readonly resourceId?: string; readonly cloudResourceId?: string }>[],
 ): Readonly<Record<string, unknown>> {
+  const { sourceDiagnostics: _sourceDiagnostics, ...promptSnapshot } = snapshot;
   const resources = snapshot.resources
     .filter((resource) => candidateResources === undefined || candidateResources.some((candidate) => (
       candidate.resourceId === resource.externalResourceId
@@ -110,7 +127,7 @@ export function compactRecommendationEvidenceSnapshot(
     }));
 
   return {
-    ...snapshot,
+    ...promptSnapshot,
     resources,
     deterministicRules: resources.map((resource) => resource.ruleEvaluation),
   };

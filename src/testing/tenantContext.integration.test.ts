@@ -98,7 +98,17 @@ describe.skipIf(!integrationEnabled)('runtime tenant context', () => {
       snapshot: ownSnapshot,
     });
 
-    expect(ownSnapshot.metricCount).toBe(14);
+    const expectedMetricCount = await fixturePrisma.costMetric.count({
+      where: {
+        tenantId: tenantA.id,
+        chargePeriodStart: {
+          gte: new Date(ownSnapshot.periodStart),
+          lt: new Date(ownSnapshot.periodEnd),
+        },
+      },
+    });
+    expect(expectedMetricCount).toBeGreaterThan(0);
+    expect(ownSnapshot.metricCount).toBe(expectedMetricCount);
     expect(ownSnapshot.services.map((service) => service.serviceName)).toContain('Amazon Elastic Compute Cloud');
     expect(otherTenantSnapshot.metricCount).toBe(0);
     expect(otherTenantSnapshot.providers).toEqual([]);

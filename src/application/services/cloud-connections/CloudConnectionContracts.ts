@@ -38,6 +38,12 @@ export interface QueueTechnicalBackfillInput {
   readonly cloudConnectionId: string;
   readonly lookbackDays?: number;
   readonly windowHours?: number;
+  readonly metricFilter?: Readonly<{
+    readonly namespace: string;
+    readonly metricName: 'CpuUtilization' | 'MemoryUtilization';
+    readonly resourceId: string;
+    readonly regionId: string;
+  }>;
 }
 
 export interface TechnicalBackfillWindow {

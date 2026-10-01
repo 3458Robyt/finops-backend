@@ -194,6 +194,15 @@ export interface TechnicalCostContextItem {
   readonly conversionStatus?: 'NOT_REQUIRED' | 'CONVERTED' | 'MISSING_RATE' | 'UNSUPPORTED_CURRENCY';
 }
 
+export interface MetricSourceDiagnostic {
+  readonly externalResourceId: string;
+  readonly cloudConnectionId: string;
+  readonly metricName: 'CpuUtilization' | 'MemoryUtilization';
+  readonly catalogStatus: 'NOT_DISCOVERED' | 'DISABLED' | 'ENABLED';
+  readonly lastDiscoveredAt?: Date;
+  readonly latestJobStatus?: string;
+}
+
 export interface TechnicalMetricSummaryFilters {
   readonly startDate?: Date;
   readonly endDate?: Date;
@@ -212,12 +221,15 @@ export interface TechnicalMetricSummaryItem {
   readonly resourceName?: string;
   readonly providerNamespace?: string;
   readonly regionId?: string;
+  readonly compartmentId?: string;
   readonly dimensionsHash?: string;
   readonly resourceType?: string;
   readonly serviceName?: string;
   readonly metricName: string;
   readonly metricUnit?: string;
   readonly statistic: MetricStatistic;
+  /** Source resolution, not the display bucket. Required to assess expected coverage. */
+  readonly granularitySeconds?: number;
   readonly sampleCount: number;
   readonly coverageDays: number;
   readonly min: number;
@@ -311,7 +323,13 @@ export interface IResourceMetricRepository {
     tenantId: string,
     externalResourceIds: readonly string[],
     cloudResourceIds?: readonly string[],
+    period?: Readonly<{ readonly start: Date; readonly end: Date }>,
   ): Promise<readonly TechnicalCostContextItem[]>;
+
+  listMetricSourceDiagnosticsForTenant?(
+    tenantId: string,
+    resources: readonly { readonly externalResourceId: string; readonly cloudConnectionId?: string }[],
+  ): Promise<readonly MetricSourceDiagnostic[]>;
 
   listMetricSummariesForTenant(
     tenantId: string,

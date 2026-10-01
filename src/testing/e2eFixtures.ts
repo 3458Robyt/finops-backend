@@ -29,6 +29,14 @@ export interface E2eFixtureManifest {
     readonly email: string;
     readonly name: string;
   };
+  readonly operatorAdmin: {
+    readonly email: string;
+    readonly name: string;
+  };
+  readonly leadTechnician: {
+    readonly email: string;
+    readonly name: string;
+  };
   readonly clientApprover: {
     readonly email: string;
     readonly name: string;
@@ -234,6 +242,26 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
       status: 'ACTIVE',
     },
   });
+  const operatorAdmin = await prisma.user.create({
+    data: {
+      tenantId: tenantA.id,
+      email: `${fixturePrefix}-operator-${runId}@example.test`,
+      name: `E2E Operator Admin ${runId}`,
+      passwordHash,
+      role: 'OPERATOR_ADMIN',
+      status: 'ACTIVE',
+    },
+  });
+  const leadTechnician = await prisma.user.create({
+    data: {
+      tenantId: tenantA.id,
+      email: `${fixturePrefix}-lead-${runId}@example.test`,
+      name: `E2E Lead Technician ${runId}`,
+      passwordHash,
+      role: 'LEAD_TECHNICIAN',
+      status: 'ACTIVE',
+    },
+  });
   const clientApprover = await prisma.user.create({
     data: {
       tenantId: tenantB.id,
@@ -368,6 +396,8 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
       name: viewer.name,
     },
     technician: { email: technician.email, name: technician.name },
+    operatorAdmin: { email: operatorAdmin.email, name: operatorAdmin.name },
+    leadTechnician: { email: leadTechnician.email, name: leadTechnician.name },
     clientApprover: { email: clientApprover.email, name: clientApprover.name },
     clientViewer: { email: clientViewer.email, name: clientViewer.name },
     tenants: [
@@ -428,8 +458,8 @@ async function seedTenantData(
 ): Promise<{ readonly recommendationId: string; readonly resourceId: string }> {
   const now = new Date();
   const { periodStart } = input;
-  const latestTechnicalSampleAt = new Date(periodStart);
-  latestTechnicalSampleAt.setUTCMinutes((14 * 48 - 1) * 30);
+  const technicalPeriodStart = new Date(now.getTime() - 14 * 86400000);
+  const latestTechnicalSampleAt = new Date(now.getTime() - 1800000);
   const connection = await prisma.cloudConnection.create({
     data: {
       tenantId: input.tenantId,
@@ -491,7 +521,7 @@ async function seedTenantData(
     },
   });
   await prisma.resourceMetricSample.createMany({
-    data: buildMetricSamples(input, connection.id, resource.id, periodStart),
+    data: buildMetricSamples(input, connection.id, resource.id, technicalPeriodStart),
   });
 
   const technicalMetricSummaries: TechnicalMetricSummaryItem[] = [
@@ -507,9 +537,11 @@ async function seedTenantData(
     serviceName: input.serviceName,
     metricName: metric.metricName,
     metricUnit: metric.metricUnit,
+    ...(input.provider === 'OCI' ? { providerNamespace: 'oci_computeagent' } : {}),
     statistic: 'MEAN',
-    sampleCount: 14 * 48,
-    coverageDays: 14,
+    granularitySeconds: 1800,
+    sampleCount: 7 * 48,
+    coverageDays: 7,
     min: metric.base + metric.offset,
     max: metric.base + metric.offset + 11,
     avg: metric.base + metric.offset + 5.5,
@@ -519,7 +551,7 @@ async function seedTenantData(
     latest: metric.base + metric.offset + 11,
     highUtilizationSampleCount: 0,
     highUtilizationRatio: 0,
-    firstSampledAt: periodStart,
+    firstSampledAt: new Date(now.getTime() - 7 * 86400000),
     latestSampledAt: latestTechnicalSampleAt,
   }));
   const [technicalRuleEvaluation] = evaluateTechnicalOptimizationRules({
@@ -556,8 +588,8 @@ async function seedTenantData(
         deterministicRules: technicalRuleJson,
         costEvidenceRefs: [`cost_metrics:e2e-fixture:${input.runId}:${input.resourceId}`],
         technicalEvidenceRefs,
-        technicalSampleCount: 14 * 48,
-        technicalCoverageDays: 14,
+        technicalSampleCount: 7 * 48,
+        technicalCoverageDays: 7,
         latestTechnicalSampleAt: latestTechnicalSampleAt.toISOString(),
         recommendationEvidenceSnapshot: {
           version: '1',

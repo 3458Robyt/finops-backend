@@ -10,6 +10,7 @@ import {
   assertLocalIntegrationDatabase,
   runIntegrationCommand,
 } from './integrationRuntime.js';
+import { latestMigrationId } from './latestMigrationId.js';
 
 // Supabase API smoke includes two authenticated suites and can take several
 // minutes over a remote PostgreSQL connection. Keep it bounded without
@@ -69,7 +70,7 @@ try {
       APP_PROCESS_ROLE: 'api',
       DB_RUNTIME_ENFORCE: 'true',
       DB_RUNTIME_ROLE: 'finops_runtime',
-      DB_EXPECTED_MIGRATION: '202609150001_readiness_summary_indexes',
+      DB_EXPECTED_MIGRATION: latestMigrationId(),
       PROCESS_HEARTBEAT_ENABLED: 'false',
       INGESTION_WORKER_ENABLED: 'false',
       INGESTION_SCHEDULER_ENABLED: 'false',

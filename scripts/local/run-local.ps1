@@ -15,7 +15,12 @@ $encodedPassword = [Uri]::EscapeDataString($password)
 $env:DATABASE_URL = "postgresql://postgres:$encodedPassword@127.0.0.1:5433/finops_local"
 $env:DB_RUNTIME_ENFORCE = 'true'
 $env:DB_RUNTIME_ROLE = 'finops_runtime'
-$env:DB_EXPECTED_MIGRATION = '202609150001_readiness_summary_indexes'
+$latestMigration = Get-ChildItem -LiteralPath (Join-Path $repoRoot 'prisma\migrations') -Directory |
+  Where-Object { $_.Name -match '^\d{12}_[a-z0-9_]+$' } |
+  Sort-Object Name |
+  Select-Object -Last 1
+if ($null -eq $latestMigration) { throw 'No se encontró una migración Prisma para comprobar readiness.' }
+$env:DB_EXPECTED_MIGRATION = $latestMigration.Name
 $env:CORS_ORIGIN = if ($env:CORS_ORIGIN) { $env:CORS_ORIGIN } else { 'http://localhost:5173,http://127.0.0.1:5173' }
 $env:ENABLE_OCI_PROVIDER = 'true'
 $env:INGESTION_SCHEDULER_PROVIDER = 'oci'

@@ -1,7 +1,7 @@
 import type { IAiGateway } from '../../../domain/interfaces/IAiGateway.js';
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
-import type { AiAuditReport, AiCandidateAuditArtifact } from '../../../domain/models/RecommendationExecutionPlan.js';
+import type { AiAuditReport } from '../../../domain/models/RecommendationExecutionPlan.js';
 import {
   evaluateExecutionPlan,
   evaluateRecommendationDrafts,
@@ -21,6 +21,8 @@ import {
 import { FinOpsArtifactAiRunner, type AiArtifactRequestPolicy } from './finOpsArtifactAiRunner.js';
 import { isAuditApproved, MIN_APPROVED_AUDIT_SCORE } from './auditApprovalPolicy.js';
 import { selectAuditedRecommendationDrafts } from './recommendationAuditSelection.js';
+import { generateAuditedReviewDrafts, type AuditedDraftsResult } from './finOpsReviewDraftGenerator.js';
+import { buildDeterministicRejectionReport, readRepairInstructions } from './recommendationAuditReports.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -36,16 +38,7 @@ import { selectAuditedRecommendationDrafts } from './recommendationAuditSelectio
  * @module application/services/ai/finOpsArtifactGenerator
  */
 
-/** Resultado de generar y auditar borradores de recomendación. */
-export interface AuditedDraftsResult {
-  readonly drafts: readonly (AiRecommendationDraft & { tenantId: string })[];
-  readonly approvedDrafts: readonly (AiRecommendationDraft & { tenantId: string })[];
-  readonly rejectedDrafts: readonly (AiRecommendationDraft & { tenantId: string })[];
-  readonly candidateAudits: readonly AiCandidateAuditArtifact[];
-  readonly auditReport?: AiAuditReport;
-  /** Texto crudo de la primera respuesta del modelo (para la traza de la operación). */
-  readonly firstRawResponse: string;
-}
+export type { AuditedDraftsResult } from './finOpsReviewDraftGenerator.js';
 
 /** Resultado de generar y auditar un plan de ejecución. */
 export interface AuditedPlanResult {
@@ -227,6 +220,33 @@ export class FinOpsArtifactGenerator {
     };
   }
 
+  /** Generates non-publishable technical review drafts for validation-only resources. */
+  public async generateAuditedReviewDrafts(
+    tenantId: string,
+    userId: string | undefined,
+    snapshot: CostAnalyticsSnapshot,
+    systemPrompt: string,
+    readinessReport: RecommendationReadinessReport,
+    technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot,
+    deterministicAnalysis?: DeterministicTrendAnalysis,
+    deadlineAt?: number,
+    onAuditStart?: () => Promise<void> | void,
+  ): Promise<AuditedDraftsResult> {
+    return generateAuditedReviewDrafts({
+      runner: this.aiRunner,
+      tenantId,
+      ...(userId === undefined ? {} : { userId }),
+      snapshot,
+      systemPrompt,
+      readinessReport,
+      ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),
+      ...(deterministicAnalysis === undefined ? {} : { deterministicAnalysis }),
+      ...(deadlineAt === undefined ? {} : { deadlineAt }),
+      ...(onAuditStart === undefined ? {} : { onAuditStart }),
+      combineQuality: (audit, quality) => this.combineWithDeterministicQuality(audit, quality),
+    });
+  }
+
   /**
    * Genera el contenido de un plan de ejecución y lo audita, con una única ronda
    * de revisión si el auditor pide `NEEDS_REVISION`.
@@ -340,26 +360,4 @@ export class FinOpsArtifactGenerator {
       ? { ...combined, verdict: 'APPROVED' }
       : combined;
   }
-}
-
-function readRepairInstructions(audit: AiAuditReport): readonly string[] {
-  return (audit.repairInstructions?.length ?? 0) > 0
-    ? audit.repairInstructions!
-    : audit.requiredChanges;
-}
-
-function buildDeterministicRejectionReport(quality: QualityReport): AiAuditReport {
-  const failedChecks = quality.checks.filter((check) => !check.passed);
-  const issues = failedChecks.map((check) => check.detail);
-  return {
-    verdict: 'REJECTED',
-    score: quality.score,
-    checks: quality.checks.map((check) => ({
-      name: `deterministic:${check.name}`,
-      passed: check.passed,
-      notes: check.detail,
-    })),
-    blockingIssues: issues,
-    requiredChanges: issues,
-  };
 }

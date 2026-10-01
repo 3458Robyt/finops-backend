@@ -30,7 +30,8 @@ export interface TechnicalRecommendationEvidenceProvider {
 
 const maxResources = 12;
 const maxMetricsPerResource = 8;
-const technicalEvidenceLookbackDays = 30;
+const technicalEvidenceLookbackDays = 7;
+const maxEvidenceSummaries = 1000;
 
 export class TechnicalRecommendationEvidenceService implements TechnicalRecommendationEvidenceProvider {
   public constructor(private readonly repository: IResourceMetricRepository) {}
@@ -57,35 +58,47 @@ export class TechnicalRecommendationEvidenceService implements TechnicalRecommen
     readonly externalResourceId?: string;
     readonly cloudResourceId?: string;
   }, preferBoundedRollups: boolean): Promise<RecommendationEvidenceSnapshot> {
-    const startDate = parseDate(input.snapshot.periodStart);
-    const endDate = parseDate(input.snapshot.periodEnd);
     const now = new Date();
-    const evidenceStartDate = startDate === undefined
-      ? undefined
-      : new Date(startDate.getTime() - technicalEvidenceLookbackDays * 24 * 60 * 60 * 1000);
-    const evidenceEndDate = endDate !== undefined && endDate <= now ? endDate : now;
-    const referenceDate = evidenceEndDate;
+    // Current optimization decisions require current measurements, even when
+    // the latest billing snapshot closes several days earlier.
+    const evidenceStartDate = new Date(now.getTime() - technicalEvidenceLookbackDays * 24 * 60 * 60 * 1000);
+    const evidenceEndDate = now;
+    const referenceDate = now;
     const candidateResourceIds: string[] = input.externalResourceId === undefined
       ? [...new Set(input.snapshot.topResources.map((resource) => resource.resourceId).filter((id) => id.trim() !== ''))]
       : [input.externalResourceId];
     const summaryReader = preferBoundedRollups && this.repository.listMetricSummariesForTenantFast !== undefined
       ? this.repository.listMetricSummariesForTenantFast.bind(this.repository)
       : this.repository.listMetricSummariesForTenant.bind(this.repository);
-    const summaries = await summaryReader(input.tenantId, {
+    const fetchedSummaries = await summaryReader(input.tenantId, {
       ...(evidenceStartDate !== undefined ? { startDate: evidenceStartDate } : {}),
       ...(evidenceEndDate !== undefined ? { endDate: evidenceEndDate } : {}),
       ...(candidateResourceIds.length > 0 ? { externalResourceIds: candidateResourceIds } : {}),
       ...(input.cloudResourceId !== undefined ? { cloudResourceIds: [input.cloudResourceId] } : {}),
-      limit: 1000,
+      limit: maxEvidenceSummaries + 1,
     });
+    const summaryTruncated = fetchedSummaries.length > maxEvidenceSummaries;
+    const summaries = fetchedSummaries.slice(0, maxEvidenceSummaries);
     const deterministicRules = evaluateTechnicalOptimizationRules({
       summaries,
       referenceDate,
     });
     const resourceIds = [...new Set(summaries.map((summary) => summary.externalResourceId))];
     const cloudResourceIds = [...new Set(summaries.map((summary) => summary.cloudResourceId).filter((value): value is string => value !== undefined))];
-    const costContext = await this.repository.listCostContextForResources(input.tenantId, resourceIds, cloudResourceIds);
-    const resources = buildResources(input.snapshot, summaries, costContext, deterministicRules);
+    const costStart = new Date(input.snapshot.periodStart);
+    const costEnd = new Date(input.snapshot.periodEnd);
+    const costContext = await this.repository.listCostContextForResources(input.tenantId, resourceIds, cloudResourceIds,
+      Number.isFinite(costStart.getTime()) && Number.isFinite(costEnd.getTime())
+        ? { start: costStart, end: costEnd }
+        : undefined);
+    const sourceDiagnostics = await this.repository.listMetricSourceDiagnosticsForTenant?.(
+      input.tenantId,
+      input.snapshot.topResources.map((resource) => ({
+        externalResourceId: resource.resourceId,
+        ...(resource.cloudConnectionId === undefined ? {} : { cloudConnectionId: resource.cloudConnectionId }),
+      })),
+    );
+    const resources = buildResources(summaries, costContext, deterministicRules);
     const availability = resources.length === 0
       ? 'NO_TECHNICAL_EVIDENCE'
       : 'COST_USAGE_AND_TECHNICAL_AVAILABLE';
@@ -96,8 +109,17 @@ export class TechnicalRecommendationEvidenceService implements TechnicalRecommen
       periodEnd: input.snapshot.periodEnd,
       generatedAt: new Date().toISOString(),
       availability,
+      ...(summaryTruncated ? { summaryTruncated: true } : {}),
       resources,
       deterministicRules,
+      ...(sourceDiagnostics === undefined ? {} : { sourceDiagnostics: sourceDiagnostics.map((item) => ({
+        externalResourceId: item.externalResourceId,
+        cloudConnectionId: item.cloudConnectionId,
+        metricName: item.metricName,
+        catalogStatus: item.catalogStatus,
+        ...(item.lastDiscoveredAt === undefined ? {} : { lastDiscoveredAt: item.lastDiscoveredAt.toISOString() }),
+        ...(item.latestJobStatus === undefined ? {} : { latestJobStatus: item.latestJobStatus }),
+      })) }),
     } as const;
 
     return { ...base, hash: hashRecommendationEvidenceSnapshot(base) };
@@ -114,7 +136,6 @@ export class TechnicalRecommendationEvidenceService implements TechnicalRecommen
 }
 
 function buildResources(
-  snapshot: CostAnalyticsSnapshot,
   summaries: readonly TechnicalMetricSummaryItem[],
   costContext: readonly TechnicalCostContextItem[],
   deterministicRules: readonly ReturnType<typeof evaluateTechnicalOptimizationRules>[number][],
@@ -148,18 +169,12 @@ function buildResources(
           ? 'COST_AND_TECHNICAL'
           : 'TECHNICAL_ONLY',
         ...(cost !== undefined ? { cost: toCost(cost) } : {}),
-        usage: (snapshot.topUsage ?? [])
-          .filter((usage) => usage.provider === first.provider && usage.serviceName === first.serviceName)
-          .map((usage) => ({
-            serviceName: usage.serviceName,
-            consumedQuantity: round(usage.consumedQuantity),
-            consumedUnit: usage.consumedUnit,
-            totalCost: round(usage.totalCost),
-            currency: usage.currency,
-          })),
+        // topUsage is aggregated by service, not measured for this resource.
+        usage: [],
         metrics: resourceSummaries
           .map(toMetric)
-          .sort((left, right) => right.sampleCount - left.sampleCount)
+          .sort((left, right) => metricPriority(left.metricName) - metricPriority(right.metricName)
+            || right.sampleCount - left.sampleCount)
           .slice(0, maxMetricsPerResource),
         ruleEvaluation,
       } as RecommendationEvidenceResource;
@@ -182,6 +197,12 @@ function toMetric(summary: TechnicalMetricSummaryItem): RecommendationEvidenceMe
   return {
     metricName: summary.metricName,
     ...(summary.metricUnit !== undefined ? { metricUnit: summary.metricUnit } : {}),
+    ...(summary.providerNamespace !== undefined ? { providerNamespace: summary.providerNamespace } : {}),
+    ...(summary.regionId !== undefined ? { regionId: summary.regionId } : {}),
+    ...(summary.compartmentId !== undefined ? { compartmentId: summary.compartmentId } : {}),
+    ...(summary.dimensionsHash !== undefined ? { dimensionsHash: summary.dimensionsHash } : {}),
+    statistic: summary.statistic,
+    ...(summary.granularitySeconds !== undefined ? { granularitySeconds: summary.granularitySeconds } : {}),
     sampleCount: summary.sampleCount,
     coverageDays: summary.coverageDays,
     min: round(summary.min),
@@ -199,9 +220,10 @@ function toMetric(summary: TechnicalMetricSummaryItem): RecommendationEvidenceMe
   };
 }
 
-function parseDate(value: string): Date | undefined {
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+function metricPriority(name: string): number {
+  if (name.toLowerCase().replace(/[^a-z]/g, '') === 'cpuutilization') return 0;
+  if (name.toLowerCase().replace(/[^a-z]/g, '') === 'memoryutilization') return 1;
+  return 2;
 }
 
 function groupBy<T>(items: readonly T[], keyFn: (item: T) => string): Map<string, T[]> {

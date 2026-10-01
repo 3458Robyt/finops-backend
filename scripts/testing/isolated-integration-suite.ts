@@ -7,6 +7,7 @@ import {
   createIntegrationPool,
   runIntegrationCommand,
 } from './integrationRuntime.js';
+import { latestMigrationId } from './latestMigrationId.js';
 
 // The complete remote PostgreSQL suite includes fixture-heavy performance
 // checks. Keep it bounded, but allow normal Supabase latency without forcing
@@ -56,7 +57,7 @@ const isolatedEnv = {
   RUN_DB_INTEGRATION_TESTS: 'true',
   DB_RUNTIME_ENFORCE: 'true',
   DB_RUNTIME_ROLE: 'finops_runtime',
-  DB_EXPECTED_MIGRATION: '202609150001_readiness_summary_indexes',
+  DB_EXPECTED_MIGRATION: latestMigrationId(),
 };
 
 let schemaCreated = false;

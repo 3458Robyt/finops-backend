@@ -23,7 +23,7 @@ export type RecommendationAnalysisRunStage =
 export type RecommendationAnalysisTrigger = 'MANUAL' | 'SCHEDULED' | 'POST_INGESTION' | 'RETRY';
 export type RecommendationAnalysisScope = 'TENANT' | 'RESOURCE';
 export type RecommendationAnalysisRecommendationDisposition = 'CREATED' | 'REUSED';
-export type RecommendationAnalysisCandidateFinalDisposition = 'PUBLISHED' | 'REJECTED' | 'SKIPPED';
+export type RecommendationAnalysisCandidateFinalDisposition = 'PUBLISHED' | 'REVIEW_DRAFT' | 'REJECTED' | 'SKIPPED';
 
 /** Registro auditable por candidato/draft de una corrida de recomendaciones. */
 export interface RecommendationAnalysisCandidateAudit {
@@ -51,7 +51,7 @@ export interface RecommendationAnalysisCandidateResult {
   readonly candidateId: string;
   readonly resourceId?: string;
   readonly readiness: string;
-  readonly outcome: 'ELIGIBLE' | 'SKIPPED' | 'PUBLISHED' | 'REJECTED';
+  readonly outcome: 'ELIGIBLE' | 'SKIPPED' | 'PUBLISHED' | 'REVIEW_DRAFT' | 'REJECTED';
   readonly reasons: readonly string[];
   readonly recommendationId?: string;
 }

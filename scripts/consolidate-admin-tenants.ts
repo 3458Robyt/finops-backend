@@ -121,7 +121,7 @@ function parseArgs(rawArgs: readonly string[]): Args {
 
   const canonicalEmail = values.get('canonical-email')?.trim().toLowerCase();
   if (canonicalEmail === undefined || canonicalEmail === '') {
-    throw new Error('Usage: npm run users:consolidate-admin-tenants -- --canonical-email=admin@example.com --duplicate-emails=a@x.com,b@x.com [--apply]');
+    throw new Error('Usage: npm run users:consolidate-admin-tenants -- --canonical-email=test-user-0002@example.test --duplicate-emails=test-user-0001@example.test,test-user-0005@example.test [--apply]');
   }
 
   const duplicateEmails = values.get('duplicate-emails')

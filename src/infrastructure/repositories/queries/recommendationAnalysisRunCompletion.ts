@@ -91,6 +91,7 @@ export async function completeRecommendationAnalysisRun(
         promptTokenEstimate: input.promptTokenEstimate,
         responseTokenEstimate: input.responseTokenEstimate,
         latencyMs: input.latencyMs,
+        ...(input.stageTimings === undefined ? {} : { stageTimings: input.stageTimings as Prisma.InputJsonValue }),
         ...(input.errorCode !== undefined ? { errorCode: input.errorCode } : { errorCode: null }),
         ...(input.errorMessage !== undefined ? { errorMessage: input.errorMessage } : { errorMessage: null }),
         completedAt: new Date(),

@@ -39,7 +39,7 @@ async function main(): Promise<void> {
   const passwordHash = await passwordHasher.hash(defaultPassword);
 
   await prisma.user.upsert({
-    where: { email: '[correo omitido]' },
+    where: { email: 'test-user-0004@example.test' },
     update: {
       passwordHash,
       role: UserRole.MASTER_ADMIN,
@@ -48,15 +48,15 @@ async function main(): Promise<void> {
     },
     create: {
       tenantId: tenant.id,
-      email: '[correo omitido]',
-      name: 'FinOps Operator',
+      email: 'test-user-0004@example.test',
+      name: 'Demo Administrator',
       passwordHash,
       role: UserRole.MASTER_ADMIN,
     },
   });
 
   await prisma.user.upsert({
-    where: { email: 'ejecutivo@cliente.com' },
+    where: { email: 'test-user-0011@example.test' },
     update: {
       passwordHash,
       role: UserRole.CLIENT_VIEWER,
@@ -65,7 +65,7 @@ async function main(): Promise<void> {
     },
     create: {
       tenantId: tenant.id,
-      email: 'ejecutivo@cliente.com',
+      email: 'test-user-0011@example.test',
       name: 'Ejecutivo Cliente',
       passwordHash,
       role: UserRole.CLIENT_VIEWER,

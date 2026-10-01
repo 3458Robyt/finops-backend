@@ -41,7 +41,7 @@ function buildAuth(role: AuthContext['role']): AuthContext {
   return {
     userId: 'user-1',
     tenantId: 'tenant-1',
-    email: 'user@example.com',
+    email: 'test-user-0027@example.test',
     role,
     jwtId: 'session-1',
   };

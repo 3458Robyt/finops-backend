@@ -56,6 +56,7 @@ export function toRecommendationAnalysisRunDomain(row: RunRow | RunDetailRow): R
     promptTokenEstimate: row.promptTokenEstimate,
     responseTokenEstimate: row.responseTokenEstimate,
     ...(row.latencyMs !== null ? { latencyMs: row.latencyMs } : {}),
+    ...(row.stageTimings !== null ? { stageTimings: readStageTimings(row.stageTimings) } : {}),
     ...(row.workerId !== null ? { workerId: row.workerId } : {}),
     ...(row.cancelRequestedAt !== null ? { cancelRequestedAt: row.cancelRequestedAt } : {}),
     ...(row.errorCode !== null ? { errorCode: row.errorCode } : {}),
@@ -72,6 +73,13 @@ export function toRecommendationAnalysisRunDomain(row: RunRow | RunDetailRow): R
     })),
     ...('candidateAudits' in row ? { candidateAudits: row.candidateAudits.map(toCandidateAuditDomain) } : {}),
   };
+}
+
+function readStageTimings(value: unknown): Readonly<Record<string, number>> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([, duration]) => (
+    typeof duration === 'number' && Number.isFinite(duration) && duration >= 0
+  ))) as Readonly<Record<string, number>>;
 }
 
 function toCandidateAuditDomain(row: RunDetailRow['candidateAudits'][number]): RecommendationAnalysisCandidateAudit {

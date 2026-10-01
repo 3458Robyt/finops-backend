@@ -36,7 +36,7 @@ class FakeMasterAdminRepository implements IMasterAdminRepository {
     role: 'MASTER_ADMIN',
   };
   public tenants: MasterAdminTenant[] = [buildTenant('tenant-1', 'Cliente Uno')];
-  public users: MasterAdminUser[] = [buildUser('tech-1', 'Tecnico Uno', 'tech@example.com', 'FINOPS_TECHNICIAN')];
+  public users: MasterAdminUser[] = [buildUser('tech-1', 'Tecnico Uno', 'test-user-0022@example.test', 'FINOPS_TECHNICIAN')];
   public assignments: MasterAdminAssignment[] = [];
   public audits: CreateMasterAdminAuditEventInput[] = [];
   public createdUserInput: CreateMasterAdminUserInput | null = null;
@@ -139,12 +139,12 @@ describe('MasterAdminService', () => {
     const user = await service.createStaffUser({
       actorUserId: 'master-1',
       name: 'Nueva Tecnica',
-      email: 'NUEVA@example.com',
+      email: 'test-user-0013@example.test',
       role: 'FINOPS_TECHNICIAN',
       temporaryPassword: 'Temporal123',
     });
 
-    expect(user.email).toBe('nueva@example.com');
+    expect(user.email).toBe('test-user-0013@example.test');
     expect(repository.createdUserInput).toMatchObject({
       tenantId: 'operator-tenant',
       operatorOrganizationId: 'operator-org',

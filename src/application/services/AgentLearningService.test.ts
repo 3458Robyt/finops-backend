@@ -435,7 +435,7 @@ describe('AgentLearningService', () => {
     const actor: AuthContext = {
       userId: 'admin-1',
       tenantId: 'tenant-1',
-      email: 'admin@example.com',
+      email: 'test-user-0002@example.test',
       role: 'ADMIN',
       jwtId: 'jwt-1',
     };
@@ -456,7 +456,7 @@ describe('AgentLearningService', () => {
     await expect(service.deactivateMemory({
       userId: 'client-1',
       tenantId: 'tenant-1',
-      email: 'client@example.com',
+      email: 'test-user-0007@example.test',
       role: 'CLIENT_APPROVER',
       jwtId: 'jwt-2',
     }, 'memory-1')).rejects.toThrow('Solo un administrador del agente puede revertir memorias');

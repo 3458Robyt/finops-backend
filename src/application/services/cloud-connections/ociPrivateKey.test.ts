@@ -8,7 +8,7 @@ const ociConnection: CloudConnectionSummary = {
   id: 'connection-oci',
   tenantId: 'tenant-1',
   providerCode: 'oci',
-  rootExternalId: 'ocid1.tenancy.example',
+  rootExternalId: 'ocid1.tenancy.oc1..exampleid0021',
   name: 'OCI test',
   status: 'ACTIVE',
   defaultRegion: 'us-ashburn-1',
@@ -26,7 +26,7 @@ describe('OCI private key input policy', () => {
     const pem = createPrivateKeyPem();
     const result = normalizeOperationalCredential(ociConnection, {
       tenancyId: ociConnection.rootExternalId,
-      userId: 'ocid1.user.example',
+      userId: 'ocid1.user.oc1..exampleid0029',
       privateKey: pem.replace(/\r?\n/g, '\\n'),
     });
 
@@ -78,7 +78,7 @@ describe('OCI private key input policy', () => {
     const pem = createPrivateKeyPem();
     expect(() => normalizeOperationalCredential(ociConnection, {
       tenancyId: ociConnection.rootExternalId,
-      userId: 'ocid1.user.example',
+      userId: 'ocid1.user.oc1..exampleid0029',
       fingerprint: '00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff',
       privateKey: pem,
     })).toThrow(/no coincide/i);

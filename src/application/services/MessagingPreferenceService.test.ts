@@ -64,7 +64,7 @@ function actor(): AuthContext {
   return {
     userId: 'user-1',
     tenantId: 'tenant-1',
-    email: 'user@example.test',
+    email: 'test-user-0028@example.test',
     role: 'FINOPS_TECHNICIAN',
     jwtId: 'jwt-1',
   };

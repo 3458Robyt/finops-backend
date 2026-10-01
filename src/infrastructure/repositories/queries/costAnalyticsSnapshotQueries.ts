@@ -28,6 +28,7 @@ export interface SnapshotSummary {
   readonly metricCount: number;
   readonly totalCost: number;
   readonly byCurrency: readonly { readonly currency: string; readonly metricCount: number; readonly totalCost: number }[];
+  readonly byCurrencyByDay: readonly { readonly currency: string; readonly metricCount: number; readonly totalCost: number; readonly conversion_date: Date }[];
 }
 
 /** Conjunto de agregaciones que componen el snapshot mensual de un tenant. */
@@ -40,6 +41,8 @@ export interface SnapshotAggregations {
   readonly environments: readonly EnvironmentRow[];
   readonly topResources: readonly ResourceRow[];
   readonly topUsage: readonly TopUsageRow[];
+  readonly observedThrough: Date | null;
+  readonly coveredDays: number;
 }
 
 /**
@@ -63,17 +66,18 @@ export async function runSnapshotAggregations(
   periodStart: Date,
   periodEnd: Date,
 ): Promise<SnapshotAggregations> {
-  const [summary, currencies, providers, accounts, services, environments, topResources, topUsage] = await Promise.all([
-    prisma.$queryRaw<readonly { readonly currency: string; readonly metric_count: number; readonly total_cost: number }[]>`
+  const [summary, currencies, providers, accounts, services, environments, topResources, topUsage, coverage] = await Promise.all([
+    prisma.$queryRaw<readonly { readonly currency: string; readonly metric_count: number; readonly total_cost: number; readonly conversion_date: Date }[]>`
       select billing_currency as currency,
+             (date_trunc('day', charge_period_start at time zone 'UTC') at time zone 'UTC') as conversion_date,
              count(*)::int as metric_count,
              coalesce(sum(billed_cost), 0)::float8 as total_cost
       from cost_metrics
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
-      group by billing_currency
-      order by billing_currency asc
+      group by billing_currency, date_trunc('day', charge_period_start at time zone 'UTC')
+      order by conversion_date asc, billing_currency asc
     `,
     // Divisa predominante del periodo: la divisa de facturación más frecuente
     // (mayor número de métricas). Se usa como divisa de presentación del
@@ -92,7 +96,8 @@ export async function runSnapshotAggregations(
     // de billed_cost (en la divisa predominante del tenant). Ordenado de mayor
     // a menor gasto.
     prisma.$queryRaw<ProviderRow[]>`
-      select provider::text as provider,
+      select (date_trunc('day', charge_period_start at time zone 'UTC') at time zone 'UTC') as conversion_date,
+             provider::text as provider,
              count(*)::int as metric_count,
              coalesce(sum(billed_cost), 0)::float8 as total_cost,
              billing_currency as currency
@@ -100,13 +105,14 @@ export async function runSnapshotAggregations(
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
-      group by provider, billing_currency
-      order by total_cost desc
+      group by date_trunc('day', charge_period_start at time zone 'UTC'), provider, billing_currency
+      order by conversion_date asc, total_cost desc
     `,
     // Coste por cuenta cloud: join con cloud_accounts para resolver el nombre
     // legible de la cuenta. Agrupa por cuenta y proveedor, ordenado por gasto.
     prisma.$queryRaw<AccountRow[]>`
-      select cm.cloud_account_id,
+      select (date_trunc('day', cm.charge_period_start at time zone 'UTC') at time zone 'UTC') as conversion_date,
+             cm.cloud_account_id,
              cm.provider::text as provider,
              max(ca.name) as name,
              count(*)::int as metric_count,
@@ -117,12 +123,13 @@ export async function runSnapshotAggregations(
       where cm.tenant_id = ${tenantId}
         and cm.charge_period_start >= ${periodStart}
         and cm.charge_period_start < ${periodEnd}
-      group by cm.cloud_account_id, cm.provider, cm.billing_currency
-      order by total_cost desc
+      group by date_trunc('day', cm.charge_period_start at time zone 'UTC'), cm.cloud_account_id, cm.provider, cm.billing_currency
+      order by conversion_date asc, total_cost desc
     `,
     // Top 10 de servicios por gasto, agrupando por servicio y proveedor.
     prisma.$queryRaw<ServiceRow[]>`
-      select service_name,
+      select (date_trunc('day', charge_period_start at time zone 'UTC') at time zone 'UTC') as conversion_date,
+             service_name,
              provider::text as provider,
              count(*)::int as metric_count,
              coalesce(sum(billed_cost), 0)::float8 as total_cost,
@@ -131,14 +138,14 @@ export async function runSnapshotAggregations(
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
-      group by service_name, provider, billing_currency
-      order by total_cost desc
-      limit 10
+      group by date_trunc('day', charge_period_start at time zone 'UTC'), service_name, provider, billing_currency
+      order by conversion_date asc, total_cost desc
     `,
     // Coste por entorno: extrae la etiqueta 'environment' del JSON de tags;
     // las métricas sin esa etiqueta se agrupan como 'unknown'.
     prisma.$queryRaw<EnvironmentRow[]>`
-      select coalesce(tags->>'environment', 'unknown') as environment,
+      select (date_trunc('day', charge_period_start at time zone 'UTC') at time zone 'UTC') as conversion_date,
+             coalesce(tags->>'environment', 'unknown') as environment,
              count(*)::int as metric_count,
              coalesce(sum(billed_cost), 0)::float8 as total_cost,
              billing_currency as currency
@@ -146,33 +153,41 @@ export async function runSnapshotAggregations(
       where tenant_id = ${tenantId}
         and charge_period_start >= ${periodStart}
         and charge_period_start < ${periodEnd}
-      group by coalesce(tags->>'environment', 'unknown'), billing_currency
-      order by total_cost desc
+      group by date_trunc('day', charge_period_start at time zone 'UTC'), coalesce(tags->>'environment', 'unknown'), billing_currency
+      order by conversion_date asc, total_cost desc
     `,
     // Top 10 de recursos por gasto. Excluye resource_id vacío (métricas no
     // atribuibles a un recurso concreto). Usa max() para servicio/proveedor
     // representativos del recurso agrupado.
     prisma.$queryRaw<ResourceRow[]>`
-      select resource_id,
-             max(service_name) as service_name,
-             max(provider::text) as provider,
+      select (date_trunc('day', cm.charge_period_start at time zone 'UTC') at time zone 'UTC') as conversion_date,
+             cm.resource_id,
+             cm.cloud_account_id,
+             max(cm.cloud_connection_id) as cloud_connection_id,
+             max(cm.cloud_resource_id) as cloud_resource_id,
+             coalesce(max(nullif(cm.resource_name, '')), max(cr.name)) as resource_name,
+             max(cm.service_name) as service_name,
+             max(cm.provider::text) as provider,
              count(*)::int as metric_count,
-             coalesce(sum(billed_cost), 0)::float8 as total_cost,
-             billing_currency as currency
-      from cost_metrics
-      where tenant_id = ${tenantId}
-        and charge_period_start >= ${periodStart}
-        and charge_period_start < ${periodEnd}
-        and resource_id <> ''
-      group by resource_id, billing_currency
-      order by total_cost desc
-      limit 10
+             coalesce(sum(cm.billed_cost), 0)::float8 as total_cost,
+             cm.billing_currency as currency
+      from cost_metrics cm
+      left join cloud_resources cr
+        on cr.id = cm.cloud_resource_id
+       and cr.tenant_id = cm.tenant_id
+      where cm.tenant_id = ${tenantId}
+        and cm.charge_period_start >= ${periodStart}
+        and cm.charge_period_start < ${periodEnd}
+        and cm.resource_id <> ''
+      group by date_trunc('day', cm.charge_period_start at time zone 'UTC'), cm.resource_id, cm.cloud_account_id, cm.billing_currency
+      order by conversion_date asc, total_cost desc
     `,
     // Top 10 de uso por servicio y unidad consumida. Solo considera métricas
     // con cantidad y unidad de consumo válidas (no nulas ni vacías), para
     // poder calcular después el coste unitario.
     prisma.$queryRaw<TopUsageRow[]>`
-      select service_name,
+      select (date_trunc('day', charge_period_start at time zone 'UTC') at time zone 'UTC') as conversion_date,
+             service_name,
              provider::text as provider,
              consumed_unit,
            billing_currency as currency,
@@ -186,17 +201,35 @@ export async function runSnapshotAggregations(
         and consumed_quantity is not null
         and consumed_unit is not null
         and consumed_unit <> ''
-     group by service_name, provider, consumed_unit, billing_currency
-      order by total_cost desc, consumed_quantity desc
-      limit 10
+     group by date_trunc('day', charge_period_start at time zone 'UTC'), service_name, provider, consumed_unit, billing_currency
+      order by conversion_date asc, total_cost desc, consumed_quantity desc
+    `,
+    prisma.$queryRaw<readonly { readonly observed_through: Date | null; readonly covered_days: number }[]>`
+      select max(charge_period_end) as observed_through,
+             count(distinct (charge_period_start at time zone 'UTC')::date)::int as covered_days
+      from cost_metrics
+      where tenant_id = ${tenantId}
+        and charge_period_start >= ${periodStart}
+        and charge_period_start < ${periodEnd}
     `,
   ]);
+
+  const coverageRow = coverage[0];
+  const byCurrency = new Map<string, { metricCount: number; totalCost: number }>();
+  for (const row of summary) {
+    const current = byCurrency.get(row.currency) ?? { metricCount: 0, totalCost: 0 };
+    byCurrency.set(row.currency, {
+      metricCount: current.metricCount + row.metric_count,
+      totalCost: current.totalCost + row.total_cost,
+    });
+  }
 
   return {
     summary: {
       metricCount: summary.reduce((total, row) => total + row.metric_count, 0),
       totalCost: summary.reduce((total, row) => total + row.total_cost, 0),
-      byCurrency: summary.map((row) => ({ currency: row.currency, metricCount: row.metric_count, totalCost: row.total_cost })),
+      byCurrency: [...byCurrency.entries()].map(([currency, value]) => ({ currency, ...value })),
+      byCurrencyByDay: summary.map((row) => ({ currency: row.currency, metricCount: row.metric_count, totalCost: row.total_cost, conversion_date: row.conversion_date })),
     },
     currencies,
     providers,
@@ -205,5 +238,20 @@ export async function runSnapshotAggregations(
     environments,
     topResources,
     topUsage,
+    observedThrough: coverageRow?.observed_through ?? null,
+    coveredDays: coverageRow?.covered_days ?? 0,
   };
+}
+
+/** Lee el límite superior de costos con la consulta acotada por tenant. */
+export async function queryLatestObservedThrough(
+  prisma: PrismaClient,
+  tenantId: string,
+): Promise<Date | undefined> {
+  const rows = await prisma.$queryRaw<readonly [{ readonly observed_through: Date | null }]>`
+    select max(charge_period_end) as observed_through
+    from cost_metrics
+    where tenant_id = ${tenantId}
+  `;
+  return rows[0]?.observed_through ?? undefined;
 }

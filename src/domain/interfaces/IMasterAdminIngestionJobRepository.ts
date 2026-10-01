@@ -47,10 +47,17 @@ export interface ReconciledIngestionJobs {
   readonly cancelled: number;
 }
 
+export interface ReprocessedIngestionJob {
+  readonly job: MasterAdminIngestionJob;
+  readonly originalJobId: string;
+  readonly reusedActiveJob: boolean;
+}
+
 export interface IMasterAdminIngestionJobRepository {
   list(input: MasterAdminIngestionJobFilters): Promise<MasterAdminIngestionJobPage>;
   deletePendingJobs(): Promise<DeletedPendingIngestionJobs>;
   reconcileStaleJobs?: () => Promise<ReconciledIngestionJobs>;
   requestCancellation(jobId: string, userId: string): Promise<MasterAdminIngestionJob | null>;
   archive(jobId: string, userId: string): Promise<MasterAdminIngestionJob | null>;
+  reprocess(jobId: string, userId: string, reason: string): Promise<ReprocessedIngestionJob | null>;
 }

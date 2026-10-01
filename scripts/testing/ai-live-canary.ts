@@ -1,10 +1,11 @@
 import 'dotenv/config';
 
 import { execFile, spawn } from 'node:child_process';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 import { Pool } from 'pg';
+import { assertLocalIntegrationDatabase } from './integrationRuntime.js';
 
 const execFileAsync = promisify(execFile);
 const liveEnabled = process.env['AI_LIVE_TESTS'] === 'true';
@@ -22,6 +23,7 @@ const sourceUrl = process.env['DATABASE_URL'];
 if (sourceUrl === undefined || sourceUrl.trim() === '') {
   throw new Error('DATABASE_URL is required for the isolated AI canary.');
 }
+assertLocalIntegrationDatabase(sourceUrl);
 
 const schema = `finops_e2e_ai_${Date.now().toString(36)}`;
 const runId = process.env['E2E_RUN_ID'] ?? `ai-canary-${Date.now()}`;
@@ -84,6 +86,16 @@ try {
     if (audit.stderr.trim() !== '') {
       console.error(audit.stderr.trim());
     }
+    const deepAudit = await runCommand(nodeCommand, [tsxCli, 'scripts/testing/ai-live-deep-audit.ts'], {
+      AI_LIVE_TESTS: 'true',
+      AI_EXPECTED_MODEL: process.env['AI_EXPECTED_MODEL'] ?? 'gpt-5.6-luna',
+      E2E_API_BASE_URL: apiBaseUrl,
+      E2E_FIXTURE_FILE: fixtureFile,
+    });
+    console.log(deepAudit.stdout.trim());
+    if (deepAudit.stderr.trim() !== '') {
+      console.error(deepAudit.stderr.trim());
+    }
   }
   if (canaryScope === 'learning' || canaryScope === 'all') {
     const learningAudit = await runCommand(nodeCommand, [tsxCli, 'scripts/testing/learning-live-audit.ts'], {
@@ -100,7 +112,19 @@ try {
   }
 } catch (error: unknown) {
   canaryError = error;
-  console.error(`AI live canary backend output:\n${serverOutput.join('')}`);
+  const details = failureDetails(error);
+  const outputFile = resolve(`.test-artifacts/ai-audit/ai-live-canary-failure-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+  await mkdir(resolve('.test-artifacts/ai-audit'), { recursive: true });
+  await writeFile(outputFile, `${JSON.stringify({
+    success: false,
+    generatedAt: new Date().toISOString(),
+    runId,
+    canaryScope,
+    error: details,
+    backendOutput: redactText(serverOutput.join('')),
+  }, null, 2)}\n`, 'utf8');
+  console.error(`AI live canary failure artifact: ${outputFile}`);
+  console.error(`AI live canary backend output:\n${redactText(serverOutput.join(''))}`);
   throw error;
 } finally {
   await stopProcess(server);
@@ -174,9 +198,20 @@ async function stopProcess(child: ReturnType<typeof spawn> | undefined): Promise
   if (child === undefined || child.exitCode !== null) return;
   if (process.platform === 'win32') {
     await execFileAsync('taskkill', ['/PID', String(child.pid), '/T', '/F']).catch(() => undefined);
-    return;
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+  } else {
+    child.kill('SIGTERM');
   }
-  child.kill('SIGTERM');
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise<void>((resolvePromise) => {
+    const finish = (): void => {
+      clearTimeout(timeout);
+      child.off('exit', finish);
+      resolvePromise();
+    };
+    const timeout = setTimeout(finish, 5_000);
+    child.once('exit', finish);
+  });
 }
 
 function appendOutput(buffer: string[], chunk: Buffer): void {
@@ -185,5 +220,32 @@ function appendOutput(buffer: string[], chunk: Buffer): void {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300);
+  return failureDetails(error).message;
+}
+
+function failureDetails(error: unknown): {
+  readonly code: string | number | undefined;
+  readonly message: string;
+  readonly childStdout: string;
+  readonly childStderr: string;
+} {
+  const record = typeof error === 'object' && error !== null
+    ? error as Record<string, unknown>
+    : undefined;
+  return {
+    code: typeof record?.['code'] === 'string' || typeof record?.['code'] === 'number'
+      ? record['code']
+      : undefined,
+    message: redactText(error instanceof Error ? error.message : String(record?.['message'] ?? error)),
+    childStdout: redactText(typeof record?.['stdout'] === 'string' ? record['stdout'] : ''),
+    childStderr: redactText(typeof record?.['stderr'] === 'string' ? record['stderr'] : ''),
+  };
+}
+
+function redactText(value: string): string {
+  const redacted = value
+    .replace(/(?:sk|nvapi)-[A-Za-z0-9._-]+/gi, '[REDACTED_AI_KEY]')
+    .replace(/(postgres(?:ql)?:\/\/)[^@\s]+@/gi, '$1[REDACTED]@');
+  if (redacted.length <= 4_000) return redacted;
+  return `${redacted.slice(0, 1_000)}\n...[truncated]...\n${redacted.slice(-3_000)}`;
 }

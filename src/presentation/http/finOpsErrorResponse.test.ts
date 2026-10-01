@@ -12,6 +12,16 @@ describe('finOpsErrorResponse', () => {
     });
     expect(resolveFinOpsError(new FinOpsBaseError('conflict', 'CONFLICT'), 'fallback').status).toBe(409);
     expect(resolveFinOpsError(new FinOpsBaseError('provider unavailable', 'AI_RESPONSE_ERROR'), 'fallback').status).toBe(502);
+    expect(resolveFinOpsError(new FinOpsBaseError('retry later', 'PROVIDER_UNAVAILABLE'), 'fallback')).toEqual({
+      status: 503,
+      error: 'retry later',
+      code: 'PROVIDER_UNAVAILABLE',
+    });
+    expect(resolveFinOpsError(new FinOpsBaseError('provider timeout', 'PROVIDER_TIMEOUT'), 'fallback')).toEqual({
+      status: 504,
+      error: 'provider timeout',
+      code: 'PROVIDER_TIMEOUT',
+    });
     expect(resolveFinOpsError(new FinOpsBaseError('apiKey=super-secret', 'PROVIDER_ERROR'), 'fallback').error)
       .toBe('apiKey=[REDACTED]');
   });

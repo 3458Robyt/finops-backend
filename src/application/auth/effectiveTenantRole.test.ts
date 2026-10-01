@@ -5,7 +5,7 @@ import type { AccessibleTenant, AuthUser } from '../../domain/interfaces/IUserRe
 const user: AuthUser = {
   id: 'user-1',
   tenantId: 'home',
-  email: 'technician@example.com',
+  email: 'test-user-0024@example.test',
   name: 'Technician',
   passwordHash: 'hash',
   role: 'FINOPS_TECHNICIAN',

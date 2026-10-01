@@ -15,7 +15,7 @@ function context(role: AuthContext['role'], identityRole?: AuthContext['identity
   return {
     userId: 'user-1',
     tenantId: 'tenant-1',
-    email: 'admin@example.com',
+    email: 'test-user-0002@example.test',
     role,
     ...(identityRole === undefined ? {} : { identityRole }),
     jwtId: 'jwt-1',

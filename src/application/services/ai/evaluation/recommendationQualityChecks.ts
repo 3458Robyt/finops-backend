@@ -3,8 +3,17 @@ import type { FinOpsRecommendation } from '../../../../domain/models/FinOpsRecom
 import type { AiRecommendationDraft } from '../finOpsAiTypes.js';
 import { isRecord } from '../jsonReadHelpers.js';
 import type { RecommendationEvidenceSnapshot } from '../RecommendationEvidenceSnapshot.js';
+import {
+  getRecommendationPeriodDays,
+  type RecommendationOpportunityCandidate,
+  type RecommendationReadinessReport,
+} from '../RecommendationReadinessGate.js';
 import { collectText, looksLikeSpanish } from '../aiLanguageGuard.js';
 import { buildNoSensitiveOutputCheck } from './qualitySensitiveOutput.js';
+import {
+  hasStrongTechnicalEvidence,
+  matchesCanonicalTechnicalEvidence,
+} from './recommendationTechnicalQuality.js';
 import { toReport, type QualityCheck, type QualityReport } from './qualityRubricTypes.js';
 
 const validEvidenceLevels = new Set(['COST_ONLY', 'COST_AND_USAGE', 'COST_USAGE_AND_TECHNICAL']);
@@ -16,6 +25,7 @@ export function evaluateRecommendationDrafts(
   expectedCount?: number,
   scopedExternalResourceId?: string,
   technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot,
+  readinessReport?: RecommendationReadinessReport,
 ): QualityReport {
   const allowedAccounts = new Set(snapshot.accounts.map((account) => account.cloudAccountId));
   const checks: QualityCheck[] = [];
@@ -28,6 +38,23 @@ export function evaluateRecommendationDrafts(
       ? `Se obtuvieron ${drafts.length} recomendaciones.`
       : `Se esperaban ${expectedCount} y se obtuvieron ${drafts.length}.`,
   });
+
+  if (readinessReport !== undefined) {
+    checks.push(buildAllPass(
+      'candidateEvidenceConsistency',
+      drafts,
+      (draft) => matchesReadinessCandidate(draft, readinessReport.candidates, snapshot),
+      'Cada recomendación coincide con el candidato y los importes autorizados.',
+      'Hay recomendaciones que alteran el candidato, la evidencia financiera o el costo mensual normalizado autorizado.',
+    ));
+    checks.push(buildAllPass(
+      'reviewScopeConsistency',
+      drafts,
+      (draft) => hasConsistentReviewScope(draft, readinessReport.candidates),
+      'El alcance financiero y técnico coincide con el candidato autorizado.',
+      'El alcance de revisión no coincide con la evidencia disponible del candidato.',
+    ));
+  }
 
   checks.push(buildAllPass(
     'accountScoping',
@@ -112,9 +139,9 @@ export function evaluateRecommendationDrafts(
   checks.push(buildAllPass(
     'savingsRealism',
     drafts,
-    (draft) => isSavingsRealistic(draft.estimatedMonthlySavings, snapshot.totalCost),
-    'El ahorro estimado está dentro de un rango realista.',
-    'Hay ahorros negativos o mayores que el costo total del periodo.',
+    (draft) => isSavingsRealistic(draft.estimatedMonthlySavings, snapshot),
+    'El ahorro mensual estimado está dentro del costo mensual normalizado.',
+    'Hay ahorros negativos o mayores que el costo mensual normalizado.',
   ));
 
   checks.push(buildAllPass(
@@ -128,10 +155,20 @@ export function evaluateRecommendationDrafts(
   checks.push(buildAllPass(
     'candidateSavingsCap',
     drafts,
-    (draft) => isWithinCandidateSavingsCap(draft),
+    (draft) => isWithinCandidateSavingsCap(draft, readinessReport),
     'Los ahorros no superan el límite determinista del candidato.',
     'Hay un ahorro estimado superior al máximo calculado para su candidato.',
   ));
+
+  if (readinessReport !== undefined) {
+    checks.push(buildAllPass(
+      'savingsNarrativeCap',
+      drafts,
+      (draft) => hasNoUnpricedSavingsClaim(draft, readinessReport),
+      'El texto no cuantifica ahorros por encima de la evidencia calculada.',
+      'El texto afirma un importe de ahorro sin un cálculo determinístico autorizado.',
+    ));
+  }
 
   checks.push(buildAllPass(
     'spanishText',
@@ -200,6 +237,81 @@ function readExternalResourceId(draft: AiRecommendationDraft): string | undefine
   return typeof value === 'string' && value.trim() !== '' ? value : undefined;
 }
 
+function matchesReadinessCandidate(
+  draft: AiRecommendationDraft,
+  candidates: readonly RecommendationOpportunityCandidate[],
+  snapshot: CostAnalyticsSnapshot,
+): boolean {
+  if (!isRecord(draft.evidence)) return false;
+  const candidateId = readStringEvidence(draft.evidence, 'candidateId');
+  const candidate = candidateId === undefined
+    ? undefined
+    : candidates.find((item) => item.id === candidateId);
+  if (candidate === undefined || draft.cloudAccountId !== candidate.cloudAccountId) return false;
+
+  const externalResourceId = readExternalResourceId(draft);
+  if (candidate.resourceId === undefined
+    ? externalResourceId !== undefined
+    : externalResourceId !== candidate.resourceId) return false;
+
+  const cloudResourceId = readStringEvidence(draft.evidence, 'cloudResourceId');
+  if (candidate.cloudResourceId === undefined
+    ? cloudResourceId !== undefined
+    : cloudResourceId !== candidate.cloudResourceId) return false;
+
+  if (readEvidenceLevel(draft) !== candidate.evidenceLevelAllowed) return false;
+  if (readRequiresTechnicalValidation(draft) !== candidate.requiresTechnicalValidation) return false;
+
+  const observedCost = readOptionalNumericEvidence(draft.evidence, 'observedCost');
+  if (candidate.observedCost !== undefined
+    && (observedCost === undefined || !sameAmount(observedCost, candidate.observedCost))) return false;
+
+  const maxSavings = readOptionalNumericEvidence(draft.evidence, 'maxEstimatedMonthlySavings');
+  if (maxSavings === undefined || !sameAmount(maxSavings, candidate.maxEstimatedMonthlySavings)) return false;
+
+  const normalizedMonthlyCost = readOptionalNumericEvidence(draft.evidence, 'normalizedMonthlyCost');
+  if (candidate.observedCost !== undefined && normalizedMonthlyCost === undefined) return false;
+  if (candidate.observedCost !== undefined && normalizedMonthlyCost !== undefined) {
+    const expected = normalizeMonthlyAmount(candidate.observedCost, getRecommendationPeriodDays(snapshot));
+    if (!sameAmount(normalizedMonthlyCost, expected)) return false;
+  }
+
+  return true;
+}
+
+function hasConsistentReviewScope(
+  draft: AiRecommendationDraft,
+  candidates: readonly RecommendationOpportunityCandidate[],
+): boolean {
+  if (!isRecord(draft.evidence)) return false;
+  const candidateId = readStringEvidence(draft.evidence, 'candidateId');
+  const candidate = candidateId === undefined
+    ? undefined
+    : candidates.find((item) => item.id === candidateId);
+  if (candidate === undefined) return false;
+
+  if (candidate.reviewScope === 'FINANCIAL') {
+    return readFinancialReviewOnly(draft) && draft.estimatedMonthlySavings === undefined;
+  }
+
+  return candidate.resourceId !== undefined
+    || (draft.evidence['reviewScope'] !== 'TECHNICAL' && draft.evidence['financialReviewOnly'] !== true);
+}
+
+function readOptionalNumericEvidence(evidence: Record<string, unknown>, field: string): number | undefined {
+  const value = evidence[field];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function sameAmount(left: number, right: number): boolean {
+  return Math.abs(left - right) <= Math.max(0.01, Math.abs(right) * 0.001);
+}
+
+function normalizeMonthlyAmount(amount: number, periodDays: number): number {
+  const normalized = amount * 30 / periodDays;
+  return Math.round(normalized * 100) / 100;
+}
+
 function readBlockers(draft: AiRecommendationDraft): readonly string[] {
   if (!isRecord(draft.evidence)) {
     return [];
@@ -213,146 +325,48 @@ function readBlockers(draft: AiRecommendationDraft): readonly string[] {
   return raw.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
 }
 
-function hasStrongTechnicalEvidence(
+function isWithinCandidateSavingsCap(
   draft: AiRecommendationDraft,
-  snapshot: CostAnalyticsSnapshot,
-  technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot,
+  readinessReport: RecommendationReadinessReport | undefined,
 ): boolean {
-  if (!isRecord(draft.evidence)) {
-    return false;
+  const evidence = isRecord(draft.evidence) ? draft.evidence : undefined;
+  const potential = readOptionalNumericEvidence(evidence ?? {}, 'potentialMonthlySavings');
+  const amounts = [draft.estimatedMonthlySavings, potential].filter((amount): amount is number => amount !== undefined);
+  if (amounts.length === 0) return true;
+
+  if (readinessReport === undefined) {
+    const configuredCap = readOptionalNumericEvidence(evidence ?? {}, 'maxEstimatedMonthlySavings');
+    return configuredCap === undefined
+      || amounts.every((amount) => amount >= 0 && amount <= configuredCap + 0.01);
   }
 
-  const evidenceRefs = readEvidenceRefs(draft.evidence);
-  const sampleCount = readNumericEvidence(draft.evidence, 'technicalSampleCount');
-  const coverageDays = readNumericEvidence(draft.evidence, 'technicalCoverageDays');
-  const latestSampleAt = readStringEvidence(draft.evidence, 'latestTechnicalSampleAt');
-  const hasResourceLink = readStringEvidence(draft.evidence, 'cloudResourceId') !== undefined &&
-    readStringEvidence(draft.evidence, 'externalResourceId') !== undefined;
-
-  const legacyStrong = evidenceRefs.length > 0 &&
-    hasResourceLink &&
-    (sampleCount >= 48 || coverageDays >= 7) &&
-    isRecentTechnicalSample(latestSampleAt, snapshot);
-
-  return technicalEvidenceSnapshot === undefined
-    ? legacyStrong
-    : legacyStrong && matchesCanonicalTechnicalEvidence(draft, technicalEvidenceSnapshot);
+  if (evidence === undefined) return false;
+  const candidateId = readStringEvidence(evidence, 'candidateId');
+  const candidate = readinessReport.candidates.find((item) => item.id === candidateId);
+  return candidate !== undefined && amounts.every((amount) => (
+    amount >= 0 && amount <= candidate.maxEstimatedMonthlySavings + 0.01
+  ));
 }
 
-function matchesCanonicalTechnicalEvidence(
+function hasNoUnpricedSavingsClaim(
   draft: AiRecommendationDraft,
-  snapshot: RecommendationEvidenceSnapshot,
+  readinessReport: RecommendationReadinessReport,
 ): boolean {
-  if (!isRecord(draft.evidence)) {
-    return false;
-  }
+  if (!isRecord(draft.evidence)) return false;
+  const candidateId = readStringEvidence(draft.evidence, 'candidateId');
+  const candidate = readinessReport.candidates.find((item) => item.id === candidateId);
+  if (candidate === undefined || candidate.maxEstimatedMonthlySavings > 0) return true;
 
-  const externalResourceId = readStringEvidence(draft.evidence, 'externalResourceId');
-  const cloudResourceId = readStringEvidence(draft.evidence, 'cloudResourceId');
-  if (externalResourceId === undefined || cloudResourceId === undefined) {
-    return false;
-  }
-
-  const matchingResources = snapshot.resources.filter((item) => item.externalResourceId === externalResourceId);
-  const resource = matchingResources.length === 1
-    ? matchingResources[0]
-    : matchingResources.find((item) => item.cloudResourceId === cloudResourceId);
-  if (
-    resource === undefined
-    || resource.linkQuality !== 'COST_AND_TECHNICAL'
-    || resource.cloudResourceId === undefined
-    || resource.cloudResourceId !== cloudResourceId
-  ) {
-    return false;
-  }
-
-  const refs = readEvidenceRefs(draft.evidence);
-  const metricsByRef = new Map(resource.metrics.map((metric) => [metric.evidenceRef, metric]));
-  const allowedRefs = new Set(metricsByRef.keys());
-  const refsMatch = refs.length > 0 && refs.every((ref) => allowedRefs.has(ref));
-  const ruleAllowsAction = resource.ruleEvaluation.readiness === 'GENERATABLE' &&
-    resource.ruleEvaluation.blockers.length === 0;
-  const referencedMetrics = refs.flatMap((ref) => {
-    const metric = metricsByRef.get(ref);
-    return metric === undefined ? [] : [metric];
-  });
-  const sampleCount = readNumericEvidence(draft.evidence, 'technicalSampleCount');
-  const coverageDays = readNumericEvidence(draft.evidence, 'technicalCoverageDays');
-  const latestSampleAt = readStringEvidence(draft.evidence, 'latestTechnicalSampleAt');
-  const numbersMatch = referencedMetrics.length > 0 &&
-    referencedMetrics.some((metric) => (
-      metric.sampleCount === sampleCount &&
-      metric.coverageDays === coverageDays &&
-      metric.latestSampledAt === latestSampleAt
-    ));
-  const savingsWithinEvidence = draft.estimatedMonthlySavings === undefined || resource.cost === undefined ||
-    draft.estimatedMonthlySavings <= resource.cost.totalCost * resource.ruleEvaluation.maxTechnicalSavingsRate + 0.01;
-  const allowedPercentages = referencedMetrics.flatMap((metric) => [
-    metric.min, metric.max, metric.avg, metric.p50, metric.p95, metric.p99, metric.latest, metric.highUtilizationRatio * 100,
-  ]);
-  const narrativePercentagesMatch = extractPercentages(`${draft.title} ${draft.description}`)
-    .every((claim) => allowedPercentages.some((value) => Math.abs(value - claim) <= 0.01));
-
-  return refsMatch && ruleAllowsAction && numbersMatch && savingsWithinEvidence && narrativePercentagesMatch;
-}
-
-function extractPercentages(value: string): readonly number[] {
-  return [...value.matchAll(/(\d+(?:[.,]\d+)?)\s*%/g)]
-    .map((match) => Number.parseFloat(match[1]!.replace(',', '.')))
-    .filter((number) => Number.isFinite(number));
-}
-
-function readEvidenceRefs(evidence: Record<string, unknown>): readonly string[] {
-  const raw = evidence['technicalEvidenceRefs'];
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-
-  return raw.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
-}
-
-function readNumericEvidence(evidence: Record<string, unknown>, field: string): number {
-  const value = evidence[field];
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
-}
-
-function isWithinCandidateSavingsCap(draft: AiRecommendationDraft): boolean {
-  if (draft.estimatedMonthlySavings === undefined || !isRecord(draft.evidence)) {
-    return true;
-  }
-
-  const configuredCap = draft.evidence['maxEstimatedMonthlySavings'];
-  if (typeof configuredCap !== 'number' || !Number.isFinite(configuredCap)) {
-    // Golden fixtures and legacy callers may not contain the normalized cap.
-    return true;
-  }
-
-  return draft.estimatedMonthlySavings >= 0 && draft.estimatedMonthlySavings <= configuredCap + 0.01;
+  const currency = String.raw`(?:COP|USD|EUR|GBP|MXN|BRL|\$)`;
+  const money = String.raw`(?:${currency}\s*[\d][\d.,]*|[\d][\d.,]*\s*${currency})`;
+  const savingAction = String.raw`(?:ahorr\w*|reduc\w*|disminu\w*|baj\w*)`;
+  const claim = new RegExp(String.raw`(?:${savingAction}.{0,60}${money}|${money}.{0,60}${savingAction})`, 'i');
+  return !claim.test(`${draft.title} ${draft.description}`);
 }
 
 function readStringEvidence(evidence: Record<string, unknown>, field: string): string | undefined {
   const value = evidence[field];
   return typeof value === 'string' && value.trim() !== '' ? value : undefined;
-}
-
-function isRecentTechnicalSample(latestSampleAt: string | undefined, snapshot: CostAnalyticsSnapshot): boolean {
-  if (latestSampleAt === undefined) {
-    return false;
-  }
-
-  const latest = new Date(latestSampleAt);
-  const periodEnd = new Date(snapshot.periodEnd);
-  if (Number.isNaN(latest.getTime()) || Number.isNaN(periodEnd.getTime())) {
-    return false;
-  }
-
-  // Monthly billing snapshots can end in the future while the technical
-  // samples stop at "now". Use the earlier instant so fresh samples are not
-  // rejected solely because the billing period is still open.
-  const reference = new Date(Math.min(periodEnd.getTime(), Date.now()));
-
-  const ageDays = (reference.getTime() - latest.getTime()) / (24 * 60 * 60 * 1000);
-  return ageDays >= 0 && ageDays <= 7;
 }
 
 function isTechnicalAction(draft: AiRecommendationDraft): boolean {
@@ -374,12 +388,11 @@ function isTechnicalAction(draft: AiRecommendationDraft): boolean {
 }
 
 /** Determina si un ahorro estimado es realista respecto al costo total. */
-function isSavingsRealistic(savings: number | undefined, totalCost: number): boolean {
+function isSavingsRealistic(savings: number | undefined, snapshot: CostAnalyticsSnapshot): boolean {
   if (savings === undefined) {
     return true;
   }
 
-  return savings >= 0 && savings <= Math.max(totalCost, 0);
+  const monthlyCost = snapshot.totalCost * 30 / getRecommendationPeriodDays(snapshot);
+  return savings >= 0 && savings <= Math.max(monthlyCost, 0);
 }
-
-/** Indica si el plan contiene alguna frase de ejecución automática prohibida. */

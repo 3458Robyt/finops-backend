@@ -83,6 +83,33 @@ describe('focusCostMetricProjection', () => {
     expect(rows[0]).toMatchObject({ resourceLinkReason: 'INVENTORY_RESOURCE_NOT_FOUND' });
     expect(rows[0]?.cloudResourceId).toBeUndefined();
   });
+
+  it('classifies OCI aggregate identifiers as service-level costs', () => {
+    const rows = buildFocusCostMetricRows({
+      job: buildJob(),
+      rows: [buildFocusRow({
+        resourceId: 'oci_objectstorage',
+        rawRow: { ResourceId: 'oci_objectstorage' },
+      })],
+      accountIdsByExternalId: new Map([['subaccount-1', 'cloud-account-1']]),
+      resourceIdsByExternalId: new Map(),
+    });
+
+    expect(rows[0]).toMatchObject({ resourceLinkReason: 'SERVICE_LEVEL_COST' });
+    expect(rows[0]?.cloudResourceId).toBeUndefined();
+  });
+
+  it('classifies OCI billing-only backup identifiers as unsupported', () => {
+    const rows = buildFocusCostMetricRows({
+      job: buildJob(),
+      rows: [buildFocusRow({ resourceId: 'dbbackupiad/bT9ej7zNsA6m3HEWavcJ' })],
+      accountIdsByExternalId: new Map([['subaccount-1', 'cloud-account-1']]),
+      resourceIdsByExternalId: new Map(),
+    });
+
+    expect(rows[0]).toMatchObject({ resourceLinkReason: 'UNSUPPORTED_RESOURCE_ID' });
+    expect(rows[0]?.cloudResourceId).toBeUndefined();
+  });
 });
 
 function buildJob(): CloudIngestionJobContext {

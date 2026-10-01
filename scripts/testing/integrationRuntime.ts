@@ -11,6 +11,9 @@ export interface IntegrationCommandResult {
 }
 
 export function createIntegrationPool(connectionString: string, schema?: string): Pool {
+  // Guard every destructive runner at the shared pool boundary, including
+  // cleanup paths that may execute before a script's own preflight.
+  assertLocalIntegrationDatabase(connectionString);
   return new Pool({
     connectionString,
     options: [
@@ -57,6 +60,17 @@ export async function runIntegrationCommand(
 export function assertIntegrationSchema(schemaName: string): void {
   if (!/^finops_e2e_[a-z0-9_]+$/.test(schemaName)) {
     throw new Error('Refusing to operate outside the finops_e2e_* schema allowlist.');
+  }
+}
+
+export function assertLocalIntegrationDatabase(connectionString: string): void {
+  const host = new URL(connectionString).hostname.toLowerCase();
+  const localHosts = new Set(['127.0.0.1', 'localhost', '::1']);
+  if (!localHosts.has(host) && process.env['ALLOW_REMOTE_INTEGRATION_TESTS'] !== 'true') {
+    throw new Error(
+      `Refusing destructive integration tests against remote database host ${host}. `
+      + 'Set ALLOW_REMOTE_INTEGRATION_TESTS=true only for an explicitly isolated target.',
+    );
   }
 }
 

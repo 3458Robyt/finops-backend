@@ -30,4 +30,44 @@ describe('ContextEngineService', () => {
     expect(context.contextText).toContain('Prioridades de recomendacion: se aplican solo cuando el usuario solicita una recomendacion.');
     expect(context.systemInstructions).toContain('sin convertirla en una recomendacion');
   });
+
+  test('keeps execution plans scoped to active profile and tenant rules, without unrelated summaries or learning', async () => {
+    const findContextSummaries = vi.fn().mockResolvedValue([{
+      id: 'summary-1',
+      artifactType: 'COST_ANALYSIS',
+      scopeKey: 'tenant',
+      summary: 'Conflicting finance fact USD 169',
+    }]);
+    const repository = {
+      findActiveProfile: vi.fn().mockResolvedValue(defaultProfile()),
+      listTenantRules: vi.fn().mockResolvedValue([]),
+      findContextSummaries,
+    } as unknown as IAgentContextRepository;
+    const getRecommendationLearningContext = vi.fn().mockResolvedValue({
+      memoryIds: ['memory-1'],
+      caseIds: ['case-1'],
+      summary: 'Conflicting learned amount USD 157.50',
+    });
+    const service = new ContextEngineService(
+      repository,
+      new AgentInstructionService(repository),
+      { getRecommendationLearningContext } as never,
+    );
+
+    const context = await service.buildContext({
+      tenantId: 'tenant-1',
+      operation: 'EXECUTION_PLAN',
+      queryText: 'Plan recommendation rec-1',
+      snapshot: {} as never,
+      recommendation: {} as never,
+      model: 'test-model',
+    });
+
+    expect(findContextSummaries).not.toHaveBeenCalled();
+    expect(getRecommendationLearningContext).not.toHaveBeenCalled();
+    expect(context.contextText).not.toContain('USD 169');
+    expect(context.contextText).not.toContain('USD 157.50');
+    expect(context.artifactIds).toEqual([]);
+    expect(context.memoryIds).toEqual([]);
+  });
 });

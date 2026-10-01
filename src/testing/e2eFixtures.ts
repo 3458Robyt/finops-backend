@@ -9,6 +9,9 @@ import {
   Prisma,
   PrismaClient,
 } from '../generated/prisma/client.js';
+import type { TechnicalMetricSummaryItem } from '../domain/interfaces/IResourceMetricRepository.js';
+import { evaluateTechnicalOptimizationRules } from '../application/services/ai/TechnicalOptimizationRuleEngine.js';
+import { buildPostgresSessionOptions } from '../infrastructure/database/tenantContext.js';
 
 export interface E2eFixtureManifest {
   readonly runId: string;
@@ -19,6 +22,26 @@ export interface E2eFixtureManifest {
     readonly name: string;
   };
   readonly viewer: {
+    readonly email: string;
+    readonly name: string;
+  };
+  readonly technician: {
+    readonly email: string;
+    readonly name: string;
+  };
+  readonly operatorAdmin: {
+    readonly email: string;
+    readonly name: string;
+  };
+  readonly leadTechnician: {
+    readonly email: string;
+    readonly name: string;
+  };
+  readonly clientApprover: {
+    readonly email: string;
+    readonly name: string;
+  };
+  readonly clientViewer: {
     readonly email: string;
     readonly name: string;
   };
@@ -61,7 +84,7 @@ export function createTestingPrismaClient(): PrismaClient {
     adapter: new PrismaPg(
       {
         connectionString,
-        ...(schema === undefined ? {} : { options: `-c search_path=${schema}` }),
+        options: buildPostgresSessionOptions(schema),
       },
       schema === undefined ? undefined : { schema },
     ),
@@ -209,6 +232,56 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
       status: 'ACTIVE',
     },
   });
+  const technician = await prisma.user.create({
+    data: {
+      tenantId: tenantA.id,
+      email: `${fixturePrefix}-technician-${runId}@example.test`,
+      name: `E2E Technician ${runId}`,
+      passwordHash,
+      role: 'FINOPS_TECHNICIAN',
+      status: 'ACTIVE',
+    },
+  });
+  const operatorAdmin = await prisma.user.create({
+    data: {
+      tenantId: tenantA.id,
+      email: `${fixturePrefix}-operator-${runId}@example.test`,
+      name: `E2E Operator Admin ${runId}`,
+      passwordHash,
+      role: 'OPERATOR_ADMIN',
+      status: 'ACTIVE',
+    },
+  });
+  const leadTechnician = await prisma.user.create({
+    data: {
+      tenantId: tenantA.id,
+      email: `${fixturePrefix}-lead-${runId}@example.test`,
+      name: `E2E Lead Technician ${runId}`,
+      passwordHash,
+      role: 'LEAD_TECHNICIAN',
+      status: 'ACTIVE',
+    },
+  });
+  const clientApprover = await prisma.user.create({
+    data: {
+      tenantId: tenantB.id,
+      email: `${fixturePrefix}-approver-${runId}@example.test`,
+      name: `E2E Client Approver ${runId}`,
+      passwordHash,
+      role: 'CLIENT_APPROVER',
+      status: 'ACTIVE',
+    },
+  });
+  const clientViewer = await prisma.user.create({
+    data: {
+      tenantId: tenantB.id,
+      email: `${fixturePrefix}-client-viewer-${runId}@example.test`,
+      name: `E2E Client Viewer ${runId}`,
+      passwordHash,
+      role: 'CLIENT_VIEWER',
+      status: 'ACTIVE',
+    },
+  });
 
   const tenantAFixture = await seedTenantData(prisma, {
     runId,
@@ -223,6 +296,80 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
     periodStart,
   });
 
+  const tenantAConnection = await prisma.cloudConnection.findFirst({
+    where: { tenantId: tenantA.id },
+    select: { id: true },
+  });
+  if (tenantAConnection === null) throw new Error('E2E fixture connection was not created.');
+  await prisma.ingestionJob.create({
+    data: {
+      tenantId: tenantA.id,
+      cloudConnectionId: tenantAConnection.id,
+      sourceType: 'BILLING_EXPORT',
+      status: 'FAILED',
+      dataOutcome: 'PROVIDER_ERROR',
+      requestedByUserId: user.id,
+      targetStart: periodStart,
+      targetEnd: new Date(periodStart.getTime() + 60 * 60 * 1000),
+      attempts: 3,
+      maxAttempts: 3,
+      priority: 50,
+      errorMessage: 'Fixture provider error for audited reprocessing.',
+      requestContext: { e2eRunId: runId, fixture: true },
+      progress: { phase: 'FAILED', message: 'Fixture job available for reprocessing tests.' },
+      completedAt: new Date(),
+    },
+  });
+  await prisma.ingestionJob.create({
+    data: {
+      tenantId: tenantA.id,
+      cloudConnectionId: tenantAConnection.id,
+      sourceType: 'BILLING_EXPORT',
+      status: 'SUCCESS',
+      dataOutcome: 'PARTIAL',
+      requestedByUserId: user.id,
+      targetStart: new Date(periodStart.getTime() - 60 * 60 * 1000),
+      targetEnd: periodStart,
+      attempts: 1,
+      maxAttempts: 3,
+      priority: 50,
+      requestContext: { e2eRunId: runId, fixture: true, focusSchemaCase: 'nonconformant' },
+      progress: { phase: 'COMPLETED', message: 'Fixture con esquema FOCUS incompleto.' },
+      resultSummary: {
+        focusRows: 4,
+        focusRowsInserted: 4,
+        warnings: ['Fixture: FOCUS 1.0 sin dos columnas obligatorias.'],
+        coverage: {
+          focusSchemaValidation: {
+            status: 'NONCONFORMANT',
+            filesChecked: 2,
+            filesConformant: 0,
+            filesNonconformant: 2,
+            filesUnverified: 0,
+            missingMandatoryColumns: ['ChargeClass', 'ContractedCost'],
+          },
+        },
+      },
+      completedAt: new Date(),
+    },
+  });
+  await prisma.ingestionJob.create({
+    data: {
+      tenantId: tenantA.id,
+      cloudConnectionId: tenantAConnection.id,
+      sourceType: 'TECHNICAL_METRIC',
+      status: 'PENDING',
+      requestedByUserId: user.id,
+      targetStart: new Date(periodStart.getTime() + 60 * 60 * 1000),
+      targetEnd: new Date(periodStart.getTime() + 2 * 60 * 60 * 1000),
+      attempts: 0,
+      maxAttempts: 3,
+      priority: 25,
+      requestContext: { e2eRunId: runId, fixture: true, readinessCase: 'pending_without_worker' },
+      progress: { phase: 'QUEUED', message: 'Fixture pendiente para validar readiness sin worker.' },
+    },
+  });
+
   await seedTenantData(prisma, {
     runId,
     tenantId: tenantB.id,
@@ -230,7 +377,7 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
     provider: 'OCI',
     providerCode: 'oci',
     accountId: `${runId}-oci-prod`,
-    resourceId: `ocid1.instance.oc1.iad.${runId}`,
+    resourceId: `ocid1.instance.oc1..exampleid0014.${runId}`,
     resourceName: `e2e-oci-${runId}`,
     serviceName: 'Oracle Compute',
     periodStart,
@@ -248,6 +395,11 @@ export async function createE2eFixtures(prisma: PrismaClient, runId = generateRu
       email: viewer.email,
       name: viewer.name,
     },
+    technician: { email: technician.email, name: technician.name },
+    operatorAdmin: { email: operatorAdmin.email, name: operatorAdmin.name },
+    leadTechnician: { email: leadTechnician.email, name: leadTechnician.name },
+    clientApprover: { email: clientApprover.email, name: clientApprover.name },
+    clientViewer: { email: clientViewer.email, name: clientViewer.name },
     tenants: [
       { id: tenantA.id, name: tenantA.name, slug: tenantA.slug },
       { id: tenantB.id, name: tenantB.name, slug: tenantB.slug },
@@ -306,9 +458,8 @@ async function seedTenantData(
 ): Promise<{ readonly recommendationId: string; readonly resourceId: string }> {
   const now = new Date();
   const { periodStart } = input;
-  const latestTechnicalSampleAt = new Date(periodStart);
-  latestTechnicalSampleAt.setUTCMinutes((14 * 48 - 1) * 30);
-  const technicalEvidenceRef = `resource_metric_samples:${input.resourceId}:CPUUtilization:${latestTechnicalSampleAt.toISOString()}`;
+  const technicalPeriodStart = new Date(now.getTime() - 14 * 86400000);
+  const latestTechnicalSampleAt = new Date(now.getTime() - 1800000);
   const connection = await prisma.cloudConnection.create({
     data: {
       tenantId: input.tenantId,
@@ -370,8 +521,52 @@ async function seedTenantData(
     },
   });
   await prisma.resourceMetricSample.createMany({
-    data: buildMetricSamples(input, connection.id, resource.id, periodStart),
+    data: buildMetricSamples(input, connection.id, resource.id, technicalPeriodStart),
   });
+
+  const technicalMetricSummaries: TechnicalMetricSummaryItem[] = [
+    { metricName: 'CPUUtilization', metricUnit: 'Percent', base: 8, offset: 0 },
+    { metricName: 'MemoryUtilization', metricUnit: 'Percent', base: 20, offset: 1 },
+    { metricName: 'NetworkIn', metricUnit: 'Bytes', base: 1024, offset: 2 },
+  ].map((metric) => ({
+    provider: input.provider,
+    externalResourceId: input.resourceId,
+    cloudResourceId: resource.id,
+    cloudConnectionId: connection.id,
+    resourceType: 'COMPUTE_INSTANCE',
+    serviceName: input.serviceName,
+    metricName: metric.metricName,
+    metricUnit: metric.metricUnit,
+    ...(input.provider === 'OCI' ? { providerNamespace: 'oci_computeagent' } : {}),
+    statistic: 'MEAN',
+    granularitySeconds: 1800,
+    sampleCount: 7 * 48,
+    coverageDays: 7,
+    min: metric.base + metric.offset,
+    max: metric.base + metric.offset + 11,
+    avg: metric.base + metric.offset + 5.5,
+    p50: metric.base + metric.offset + 5.5,
+    p95: metric.base + metric.offset + 11,
+    p99: metric.base + metric.offset + 11,
+    latest: metric.base + metric.offset + 11,
+    highUtilizationSampleCount: 0,
+    highUtilizationRatio: 0,
+    firstSampledAt: new Date(now.getTime() - 7 * 86400000),
+    latestSampledAt: latestTechnicalSampleAt,
+  }));
+  const [technicalRuleEvaluation] = evaluateTechnicalOptimizationRules({
+    summaries: technicalMetricSummaries,
+    referenceDate: now,
+  });
+  if (technicalRuleEvaluation === undefined) {
+    throw new Error('E2E fixture technical rule evaluation returned no resource result.');
+  }
+  const technicalRuleJson = technicalRuleEvaluation as unknown as Prisma.InputJsonValue;
+  const technicalEvidenceRefs = technicalRuleEvaluation.technicalEvidenceRefs;
+  const technicalMetricEvidence = technicalRuleEvaluation.metricSummary.map((summary, index) => ({
+    ...summary,
+    evidenceRef: technicalEvidenceRefs[index]!,
+  }));
 
   const recommendation = await prisma.recommendation.create({
     data: {
@@ -380,18 +575,21 @@ async function seedTenantData(
       type: 'RIGHTSIZING',
       status: 'PENDING',
       severity: 'HIGH',
-      title: `Reducir capacidad de ${input.resourceName}`,
-      description: 'La instancia muestra baja utilizacion de CPU y costo sostenido. Validar ventana de carga antes de aplicar rightsizing.',
-      estimatedMonthlySavings: new Prisma.Decimal(42.25),
+      title: `Revisar capacidad de ${input.resourceName}`,
+      description: 'Las métricas sugieren revisar la capacidad. Validar la ventana de carga y el rendimiento antes de considerar un cambio.',
+      estimatedMonthlySavings: new Prisma.Decimal(0),
       currency: 'USD',
       evidence: {
         e2eRunId: input.runId,
         evidenceLevel: 'COST_USAGE_AND_TECHNICAL',
+        maxEstimatedMonthlySavings: 0,
         cloudResourceId: resource.id,
         externalResourceId: input.resourceId,
-        technicalEvidenceRefs: [technicalEvidenceRef],
-        technicalSampleCount: 14 * 48,
-        technicalCoverageDays: 14,
+        deterministicRules: technicalRuleJson,
+        costEvidenceRefs: [`cost_metrics:e2e-fixture:${input.runId}:${input.resourceId}`],
+        technicalEvidenceRefs,
+        technicalSampleCount: 7 * 48,
+        technicalCoverageDays: 7,
         latestTechnicalSampleAt: latestTechnicalSampleAt.toISOString(),
         recommendationEvidenceSnapshot: {
           version: '1',
@@ -406,24 +604,12 @@ async function seedTenantData(
             cloudResourceId: resource.id,
             provider: input.provider,
             linkQuality: 'COST_AND_TECHNICAL',
-            cost: { totalCost: 169, currency: 'USD', focusMetricCount: 31 },
+            cost: { totalCost: 157.5, currency: 'USD', focusMetricCount: 14 },
             usage: [],
-            metrics: [{
-              metricName: 'CPUUtilization', metricUnit: 'Percent', sampleCount: 14 * 48, coverageDays: 14,
-              min: 8, max: 19, avg: 13.5, p50: 13.5, p95: 19, p99: 19, latest: 19,
-              firstSampledAt: periodStart.toISOString(), latestSampledAt: latestTechnicalSampleAt.toISOString(),
-              evidenceRef: technicalEvidenceRef,
-            }],
-            ruleEvaluation: {
-              externalResourceId: input.resourceId, cloudResourceId: resource.id, provider: input.provider,
-              readiness: 'VALIDATION_ONLY', evidenceStrength: 'MEDIUM', recommendedActionType: 'TECHNICAL_VALIDATION_REQUIRED',
-              ruleMatches: ['CPU_STRONG_UNDERUTILIZATION'], blockers: ['INSUFFICIENT_TECHNICAL_COVERAGE'],
-              sourceFacts: ['Fixture con cobertura limitada para exigir validación técnica.'],
-              technicalEvidenceRefs: [`resource_metric_samples:${input.resourceId}:CPUUtilization:2026-05`],
-              metricSummary: [], maxTechnicalSavingsRate: 0,
-            },
+            metrics: technicalMetricEvidence,
+            ruleEvaluation: technicalRuleJson,
           }],
-          deterministicRules: [],
+          deterministicRules: [technicalRuleJson],
         },
         aiAudit: { verdict: 'APPROVED', score: 94, checks: [], blockingIssues: [], requiredChanges: [] },
         aiLearning: { memoryIds: ['e2e-memory-1'], caseIds: ['e2e-case-1'], summary: 'Fixture de aprendizaje auditado.' },
@@ -438,19 +624,19 @@ async function seedTenantData(
       model: 'fixture-model',
       auditorModel: 'fixture-auditor',
       content: {
-        summary: 'Validar baja utilizacion y reducir capacidad en una ventana controlada.',
+        summary: 'Validar la capacidad antes de considerar una optimización.',
         scope: {
           cloudAccountId: account.id,
           externalResourceId: input.resourceId,
           service: input.serviceName,
         },
         prerequisites: ['Confirmar propietario del servicio.', 'Revisar metricas de CPU y memoria.'],
-        steps: ['Crear respaldo/configuracion actual.', 'Aplicar cambio de capacidad.', 'Monitorear 24 horas.'],
+        steps: ['Registrar la configuración actual.', 'Si existe aprobación externa explícita, evaluar una alternativa reversible.', 'Monitorear el servicio después de la validación.'],
         validation: ['Comparar CPU, memoria, errores y costo diario.'],
         risks: ['Degradacion si el patron de carga cambia.'],
         rollback: ['Restaurar el shape/tamano previo.'],
-        successCriteria: ['Reducir costo mensual sin degradacion del servicio.'],
-        estimatedSavings: { amount: 42.25, currency: 'USD' },
+        successCriteria: ['Mantener el rendimiento y documentar la decisión técnica.'],
+        estimatedSavings: { amount: 0, currency: 'USD', status: 'POTENTIAL_NOT_VERIFIED', note: 'No hay un cálculo determinístico de ahorro validado.' },
       },
       auditReport: {
         verdict: 'APPROVED',

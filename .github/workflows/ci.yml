@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  DATABASE_URL: postgresql://finops:finops@127.0.0.1:55432/finops_test
+  DATABASE_URL: postgresql://redacted:placeholder@127.0.0.1:55432/finops_test
   JWT_SECRET: ci-finops-jwt-secret-with-at-least-thirty-two-chars
   AI_API_KEY: ci-placeholder-key
   AI_BASE_URL: http://127.0.0.1:9999/v1
@@ -53,12 +53,12 @@ jobs:
       - run: npm run build
       - name: Create API smoke fixtures
         run: >
-          TEST_DATABASE_URL=postgresql://finops:finops@localhost:55432/finops_test
+          TEST_DATABASE_URL=postgresql://redacted:placeholder@localhost:55432/finops_test
           ALLOW_DESTRUCTIVE_TEST_DATABASE=true
           npm run test:fixtures:create
       - name: Start API and run smoke contract
         env:
-          DATABASE_URL: postgresql://finops:finops@localhost:55432/finops_test
+          DATABASE_URL: postgresql://redacted:placeholder@localhost:55432/finops_test
           JWT_SECRET: ci-finops-jwt-secret-with-at-least-thirty-two-chars
           AI_API_KEY: ci-placeholder-key
           AI_BASE_URL: http://127.0.0.1:9999/v1
@@ -100,7 +100,7 @@ jobs:
       - name: Cleanup API smoke fixtures
         if: always()
         env:
-          TEST_DATABASE_URL: postgresql://finops:finops@localhost:55432/finops_test
+          TEST_DATABASE_URL: postgresql://redacted:placeholder@localhost:55432/finops_test
           ALLOW_DESTRUCTIVE_TEST_DATABASE: 'true'
         run: npm run test:fixtures:cleanup
       - name: Print API log on failure

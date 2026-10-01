@@ -6,16 +6,29 @@ describe('OCI Usage API date ranges', () => {
     expect(normalizeOciDailyUsageRange(
       new Date('2026-08-15T13:47:12.456Z'),
       new Date('2026-08-17T18:06:30.682Z'),
+      new Date('2026-08-18T12:00:00Z'),
     )).toEqual({
       start: new Date('2026-08-15T00:00:00.000Z'),
-      end: new Date('2026-08-17T00:00:00.000Z'),
+      end: new Date('2026-08-18T00:00:00.000Z'),
     });
   });
 
-  test('uses the previous complete day when both timestamps fall today', () => {
+  test('keeps a historical single-day range on its requested UTC date', () => {
+    expect(normalizeOciDailyUsageRange(
+      new Date('2026-08-17T02:00:00.000Z'),
+      new Date('2026-08-17T03:00:00.000Z'),
+      new Date('2026-08-19T00:00:00Z'),
+    )).toEqual({
+      start: new Date('2026-08-17T00:00:00.000Z'),
+      end: new Date('2026-08-18T00:00:00.000Z'),
+    });
+  });
+
+  test('excludes the current partial UTC day and returns the last complete day', () => {
     expect(normalizeOciDailyUsageRange(
       new Date('2026-08-17T17:55:00.000Z'),
       new Date('2026-08-17T18:00:00.000Z'),
+      new Date('2026-08-17T18:30:00Z'),
     )).toEqual({
       start: new Date('2026-08-16T00:00:00.000Z'),
       end: new Date('2026-08-17T00:00:00.000Z'),

@@ -33,7 +33,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$OracleUsageReportTenancyOcid = "ocid1.tenancy.oc1..aaaaaaaaned4fkpkisbwjlr56u7cj63lf3wffbilvqknstgtvzub7vhqkggq"
+$OracleUsageReportTenancyOcid = "REPLACE_WITH_TENANCY_OCID"
 $ReportingNamespace = "bling"
 
 function Show-Help {

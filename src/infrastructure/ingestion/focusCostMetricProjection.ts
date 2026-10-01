@@ -4,11 +4,13 @@ import type {
   NormalizedFocusCostLineItem,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import type { Prisma } from '../../generated/prisma/client.js';
-import { CostBillingSource } from '../../generated/prisma/client.js';
+import { CloudProvider, CostBillingSource } from '../../generated/prisma/client.js';
 import {
+  isKnownUnsupportedResourceId,
   normalizeExternalResourceId,
   resolveExactResourceLink,
 } from '../../domain/models/ResourceLinkage.js';
+import { isOciAggregateResourceId } from './oci/OciHistoricalResourceCatalog.js';
 
 export function getFocusCloudAccountExternalId(
   job: CloudIngestionJobContext,
@@ -57,12 +59,7 @@ export function buildFocusCostMetricRows(input: {
       ? undefined
       : input.resourceIdsByExternalId.get(normalizedResourceId);
     const resourceLink = knownResourceId === undefined
-      ? resolveExactResourceLink({
-          cloudConnectionId: row.cloudConnectionId,
-          externalResourceId: normalizedResourceId,
-          resourceIdsByKey: new Map(),
-          serviceLevel: normalizedResourceId === undefined && !Object.prototype.hasOwnProperty.call(row.rawRow, 'ResourceId'),
-        })
+      ? resolveFocusResourceLink(row.provider, row.cloudConnectionId, normalizedResourceId, row.rawRow)
       : { cloudResourceId: knownResourceId };
 
     return {
@@ -112,6 +109,30 @@ export function buildFocusCostMetricRows(input: {
         lineItemHash: row.lineItemHash,
       } satisfies Prisma.InputJsonObject,
     };
+  });
+}
+
+function resolveFocusResourceLink(
+  provider: CloudProvider,
+  cloudConnectionId: string,
+  normalizedResourceId: string | undefined,
+  rawRow: Readonly<Record<string, unknown>>,
+): ReturnType<typeof resolveExactResourceLink> {
+  if (provider === CloudProvider.OCI && normalizedResourceId !== undefined
+    && isOciAggregateResourceId(normalizedResourceId)) {
+    return { reason: 'SERVICE_LEVEL_COST' };
+  }
+
+  if (provider === CloudProvider.OCI && isKnownUnsupportedResourceId(normalizedResourceId)) {
+    return { reason: 'UNSUPPORTED_RESOURCE_ID' };
+  }
+
+  return resolveExactResourceLink({
+    cloudConnectionId,
+    externalResourceId: normalizedResourceId,
+    resourceIdsByKey: new Map(),
+    serviceLevel: normalizedResourceId === undefined
+      && !Object.prototype.hasOwnProperty.call(rawRow, 'ResourceId'),
   });
 }
 

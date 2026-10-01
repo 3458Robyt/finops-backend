@@ -272,6 +272,37 @@ export class CloudConnectionManagementController extends CloudConnectionControll
     }
   };
 
+  public previewMetricDefinitions = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    const abortController = new AbortController();
+    const abortOnDisconnect = () => !res.writableEnded && abortController.abort();
+    try {
+      if (req.auth === undefined) throw new FinOpsBaseError('Debes iniciar sesión para continuar.', 'AUTHENTICATION_REQUIRED');
+      const body = this.requireObjectBody(req.body), scopeValue = this.requireObjectBody(body['scope']);
+      const scope = {
+        regionId: this.requireString(scopeValue['regionId'], 'scope.regionId'),
+        compartmentId: this.requireString(scopeValue['compartmentId'], 'scope.compartmentId'),
+        ...(scopeValue['namespace'] === undefined
+          ? {}
+          : { namespace: this.requireString(scopeValue['namespace'], 'scope.namespace') }),
+      };
+      res.once('close', abortOnDisconnect);
+      const discovery = await this.cloudConnectionService.previewMetricDefinitions({
+        tenantId: req.auth.tenantId,
+        userId: req.auth.userId,
+        cloudConnectionId: this.requireParam(req, 'id'),
+        scope,
+        signal: abortController.signal,
+      });
+      res.status(200).json({ success: true, discovery });
+    } catch (error: unknown) {
+      if (abortController.signal.aborted || res.destroyed) return;
+      this.respondWithError(res, error);
+    } finally { res.off('close', abortOnDisconnect); }
+  };
+
   public activateConnection = async (
     req: Request,
     res: Response,

@@ -15,13 +15,14 @@ export interface OciCompartmentDiscoveryResult {
 }
 
 export interface OciCompartmentDiscoveryDependencies {
-  readonly createIdentityClient: (job: CloudIngestionJobContext) => OciIdentityClient;
-  readonly withRetry: <T>(operation: () => Promise<T>) => Promise<T>;
+  readonly createIdentityClient: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciIdentityClient;
+  readonly withRetry: <T>(operation: (signal?: AbortSignal) => Promise<T>, signal?: AbortSignal) => Promise<T>;
 }
 
 export async function discoverOciInventoryCompartments(
   job: CloudIngestionJobContext,
   dependencies: OciCompartmentDiscoveryDependencies,
+  signal?: AbortSignal,
 ): Promise<OciCompartmentDiscoveryResult> {
   const configured = readConfiguredCompartments(job);
   const compartmentIds = new Set(configured);
@@ -29,22 +30,29 @@ export async function discoverOciInventoryCompartments(
     return buildResult(job, compartmentIds, 0, 'CONFIGURED_ONLY', configured.length, 0);
   }
 
-  const client = dependencies.createIdentityClient(job);
   let apiCallCount = 0;
   let discoveredCompartmentCount = 0;
   let page: string | undefined;
 
   try {
     do {
+      throwIfAborted(signal);
       apiCallCount += 1;
-      const response = await dependencies.withRetry(() => client.listCompartments({
-        compartmentId: job.connection.rootExternalId,
-        compartmentIdInSubtree: true,
-        accessLevel: 'ACCESSIBLE',
-        lifecycleState: 'ACTIVE',
-        limit: 1000,
-        ...(page !== undefined ? { page } : {}),
-      }));
+      const response = await dependencies.withRetry(async (attemptSignal) => {
+        const client = dependencies.createIdentityClient(job, attemptSignal);
+        try {
+          return await client.listCompartments({
+            compartmentId: job.connection.rootExternalId,
+            compartmentIdInSubtree: true,
+            accessLevel: 'ACCESSIBLE',
+            lifecycleState: 'ACTIVE',
+            limit: 1000,
+            ...(page !== undefined ? { page } : {}),
+          });
+        } finally {
+          client.close?.();
+        }
+      }, signal);
       for (const compartment of response.items ?? []) {
         if (compartment.id !== undefined && compartment.lifecycleState?.toUpperCase() === 'ACTIVE') {
           compartmentIds.add(compartment.id);
@@ -53,7 +61,8 @@ export async function discoverOciInventoryCompartments(
       }
       page = response.opcNextPage;
     } while (page !== undefined);
-  } catch {
+  } catch (error) {
+    if (signal?.aborted === true) throw error;
     return buildResult(
       job,
       compartmentIds,
@@ -62,8 +71,6 @@ export async function discoverOciInventoryCompartments(
       configured.length,
       discoveredCompartmentCount,
     );
-  } finally {
-    client.close?.();
   }
 
   return buildResult(
@@ -74,6 +81,10 @@ export async function discoverOciInventoryCompartments(
     configured.length,
     discoveredCompartmentCount,
   );
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted === true) throw new Error('OCI inventory operation cancelled');
 }
 
 function readConfiguredCompartments(job: CloudIngestionJobContext): readonly string[] {

@@ -6,9 +6,10 @@ import type {
   MasterAdminIngestionJobFilters,
   MasterAdminIngestionJobPage,
   MasterAdminIngestionJobSummary,
+  ReprocessedIngestionJob,
   ReconciledIngestionJobs,
 } from '../../domain/interfaces/IMasterAdminIngestionJobRepository.js';
-import { toIngestionJobHistoryItem } from './mappers/cloudConnectionMappers.js';
+import { isJsonObject, toIngestionJobHistoryItem } from './mappers/cloudConnectionMappers.js';
 import { PrismaIngestionJobLeaseReconciler } from '../ingestion/PrismaIngestionJobLeaseReconciler.js';
 import { loadRuntimeConfig } from '../config/runtimeConfigReader.js';
 
@@ -110,6 +111,93 @@ export class PrismaMasterAdminIngestionJobRepository implements IMasterAdminInge
       data: { archivedAt: new Date(), archivedByUserId: userId },
     });
     return result.count === 0 ? null : this.findById(jobId);
+  }
+
+  public async reprocess(jobId: string, userId: string, reason: string): Promise<ReprocessedIngestionJob | null> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const original = await tx.ingestionJob.findUnique({ where: { id: jobId }, include: jobRelations });
+        if (original === null || original.archivedAt !== null) return null;
+
+        if (original.status === 'PENDING' || original.status === 'RUNNING') {
+          return { job: toAdminJob(original), originalJobId: original.id, reusedActiveJob: true };
+        }
+
+        const eligible = original.status === 'FAILED'
+          || original.status === 'CANCELLED'
+          || original.status === 'SKIPPED'
+          || (original.status === 'SUCCESS' && original.dataOutcome !== 'DATA_WRITTEN');
+        if (!eligible) return null;
+
+        const active = await tx.ingestionJob.findFirst({
+          where: {
+            tenantId: original.tenantId,
+            cloudConnectionId: original.cloudConnectionId,
+            sourceType: original.sourceType,
+            targetStart: original.targetStart,
+            targetEnd: original.targetEnd,
+            configurationHash: original.configurationHash,
+            status: { in: ['PENDING', 'RUNNING'] },
+            archivedAt: null,
+          },
+          include: jobRelations,
+          orderBy: { createdAt: 'desc' },
+        });
+        if (active !== null) return { job: toAdminJob(active), originalJobId: original.id, reusedActiveJob: true };
+
+        const now = new Date();
+        const previousContext = isJsonObject(original.requestContext)
+          ? original.requestContext as Record<string, unknown>
+          : {};
+        const created = await tx.ingestionJob.create({
+          data: {
+            tenantId: original.tenantId,
+            cloudConnectionId: original.cloudConnectionId,
+            sourceType: original.sourceType,
+            requestedByUserId: userId,
+            targetStart: original.targetStart,
+            targetEnd: original.targetEnd,
+            maxAttempts: original.maxAttempts,
+            priority: original.priority,
+            ...(original.configurationHash === null ? {} : { configurationHash: original.configurationHash }),
+            requestContext: {
+              ...previousContext,
+              reprocessOf: original.id,
+              reprocessReason: reason,
+              reprocessRequestedAt: now.toISOString(),
+            } as Prisma.InputJsonValue,
+            progress: {
+              phase: 'QUEUED',
+              message: 'Reprocesamiento administrativo encolado; esperando un slot del worker.',
+              reprocessOf: original.id,
+              updatedAt: now.toISOString(),
+            } as Prisma.InputJsonValue,
+          },
+          include: jobRelations,
+        });
+        return { job: toAdminJob(created), originalJobId: original.id, reusedActiveJob: false };
+      });
+    } catch (error: unknown) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') throw error;
+      const original = await this.prisma.ingestionJob.findUnique({ where: { id: jobId } });
+      if (original === null) return null;
+      const active = await this.prisma.ingestionJob.findFirst({
+        where: {
+          id: { not: jobId },
+          tenantId: original.tenantId,
+          cloudConnectionId: original.cloudConnectionId,
+          sourceType: original.sourceType,
+          targetStart: original.targetStart,
+          targetEnd: original.targetEnd,
+          configurationHash: original.configurationHash,
+          status: { in: ['PENDING', 'RUNNING'] },
+          archivedAt: null,
+        },
+        include: jobRelations,
+        orderBy: { createdAt: 'desc' },
+      });
+      return active === null ? null : { job: toAdminJob(active), originalJobId: jobId, reusedActiveJob: true };
+    }
   }
 
   private buildWhere(input: MasterAdminIngestionJobFilters): Prisma.IngestionJobWhereInput {

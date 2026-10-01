@@ -20,7 +20,12 @@ class FakeResourceMetricRepository implements IResourceMetricRepository {
   public samplesQuery: { tenantId: string; limit: number } | null = null;
   public filteredSamplesQuery: { tenantId: string; limit: number } | null = null;
   public seriesQuery: { tenantId: string; filters: TechnicalMetricSeriesFilters } | null = null;
-  public costContextQuery: { tenantId: string; externalResourceIds: readonly string[] } | null = null;
+  public costContextQuery: {
+    tenantId: string;
+    externalResourceIds: readonly string[];
+    cloudResourceIds?: readonly string[];
+  } | null = null;
+  public summaryQuery: TechnicalMetricSummaryFilters | null = null;
   public summaries: readonly TechnicalMetricSummaryItem[] = [];
   public resources: readonly CloudResourceItem[] = [
     {
@@ -167,15 +172,17 @@ class FakeResourceMetricRepository implements IResourceMetricRepository {
   public async listCostContextForResources(
     tenantId: string,
     externalResourceIds: readonly string[],
+    cloudResourceIds?: readonly string[],
   ) {
-    this.costContextQuery = { tenantId, externalResourceIds };
+    this.costContextQuery = { tenantId, externalResourceIds, ...(cloudResourceIds !== undefined ? { cloudResourceIds } : {}) };
     return this.costContext;
   }
 
   public async listMetricSummariesForTenant(
     _tenantId: string,
-    _filters: TechnicalMetricSummaryFilters,
+    filters: TechnicalMetricSummaryFilters,
   ): Promise<readonly TechnicalMetricSummaryItem[]> {
+    this.summaryQuery = filters;
     return this.summaries;
   }
 }
@@ -184,7 +191,8 @@ describe('TechnicalMetricsService', () => {
   test('returns a resource summary scoped to its tenant resource', async () => {
     const repository = new FakeResourceMetricRepository();
     repository.summaries = [{
-      provider: 'AWS', externalResourceId: 'i-0abc', metricName: 'cpu_utilization', statistic: 'MEAN', sampleCount: 2,
+      provider: 'AWS', externalResourceId: 'i-0abc', resourceType: 'COMPUTE_INSTANCE',
+      metricName: 'cpu_utilization', metricUnit: 'Percent', statistic: 'MEAN', granularitySeconds: 1800, sampleCount: 2,
       coverageDays: 1, min: 10, max: 12.5, avg: 11.25, p50: 11.25, p95: 12.5, p99: 12.5,
       latest: 10, firstSampledAt: new Date('2026-04-30T00:00:00.000Z'), latestSampledAt: new Date('2026-04-30T00:30:00.000Z'),
     }];
@@ -195,6 +203,9 @@ describe('TechnicalMetricsService', () => {
     expect(summary?.resource.externalResourceId).toBe('i-0abc');
     expect(summary?.metrics).toHaveLength(1);
     expect(summary?.cost?.totalCost).toBe(42.25);
+    expect(repository.summaryQuery?.cloudResourceIds).toEqual(['res-1']);
+    expect(repository.costContextQuery?.externalResourceIds).toEqual([]);
+    expect(repository.costContextQuery?.cloudResourceIds).toEqual(['res-1']);
     expect(summary?.evidence).toMatchObject({
       strength: 'LOW',
       readiness: 'VALIDATION_ONLY',

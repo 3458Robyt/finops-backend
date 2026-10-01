@@ -1,10 +1,11 @@
-import OpenAI from 'openai';
+import OpenAI, { APIConnectionTimeoutError } from 'openai';
 
-import { ConfigurationError } from '../../domain/errors/errors.js';
+import { ConfigurationError, FinOpsBaseError, ProviderError, ProviderTimeoutError, ProviderUnavailableError } from '../../domain/errors/errors.js';
 import type { AiGatewayRequest, IAiGateway } from '../../domain/interfaces/IAiGateway.js';
 import type { MetricsRegistry } from '../../application/observability/MetricsRegistry.js';
 import { loadRuntimeConfig } from '../config/runtimeConfigReader.js';
 import type { RuntimeConfig } from '../config/runtimeConfigTypes.js';
+import { safeErrorMessage } from '../../application/observability/safeError.js';
 
 /**
  * Adaptador de infraestructura para endpoints compatibles con la API de OpenAI.
@@ -50,40 +51,62 @@ export class OpenAiCompatibleAiGateway implements IAiGateway {
     const model = request.model ?? this.model;
     const startedAt = Date.now();
     const inputTokens = estimateTokens(request.messages.map((message) => message.content).join('\n'));
+    const timeoutController = request.timeoutMs === undefined ? undefined : new AbortController();
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     try {
-      const completion = await this.client.chat.completions.create(
-        {
-          model,
-          messages: request.messages.map((message) => ({
-            role: message.role,
-            content: message.content,
-          })),
-          temperature: request.temperature ?? 0.3,
-          top_p: 0.95,
-          max_tokens: request.maxTokens ?? 2048,
-          ...(request.responseFormat === 'json'
-            ? { response_format: { type: 'json_object' as const } }
-            : {}),
-          stream: true,
-        },
-        {
-          ...(request.timeoutMs !== undefined ? { timeout: request.timeoutMs } : {}),
-          ...(request.maxRetries !== undefined ? { maxRetries: request.maxRetries } : {}),
-        },
-      );
+      const completionPromise = (async (): Promise<string> => {
+        const completion = await this.client.chat.completions.create(
+          {
+            model,
+            messages: request.messages.map((message) => ({
+              role: message.role,
+              content: message.content,
+            })),
+            temperature: request.temperature ?? 0.3,
+            top_p: 0.95,
+            max_tokens: request.maxTokens ?? 2048,
+            ...(request.responseFormat === 'json'
+              ? { response_format: { type: 'json_object' as const } }
+              : {}),
+            ...(request.reasoningEffort === undefined ? {} : { reasoning_effort: request.reasoningEffort }),
+            stream: true,
+          },
+          {
+            ...(request.timeoutMs !== undefined ? { timeout: request.timeoutMs } : {}),
+            ...(request.maxRetries !== undefined ? { maxRetries: request.maxRetries } : {}),
+            ...(timeoutController === undefined ? {} : { signal: timeoutController.signal }),
+          },
+        );
 
-      let output = '';
-      const stream = completion as AsyncIterable<{
-        readonly choices?: ReadonlyArray<{
-          readonly delta?: {
-            readonly content?: string | null;
-          };
+        let output = '';
+        const stream = completion as AsyncIterable<{
+          readonly choices?: ReadonlyArray<{
+            readonly delta?: {
+              readonly content?: string | null;
+            };
+          }>;
         }>;
-      }>;
 
-      for await (const chunk of stream) {
-        output += chunk.choices?.[0]?.delta?.content ?? '';
-      }
+        for await (const chunk of stream) {
+          output += chunk.choices?.[0]?.delta?.content ?? '';
+        }
+        return output;
+      })();
+
+      const output = request.timeoutMs === undefined
+        ? await completionPromise
+        : await Promise.race([
+            completionPromise,
+            new Promise<never>((_, reject) => {
+              timeoutHandle = setTimeout(() => {
+                const timeoutError = new ProviderTimeoutError(
+                  'La solicitud al proveedor de IA excedió el tiempo máximo configurado',
+                );
+                timeoutController?.abort(timeoutError);
+                reject(timeoutError);
+              }, request.timeoutMs);
+            }),
+          ]);
 
       this.metrics?.increment('ai_requests_total', { model, outcome: 'success' });
       this.metrics?.increment('ai_input_tokens_estimated_total', { model }, inputTokens);
@@ -93,10 +116,46 @@ export class OpenAiCompatibleAiGateway implements IAiGateway {
     } catch (error) {
       this.metrics?.increment('ai_requests_total', { model, outcome: 'error' });
       this.metrics?.observe('ai_request_duration_ms', Date.now() - startedAt, { model, outcome: 'error' });
-      throw error;
+      if (error instanceof APIConnectionTimeoutError) {
+        throw new ProviderTimeoutError('La solicitud al proveedor de IA excedió el tiempo máximo configurado');
+      }
+      if (error instanceof FinOpsBaseError) throw error;
+      const providerStatus = readProviderStatus(error);
+      if (isTransientProviderFailure(error, providerStatus)) {
+        throw new ProviderUnavailableError('AI', providerStatus, error instanceof Error ? error : undefined);
+      }
+      throw new ProviderError(
+        'AI',
+        safeErrorMessage(error),
+        error instanceof Error ? error : undefined,
+      );
+    } finally {
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 }
+
+function readProviderStatus(error: unknown): number | undefined {
+  if (error === null || typeof error !== 'object') return readStatusFromMessage(error);
+  const value = error as { readonly status?: unknown; readonly response?: { readonly status?: unknown } };
+  const status = typeof value.status === 'number' ? value.status : value.response?.status;
+  return typeof status === 'number' && Number.isInteger(status) ? status : readStatusFromMessage(error);
+}
+
+function readStatusFromMessage(error: unknown): number | undefined {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = message.match(/\b([45]\d{2})\b/);
+  return match === null ? undefined : Number(match[1]);
+}
+
+function isTransientProviderFailure(error: unknown, status?: number): boolean {
+  if (status === 429 || (status !== undefined && status >= 500 && status <= 599)) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /rate\s*limit|too many requests|service temporarily unavailable|upstream unavailable/i.test(message);
+}
+
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }

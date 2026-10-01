@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
 import { invalidatedValidationData } from '../src/infrastructure/repositories/cloudConnectionMetadata.js';
 import { OCI_CORE_METRIC_STATISTICS } from '../src/domain/interfaces/ICloudIngestionProvider.js';
+import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
 
 /**
  * Rewrites an OCI connection's technical definitions to provider-native core
@@ -15,10 +16,13 @@ async function main(): Promise<void> {
   }
 
   const prisma = getPrismaClient();
-  const connection = await prisma.cloudConnection.findUnique({
-    where: { id: connectionId },
-    select: { id: true, providerCode: true, metadata: true },
-  });
+  const connection = await runWithDatabaseContext(
+    { workerId: 'oci-metric-preparation-cli', role: 'MASTER_ADMIN' },
+    () => prisma.cloudConnection.findUnique({
+      where: { id: connectionId },
+      select: { id: true, providerCode: true, metadata: true },
+    }),
+  );
   if (connection === null) throw new Error('La conexión indicada no existe.');
   if (connection.providerCode !== 'oci') throw new Error('La conexión indicada no es OCI.');
 
@@ -40,10 +44,13 @@ async function main(): Promise<void> {
 
   const dryRun = args.has('dry-run');
   if (!dryRun) {
-    await prisma.cloudConnection.update({
-      where: { id: connectionId },
-      data: invalidatedValidationData(metadata),
-    });
+    await runWithDatabaseContext(
+      { workerId: 'oci-metric-preparation-cli', role: 'MASTER_ADMIN' },
+      () => prisma.cloudConnection.update({
+        where: { id: connectionId },
+        data: invalidatedValidationData(metadata),
+      }),
+    );
   }
 
   const metrics = [...new Set(definitions.map((definition) => String(definition['metricName'] ?? 'unknown')))].sort();

@@ -442,10 +442,10 @@ function parseArgs(args: readonly string[]): ImportOptions {
     password,
     reportsDir: options.get('reports-dir') ?? positional[1] ?? defaultReportsDir,
     rootExternalId,
-    tenantName: options.get('tenant-name') ?? 'OCI Personal Demo',
-    tenantSlug: options.get('tenant-slug') ?? 'oci-personal-demo',
-    userEmail: options.get('user-email') ?? '[correo omitido]',
-    userName: options.get('user-name') ?? 'FinOps Operator',
+    tenantName: options.get('tenant-name') ?? 'OCI Demo Tenant',
+    tenantSlug: options.get('tenant-slug') ?? 'oci-demo-tenant',
+    userEmail: options.get('user-email') ?? 'test-user-0004@example.test',
+    userName: options.get('user-name') ?? 'Demo Import Operator',
   };
 }
 

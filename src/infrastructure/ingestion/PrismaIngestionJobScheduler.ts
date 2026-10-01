@@ -3,6 +3,7 @@ import { Prisma } from '../../generated/prisma/client.js';
 import {
   buildIngestionSchedulePlan,
   type IngestionScheduleOptions,
+  type ScheduleableMetricCoverageWindow,
 } from './ingestionJobScheduler.js';
 import { buildIngestionConfigurationHash } from './ingestionConfigurationHash.js';
 
@@ -127,7 +128,7 @@ export async function runPrismaIngestionJobScheduler(
     metricFloor.getUTCDate(),
   ));
   const metricResolutionSeconds = 30 * 60;
-  const metricCoverage: Array<readonly [string, readonly Date[]]> = [];
+  const metricCoverage: Array<readonly [string, readonly ScheduleableMetricCoverageWindow[]]> = [];
   for (const connection of connections) {
     const requestContext = { interval: '30m', resolutionSeconds: metricResolutionSeconds };
     const configurationHash = buildIngestionConfigurationHash({
@@ -144,7 +145,7 @@ export async function runPrismaIngestionJobScheduler(
     `;
     const hasCoverageRows = Number(coverageCount[0]?.total ?? 0) > 0;
     const rows = hasCoverageRows
-      ? await tx.$queryRaw<readonly { readonly window_start: Date }[]>`
+      ? await tx.$queryRaw<readonly { readonly window_start: Date; readonly status: 'COVERED' | 'PARTIAL' | 'NO_DATA' }[]>`
           WITH expected AS (
             SELECT COUNT(*)::int AS expected_streams
             FROM cloud_metric_definitions definition
@@ -162,7 +163,8 @@ export async function runPrismaIngestionJobScheduler(
               window_start,
               COUNT(DISTINCT stream_key)::int AS observed_streams,
               COUNT(*)::int AS coverage_rows,
-              COUNT(*) FILTER (WHERE status = 'COVERED'::"MetricCoverageStatus")::int AS covered_rows
+              COUNT(*) FILTER (WHERE status = 'COVERED'::"MetricCoverageStatus")::int AS covered_rows,
+              COUNT(*) FILTER (WHERE status = 'NO_DATA'::"MetricCoverageStatus")::int AS no_data_rows
             FROM resource_metric_coverage_windows
             WHERE tenant_id = ${connection.tenantId}
               AND cloud_connection_id = ${connection.id}
@@ -172,18 +174,24 @@ export async function runPrismaIngestionJobScheduler(
               AND window_start < ${options.schedule.now}
             GROUP BY window_start
           )
-          SELECT daily.window_start
+          SELECT daily.window_start,
+            CASE
+              WHEN daily.no_data_rows = daily.coverage_rows THEN 'NO_DATA'::"MetricCoverageStatus"
+              WHEN daily.covered_rows = daily.coverage_rows
+                AND daily.observed_streams >= GREATEST(expected.expected_streams, 1)
+                THEN 'COVERED'::"MetricCoverageStatus"
+              ELSE 'PARTIAL'::"MetricCoverageStatus"
+            END AS status
           FROM daily
           CROSS JOIN expected
           WHERE daily.coverage_rows > 0
-            AND daily.covered_rows = daily.coverage_rows
-            AND daily.observed_streams >= GREATEST(expected.expected_streams, 1)
           ORDER BY daily.window_start ASC
         `
-      : await tx.$queryRaw<readonly { readonly window_start: Date }[]>`
+      : await tx.$queryRaw<readonly { readonly window_start: Date; readonly status: 'COVERED' }[]>`
           SELECT to_timestamp(
             floor(extract(epoch FROM sampled_at) / ${metricWindowSeconds}) * ${metricWindowSeconds}
-          ) AS window_start
+          ) AS window_start,
+            'COVERED'::text AS status
           FROM resource_metric_samples
           WHERE tenant_id = ${connection.tenantId}
             AND cloud_connection_id = ${connection.id}
@@ -193,12 +201,18 @@ export async function runPrismaIngestionJobScheduler(
           GROUP BY 1
           ORDER BY 1 ASC
         `;
-    metricCoverage.push([connection.id, rows.map((row) => row.window_start)]);
+    metricCoverage.push([connection.id, rows.map((row) => ({
+      windowStart: row.window_start,
+      status: row.status,
+    }))]);
   }
   const coverageByConnection = new Map(metricCoverage);
   const enrichedConnections = connections.map((connection) => ({
     ...connection,
-    metricCoverageWindowStarts: coverageByConnection.get(connection.id) ?? [],
+    metricCoverageWindows: coverageByConnection.get(connection.id) ?? [],
+    metricCoverageWindowStarts: (coverageByConnection.get(connection.id) ?? [])
+      .filter((window) => window.status === 'COVERED')
+      .map((window) => window.windowStart),
   }));
   const plan = buildIngestionSchedulePlan(enrichedConnections, options.schedule);
   const createdJobs: PrismaIngestionJobSchedulerRunResult['createdJobs'][number][] = [];

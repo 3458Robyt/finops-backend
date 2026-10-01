@@ -18,6 +18,10 @@ class FakeHeartbeatRepository implements IProcessHeartbeatRepository {
     return true;
   }
 
+  public async markStale(): Promise<number> {
+    return 0;
+  }
+
   public async findById(_processId: string): Promise<null> {
     return null;
   }
@@ -37,7 +41,7 @@ describe('startProcessHeartbeat', () => {
     let loop: NonOverlappingLoopOptions | undefined;
     let stop: (() => Promise<void>) | undefined;
 
-    startProcessHeartbeat({
+    await startProcessHeartbeat({
       config: config(true),
       startBackgroundLoop: (options) => { loop = options; },
       registerStop: (callback) => { stop = callback; },
@@ -51,11 +55,11 @@ describe('startProcessHeartbeat', () => {
     expect(repository.stopped).toEqual(repository.recorded);
   });
 
-  it('does not create a loop when the operational flag is disabled', () => {
+  it('does not create a loop when the operational flag is disabled', async () => {
     const repository = new FakeHeartbeatRepository();
     let started = false;
 
-    startProcessHeartbeat({
+    await startProcessHeartbeat({
       config: config(false),
       startBackgroundLoop: () => { started = true; },
       registerStop: () => { started = true; },

@@ -1,10 +1,13 @@
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { Prisma } from '../../generated/prisma/client.js';
 
+const rollupRebuildChunkDays = 7;
+
 /**
  * Maintains peak-preserving rollups for technical metric series.
- * Raw samples remain canonical; affected buckets are recomputed from all raw
- * samples so retries and overlapping backfills remain idempotent.
+ * Raw samples remain canonical; each source resolution plus a compact daily
+ * projection is recomputed from all raw samples so retries and overlapping
+ * backfills remain idempotent.
  */
 export class PrismaResourceMetricRollupPersistence {
   public async refreshForJob(prisma: Pick<PrismaClient, '$executeRaw'>, ingestionJobId: string): Promise<number> {
@@ -13,11 +16,12 @@ export class PrismaResourceMetricRollupPersistence {
         SELECT "tenant_id", "cloud_connection_id", "target_start", "target_end"
         FROM ingestion_jobs
         WHERE id = ${ingestionJobId}
-      ), affected AS (
+      ), affected AS MATERIALIZED (
+        -- Recompute every source resolution for each affected stream together;
+        -- otherwise a job at one resolution can overwrite an incomplete daily rollup.
         SELECT DISTINCT
           samples.tenant_id,
           samples.cloud_connection_id,
-          samples.cloud_resource_id,
           samples.external_resource_id,
           samples.provider_namespace,
           samples.region_id,
@@ -26,7 +30,10 @@ export class PrismaResourceMetricRollupPersistence {
           samples.statistic
         FROM resource_metric_samples samples
         WHERE samples.ingestion_job_id = ${ingestionJobId}
-      ), filtered_samples AS MATERIALIZED (
+      ), samples_range AS MATERIALIZED (
+        -- Scan the connection/time window once, then join the affected streams.
+        -- A per-stream index loop read millions of rows and discarded most of
+        -- them after the date predicate on large tenant connections.
         SELECT samples.id, samples.tenant_id, samples.cloud_connection_id,
           samples.cloud_resource_id, samples.provider, samples.external_resource_id,
           samples.provider_namespace, samples.region_id, samples.compartment_id,
@@ -35,36 +42,54 @@ export class PrismaResourceMetricRollupPersistence {
           samples.granularity_seconds
         FROM resource_metric_samples samples
         CROSS JOIN job
-        WHERE samples.sampled_at >= date_trunc('day', job."target_start")
-          AND samples.sampled_at < date_trunc('day', job."target_end") + interval '1 day'
-          AND samples.tenant_id = job."tenant_id"
+        WHERE samples.tenant_id = job."tenant_id"
           AND samples.cloud_connection_id = job."cloud_connection_id"
           AND samples.source_type = 'TECHNICAL_METRIC'::"IngestionSourceType"
+          AND samples.sampled_at >= date_trunc('day', job."target_start")
+          AND samples.sampled_at < date_trunc('day', job."target_end") + interval '1 day'
       ), source AS (
-        SELECT samples.*, bucket.bucket_seconds, bucket.bucket_start
-        FROM filtered_samples samples
+        SELECT samples.id, samples.tenant_id, samples.cloud_connection_id,
+          samples.cloud_resource_id, samples.provider, samples.external_resource_id,
+          samples.provider_namespace, samples.region_id, samples.compartment_id,
+          samples.dimensions_hash, samples.metric_name, samples.metric_unit,
+          samples.statistic, samples.value, samples.sampled_at,
+          samples.granularity_seconds, bucket.bucket_seconds, bucket.bucket_start
+        FROM samples_range samples
         CROSS JOIN job
         INNER JOIN affected
           ON affected.tenant_id = samples.tenant_id
          AND affected.cloud_connection_id = samples.cloud_connection_id
-         AND affected.cloud_resource_id IS NOT DISTINCT FROM samples.cloud_resource_id
          AND affected.external_resource_id = samples.external_resource_id
          AND affected.provider_namespace = samples.provider_namespace
          AND affected.region_id = samples.region_id
-          AND affected.dimensions_hash = samples.dimensions_hash
-          AND affected.metric_name = samples.metric_name
-          AND affected.statistic = samples.statistic
-        CROSS JOIN (VALUES (1800), (3600), (86400)) AS buckets(bucket_seconds)
+         AND affected.dimensions_hash = samples.dimensions_hash
+         AND affected.metric_name = samples.metric_name
+         AND affected.statistic = samples.statistic
         CROSS JOIN LATERAL (
-            SELECT buckets.bucket_seconds,
-              to_timestamp(floor(extract(epoch FROM samples.sampled_at) / buckets.bucket_seconds) * buckets.bucket_seconds) AS bucket_start
-          ) bucket
+          SELECT CASE
+            WHEN samples.granularity_seconds <= 1800 THEN 1800
+            WHEN samples.granularity_seconds <= 3600 THEN 3600
+            ELSE 86400
+          END::int AS source_bucket_seconds
+        ) source_resolution
+        CROSS JOIN LATERAL (
+          SELECT source_resolution.source_bucket_seconds AS bucket_seconds
+          UNION ALL
+          SELECT 86400::int
+          WHERE source_resolution.source_bucket_seconds <> 86400
+        ) bucket_resolution
+        CROSS JOIN LATERAL (
+          SELECT bucket_resolution.bucket_seconds,
+            to_timestamp(floor(extract(epoch FROM samples.sampled_at) / bucket_resolution.bucket_seconds) * bucket_resolution.bucket_seconds) AS bucket_start
+        ) bucket
         WHERE bucket.bucket_start >= to_timestamp(
             floor(extract(epoch FROM job."target_start") / bucket.bucket_seconds)
             * bucket.bucket_seconds
           )
-          AND bucket.bucket_start < to_timestamp(
-            ceil(extract(epoch FROM job."target_end") / bucket.bucket_seconds)
+        -- OCI may return a datapoint exactly at endTime. Include that end
+        -- bucket when refreshing this job's projection instead of dropping it.
+        AND bucket.bucket_start <= to_timestamp(
+            floor(extract(epoch FROM job."target_end") / bucket.bucket_seconds)
             * bucket.bucket_seconds
           )
       ), grouped AS (
@@ -151,31 +176,65 @@ export class PrismaResourceMetricRollupPersistence {
   }
 
   public async refreshAll(prisma: PrismaClient, tenantId?: string): Promise<number> {
-    const scope = tenantId === undefined ? Prisma.sql`` : Prisma.sql`WHERE tenant_id = ${tenantId}`;
-    await prisma.$executeRaw(Prisma.sql`DELETE FROM resource_metric_rollups ${scope}`);
-    let inserted = 0;
-    for (const bucketSeconds of [1800, 3600, 86400]) {
-      inserted += await this.refreshAllBucket(prisma, tenantId, bucketSeconds);
+    const deleteScope = tenantId === undefined ? Prisma.sql`` : Prisma.sql`WHERE tenant_id = ${tenantId}`;
+    await prisma.$executeRaw(Prisma.sql`DELETE FROM resource_metric_rollups ${deleteScope}`);
+
+    const tenantScope = tenantId === undefined ? Prisma.sql`` : Prisma.sql`AND tenant_id = ${tenantId}`;
+    const bounds = await prisma.$queryRaw<readonly [{ readonly first_sampled_at: Date | null; readonly last_sampled_at: Date | null }]>(Prisma.sql`
+      SELECT min(sampled_at) AS first_sampled_at, max(sampled_at) AS last_sampled_at
+      FROM resource_metric_samples
+      WHERE source_type = 'TECHNICAL_METRIC'::"IngestionSourceType" ${tenantScope}
+    `);
+    const first = bounds[0]?.first_sampled_at;
+    const last = bounds[0]?.last_sampled_at;
+    if (first === null || first === undefined || last === null || last === undefined) return 0;
+
+    let affected = 0;
+    let chunkStart = startOfUtcDay(first);
+    const finalExclusive = new Date(last.getTime() + 1);
+    while (chunkStart < finalExclusive) {
+      const chunkEnd = new Date(chunkStart.getTime() + rollupRebuildChunkDays * 24 * 60 * 60 * 1000);
+      affected += await this.refreshAllBucket(prisma, tenantId, chunkStart, chunkEnd);
+      chunkStart = chunkEnd;
     }
-    return inserted;
+    return affected;
   }
 
   private async refreshAllBucket(
     prisma: PrismaClient,
     tenantId: string | undefined,
-    bucketSeconds: number,
+    startDate?: Date,
+    endDate?: Date,
   ): Promise<number> {
-    const scope = tenantId === undefined ? Prisma.sql`` : Prisma.sql`WHERE tenant_id = ${tenantId}`;
+    const scope = tenantId === undefined ? Prisma.sql`` : Prisma.sql`AND s.tenant_id = ${tenantId}`;
+    const timeScope = startDate === undefined || endDate === undefined
+      ? Prisma.sql``
+      : Prisma.sql`AND s.sampled_at >= ${startDate} AND s.sampled_at < ${endDate}`;
     return prisma.$executeRaw(Prisma.sql`
       WITH source AS (
         SELECT s.id, s.tenant_id, s.cloud_connection_id, s.cloud_resource_id,
           s.provider, s.external_resource_id, s.provider_namespace, s.region_id,
           s.compartment_id, s.dimensions_hash, s.metric_name, s.metric_unit,
           s.statistic, s.value, s.sampled_at, s.granularity_seconds,
-          ${bucketSeconds}::int AS bucket_seconds,
-          to_timestamp(floor(extract(epoch FROM s.sampled_at) / ${bucketSeconds}) * ${bucketSeconds}) AS bucket_start
+          bucket_resolution.bucket_seconds,
+          to_timestamp(floor(extract(epoch FROM s.sampled_at) / bucket_resolution.bucket_seconds) * bucket_resolution.bucket_seconds) AS bucket_start
         FROM resource_metric_samples s
-        ${scope}
+        CROSS JOIN LATERAL (
+          SELECT CASE
+            WHEN s.granularity_seconds <= 1800 THEN 1800
+            WHEN s.granularity_seconds <= 3600 THEN 3600
+            ELSE 86400
+          END::int AS source_bucket_seconds
+        ) source_resolution
+        CROSS JOIN LATERAL (
+          SELECT source_resolution.source_bucket_seconds AS bucket_seconds
+          UNION ALL
+          SELECT 86400::int
+          WHERE source_resolution.source_bucket_seconds <> 86400
+        ) bucket_resolution
+        WHERE s.source_type = 'TECHNICAL_METRIC'::"IngestionSourceType"
+          ${scope}
+          ${timeScope}
       ), grouped AS (
         SELECT tenant_id, cloud_connection_id, max(cloud_resource_id) AS cloud_resource_id,
           provider, external_resource_id, provider_namespace, region_id, max(compartment_id) AS compartment_id,
@@ -219,4 +278,8 @@ export class PrismaResourceMetricRollupPersistence {
       FROM grouped
     `);
   }
+}
+
+function startOfUtcDay(value: Date): Date {
+  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
 }

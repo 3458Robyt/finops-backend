@@ -92,6 +92,17 @@ export class CloudIngestionController extends CloudConnectionControllerSupport {
         body["windowHours"],
         "windowHours",
       );
+      const filterValue = body["metricFilter"];
+      if (filterValue !== undefined && (filterValue === null || typeof filterValue !== 'object' || Array.isArray(filterValue))) {
+        throw new FinOpsBaseError('metricFilter debe ser un objeto con serie y recurso OCI explícitos.', 'VALIDATION_ERROR');
+      }
+      const metricFilter = filterValue as Record<string, unknown> | undefined;
+      const parsedFilter = metricFilter === undefined ? undefined : {
+        namespace: this.requireString(metricFilter['namespace'], 'metricFilter.namespace'),
+        metricName: this.requireString(metricFilter['metricName'], 'metricFilter.metricName') as 'CpuUtilization' | 'MemoryUtilization',
+        resourceId: this.requireString(metricFilter['resourceId'], 'metricFilter.resourceId'),
+        regionId: this.requireString(metricFilter['regionId'], 'metricFilter.regionId'),
+      };
 
       const backfill =
         await this.cloudConnectionService.queueTechnicalMetricBackfill({
@@ -100,6 +111,7 @@ export class CloudIngestionController extends CloudConnectionControllerSupport {
           cloudConnectionId,
           ...(lookbackDays !== undefined ? { lookbackDays } : {}),
           ...(windowHours !== undefined ? { windowHours } : {}),
+          ...(parsedFilter === undefined ? {} : { metricFilter: parsedFilter }),
         });
 
       res.status(202).json({ success: true, backfill });

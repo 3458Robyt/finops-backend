@@ -132,19 +132,10 @@ export class PrismaCostAllocationRepository implements ICostAllocationRepository
       if (activeJobs > 0) throw new FinOpsBaseError('El período todavía tiene trabajos de ingesta de facturación activos', 'VALIDATION_ERROR');
       const [rules, metrics] = await Promise.all([this.loadRules(tx, tenantId, 'ACTIVE'), this.metrics(tenantId, normalizedPeriod, undefined, undefined, undefined, undefined, tx)]);
       if (metrics.length === 0) throw new FinOpsBaseError('No hay costos disponibles para este período', 'VALIDATION_ERROR');
-      const sourceHashBeforeAllocation = hashMetrics(metrics);
-      const sourceTotalBeforeAllocation = metrics.reduce((total, metric) => total.plus(metric.billedCost), new Prisma.Decimal(0));
       const allocation = allocate(metrics, rules, normalizedPeriod);
-      const sourceStateAfterAllocation = await tx.costMetric.aggregate({
-        where: { tenantId, chargePeriodStart: { gte: normalizedPeriod, lt: end } },
-        _count: { _all: true },
-        _sum: { billedCost: true },
-      });
-      const sourceTotalAfterAllocation = sourceStateAfterAllocation._sum.billedCost ?? new Prisma.Decimal(0);
-      const sourceMetricsAfterAllocation = sourceStateAfterAllocation._count._all === metrics.length && sourceTotalBeforeAllocation.eq(sourceTotalAfterAllocation)
-        ? await this.metrics(tenantId, normalizedPeriod, undefined, undefined, undefined, undefined, tx)
-        : [];
-      if (sourceStateAfterAllocation._count._all !== metrics.length || !sourceTotalBeforeAllocation.eq(sourceTotalAfterAllocation) || hashMetrics(sourceMetricsAfterAllocation) !== sourceHashBeforeAllocation) throw new FinOpsBaseError('La fuente de costos cambió durante el cierre; intente nuevamente', 'VALIDATION_ERROR');
+      // SERIALIZABLE keeps one consistent source snapshot for the entire closure transaction.
+      // Re-reading and re-hashing the same rows here added two full scans without detecting
+      // commits made after that snapshot; those are handled by a later versioned closure.
       const summaries = allocation.summaries;
       const rulesHash = hashRules(rules);
       const closures: CostAllocationClosure[] = [];

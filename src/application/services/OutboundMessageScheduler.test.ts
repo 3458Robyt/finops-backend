@@ -30,7 +30,7 @@ describe('OutboundMessageScheduler', () => {
 const actor: AuthContext = {
   userId: 'scheduler-user',
   tenantId: 'tenant-1',
-  email: 'scheduler@example.com',
+  email: 'test-user-0018@example.test',
   role: 'MASTER_ADMIN',
   jwtId: 'scheduler-jwt',
 };

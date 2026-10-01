@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { FinOpsAiService } from '../../application/services/FinOpsAiService.js';
 import type { IAgentLearningService } from '../../domain/interfaces/IAgentLearningService.js';
+import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
 import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const chatSchema = z.object({
@@ -85,6 +86,7 @@ export class AiController {
       const result = await this.aiService.answerChat({
         tenantId: req.auth.tenantId,
         userId: req.auth.userId,
+        traceSource: 'WEB',
         message: parsed.data.message,
         outputFormat: 'MARKDOWN',
         ...(parsed.data.history !== undefined ? { history: parsed.data.history } : {}),
@@ -152,6 +154,10 @@ export class AiController {
         tenantId: req.auth.tenantId,
         userId: req.auth.userId,
         persist: parsed.data.persist === true,
+        // The HTTP path must stay within the recommendation SLO. A second
+        // generation/audit cycle is reserved for explicit internal flows;
+        // otherwise a NEEDS_REVISION result is rejected with its audit details.
+        allowRepair: false,
         ...(parsed.data.externalResourceId !== undefined ? { externalResourceId: parsed.data.externalResourceId } : {}),
         ...(parsed.data.cloudResourceId !== undefined ? { cloudResourceId: parsed.data.cloudResourceId } : {}),
       });
@@ -224,6 +230,7 @@ export class AiController {
     }
 
     try {
+      requirePermission(req.auth.role, 'AGENT_OBSERVE', 'No tienes permiso para consultar el aprendizaje del agente.');
       const learning = await this.learningService.getLearningSummary(req.auth.tenantId);
 
       res.status(200).json({

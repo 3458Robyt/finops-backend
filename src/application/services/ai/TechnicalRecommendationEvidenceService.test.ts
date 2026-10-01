@@ -22,6 +22,7 @@ class FakeResourceMetricRepository implements IResourceMetricRepository {
   public summaries: readonly TechnicalMetricSummaryItem[] = [];
   public sampleFilters: TechnicalMetricSampleFilters | undefined;
   public summaryFilters: TechnicalMetricSummaryFilters | undefined;
+  public fastSummaryFilters: TechnicalMetricSummaryFilters | undefined;
 
   public async listResourcesForTenant(): Promise<readonly CloudResourceItem[]> {
     return [];
@@ -71,6 +72,14 @@ class FakeResourceMetricRepository implements IResourceMetricRepository {
       filters.externalResourceIds === undefined || filters.externalResourceIds.includes(summary.externalResourceId)
     ));
   }
+
+  public async listMetricSummariesForTenantFast(
+    _tenantId: string,
+    filters: TechnicalMetricSummaryFilters,
+  ): Promise<readonly TechnicalMetricSummaryItem[]> {
+    this.fastSummaryFilters = filters;
+    return this.summaries;
+  }
 }
 
 describe('TechnicalRecommendationEvidenceService', () => {
@@ -81,7 +90,7 @@ describe('TechnicalRecommendationEvidenceService', () => {
       sample('s2', 12, '2026-06-21T00:00:00.000Z'),
     ];
     repository.costContext = [
-      { externalResourceId: 'ocid1.instance.oc1.test', cloudResourceId: 'cloud-resource-1', totalCost: 42, currency: 'USD', metricCount: 2 },
+      { externalResourceId: 'ocid1.instance.oc1..exampleid0017', cloudResourceId: 'cloud-resource-1', totalCost: 42, currency: 'USD', metricCount: 2 },
     ];
     repository.summaries = [
       metricSummary('CpuUtilization', 8, 25),
@@ -95,7 +104,7 @@ describe('TechnicalRecommendationEvidenceService', () => {
     });
 
     expect(evidence).toContain('COST_USAGE_AND_TECHNICAL_AVAILABLE');
-    expect(evidence).toContain('resource_metric_samples:cloud-resource-1:ocid1.instance.oc1.test:CpuUtilization');
+    expect(evidence).toContain('resource_metric_samples:cloud-resource-1:ocid1.instance.oc1..exampleid0017:CpuUtilization');
     expect(evidence).toContain('"technicalEvidenceRefs"');
     expect(evidence).toContain('"deterministicRules"');
     expect(evidence).toContain('CPU_STRONG_UNDERUTILIZATION');
@@ -119,23 +128,45 @@ describe('TechnicalRecommendationEvidenceService', () => {
     const repository = new FakeResourceMetricRepository();
     repository.samples = [
       sample('s1', 8, '2026-06-20T00:00:00.000Z'),
-      { ...sample('s2', 55, '2026-06-20T00:00:00.000Z'), externalResourceId: 'ocid1.instance.other' },
+      { ...sample('s2', 55, '2026-06-20T00:00:00.000Z'), externalResourceId: 'ocid1.instance.oc1..exampleid0018' },
     ];
     repository.summaries = [
       metricSummary('CpuUtilization', 8, 25),
-      { ...metricSummary('CpuUtilization', 55, 90), externalResourceId: 'ocid1.instance.other' },
+      { ...metricSummary('CpuUtilization', 55, 90), externalResourceId: 'ocid1.instance.oc1..exampleid0018' },
     ];
     const service = new TechnicalRecommendationEvidenceService(repository);
 
     const evidence = await service.buildRecommendationEvidence({
       tenantId: 'tenant-1',
       snapshot,
-      externalResourceId: 'ocid1.instance.oc1.test',
+      externalResourceId: 'ocid1.instance.oc1..exampleid0017',
     });
 
-    expect(repository.summaryFilters?.externalResourceIds).toEqual(['ocid1.instance.oc1.test']);
-    expect(evidence).toContain('ocid1.instance.oc1.test');
-    expect(evidence).not.toContain('ocid1.instance.other');
+    expect(repository.summaryFilters?.externalResourceIds).toEqual(['ocid1.instance.oc1..exampleid0017']);
+    expect(evidence).toContain('ocid1.instance.oc1..exampleid0017');
+    expect(evidence).not.toContain('ocid1.instance.oc1..exampleid0018');
+  });
+
+  test('limits tenant-wide evidence to resources present in the cost snapshot', async () => {
+    const repository = new FakeResourceMetricRepository();
+    repository.summaries = [metricSummary('CpuUtilization', 8, 25)];
+    const service = new TechnicalRecommendationEvidenceService(repository);
+
+    await service.buildRecommendationEvidenceSnapshot({
+      tenantId: 'tenant-1',
+      snapshot: {
+        ...snapshot,
+        topResources: [{
+          resourceId: 'ocid1.instance.oc1..exampleid0017',
+          provider: 'OCI',
+          serviceName: 'Compute',
+          totalCost: 100,
+          metricCount: 10,
+        }],
+      },
+    });
+
+    expect(repository.summaryFilters?.externalResourceIds).toEqual(['ocid1.instance.oc1..exampleid0017']);
   });
 
   test('does not treat a future monthly period end as stale technical evidence', async () => {
@@ -143,11 +174,11 @@ describe('TechnicalRecommendationEvidenceService', () => {
     vi.setSystemTime(new Date('2026-06-20T12:00:00.000Z'));
     try {
       const repository = new FakeResourceMetricRepository();
-      repository.summaries = [{
-        ...metricSummary('CpuUtilization', 8, 25),
-        firstSampledAt: new Date('2026-06-06T00:00:00.000Z'),
+      repository.summaries = ['CpuUtilization', 'MemoryUtilization'].map((metricName) => ({
+        ...metricSummary(metricName, 8, 25),
+        firstSampledAt: new Date('2026-06-13T12:00:00.000Z'),
         latestSampledAt: new Date('2026-06-19T23:30:00.000Z'),
-      }];
+      }));
       const service = new TechnicalRecommendationEvidenceService(repository);
 
       const evidence = await service.buildRecommendationEvidenceSnapshot({
@@ -160,6 +191,41 @@ describe('TechnicalRecommendationEvidenceService', () => {
       });
 
       expect(evidence.deterministicRules[0]?.blockers).not.toContain('INSUFFICIENT_TECHNICAL_COVERAGE');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('uses bounded rollups for interactive chat evidence without changing exact recommendation evidence', async () => {
+    const repository = new FakeResourceMetricRepository();
+    repository.summaries = [metricSummary('CpuUtilization', 8, 25)];
+    const service = new TechnicalRecommendationEvidenceService(repository);
+
+    await service.buildChatTechnicalEvidenceSnapshot({ tenantId: 'tenant-1', snapshot });
+
+    expect(repository.fastSummaryFilters).toBeDefined();
+    expect(repository.summaryFilters).toBeUndefined();
+
+    await service.buildRecommendationEvidenceSnapshot({ tenantId: 'tenant-1', snapshot });
+
+    expect(repository.summaryFilters).toBeDefined();
+  });
+
+  test('does not attribute service-wide usage to a resource and queries the current evidence window', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-30T12:00:00.000Z'));
+    try {
+      const repository = new FakeResourceMetricRepository();
+      repository.summaries = [metricSummary('CpuUtilization', 8, 25)];
+      const service = new TechnicalRecommendationEvidenceService(repository);
+      const evidence = await service.buildRecommendationEvidenceSnapshot({
+        tenantId: 'tenant-1',
+        snapshot: { ...snapshot, topResources: [{ resourceId: 'ocid1.instance.oc1..exampleid0017', provider: 'OCI', serviceName: 'Compute', totalCost: 42, metricCount: 2 }],
+          topUsage: [{ serviceName: 'Compute', provider: 'OCI', consumedQuantity: 100, consumedUnit: 'Hours', totalCost: 42, currency: 'USD', metricCount: 2 }] },
+      });
+      expect(evidence.resources[0]?.usage).toEqual([]);
+      expect(repository.summaryFilters?.startDate?.toISOString()).toBe('2026-06-23T12:00:00.000Z');
+      expect(repository.summaryFilters?.endDate?.toISOString()).toBe('2026-06-30T12:00:00.000Z');
     } finally {
       vi.useRealTimers();
     }
@@ -184,7 +250,7 @@ function sample(id: string, value: number, sampledAt: string): ResourceMetricSam
   return {
     id,
     provider: 'OCI',
-    externalResourceId: 'ocid1.instance.oc1.test',
+    externalResourceId: 'ocid1.instance.oc1..exampleid0017',
     cloudResourceId: 'cloud-resource-1',
     metricName: 'CpuUtilization',
     metricUnit: 'Percent',
@@ -197,14 +263,17 @@ function sample(id: string, value: number, sampledAt: string): ResourceMetricSam
 function metricSummary(metricName: string, avg: number, p95: number): TechnicalMetricSummaryItem {
   return {
     provider: 'OCI',
-    externalResourceId: 'ocid1.instance.oc1.test',
+    externalResourceId: 'ocid1.instance.oc1..exampleid0017',
     cloudResourceId: 'cloud-resource-1',
     resourceType: 'COMPUTE_INSTANCE',
     serviceName: 'Compute',
     metricName,
+    providerNamespace: 'oci_computeagent',
+    statistic: 'MEAN',
     metricUnit: 'Percent',
-    sampleCount: 96,
-    coverageDays: 14,
+    sampleCount: 168,
+    coverageDays: 7,
+    granularitySeconds: 3600,
     min: 1,
     max: 50,
     avg,

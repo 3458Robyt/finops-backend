@@ -6,10 +6,12 @@ import { optionalString, readObjectArray, requireString } from '../providerConfi
 import type { OciCompartmentDiscoveryResult } from './OciCompartmentDiscovery.js';
 import type { OciRegionDiscoveryResult } from './OciRegionDiscovery.js';
 import { readOciMetricDefinitions } from './OciMonitoringCollector.js';
-import type { OciComputeClient, OciResourceSearchClient } from './OciSdkContracts.js';
+import type { OciComputeClient, OciObjectStorageClient, OciResourceSearchClient } from './OciSdkContracts.js';
 import { collectOciResourceSearchInventory } from './OciResourceSearchCollector.js';
 import { mergeOciTags, normalizeOciResourceStatus, ociInventorySourcePriority } from './OciResourceNormalizer.js';
+import { classifySupportedOciResourceId } from './OciHistoricalResourceCatalog.js';
 import { safeErrorMessage } from '../../../application/observability/safeError.js';
+import { collectOciObjectStorageInventory } from './OciObjectStorageInventoryCollector.js';
 
 export interface OciInventoryCollectionResult {
   readonly apiCallCount: number;
@@ -20,68 +22,144 @@ export interface OciInventoryCollectionResult {
 }
 
 export interface OciInventoryDependencies {
-  readonly createComputeClient: (job: CloudIngestionJobContext) => OciComputeClient;
-  readonly createResourceSearchClient?: (job: CloudIngestionJobContext) => OciResourceSearchClient;
+  readonly createComputeClient: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciComputeClient;
+  readonly createObjectStorageClient?: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciObjectStorageClient;
+  readonly createResourceSearchClient?: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciResourceSearchClient;
   readonly discoverCompartments: (
     job: CloudIngestionJobContext,
+    signal?: AbortSignal,
   ) => Promise<OciCompartmentDiscoveryResult>;
   readonly discoverRegions?: (
     job: CloudIngestionJobContext,
+    signal?: AbortSignal,
   ) => Promise<OciRegionDiscoveryResult>;
-  readonly withRetry: <T>(operation: () => Promise<T>) => Promise<T>;
-  readonly withRateLimit?: <T>(job: CloudIngestionJobContext, api: 'resourceSearch' | 'compute', operation: () => Promise<T>) => Promise<T>;
+  readonly withRetry: <T>(operation: (signal?: AbortSignal) => Promise<T>, signal?: AbortSignal) => Promise<T>;
+  readonly withRateLimit?: <T>(job: CloudIngestionJobContext, api: 'resourceSearch' | 'compute' | 'objectStorage', operation: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
 }
 
 export async function collectOciInventory(
   job: CloudIngestionJobContext,
   dependencies: OciInventoryDependencies,
+  signal?: AbortSignal,
 ): Promise<OciInventoryCollectionResult> {
   const explicit = readExplicitResources(job);
   const inferred = readMetricResources(job);
   let sdkResources: readonly NormalizedCloudResource[] = [];
   let searchResources: readonly NormalizedCloudResource[] = [];
-  let resourceSearchStatus: 'COMPLETE' | 'FAILED' | 'NOT_CONFIGURED' = 'NOT_CONFIGURED';
+  let resourceSearchStatus: 'COMPLETE' | 'PARTIAL' | 'FAILED' | 'NOT_CONFIGURED' = 'NOT_CONFIGURED';
   let resourceSearchFilteredCount = 0;
   let resourceSearchTypes: readonly string[] = [];
+  let objectStorageResources: readonly NormalizedCloudResource[] = [];
+  let objectStorageStatus: 'COMPLETE' | 'FAILED' | 'NOT_CONFIGURED' = 'NOT_CONFIGURED';
   let apiCallCount = 0;
   const warnings: string[] = [];
 
-  if (dependencies.createResourceSearchClient !== undefined) {
-    try {
-      const searchOperation = () => collectOciResourceSearchInventory(job, {
-        createClient: dependencies.createResourceSearchClient!,
-        withRetry: dependencies.withRetry,
-      });
-      const search = dependencies.withRateLimit === undefined
-        ? await searchOperation()
-        : await dependencies.withRateLimit(job, 'resourceSearch', searchOperation);
-      searchResources = search.resources;
-      resourceSearchStatus = 'COMPLETE';
-      resourceSearchFilteredCount = search.filteredResourceCount;
-      resourceSearchTypes = search.resourceTypes;
-      apiCallCount += search.apiCallCount;
-      warnings.push(...search.warnings);
-    } catch (error) {
-      resourceSearchStatus = 'FAILED';
-      warnings.push(`OCI Resource Search skipped: ${safeErrorMessage(error)}`);
-    }
-  }
   let coverage: Readonly<Record<string, unknown>> = {
     inventoryCompartmentDiscovery: 'NOT_ATTEMPTED',
   };
 
+  let computeInventory: Awaited<ReturnType<typeof collectComputeInventory>> | undefined;
   try {
-    const inventory = await collectComputeInventory(job, dependencies);
+    const inventory = await collectComputeInventory(job, dependencies, signal);
+    computeInventory = inventory;
     sdkResources = inventory.resources;
     apiCallCount += inventory.apiCallCount;
     coverage = inventory.coverage;
     warnings.push(...inventory.warnings);
   } catch (error) {
+    if (signal?.aborted === true) throw error;
     warnings.push(`OCI inventory SDK skipped: ${safeErrorMessage(error)}`);
     coverage = { inventoryCompartmentDiscovery: 'FAILED' };
   }
 
-  const resources = mergeInventoryResources([...inferred, ...searchResources, ...sdkResources, ...explicit]);
+  if (dependencies.createResourceSearchClient !== undefined) {
+    const regionIds = computeInventory?.regionIds.length
+      ? computeInventory.regionIds
+      : job.connection.defaultRegion === undefined ? [] : [job.connection.defaultRegion];
+    let completedRegions = 0;
+    let failedRegions = 0;
+    for (const regionId of regionIds) {
+      throwIfAborted(signal);
+      const regionalJob = withRegion(job, regionId);
+      try {
+        const search = await collectOciResourceSearchInventory(regionalJob, {
+          createClient: dependencies.createResourceSearchClient!,
+          withRetry: dependencies.withRetry,
+          ...(dependencies.withRateLimit === undefined ? {} : {
+            withRateLimit: (context, operation, nestedSignal) => dependencies.withRateLimit!(
+              context,
+              'resourceSearch',
+              operation,
+              nestedSignal,
+            ),
+          }),
+        }, signal);
+        searchResources = mergeInventoryResources([...searchResources, ...search.resources]);
+        resourceSearchFilteredCount += search.filteredResourceCount;
+        resourceSearchTypes = [...new Set([...resourceSearchTypes, ...search.resourceTypes])];
+        apiCallCount += search.apiCallCount;
+        warnings.push(...search.warnings);
+        completedRegions += 1;
+      } catch (error) {
+        if (signal?.aborted === true) throw error;
+        failedRegions += 1;
+        warnings.push(`No se pudo consultar OCI Resource Search en ${regionId}: ${safeErrorMessage(error)}`);
+      }
+    }
+    resourceSearchStatus = completedRegions === 0 ? 'FAILED'
+      : failedRegions > 0 ? 'PARTIAL' : 'COMPLETE';
+    if (regionIds.length === 0) warnings.push('OCI Resource Search omitido: no hay regiones disponibles para consultar.');
+    coverage = { ...coverage, resourceSearchRegionCount: regionIds.length, resourceSearchFailedRegionCount: failedRegions };
+  }
+
+  if (dependencies.createObjectStorageClient !== undefined && computeInventory !== undefined) {
+    let namespaceName = readConfiguredObjectStorageNamespace(job);
+    try {
+      if (namespaceName === undefined) {
+        apiCallCount += 1;
+        namespaceName = await discoverObjectStorageNamespace(
+          job,
+          computeInventory.regionIds[0],
+          dependencies,
+          signal,
+        );
+      }
+      if (namespaceName === undefined) {
+        objectStorageStatus = 'FAILED';
+        warnings.push('OCI Object Storage inventory skipped: OCI no devolvió el namespace de Object Storage.');
+      } else {
+        const storage = await collectOciObjectStorageInventory(
+          job,
+          namespaceName,
+          computeInventory.compartmentIds,
+          computeInventory.regionIds,
+          {
+            createClient: dependencies.createObjectStorageClient,
+            withRetry: dependencies.withRetry,
+            ...(dependencies.withRateLimit === undefined ? {} : {
+              withRateLimit: (context, operation, nestedSignal) => dependencies.withRateLimit!(
+                context,
+                'objectStorage',
+                operation,
+                nestedSignal,
+              ),
+            }),
+          },
+          signal,
+        );
+        objectStorageResources = storage.resources;
+        objectStorageStatus = 'COMPLETE';
+        apiCallCount += storage.apiCallCount;
+        warnings.push(...storage.warnings);
+      }
+    } catch (error) {
+      if (signal?.aborted === true) throw error;
+      objectStorageStatus = 'FAILED';
+      warnings.push(`OCI Object Storage inventory skipped: ${safeErrorMessage(error)}`);
+    }
+  }
+
+  const resources = mergeInventoryResources([...inferred, ...searchResources, ...sdkResources, ...objectStorageResources, ...explicit]);
   if (resources.length === 0) {
     warnings.push('No OCI inventory resources found from Resource Search, Compute SDK, metadata or metric definitions.');
   }
@@ -102,6 +180,8 @@ export async function collectOciInventory(
       resourceSearchFilteredCount,
       resourceSearchResourceCount: searchResources.length,
       sdkResourceCount: sdkResources.length,
+      objectStorageStatus,
+      objectStorageResourceCount: objectStorageResources.length,
       mergedResourceCount: resources.length,
     },
   };
@@ -110,35 +190,45 @@ export async function collectOciInventory(
 async function collectComputeInventory(
   job: CloudIngestionJobContext,
   dependencies: OciInventoryDependencies,
+  signal?: AbortSignal,
 ): Promise<{
   readonly apiCallCount: number;
   readonly resources: readonly NormalizedCloudResource[];
   readonly coverage: Readonly<Record<string, unknown>>;
   readonly warnings: readonly string[];
+  readonly compartmentIds: readonly string[];
+  readonly regionIds: readonly string[];
 }> {
-  const discovery = await dependencies.discoverCompartments(job);
+  const discovery = await dependencies.discoverCompartments(job, signal);
   const regions = dependencies.discoverRegions === undefined
     ? { regionIds: job.connection.defaultRegion === undefined ? [] : [job.connection.defaultRegion], apiCallCount: 0, status: 'FALLBACK' as const, warnings: [] }
-    : await dependencies.discoverRegions(job);
+    : await dependencies.discoverRegions(job, signal);
   const resources: NormalizedCloudResource[] = [];
   let apiCallCount = discovery.apiCallCount + regions.apiCallCount;
   const warnings = [...regions.warnings];
 
   for (const regionId of regions.regionIds) {
+    throwIfAborted(signal);
     const regionalJob = withRegion(job, regionId);
-    const client = dependencies.createComputeClient(regionalJob);
-    try {
-      for (const compartmentId of discovery.compartmentIds) {
-        let page: string | undefined;
-        do {
-          apiCallCount += 1;
-          const request = () => dependencies.withRetry(() => client.listInstances({
-            compartmentId,
-            ...(page !== undefined ? { page } : {}),
-          }));
-          const response = dependencies.withRateLimit === undefined
-            ? await request()
-            : await dependencies.withRateLimit(regionalJob, 'compute', request);
+    for (const compartmentId of discovery.compartmentIds) {
+      let page: string | undefined;
+      do {
+        throwIfAborted(signal);
+        apiCallCount += 1;
+        const request = () => dependencies.withRetry(async (attemptSignal) => {
+          const client = dependencies.createComputeClient(regionalJob, attemptSignal);
+          try {
+            return await client.listInstances({
+              compartmentId,
+              ...(page !== undefined ? { page } : {}),
+            });
+          } finally {
+            client.close?.();
+          }
+        }, signal);
+        const response = dependencies.withRateLimit === undefined
+          ? await request()
+          : await dependencies.withRateLimit(regionalJob, 'compute', request, signal);
           for (const instance of response.items ?? []) {
             if (instance.id === undefined) continue;
             resources.push({
@@ -166,11 +256,8 @@ async function collectComputeInventory(
               },
             });
           }
-          page = response.opcNextPage;
-        } while (page !== undefined);
-      }
-    } finally {
-      client.close?.();
+        page = response.opcNextPage;
+      } while (page !== undefined);
     }
   }
 
@@ -189,6 +276,8 @@ async function collectComputeInventory(
       regions: regions.regionIds,
     },
     warnings,
+    compartmentIds: discovery.compartmentIds,
+    regionIds: regions.regionIds,
   };
 }
 
@@ -224,26 +313,70 @@ function readExplicitResources(job: CloudIngestionJobContext): readonly Normaliz
 }
 
 function readMetricResources(job: CloudIngestionJobContext): readonly NormalizedCloudResource[] {
-  return readOciMetricDefinitions(job).map((definition) => ({
-    tenantId: job.tenantId,
-    cloudConnectionId: job.cloudConnectionId,
-    provider: 'OCI',
-    externalResourceId: definition.resourceId,
-    name: definition.resourceId,
-    resourceType: 'COMPUTE_INSTANCE',
-    serviceName: 'Oracle Compute',
-    ...((definition.regionId ?? job.connection.defaultRegion) !== undefined
-      ? { regionId: definition.regionId ?? job.connection.defaultRegion }
-      : {}),
-    status: 'UNKNOWN',
-    rawResource: {
-      source: 'OCI_METRIC_DEFINITION',
-      normalizerVersion: 'oci-metric-definition-v1',
-      namespace: definition.namespace,
-      compartmentId: definition.compartmentId,
-      metricName: definition.metricName,
-    },
-  }));
+  return readOciMetricDefinitions(job).flatMap((definition) => {
+    const externalResourceId = definition.resourceId.trim();
+    // OCI returns tenancy-level metric definitions when no resourceId dimension
+    // exists. They remain aggregate telemetry, not an invented cloud resource.
+    if (externalResourceId === '' || externalResourceId === job.connection.rootExternalId) return [];
+    const catalog = classifySupportedOciResourceId(externalResourceId);
+    return [{
+      tenantId: job.tenantId,
+      cloudConnectionId: job.cloudConnectionId,
+      provider: 'OCI' as const,
+      externalResourceId,
+      name: externalResourceId,
+      resourceType: catalog?.resourceType ?? 'OCI_RESOURCE',
+      serviceName: catalog?.serviceName ?? 'Oracle Cloud Infrastructure',
+      ...((definition.regionId ?? job.connection.defaultRegion) !== undefined
+        ? { regionId: definition.regionId ?? job.connection.defaultRegion }
+        : {}),
+      status: 'UNKNOWN' as const,
+      rawResource: {
+        source: 'OCI_METRIC_DEFINITION',
+        normalizerVersion: 'oci-metric-definition-v1',
+        namespace: definition.namespace,
+        compartmentId: definition.compartmentId,
+        metricName: definition.metricName,
+      },
+    }];
+  });
+}
+
+async function discoverObjectStorageNamespace(
+  job: CloudIngestionJobContext,
+  regionId: string | undefined,
+  dependencies: OciInventoryDependencies,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  const clientJob = regionId === undefined ? job : withRegion(job, regionId);
+  const request = () => dependencies.withRetry(async (attemptSignal) => {
+    const client = dependencies.createObjectStorageClient!(clientJob, attemptSignal);
+    try {
+      return await client.getNamespace({ compartmentId: job.connection.rootExternalId });
+    } finally {
+      client.close?.();
+    }
+  }, signal);
+    const response = dependencies.withRateLimit === undefined
+      ? await request()
+      : await dependencies.withRateLimit(clientJob, 'objectStorage', request, signal);
+    return optionalString(response.value);
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted === true) throw new Error('OCI inventory operation cancelled');
+}
+
+function readConfiguredObjectStorageNamespace(job: CloudIngestionJobContext): string | undefined {
+  const location = readObjectArray(job.connection.metadata, 'ociFocusReportLocations')[0];
+  const object = readObjectArray(job.connection.metadata, 'ociFocusReportObjects')[0];
+  const explicit = optionalString(location?.['namespaceName'])
+    ?? optionalString(location?.['namespace-name'])
+    ?? optionalString(object?.['namespaceName'])
+    ?? optionalString(object?.['namespace-name']);
+  if (explicit !== undefined) return explicit;
+
+  return undefined;
 }
 
 function mergeInventoryResources(

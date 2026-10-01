@@ -43,6 +43,7 @@ import { isValidationAuthenticated } from './cloudConnectionValidation.js';
 import { CredentialCipher } from '../security/CredentialCipher.js';
 import { PrismaCloudIngestionReadRepository } from './PrismaCloudIngestionReadRepository.js';
 import { PrismaCloudIngestionCommandRepository } from './PrismaCloudIngestionCommandRepository.js';
+import { DEFAULT_INGESTION_VALIDATION_MAX_AGE_MINUTES } from '../ingestion/ingestionValidationFreshness.js';
 
 /** Prisma adapter for cloud connections, credentials, ingestion and audit operations. */
 export class PrismaCloudConnectionRepository implements ICloudConnectionRepository {
@@ -54,10 +55,11 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
   constructor(
     private readonly prisma: PrismaClient,
     credentialCipher?: CredentialCipher,
+    validationMaxAgeMinutes = DEFAULT_INGESTION_VALIDATION_MAX_AGE_MINUTES,
   ) {
     this.credentialRepository = new PrismaCloudCredentialRepository(prisma, credentialCipher);
     this.configurationRepository = new PrismaCloudConnectionConfigurationRepository(prisma);
-    this.ingestionReadRepository = new PrismaCloudIngestionReadRepository(prisma);
+    this.ingestionReadRepository = new PrismaCloudIngestionReadRepository(prisma, validationMaxAgeMinutes);
     this.ingestionCommandRepository = new PrismaCloudIngestionCommandRepository(prisma);
   }
 
@@ -357,8 +359,15 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
     return this.ingestionReadRepository.listFailedIngestionJobsForConnection(tenantId, cloudConnectionId, sourceType);
   }
 
-  public cancelPendingIngestionJobs(tenantId: string, cloudConnectionId: string, sourceType: IngestionSourceType): Promise<number> {
-    return this.ingestionReadRepository.cancelPendingIngestionJobs(tenantId, cloudConnectionId, sourceType);
+  public cancelPendingIngestionJobs(
+    tenantId: string,
+    cloudConnectionId: string,
+    sourceType: IngestionSourceType,
+    actorUserId: string,
+  ): Promise<number> {
+    return this.ingestionReadRepository.cancelPendingIngestionJobs(
+      tenantId, cloudConnectionId, sourceType, actorUserId,
+    );
   }
 
   public listIngestionReadinessForTenant(tenantId: string): Promise<IngestionReadinessSummary> {

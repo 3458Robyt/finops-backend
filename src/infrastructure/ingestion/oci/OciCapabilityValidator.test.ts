@@ -69,7 +69,7 @@ function buildConnection(): CloudIngestionConnection {
     id: 'connection-1',
     tenantId: 'tenant-1',
     providerCode: 'oci',
-    rootExternalId: 'ocid1.tenancy.oc1.test',
+    rootExternalId: 'ocid1.tenancy.oc1..exampleid0027',
     credentials: [],
   };
 }
@@ -80,8 +80,8 @@ function buildConnectionWithCredential(): CloudIngestionConnection {
     credentials: [{
       purpose: 'OPERATIONAL',
       payload: {
-        userId: 'ocid1.user.oc1.test',
-        tenancyId: 'ocid1.tenancy.oc1.test',
+        userId: 'ocid1.user.oc1..exampleid0032',
+        tenancyId: 'ocid1.tenancy.oc1..exampleid0027',
         fingerprint: '00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff',
         privateKey: 'not-used-by-this-test',
       },

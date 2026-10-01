@@ -14,13 +14,21 @@ import {
   type MetricSeriesCursor,
   type RawMetricSeriesRow,
 } from './technicalMetricQueryHelpers.js';
+import { PrismaResourceMetric30mRollupReader } from './PrismaResourceMetric30mRollupReader.js';
+import { PrismaResourceMetricMixedRollupReader } from './PrismaResourceMetricMixedRollupReader.js';
 
 /**
  * Reads paginated metric series without mixing SQL for resource lineage,
  * coverage, summaries, or cost context into the same repository class.
  */
 export class PrismaResourceMetricSeriesReader {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly thirtyMinuteRollups: PrismaResourceMetric30mRollupReader;
+  private readonly mixedRollups: PrismaResourceMetricMixedRollupReader;
+
+  constructor(private readonly prisma: PrismaClient) {
+    this.thirtyMinuteRollups = new PrismaResourceMetric30mRollupReader(prisma);
+    this.mixedRollups = new PrismaResourceMetricMixedRollupReader(prisma);
+  }
 
   public async listForTenant(
     tenantId: string,
@@ -38,10 +46,20 @@ export class PrismaResourceMetricSeriesReader {
         ? this.listAggregatedRows(where, cursor, filters.bucket, limit)
         : this.listRollupRows(tenantId, filters, bucketSeconds!, cursor, limit));
     let totalSamples = 0;
-    if (cursor === undefined) {
-      totalSamples = filters.bucket === 'raw' || exactPercentile
-        ? await this.countSamples(tenantId, filters)
-        : await this.countRollupSamples(tenantId, filters, bucketSeconds!);
+    if (filters.bucket === 'raw' || exactPercentile) {
+      totalSamples = cursor === undefined ? await this.countSamples(tenantId, filters) : 0;
+    } else {
+      // Raw samples are canonical. A backfill can finish before the rollup
+      // worker refreshes its projection, so a non-empty rollup result is not
+      // enough to trust the chart or its sample count.
+      const [rollupTotal, rawTotal] = await Promise.all([
+        this.countRollupSamples(tenantId, filters, bucketSeconds!),
+        this.countSamples(tenantId, filters),
+      ]);
+      totalSamples = cursor === undefined ? rawTotal : 0;
+      if (rollupTotal !== rawTotal) {
+        rows = await this.listAggregatedRows(where, cursor, filters.bucket, limit);
+      }
     }
     // Fixtures and a newly migrated database may contain raw samples before
     // the projection has been rebuilt. Keep the old SQL aggregation as a safe
@@ -86,7 +104,7 @@ export class PrismaResourceMetricSeriesReader {
           )
         `;
 
-    return this.prisma.$queryRaw<RawMetricSeriesRow[]>(Prisma.sql`
+    const rows = await this.prisma.$queryRaw<RawMetricSeriesRow[]>(Prisma.sql`
       SELECT
         sampled_at AS bucket_start,
         external_resource_id,
@@ -116,6 +134,7 @@ export class PrismaResourceMetricSeriesReader {
         provider_namespace ASC, region_id ASC, metric_name ASC, dimensions_hash ASC, granularity_seconds ASC
       LIMIT ${limit}
     `);
+    return rows;
   }
 
   private async listAggregatedRows(
@@ -217,66 +236,13 @@ export class PrismaResourceMetricSeriesReader {
     cursor: MetricSeriesCursor | undefined,
     limit: number,
   ): Promise<RawMetricSeriesRow[]> {
-    const where = buildMetricRollupWhereClause(tenantId, filters, bucketSeconds);
-    const cursorCondition = cursor === undefined
-      ? Prisma.empty
-      : cursor.kind === 'legacy-date'
-        ? Prisma.sql`AND bucket_start > ${cursor.bucketStart}`
-        : Prisma.sql`
-          AND (
-            bucket_start, external_resource_id, COALESCE(cloud_resource_id, ''),
-            provider_namespace, region_id, metric_name, dimensions_hash, bucket_seconds
-          ) > (
-            ${cursor.bucketStart}, ${cursor.externalResourceId}, ${cursor.cloudResourceId},
-            ${cursor.providerNamespace}, ${cursor.regionId}, ${cursor.metricName},
-            ${cursor.dimensionsHash}, ${bucketSeconds}
-          )
-        `;
-    return this.prisma.$queryRaw<RawMetricSeriesRow[]>(Prisma.sql`
-      SELECT
-        bucket_start,
-        external_resource_id,
-        cloud_resource_id,
-        provider_namespace,
-        region_id,
-        dimensions_hash,
-        metric_name,
-        metric_unit,
-        statistic::text AS statistic,
-        bucket_seconds AS granularity_seconds,
-        CASE statistic::text
-          WHEN 'MIN' THEN min_value
-          WHEN 'MAX' THEN max_value
-          WHEN 'P50' THEN COALESCE(p50_value, avg_value)
-          WHEN 'P90' THEN COALESCE(p90_value, avg_value)
-          WHEN 'P95' THEN COALESCE(p95_value, avg_value)
-          WHEN 'P99' THEN COALESCE(p99_value, avg_value)
-          WHEN 'LATEST' THEN latest_value
-          WHEN 'SUM' THEN sum_value
-          WHEN 'COUNT' THEN sample_count::numeric
-          ELSE avg_value
-        END::float8 AS selected_value,
-        CASE WHEN statistic::text IN ('P50', 'P90', 'P95', 'P99')
-          THEN 'POSTGRES_ROLLUP_NATIVE_STATISTIC_AVG'
-          ELSE 'POSTGRES_ROLLUP_PEAK_AWARE'
-        END::text AS aggregation_semantics,
-        source_granularities,
-        avg_value::float8 AS avg_value,
-        sum_value::float8 AS sum_value,
-        min_value::float8 AS min_value,
-        max_value::float8 AS max_value,
-        latest_value::float8 AS latest_value,
-        sample_count,
-        min_sampled_at,
-        max_sampled_at,
-        latest_sampled_at
-      FROM resource_metric_rollups
-      WHERE ${where}
-      ${cursorCondition}
-      ORDER BY bucket_start ASC, external_resource_id ASC, COALESCE(cloud_resource_id, '') ASC,
-        provider_namespace ASC, region_id ASC, metric_name ASC, dimensions_hash ASC, bucket_seconds ASC
-      LIMIT ${limit}
-    `);
+    // Keep native 30m and 1h samples as separate points. Never split an hourly
+    // value into synthetic half-hour values; the source resolution is exposed.
+    if (bucketSeconds === 1800) {
+      return this.thirtyMinuteRollups.listFor(tenantId, filters, cursor, limit);
+    }
+
+    return this.mixedRollups.listFor(tenantId, filters, bucketSeconds, cursor, limit);
   }
 
   private async countSamples(
@@ -298,11 +264,48 @@ export class PrismaResourceMetricSeriesReader {
     filters: TechnicalMetricSeriesFilters,
     bucketSeconds: number,
   ): Promise<number> {
-    const where = buildMetricRollupWhereClause(tenantId, filters, bucketSeconds);
+    const where = buildMetricRollupWhereClause(tenantId, filters);
+    if (bucketSeconds === 1800) return this.thirtyMinuteRollups.countFor(tenantId, filters);
+    if (bucketSeconds === 3600) {
+      const rows = await this.prisma.$queryRaw<{ readonly total: string | number | bigint }[]>(Prisma.sql`
+        SELECT COALESCE(SUM(sample_count), 0)::bigint AS total
+        FROM resource_metric_rollups
+        WHERE ${where} AND bucket_seconds IN (1800, 3600)
+      `);
+      return Number(rows[0]?.total ?? 0);
+    }
+
+    const preferredResolution = Prisma.sql`MAX`;
     const rows = await this.prisma.$queryRaw<{ readonly total: string | number | bigint }[]>(Prisma.sql`
-      SELECT COALESCE(SUM(sample_count), 0)::bigint AS total
-      FROM resource_metric_rollups
-      WHERE ${where}
+      WITH filtered AS (
+        SELECT tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id,
+          provider_namespace, region_id, dimensions_hash, metric_name, statistic,
+          bucket_seconds, sample_count,
+          to_timestamp(floor(extract(epoch FROM bucket_start) / ${bucketSeconds}) * ${bucketSeconds}) AS target_bucket_start
+        FROM resource_metric_rollups
+        WHERE ${where} AND bucket_seconds <= ${bucketSeconds}
+      ), preferred AS (
+        SELECT tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id,
+          provider_namespace, region_id, dimensions_hash, metric_name, statistic,
+          target_bucket_start, ${preferredResolution}(bucket_seconds) AS bucket_seconds
+        FROM filtered
+        GROUP BY tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id,
+          provider_namespace, region_id, dimensions_hash, metric_name, statistic, target_bucket_start
+      )
+      SELECT COALESCE(SUM(filtered.sample_count), 0)::bigint AS total
+      FROM filtered
+      INNER JOIN preferred
+        ON preferred.tenant_id = filtered.tenant_id
+       AND preferred.cloud_connection_id = filtered.cloud_connection_id
+       AND preferred.cloud_resource_id IS NOT DISTINCT FROM filtered.cloud_resource_id
+       AND preferred.external_resource_id = filtered.external_resource_id
+       AND preferred.provider_namespace = filtered.provider_namespace
+       AND preferred.region_id = filtered.region_id
+       AND preferred.dimensions_hash = filtered.dimensions_hash
+       AND preferred.metric_name = filtered.metric_name
+       AND preferred.statistic = filtered.statistic
+       AND preferred.target_bucket_start = filtered.target_bucket_start
+       AND preferred.bucket_seconds = filtered.bucket_seconds
     `);
     return Number(rows[0]?.total ?? 0);
   }

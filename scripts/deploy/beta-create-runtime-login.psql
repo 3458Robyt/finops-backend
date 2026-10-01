@@ -1,0 +1,25 @@
+\set ON_ERROR_STOP on
+\getenv runtime_password FINOPS_RUNTIME_DB_PASSWORD
+
+SELECT length(:'runtime_password') >= 40 AS runtime_password_is_long \gset
+\if :runtime_password_is_long
+\else
+  \echo FINOPS_RUNTIME_DB_PASSWORD must be at least 40 characters.
+  \quit 3
+\endif
+
+SELECT format(
+  'CREATE ROLE finops_beta_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD %L',
+  :'runtime_password'
+)
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'finops_beta_app')
+\gexec
+
+SELECT format(
+  'ALTER ROLE finops_beta_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD %L',
+  :'runtime_password'
+)
+\gexec
+
+GRANT finops_runtime TO finops_beta_app;
+COMMENT ON ROLE finops_beta_app IS 'FinOps beta runtime login; application switches to finops_runtime';

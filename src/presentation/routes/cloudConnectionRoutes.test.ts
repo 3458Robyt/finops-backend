@@ -13,6 +13,7 @@ describe('createCloudConnectionRoutes', () => {
       'retryFailedIngestionJobs', 'cancelPendingIngestionJobs',
       'configureMetricDefinitions',
       'previewFocusSource',
+      'previewMetricDefinitions',
     ].map((name) => [name, vi.fn()])) as unknown as CloudConnectionController;
     const auth = vi.fn((_req, _res, next: () => void) => next());
     const manager = vi.fn((_req, _res, next: () => void) => next());
@@ -28,6 +29,7 @@ describe('createCloudConnectionRoutes', () => {
       ['post', '/:id/credentials/:credentialId/validate'],
       ['post', '/:id/validate'],
       ['post', '/:id/focus-preview'],
+      ['post', '/:id/metric-definitions/discover'],
       ['post', '/:id/activate'],
       ['post', '/:id/ingestion-jobs'],
       ['post', '/:id/ingestion-jobs/retry-failed'],

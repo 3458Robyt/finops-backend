@@ -40,6 +40,7 @@ describe('cost allocation period closures', () => {
     const closures: any[] = [];
     const closureLineCounts = new Map<string, number>();
     const persistedLines: any[] = [];
+    const transactionOptions: unknown[] = [];
     const budgetFindMany = vi.fn().mockResolvedValue([{ scopeKey: 'CC-PLATFORM', currency: 'USD', amount: new Prisma.Decimal('20.00') }]);
     const matches = (row: any, where: any) => (where.tenantId === undefined || row.tenantId === where.tenantId) && (where.periodStart === undefined || row.periodStart.getTime() === where.periodStart.getTime()) && (where.currency === undefined || row.currency === where.currency);
     const tx = {
@@ -60,7 +61,7 @@ describe('cost allocation period closures', () => {
       },
       budget: { findMany: budgetFindMany },
     };
-    const prisma = { ...tx, $transaction: vi.fn().mockImplementation(async (callback: (client: typeof tx) => unknown) => callback(tx)) };
+    const prisma = { ...tx, $transaction: vi.fn().mockImplementation(async (callback: (client: typeof tx) => unknown, options: unknown) => { transactionOptions.push(options); return callback(tx); }) };
     const valueRealization = { listDestinationSummary: vi.fn().mockResolvedValue([{ period: '2026-05', allocationKey: 'CC-PLATFORM', currency: 'USD', potentialSavings: 5, approvedSavings: 3, verifiedSavings: 1, observedSavings: 1, attributedRecommendations: 1 }]) };
     const repository = new PrismaCostAllocationRepository(prisma as any, valueRealization as any);
 
@@ -68,10 +69,14 @@ describe('cost allocation period closures', () => {
     expect(preview.financialImpact.budgets).toMatchObject([{ allocationKey: 'CC-PLATFORM', budgetAmount: 20, projectedCost: 10, consumedPercent: 50 }]);
     expect(preview.financialImpact.savings).toMatchObject([{ currency: 'USD', potentialSavings: 5, verifiedSavings: 1 }]);
 
+    tx.costMetric.findMany.mockClear();
     const first = await repository.closePeriod('tenant-a', 'user-a', periodStart, true);
     expect(first[0]).toMatchObject({ version: 1, status: 'CLOSED', sourceTotal: 10, allocatedTotal: 10 });
     expect(persistedLines[0]).toMatchObject({ closureId: 'closure-1', cloudResourceId: 'canonical-resource-1', allocationKey: 'CC-PLATFORM' });
     expect(tx.costAllocationRule.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ tenantId: 'tenant-a', status: 'ACTIVE' }) }));
+    expect(tx.costMetric.findMany).toHaveBeenCalledTimes(1);
+    expect(tx.costMetric.aggregate).not.toHaveBeenCalled();
+    expect(transactionOptions[0]).toMatchObject({ isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
     const reused = await repository.closePeriod('tenant-a', 'user-a', periodStart, true);
     expect(reused[0]?.id).toBe(first[0]?.id);

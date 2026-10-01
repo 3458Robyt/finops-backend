@@ -96,6 +96,21 @@ export interface ICostAnalyticsRepository {
   getLatestTenantSnapshot(tenantId: string): Promise<CostAnalyticsSnapshot>;
 
   /**
+   * Obtiene únicamente el último instante de cargo observado.
+   *
+   * Es una lectura ligera para seleccionar ventanas móviles de análisis sin
+   * construir primero un snapshot mensual completo.
+   */
+  getLatestObservedThrough?(tenantId: string): Promise<Date | undefined>;
+
+  /**
+   * Snapshot acotado a un rango arbitrario. Es opcional para conservar los
+   * dobles de prueba y consumidores históricos que solo necesitan el snapshot
+   * mensual más reciente.
+   */
+  getTenantSnapshotForPeriod?(tenantId: string, periodStart: Date, periodEnd: Date): Promise<CostAnalyticsSnapshot>;
+
+  /**
    * Obtiene la serie mensual de costos de un tenant.
    *
    * @param tenantId - Tenant a consultar.

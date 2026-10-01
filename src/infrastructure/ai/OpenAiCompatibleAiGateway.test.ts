@@ -6,6 +6,11 @@ const { openAiConstructor, completionCreate } = vi.hoisted(() => ({
 }));
 
 vi.mock('openai', () => ({
+  APIConnectionTimeoutError: class FakeAPIConnectionTimeoutError extends Error {
+    public constructor(options?: { message?: string }) {
+      super(options?.message ?? 'Request timed out.');
+    }
+  },
   default: class FakeOpenAI {
     public constructor(options: unknown) {
       openAiConstructor(options);
@@ -23,6 +28,7 @@ describe('OpenAiCompatibleAiGateway', () => {
   const originalEnv = { ...process.env };
 
   afterEach(() => {
+    vi.useRealTimers();
     process.env = { ...originalEnv };
     openAiConstructor.mockClear();
     completionCreate.mockReset();
@@ -100,5 +106,99 @@ describe('OpenAiCompatibleAiGateway', () => {
     expect(completionCreate.mock.calls[0]?.[0]).toMatchObject({
       response_format: { type: 'json_object' },
     });
+  });
+
+  test('forwards the optional reasoning effort without changing standard requests', async () => {
+    process.env['AI_API_KEY'] = 'test-ai-key';
+    process.env['AI_BASE_URL'] = 'https://api.example.test/v1';
+    completionCreate.mockResolvedValue((async function* () {
+      yield { choices: [{ delta: { content: '{}' } }] };
+    })());
+
+    const { OpenAiCompatibleAiGateway } = await import('./OpenAiCompatibleAiGateway.js');
+    const gateway = new OpenAiCompatibleAiGateway();
+    await gateway.generateText({
+      reasoningEffort: 'low',
+      messages: [{ role: 'user', content: 'responde' }],
+    });
+
+    expect(completionCreate.mock.calls[0]?.[0]).toMatchObject({ reasoning_effort: 'low' });
+  });
+
+  test('aborts a streaming request at its request timeout', async () => {
+    vi.useFakeTimers();
+    process.env['AI_API_KEY'] = 'test-ai-key';
+    process.env['AI_BASE_URL'] = 'https://api.example.test/v1';
+    completionCreate.mockResolvedValue({
+      [Symbol.asyncIterator]: async function* () {
+        await new Promise<never>(() => undefined);
+      },
+    });
+
+    const { OpenAiCompatibleAiGateway } = await import('./OpenAiCompatibleAiGateway.js');
+    const gateway = new OpenAiCompatibleAiGateway();
+    const pending = gateway.generateText({
+      timeoutMs: 25,
+      messages: [{ role: 'user', content: 'espera' }],
+    });
+    pending.catch(() => undefined);
+
+    await vi.advanceTimersByTimeAsync(25);
+    await expect(pending).rejects.toMatchObject({
+      code: 'PROVIDER_TIMEOUT',
+      message: 'La solicitud al proveedor de IA excedió el tiempo máximo configurado',
+    });
+    const requestOptions = completionCreate.mock.calls[0]?.[1] as { signal?: AbortSignal };
+    expect(requestOptions).toEqual(expect.objectContaining({
+      signal: expect.any(AbortSignal),
+      timeout: 25,
+    }));
+    expect(requestOptions.signal?.aborted).toBe(true);
+  });
+
+  test('classifies retryable provider failures without exposing credentials', async () => {
+    process.env['AI_API_KEY'] = 'test-ai-key';
+    process.env['AI_BASE_URL'] = 'https://api.example.test/v1';
+    completionCreate.mockRejectedValue(new Error('429 rate limited apiKey=super-secret'));
+
+    const { OpenAiCompatibleAiGateway } = await import('./OpenAiCompatibleAiGateway.js');
+    const gateway = new OpenAiCompatibleAiGateway();
+
+    await expect(gateway.generateText({ messages: [{ role: 'user', content: 'hola' }] }))
+      .rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    await expect(gateway.generateText({ messages: [{ role: 'user', content: 'hola' }] }))
+      .rejects.toMatchObject({ message: expect.not.stringContaining('super-secret') });
+  });
+
+  test('classifies upstream 503 as temporarily unavailable', async () => {
+    process.env['AI_API_KEY'] = 'test-ai-key';
+    process.env['AI_BASE_URL'] = 'https://api.example.test/v1';
+    const error = Object.assign(new Error('service unavailable'), { status: 503 });
+    completionCreate.mockRejectedValue(error);
+
+    const { OpenAiCompatibleAiGateway } = await import('./OpenAiCompatibleAiGateway.js');
+    const gateway = new OpenAiCompatibleAiGateway();
+
+    await expect(gateway.generateText({ messages: [{ role: 'user', content: 'hola' }] }))
+      .rejects.toMatchObject({
+        code: 'PROVIDER_UNAVAILABLE',
+        details: { providerStatus: 503, retryable: true },
+      });
+  });
+
+  test('classifies the OpenAI SDK timeout as a provider timeout instead of a generic provider error', async () => {
+    process.env['AI_API_KEY'] = 'test-ai-key';
+    process.env['AI_BASE_URL'] = 'https://api.example.test/v1';
+    const { APIConnectionTimeoutError } = await import('openai');
+    completionCreate.mockRejectedValue(new APIConnectionTimeoutError());
+
+    const { OpenAiCompatibleAiGateway } = await import('./OpenAiCompatibleAiGateway.js');
+    const gateway = new OpenAiCompatibleAiGateway();
+
+    await expect(gateway.generateText({ messages: [{ role: 'user', content: 'hola' }] }))
+      .rejects.toMatchObject({
+        code: 'PROVIDER_TIMEOUT',
+        message: 'La solicitud al proveedor de IA excedió el tiempo máximo configurado',
+      });
   });
 });

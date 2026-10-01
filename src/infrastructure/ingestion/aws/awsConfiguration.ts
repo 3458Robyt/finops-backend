@@ -69,7 +69,7 @@ export function readAwsFocusObjects(job: CloudIngestionJobContext): readonly Aws
     return {
       bucket: requireString(item['bucket'], 'awsFocusExportObjects.bucket'),
       key: requireString(item['key'], 'awsFocusExportObjects.key'),
-      focusVersion: optionalString(item['focusVersion']) ?? '1.0',
+      focusVersion: optionalString(item['focusVersion']) ?? '1.2',
       ...(region !== undefined ? { region } : {}),
     };
   });
@@ -81,7 +81,7 @@ export function readAwsFocusLocations(job: CloudIngestionJobContext): readonly A
     return {
       bucket: requireString(item['bucket'], 'awsFocusExportLocations.bucket'),
       prefix: requireString(item['prefix'], 'awsFocusExportLocations.prefix'),
-      focusVersion: optionalString(item['focusVersion']) ?? '1.0',
+      focusVersion: optionalString(item['focusVersion']) ?? '1.2',
       maxObjects: readBoundedPositiveInteger(item['maxObjects'], 10_000, 1, 10_000),
       ...(region !== undefined ? { region } : {}),
     };

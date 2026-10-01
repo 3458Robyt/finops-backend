@@ -2,7 +2,7 @@ import type { CostHistoryPoint, CostHistoryQuery } from '../../../domain/interfa
 import type { FxRateRecord } from '../../../domain/interfaces/IFxRateRepository.js';
 
 export interface CostHistoryRow {
-  readonly period: Date;
+  readonly period_utc: string;
   readonly currency: string;
   readonly metric_count: number;
   readonly total_cost: number;

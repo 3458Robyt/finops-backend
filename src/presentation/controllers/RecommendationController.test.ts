@@ -157,14 +157,14 @@ describe('RecommendationController decisions', () => {
     const response = createResponse();
 
     await controller.getRecommendations(
-      createRequest({ query: { externalResourceId: 'ocid1.instance.demo' } }),
+      createRequest({ query: { externalResourceId: 'ocid1.instance.oc1..exampleid0009' } }),
       response as unknown as Response,
     );
 
     expect(response.statusCode).toBe(200);
     expect(repository.tenantQuery).toEqual({
       tenantId: 'tenant-1',
-      externalResourceId: 'ocid1.instance.demo',
+      externalResourceId: 'ocid1.instance.oc1..exampleid0009',
     });
   });
 
@@ -393,7 +393,7 @@ function createRequest(input: {
     auth: {
       userId: 'admin-1',
       tenantId: 'tenant-1',
-      email: 'admin@example.com',
+      email: 'test-user-0002@example.test',
       role: input.auth?.role ?? 'ADMIN',
       jwtId: 'jwt-1',
     },

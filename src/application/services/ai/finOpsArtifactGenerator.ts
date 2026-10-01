@@ -1,7 +1,7 @@
 import type { IAiGateway } from '../../../domain/interfaces/IAiGateway.js';
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
-import type { AiAuditReport, AiCandidateAuditArtifact } from '../../../domain/models/RecommendationExecutionPlan.js';
+import type { AiAuditReport } from '../../../domain/models/RecommendationExecutionPlan.js';
 import {
   evaluateExecutionPlan,
   evaluateRecommendationDrafts,
@@ -13,13 +13,16 @@ import type { AiTraceRecorder } from './aiTraceRecorder.js';
 import type { RecommendationEvidenceSnapshot } from './RecommendationEvidenceSnapshot.js';
 import type { DeterministicTrendAnalysis } from './DeterministicTrendAnalysis.js';
 import type { RecommendationReadinessReport } from './RecommendationReadinessGate.js';
+import { getRecommendationPeriodDays } from './RecommendationReadinessGate.js';
 import {
   dropNonActionableFinancialDrafts,
   normalizeRecommendationDrafts,
 } from './recommendationDraftNormalizer.js';
-import { FinOpsArtifactAiRunner } from './finOpsArtifactAiRunner.js';
+import { FinOpsArtifactAiRunner, type AiArtifactRequestPolicy } from './finOpsArtifactAiRunner.js';
 import { isAuditApproved, MIN_APPROVED_AUDIT_SCORE } from './auditApprovalPolicy.js';
 import { selectAuditedRecommendationDrafts } from './recommendationAuditSelection.js';
+import { generateAuditedReviewDrafts, type AuditedDraftsResult } from './finOpsReviewDraftGenerator.js';
+import { buildDeterministicRejectionReport, readRepairInstructions } from './recommendationAuditReports.js';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -35,16 +38,7 @@ import { selectAuditedRecommendationDrafts } from './recommendationAuditSelectio
  * @module application/services/ai/finOpsArtifactGenerator
  */
 
-/** Resultado de generar y auditar borradores de recomendación. */
-export interface AuditedDraftsResult {
-  readonly drafts: readonly (AiRecommendationDraft & { tenantId: string })[];
-  readonly approvedDrafts: readonly (AiRecommendationDraft & { tenantId: string })[];
-  readonly rejectedDrafts: readonly (AiRecommendationDraft & { tenantId: string })[];
-  readonly candidateAudits: readonly AiCandidateAuditArtifact[];
-  readonly auditReport: AiAuditReport;
-  /** Texto crudo de la primera respuesta del modelo (para la traza de la operación). */
-  readonly firstRawResponse: string;
-}
+export type { AuditedDraftsResult } from './finOpsReviewDraftGenerator.js';
 
 /** Resultado de generar y auditar un plan de ejecución. */
 export interface AuditedPlanResult {
@@ -68,8 +62,15 @@ export class FinOpsArtifactGenerator {
     traceRecorder: AiTraceRecorder,
     mainModel: string,
     auditorModel: string,
+    requestPolicy?: AiArtifactRequestPolicy,
   ) {
-    this.aiRunner = new FinOpsArtifactAiRunner(aiGateway, traceRecorder, mainModel, auditorModel);
+    this.aiRunner = new FinOpsArtifactAiRunner(
+      aiGateway,
+      traceRecorder,
+      mainModel,
+      auditorModel,
+      requestPolicy,
+    );
   }
 
   /**
@@ -93,48 +94,42 @@ export class FinOpsArtifactGenerator {
     deterministicAnalysis?: DeterministicTrendAnalysis,
     readinessReport?: RecommendationReadinessReport,
     onAuditStart?: () => Promise<void> | void,
+    options: { readonly allowRepair?: boolean } = {},
   ): Promise<AuditedDraftsResult> {
     const firstRawResponse = await this.aiRunner.generateRecommendations(systemPrompt);
+    const parsedDrafts = parseRecommendationDrafts(firstRawResponse, snapshot);
+    if (parsedDrafts.length === 0) {
+      return {
+        drafts: [],
+        approvedDrafts: [],
+        rejectedDrafts: [],
+        candidateAudits: [],
+        firstRawResponse,
+      };
+    }
     let drafts = this.withTenant(
       dropNonActionableFinancialDrafts(normalizeRecommendationDrafts(
-        parseRecommendationDrafts(firstRawResponse, snapshot),
+        parsedDrafts,
         readinessReport,
         technicalEvidenceSnapshot,
         cloudResourceId,
+        getRecommendationPeriodDays(snapshot),
       ), readinessReport),
       tenantId,
     );
-    await onAuditStart?.();
-    let auditReport = await this.aiRunner.auditArtifact({
-      artifactType: 'recommendations',
+    let auditReport: AiAuditReport;
+    const initialQuality = evaluateRecommendationDrafts(
+      drafts,
       snapshot,
-      tenantId,
-      ...(userId === undefined ? {} : { userId }),
-      artifact: drafts,
-      ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),
-      ...(deterministicAnalysis === undefined ? {} : { deterministicAnalysis }),
-      ...(readinessReport === undefined ? {} : { readinessReport }),
-    });
-
-    const repairInstructions = readRepairInstructions(auditReport);
-    const hasRepairInstructions = repairInstructions.length > 0;
-    if (auditReport.verdict === 'NEEDS_REVISION' || (
-      auditReport.verdict === 'REJECTED' &&
-      hasRepairInstructions
-    )) {
-      const revisedRaw = await this.aiRunner.reviseRecommendations(
-        systemPrompt,
-        repairInstructions,
-      );
-      drafts = this.withTenant(
-        dropNonActionableFinancialDrafts(normalizeRecommendationDrafts(
-          parseRecommendationDrafts(revisedRaw, snapshot),
-          readinessReport,
-          technicalEvidenceSnapshot,
-          cloudResourceId,
-        ), readinessReport),
-        tenantId,
-      );
+      undefined,
+      externalResourceId,
+      technicalEvidenceSnapshot,
+      readinessReport,
+    );
+    const deterministicRejected = !initialQuality.passed;
+    if (deterministicRejected) {
+      auditReport = buildDeterministicRejectionReport(initialQuality);
+    } else {
       await onAuditStart?.();
       auditReport = await this.aiRunner.auditArtifact({
         artifactType: 'recommendations',
@@ -148,7 +143,59 @@ export class FinOpsArtifactGenerator {
       });
     }
 
-    const quality = evaluateRecommendationDrafts(drafts, snapshot, undefined, externalResourceId, technicalEvidenceSnapshot);
+    const repairInstructions = readRepairInstructions(auditReport);
+    const hasRepairInstructions = repairInstructions.length > 0;
+    if (options.allowRepair !== false && !deterministicRejected && (auditReport.verdict === 'NEEDS_REVISION' || (
+      auditReport.verdict === 'REJECTED' &&
+      hasRepairInstructions
+    ))) {
+      const revisedRaw = await this.aiRunner.reviseRecommendations(
+        systemPrompt,
+        repairInstructions,
+      );
+      drafts = this.withTenant(
+        dropNonActionableFinancialDrafts(normalizeRecommendationDrafts(
+          parseRecommendationDrafts(revisedRaw, snapshot),
+          readinessReport,
+          technicalEvidenceSnapshot,
+          cloudResourceId,
+          getRecommendationPeriodDays(snapshot),
+        ), readinessReport),
+        tenantId,
+      );
+      const revisedQuality = evaluateRecommendationDrafts(
+        drafts,
+        snapshot,
+        undefined,
+        externalResourceId,
+        technicalEvidenceSnapshot,
+        readinessReport,
+      );
+      if (!revisedQuality.passed) {
+        auditReport = buildDeterministicRejectionReport(revisedQuality);
+      } else {
+        await onAuditStart?.();
+        auditReport = await this.aiRunner.auditArtifact({
+          artifactType: 'recommendations',
+          snapshot,
+          tenantId,
+          ...(userId === undefined ? {} : { userId }),
+          artifact: drafts,
+          ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),
+          ...(deterministicAnalysis === undefined ? {} : { deterministicAnalysis }),
+          ...(readinessReport === undefined ? {} : { readinessReport }),
+        });
+      }
+    }
+
+    const quality = evaluateRecommendationDrafts(
+      drafts,
+      snapshot,
+      undefined,
+      externalResourceId,
+      technicalEvidenceSnapshot,
+      readinessReport,
+    );
     const combinedAudit = this.combineWithDeterministicQuality(auditReport, quality);
     const selection = selectAuditedRecommendationDrafts({
       drafts,
@@ -156,6 +203,7 @@ export class FinOpsArtifactGenerator {
       snapshot,
       ...(externalResourceId === undefined ? {} : { externalResourceId }),
       ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),
+      ...(readinessReport === undefined ? {} : { readinessReport }),
     });
 
     return {
@@ -170,6 +218,33 @@ export class FinOpsArtifactGenerator {
       auditReport: { ...combinedAudit, candidateAudits: selection.candidateAudits },
       firstRawResponse,
     };
+  }
+
+  /** Generates non-publishable technical review drafts for validation-only resources. */
+  public async generateAuditedReviewDrafts(
+    tenantId: string,
+    userId: string | undefined,
+    snapshot: CostAnalyticsSnapshot,
+    systemPrompt: string,
+    readinessReport: RecommendationReadinessReport,
+    technicalEvidenceSnapshot?: RecommendationEvidenceSnapshot,
+    deterministicAnalysis?: DeterministicTrendAnalysis,
+    deadlineAt?: number,
+    onAuditStart?: () => Promise<void> | void,
+  ): Promise<AuditedDraftsResult> {
+    return generateAuditedReviewDrafts({
+      runner: this.aiRunner,
+      tenantId,
+      ...(userId === undefined ? {} : { userId }),
+      snapshot,
+      systemPrompt,
+      readinessReport,
+      ...(technicalEvidenceSnapshot === undefined ? {} : { technicalEvidenceSnapshot }),
+      ...(deterministicAnalysis === undefined ? {} : { deterministicAnalysis }),
+      ...(deadlineAt === undefined ? {} : { deadlineAt }),
+      ...(onAuditStart === undefined ? {} : { onAuditStart }),
+      combineQuality: (audit, quality) => this.combineWithDeterministicQuality(audit, quality),
+    });
   }
 
   /**
@@ -188,9 +263,11 @@ export class FinOpsArtifactGenerator {
     snapshot: CostAnalyticsSnapshot,
     recommendation: FinOpsRecommendation,
     systemPrompt: string,
+    deadlineAt?: number,
   ): Promise<AuditedPlanResult> {
-    const firstRawResponse = await this.aiRunner.generateExecutionPlan(systemPrompt);
+    const firstRawResponse = await this.aiRunner.generateExecutionPlan(systemPrompt, deadlineAt);
     let content = parseExecutionPlan(firstRawResponse, recommendation);
+    let deterministicQuality = evaluateExecutionPlan(content, snapshot, recommendation);
     let auditReport = await this.aiRunner.auditArtifact({
       artifactType: 'execution_plan',
       snapshot,
@@ -198,15 +275,22 @@ export class FinOpsArtifactGenerator {
       tenantId,
       userId,
       artifact: content,
+      ...(deadlineAt === undefined ? {} : { deadlineAt }),
     });
 
-    const repairInstructions = readRepairInstructions(auditReport);
+    const repairInstructions = [
+      ...readRepairInstructions(auditReport),
+      ...deterministicQuality.checks
+        .filter((check) => !check.passed)
+        .map((check) => `Control determinista ${check.name}: ${check.detail}`),
+    ];
     if (
-      (auditReport.verdict === 'NEEDS_REVISION' || auditReport.verdict === 'REJECTED')
-      && repairInstructions.length > 0
+      repairInstructions.length > 0
+      && (!deterministicQuality.passed || auditReport.verdict === 'NEEDS_REVISION' || auditReport.verdict === 'REJECTED')
     ) {
-      const revisedRaw = await this.aiRunner.reviseExecutionPlan(systemPrompt, repairInstructions);
+      const revisedRaw = await this.aiRunner.reviseExecutionPlan(systemPrompt, repairInstructions, content, deadlineAt);
       content = parseExecutionPlan(revisedRaw, recommendation);
+      deterministicQuality = evaluateExecutionPlan(content, snapshot, recommendation);
       auditReport = await this.aiRunner.auditArtifact({
         artifactType: 'execution_plan',
         snapshot,
@@ -214,6 +298,7 @@ export class FinOpsArtifactGenerator {
         tenantId,
         userId,
         artifact: content,
+        ...(deadlineAt === undefined ? {} : { deadlineAt }),
       });
     }
 
@@ -221,7 +306,7 @@ export class FinOpsArtifactGenerator {
       content,
       auditReport: this.combineWithDeterministicQuality(
         auditReport,
-        evaluateExecutionPlan(content, snapshot, recommendation),
+        deterministicQuality,
       ),
       firstRawResponse,
     };
@@ -275,10 +360,4 @@ export class FinOpsArtifactGenerator {
       ? { ...combined, verdict: 'APPROVED' }
       : combined;
   }
-}
-
-function readRepairInstructions(audit: AiAuditReport): readonly string[] {
-  return (audit.repairInstructions?.length ?? 0) > 0
-    ? audit.repairInstructions!
-    : audit.requiredChanges;
 }

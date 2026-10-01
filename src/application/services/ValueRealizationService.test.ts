@@ -70,5 +70,5 @@ class FakeNotificationRepository implements Pick<INotificationRepository, 'creat
 }
 
 class FakeOutboundRepository implements Pick<IOutboundMessageRepository, 'findTenantUsers'> {
-  public async findTenantUsers(): Promise<readonly { id: string; email: string; name: string; status: 'ACTIVE' | 'DISABLED' }[]> { return [{ id: 'user-1', email: 'u@example.com', name: 'User', status: 'ACTIVE' }]; }
+  public async findTenantUsers(): Promise<readonly { id: string; email: string; name: string; status: 'ACTIVE' | 'DISABLED' }[]> { return [{ id: 'user-1', email: 'test-user-0025@example.test', name: 'User', status: 'ACTIVE' }]; }
 }

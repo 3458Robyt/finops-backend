@@ -131,7 +131,7 @@ class FakeAuthSecurityRepository implements IAuthSecurityRepository {
 const activeUser: AuthUser = {
   id: 'user-1',
   tenantId: 'tenant-1',
-  email: 'admin@example.com',
+  email: 'test-user-0002@example.test',
   name: 'Admin User',
   passwordHash: 'hash',
   role: 'ADMIN',
@@ -150,7 +150,7 @@ describe('AuthService', () => {
     const service = new AuthService(users, new FakePasswordHasher(true), tokenService, sessions);
 
     const result = await service.login({
-      email: 'ADMIN@EXAMPLE.COM ',
+      email: 'test-user-0002@example.test ',
       password: 'secret',
       ipAddress: '127.0.0.1',
       userAgent: 'vitest',
@@ -223,7 +223,7 @@ describe('AuthService', () => {
     const users = new FakeUserRepository(activeUser);
     const service = new AuthService(users, new FakePasswordHasher(false), new FakeTokenService(), new FakeAuthSessionRepository());
 
-    await expect(service.login({ email: 'admin@example.com', password: 'bad' }))
+    await expect(service.login({ email: 'test-user-0002@example.test', password: 'bad' }))
       .rejects
       .toBeInstanceOf(AuthenticationError);
 
@@ -235,7 +235,7 @@ describe('AuthService', () => {
     const users = new FakeUserRepository({ ...activeUser, status: 'DISABLED' });
     const service = new AuthService(users, new FakePasswordHasher(true), new FakeTokenService(), new FakeAuthSessionRepository());
 
-    await expect(service.login({ email: 'admin@example.com', password: 'secret' }))
+    await expect(service.login({ email: 'test-user-0002@example.test', password: 'secret' }))
       .rejects
       .toBeInstanceOf(AuthenticationError);
   });
@@ -309,7 +309,7 @@ function buildActor(tenantId: string): AuthContext {
   return {
     userId: 'user-1',
     tenantId,
-    email: 'admin@example.com',
+    email: 'test-user-0002@example.test',
     role: 'ADMIN',
     jwtId: 'jwt-current',
   };

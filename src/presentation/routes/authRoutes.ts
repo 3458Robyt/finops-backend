@@ -28,7 +28,7 @@ export function createAuthRoutes(
   requireAuth: RequestHandler,
   passwordRecoveryController?: PasswordRecoveryController,
   mfaController?: MfaController,
-  allowedOrigins: readonly string[] = ['http://localhost:5173'],
+  allowedOrigins: readonly string[] = ['http://localhost:5173', 'http://127.0.0.1:5173'],
   clientInvitationController?: ClientInvitationController,
 ): Router {
   const router = Router();

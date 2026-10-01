@@ -12,6 +12,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '../../../generated/prisma/client.js';
+import { computeAdoptionEngagement } from './adoptionKpiQueries.js';
 import { computeAdoptionKpis, computeSavingsKpis } from './recommendationKpiQueries.js';
 
 /** Fila minima de recomendacion que consume computeSavingsKpis (findMany). */
@@ -21,6 +22,7 @@ interface SavingsRecRow {
   readonly estimatedMonthlySavings: number;
   readonly currency: string;
   readonly status: string;
+  readonly evidence?: unknown;
   readonly createdAt: Date;
 }
 
@@ -31,8 +33,22 @@ interface StatusCountRow {
 }
 
 interface ActivityRow {
-  readonly userId: string;
+  readonly userId: string | null;
   readonly createdAt: Date;
+}
+
+interface ChatTraceRow extends ActivityRow {
+  readonly source: 'WEB' | 'TELEGRAM' | 'EVALUATION' | 'SYSTEM' | 'UNKNOWN';
+}
+
+function savingsEvidence(amount: number, currency = 'USD') {
+  return {
+    savingsCalculation: {
+      provenance: 'SERVER_DETERMINISTIC', version: 'priced-alternative/v1', status: 'CALCULATED',
+      formula: 'BASELINE_MINUS_ALTERNATIVE_MONTHLY', baselineMonthlyCost: amount + 100,
+      alternativeMonthlyCost: 100, amount, currency, priceEvidenceRef: 'price:fixture:alternative',
+    },
+  };
 }
 
 /**
@@ -49,7 +65,7 @@ function createPrismaStub(input: {
   readonly executedGroups?: number;
   readonly pendingRecs?: readonly SavingsRecRow[];
   readonly statusCounts?: readonly StatusCountRow[];
-  readonly chatRows?: readonly ActivityRow[];
+  readonly chatRows?: readonly ChatTraceRow[];
   readonly telegramRows?: readonly ActivityRow[];
   readonly notificationRows?: readonly {
     readonly userId: string;
@@ -93,7 +109,11 @@ function createPrismaStub(input: {
         return { _sum: { costIncreaseMonthlyAmount: input.costIncreaseSum ?? null } };
       },
     },
-    aiContextTrace: { findMany: async () => [...(input.chatRows ?? [])] },
+    aiContextTrace: {
+      findMany: async (args: { readonly where?: { readonly source?: string } }) => (
+        input.chatRows ?? []
+      ).filter((row) => args.where?.source === undefined || row.source === args.where.source),
+    },
     telegramInteractionLog: { findMany: async () => [...(input.telegramRows ?? [])] },
     inAppNotification: { findMany: async () => [...(input.notificationRows ?? [])] },
     outboundMessageDelivery: { count: async () => input.outboundSent ?? 0 },
@@ -109,8 +129,8 @@ describe('computeAdoptionKpis', () => {
     const prisma = createPrismaStub({
       statusCounts: [{ status: 'APPROVED', _count: 1 }],
       chatRows: [
-        { userId: 'user-1', createdAt: may },
-        { userId: 'user-1', createdAt: june },
+        { userId: 'user-1', source: 'WEB', createdAt: may },
+        { userId: 'user-1', source: 'WEB', createdAt: june },
       ],
       telegramRows: [{ userId: 'user-2', createdAt: june }],
       notificationRows: [{
@@ -208,6 +228,37 @@ describe('computeAdoptionKpis', () => {
   });
 });
 
+describe('computeAdoptionEngagement', () => {
+  it('counts only attributed WEB chat, excluding legacy, Telegram, and evaluation traces', async () => {
+    const createdAt = new Date('2026-09-23T10:00:00.000Z');
+    const prisma = createPrismaStub({
+      chatRows: [
+        { userId: 'user-1', source: 'WEB', createdAt },
+        { userId: 'user-1', source: 'EVALUATION', createdAt },
+        { userId: 'user-2', source: 'TELEGRAM', createdAt },
+        { userId: 'user-3', source: 'UNKNOWN', createdAt },
+        { userId: null, source: 'WEB', createdAt },
+      ],
+    });
+
+    const engagement = await computeAdoptionEngagement(prisma, 'tenant-1', { granularity: 'month' });
+
+    expect(engagement).toMatchObject({
+      chatInteractions: 1,
+      chatUsers: 1,
+      activeUsers: 1,
+    });
+    expect(engagement.series).toEqual([{
+      periodStart: '2026-09-01',
+      activeUsers: 1,
+      chatInteractions: 1,
+      telegramInteractions: 0,
+      decisions: 0,
+      executions: 0,
+    }]);
+  });
+});
+
 describe('computeSavingsKpis', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -215,18 +266,26 @@ describe('computeSavingsKpis', () => {
 
   it('expone los agregados, fija la divisa en USD y deriva los conteos de ejecutadas/pendientes', async () => {
     const prisma = createPrismaStub({
-      estimatedSum: 1000,
       observedSum: 250,
       calculatedSum: 125,
       verifiedSum: 100,
       costIncreaseSum: 10,
       executedGroups: 2,
-      pendingRecs: [],
+      pendingRecs: [{
+        id: 'rec-approved',
+        title: 'Reducir capacidad validada',
+        estimatedMonthlySavings: 1000,
+        currency: 'USD',
+        status: 'APPROVED',
+        evidence: savingsEvidence(1000),
+        createdAt: new Date(),
+      }],
     });
 
     const kpis = await computeSavingsKpis(prisma, 'tenant-1');
 
     expect(kpis.estimatedMonthlySavings).toBe(1000);
+    expect(kpis.approvedMonthlySavings).toBe(1000);
     expect(kpis.observedMonthlySavings).toBe(125);
     expect(kpis.userReportedMonthlySavings).toBe(250);
     expect(kpis.verifiedMonthlySavings).toBe(100);
@@ -236,7 +295,7 @@ describe('computeSavingsKpis', () => {
     // executedRecommendations = numero de grupos del groupBy de ejecuciones.
     expect(kpis.executedRecommendations).toBe(2);
     // pendingSavingsRecommendations = numero de filas del findMany.
-    expect(kpis.pendingSavingsRecommendations).toBe(0);
+    expect(kpis.pendingSavingsRecommendations).toBe(1);
     expect(kpis.missedSavingsAmount).toBe(0);
     expect(kpis.topMissedSavingsRecommendation).toBeUndefined();
   });
@@ -249,6 +308,35 @@ describe('computeSavingsKpis', () => {
     expect(kpis.estimatedMonthlySavings).toBe(0);
     expect(kpis.observedMonthlySavings).toBe(0);
     expect(kpis.confirmedMonthlySavings).toBe(0);
+  });
+
+  it('no presenta revisiones financieras como ahorro y separa lo aprobado', async () => {
+    const now = new Date();
+    const prisma = createPrismaStub({
+      pendingRecs: [
+        { id: 'financial', title: 'Revisar costo', estimatedMonthlySavings: 500, currency: 'USD', status: 'PENDING', evidence: { reviewScope: 'FINANCIAL' }, createdAt: now },
+        { id: 'pending', title: 'Optimizar capacidad', estimatedMonthlySavings: 100, currency: 'USD', status: 'PENDING', evidence: savingsEvidence(100), createdAt: now },
+        { id: 'approved', title: 'Aplicar rightsizing validado', estimatedMonthlySavings: 200, currency: 'USD', status: 'APPROVED', evidence: savingsEvidence(200), createdAt: now },
+      ],
+    });
+    const kpis = await computeSavingsKpis(prisma, 'tenant-1');
+
+    expect(kpis.estimatedMonthlySavings).toBe(300);
+    expect(kpis.approvedMonthlySavings).toBe(200);
+    expect(kpis.pendingSavingsRecommendations).toBe(2);
+  });
+
+  it('excluye del impacto económico un ahorro heredado sin cálculo de alternativa con precio', async () => {
+    const prisma = createPrismaStub({
+      pendingRecs: [
+        { id: 'legacy', title: 'Revisar costo de almacenamiento', estimatedMonthlySavings: 8559.39, currency: 'COP', status: 'PENDING', evidence: { normalizedMonthlyCost: 71328.25, maxEstimatedMonthlySavings: 8559.39 }, createdAt: new Date('2026-09-17T00:00:00Z') },
+        { id: 'verified', title: 'Comparar alternativa cotizada', estimatedMonthlySavings: 12, currency: 'USD', status: 'PENDING', evidence: savingsEvidence(12), createdAt: new Date('2026-09-17T00:00:00Z') },
+      ],
+    });
+
+    const kpis = await computeSavingsKpis(prisma, 'tenant-1');
+    expect(kpis.estimatedMonthlySavings).toBe(12);
+    expect(kpis.pendingSavingsRecommendations).toBe(1);
   });
 
   it('acumula el ahorro perdido prorrateado y destaca la recomendacion con mayor ahorro perdido', async () => {
@@ -268,6 +356,7 @@ describe('computeSavingsKpis', () => {
           estimatedMonthlySavings: 300,
           currency: 'USD',
           status: 'PENDING',
+          evidence: savingsEvidence(300),
           // 60 dias sin ejecutar -> (300/30)*60 = 600.
           createdAt: new Date(now.getTime() - 60 * dayMs),
         },
@@ -277,6 +366,7 @@ describe('computeSavingsKpis', () => {
           estimatedMonthlySavings: 300,
           currency: 'USD',
           status: 'APPROVED',
+          evidence: savingsEvidence(300),
           // 30 dias sin ejecutar -> (300/30)*30 = 300.
           createdAt: new Date(now.getTime() - 30 * dayMs),
         },
@@ -313,6 +403,7 @@ describe('computeSavingsKpis', () => {
           estimatedMonthlySavings: 300,
           currency: 'USD',
           status: 'PENDING',
+          evidence: savingsEvidence(300),
           // Creada justo ahora -> 0 dias transcurridos -> ahorro perdido 0.
           createdAt: now,
         },

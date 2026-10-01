@@ -44,8 +44,12 @@ export class PrismaCloudIngestionJobRepository {
     this.support = new PrismaIngestionJobSupport(prisma, credentialCipher);
     this.claimRepository = new PrismaIngestionJobClaimRepository(prisma, this.support, jobLeaseMs);
   }
-  public async claimNextPendingJob(workerId: string): Promise<CloudIngestionJobContext | null> {
-    return this.claimRepository.claimNextPendingJob(workerId);
+  public async claimNextPendingJob(
+    workerId: string,
+    cloudConnectionId?: string,
+    sourceType?: string,
+  ): Promise<CloudIngestionJobContext | null> {
+    return this.claimRepository.claimNextPendingJob(workerId, cloudConnectionId, sourceType);
   }
   public async reconcileStaleJobs(now = new Date()): Promise<IngestionJobReconciliationResult> {
     return this.claimRepository.reconcileStaleJobs(now);
@@ -89,6 +93,7 @@ export class PrismaCloudIngestionJobRepository {
     }, result.metricSamples);
     const resources = mergeNormalizedResources([...result.resources, ...initialMetricDerivedResources]);
     const resourceIdsByExternalId = new Map(await upsertNormalizedCloudResources(this.prisma, resources));
+    const knownMetricExternalResourceIds = new Set(resourceIdsByExternalId.keys());
     await this.support.registerSourceObjects(job, result.sourceObjects);
     const metricDerivedResourceKeys = new Set(initialMetricDerivedResources.map((resource) => `${resource.cloudConnectionId}:${resource.externalResourceId}`));
     let metricDerivedResources = initialMetricDerivedResources.length;
@@ -119,11 +124,12 @@ export class PrismaCloudIngestionJobRepository {
           tenantId: job.tenantId,
           cloudConnectionId: job.cloudConnectionId,
           ...(job.connection.defaultRegion !== undefined ? { defaultRegion: job.connection.defaultRegion } : {}),
-        }, batch);
+        }, batch, knownMetricExternalResourceIds);
         if (derived.length > 0) {
           const persisted = await upsertNormalizedCloudResources(this.prisma, derived);
           for (const [externalResourceId, resourceId] of persisted) resourceIdsByExternalId.set(externalResourceId, resourceId);
           for (const resource of derived) {
+            knownMetricExternalResourceIds.add(resource.externalResourceId);
             const key = `${resource.cloudConnectionId}:${resource.externalResourceId}`;
             if (!metricDerivedResourceKeys.has(key)) {
               metricDerivedResourceKeys.add(key);
@@ -175,7 +181,9 @@ export class PrismaCloudIngestionJobRepository {
     let focusRowsProcessed = result.focusRows.length;
     let focusRowsInserted = await this.samplePersistence.insertFocusRows(this.prisma, result.focusRows, job.id);
     let costMetricProjection = await this.costProjector.projectFocusRowsToCostMetrics(this.prisma, job, result.focusRows, resourceIdsByExternalId);
-    const providerProjection = await this.costProjector.projectProviderCostsToCostMetrics(this.prisma, job, result.providerCostRows ?? [], resourceIdsByExternalId);
+    const providerProjection = await this.costProjector.projectProviderCostsToCostMetrics(
+      this.prisma, job, result.providerCostRows ?? [], resourceIdsByExternalId, result.effectiveRange,
+    );
     costMetricProjection = {
       projected: costMetricProjection.projected + providerProjection.projected,
       inserted: costMetricProjection.inserted + providerProjection.inserted,
@@ -308,7 +316,7 @@ export class PrismaCloudIngestionJobRepository {
           throw new Error('Ingestion job lease was lost before completion');
         }
 
-        await this.completionSupport.updateWatermark(tx, job, summary.dataOutcome);
+        await this.completionSupport.updateWatermark(tx, job, summary);
         await this.completionSupport.recordCoverageSegment(tx, job, summary);
         await this.completionSupport.recordQualityCheck(
           tx,

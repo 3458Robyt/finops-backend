@@ -14,6 +14,7 @@ export class PrismaResourceMetricCostContextReader {
     tenantId: string,
     externalResourceIds: readonly string[],
     cloudResourceIds?: readonly string[],
+    period?: Readonly<{ readonly start: Date; readonly end: Date }>,
   ): Promise<readonly TechnicalCostContextItem[]> {
     const normalizedResourceIds = [...new Set(externalResourceIds.map((value) => value.trim()).filter((value) => value !== ''))];
     const normalizedCloudResourceIds = [...new Set((cloudResourceIds ?? []).map((value) => value.trim()).filter((value) => value !== ''))];
@@ -43,6 +44,7 @@ export class PrismaResourceMetricCostContextReader {
         ON cr.id = cm.cloud_resource_id
        AND cr.tenant_id = cm.tenant_id
       WHERE cm.tenant_id = ${tenantId}
+        ${period === undefined ? Prisma.empty : Prisma.sql`AND cm.charge_period_start >= ${period.start} AND cm.charge_period_start < ${period.end}`}
         AND (
           (${normalizedCloudResourceIds.length > 0 ? Prisma.sql`cm.cloud_resource_id IN (${Prisma.join(normalizedCloudResourceIds)})` : Prisma.sql`FALSE`})
           OR (

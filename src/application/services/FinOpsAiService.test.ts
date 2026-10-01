@@ -1,5 +1,6 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { FinOpsAiService, type AiChatMessage } from './FinOpsAiService.js';
+import { AiObservabilityService } from './AiObservabilityService.js';
 import type { IAiGateway, AiGatewayRequest } from '../../domain/interfaces/IAiGateway.js';
 import type {
   CostAnalyticsSnapshot,
@@ -46,9 +47,12 @@ class FakeAiGateway implements IAiGateway {
 }
 
 class FakeCostAnalyticsRepository implements ICostAnalyticsRepository {
-  public async getLatestTenantSnapshot(): Promise<CostAnalyticsSnapshot> {
+  public readonly requestedTenantIds: string[] = [];
+
+  public async getLatestTenantSnapshot(tenantId: string): Promise<CostAnalyticsSnapshot> {
+    this.requestedTenantIds.push(tenantId);
     return {
-      tenantId: 'tenant-1',
+      tenantId,
       periodStart: '2024-09-01',
       periodEnd: '2024-10-01',
       totalCost: 117.35,
@@ -113,9 +117,10 @@ class FakeCostAnalyticsRepository implements ICostAnalyticsRepository {
 class FakeRecommendationRepository implements IRecommendationRepository {
   public created: readonly CreateRecommendationInput[] = [];
   public executionPlans: unknown[] = [];
+  public listedRecommendations: FinOpsRecommendation[] = [];
 
   public async findByTenant(_query: RecommendationQuery): Promise<FinOpsRecommendation[]> {
-    return [];
+    return this.listedRecommendations;
   }
 
   public async findById(_tenantId: string, _recommendationId: string): Promise<FinOpsRecommendation | null> {
@@ -248,10 +253,48 @@ class FakeTechnicalEvidenceProvider implements TechnicalRecommendationEvidencePr
 }
 
 describe('FinOpsAiService', () => {
-  test('answers chat using a compact FinOps cost snapshot', async () => {
-    const gateway = new FakeAiGateway('EC2 concentra el mayor gasto del periodo.');
+  test('answers technical and recommendation questions with tenant evidence', async () => {
+    const gateway = new FakeAiGateway('Hay evidencia tecnica y una oportunidad pendiente en el tenant.');
+    const recommendations = new FakeRecommendationRepository();
+    recommendations.listedRecommendations = [{
+      id: 'rec-chat-1',
+      cloudAccountId: 'account-focus-aws-prod',
+      type: 'USAGE_OPTIMIZATION',
+      origin: 'AI_GENERATED',
+      status: 'PENDING',
+      severity: 'MEDIUM',
+      title: 'Revisar consumo de EC2',
+      description: 'Validar horas facturadas y costo unitario.',
+      evidence: {},
+      estimatedMonthlySavings: 25,
+      currency: 'USD',
+      createdAt: new Date('2026-05-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-01T00:00:00.000Z'),
+    }];
     const service = new FinOpsAiService(
       new FakeCostAnalyticsRepository(),
+      recommendations,
+      gateway,
+      undefined,
+      undefined,
+      undefined,
+      new FakeTechnicalEvidenceProvider(),
+    );
+
+    await service.answerChat({
+      tenantId: 'tenant-1',
+      message: 'Que metricas tecnicas y recomendaciones existen?',
+    });
+
+    expect(gateway.lastRequest?.messages[0]?.content).toContain('CpuUtilization');
+    expect(gateway.lastRequest?.messages[0]?.content).toContain('rec-chat-1');
+  });
+
+  test('answers chat using a compact FinOps cost snapshot', async () => {
+    const gateway = new FakeAiGateway('EC2 concentra el mayor gasto del periodo.');
+    const analytics = new FakeCostAnalyticsRepository();
+    const service = new FinOpsAiService(
+      analytics,
       new FakeRecommendationRepository(),
       gateway,
     );
@@ -268,6 +311,7 @@ describe('FinOpsAiService', () => {
 
     expect(response.answer).toBe('EC2 concentra el mayor gasto del periodo.');
     expect(response.snapshot.totalCost).toBe(117.35);
+    expect(analytics.requestedTenantIds).toEqual(['tenant-1']);
     expect(gateway.lastRequest?.messages[0]?.content).toContain('Amazon Elastic Compute Cloud');
     expect(gateway.lastRequest?.messages[0]?.content).toContain('español');
     expect(gateway.lastRequest?.messages.at(-1)?.content).toBe('Explicame donde esta el mayor costo');
@@ -310,12 +354,17 @@ describe('FinOpsAiService', () => {
           severity: 'HIGH',
           title: 'Reducir EC2 sobredimensionado',
           description: 'EC2 domina el costo del periodo; revisar instancias con baja utilizacion.',
-          estimatedMonthlySavings: 18.25,
+          estimatedMonthlySavings: 0,
           currency: 'USD',
           evidence: {
             serviceName: 'Amazon Elastic Compute Cloud',
             evidenceLevel: 'COST_ONLY',
             requiresTechnicalValidation: true,
+            candidateId: 'resource-1',
+            externalResourceId: 'i-prod-001',
+            observedCost: 14.9,
+            normalizedMonthlyCost: 14.9,
+            maxEstimatedMonthlySavings: 2.68,
           },
         },
       ],
@@ -339,6 +388,10 @@ describe('FinOpsAiService', () => {
       new FakeCostAnalyticsRepository(),
       recommendations,
       gateway,
+      undefined,
+      undefined,
+      undefined,
+      new FakeTechnicalEvidenceProvider(),
     );
 
     const response = await service.generateRecommendations({
@@ -347,7 +400,7 @@ describe('FinOpsAiService', () => {
     });
 
     expect(response.recommendations).toHaveLength(1);
-    expect(response.recommendations[0]?.title).toBe('Reducir EC2 sobredimensionado');
+    expect(response.recommendations[0]?.title).toBe('Revisar capacidad y rendimiento de Amazon Elastic Compute Cloud (i-prod-001)');
     expect(recommendations.created).toHaveLength(1);
     expect(recommendations.created[0]?.tenantId).toBe('tenant-1');
     expect(recommendations.created[0]?.deduplicationKey).toMatch(/^[a-f0-9]{64}$/);
@@ -364,20 +417,20 @@ describe('FinOpsAiService', () => {
     expect(gateway.requests[1]?.messages[0]?.content).toContain('agente auditor');
   });
 
-  test('persists each approved recommendation with its candidate audit in a partial batch', async () => {
+  test('abstains before calling the model when cost-only evidence has no savings basis', async () => {
     const gateway = new FakeAiGateway([
       JSON.stringify({ recommendations: [
         {
           cloudAccountId: 'account-focus-aws-prod', type: 'USAGE_OPTIMIZATION', severity: 'MEDIUM',
           title: 'Revisar el consumo facturado de EC2',
           description: 'Validar las horas consumidas y su costo unitario antes de optimizar.',
-          estimatedMonthlySavings: 6, currency: 'USD',
+          estimatedMonthlySavings: 0, currency: 'USD',
           evidence: { candidateId: 'usage-1', evidenceLevel: 'COST_AND_USAGE', sourceFacts: [], assumptions: [], confidence: 0.8 },
         },
         {
           cloudAccountId: 'account-focus-aws-prod', type: 'SERVICE_COST_REVIEW', severity: 'LOW',
           title: 'Revisar el costo de EC2', description: 'Revisar el costo facturado del servicio.',
-          estimatedMonthlySavings: 9, currency: 'USD',
+          estimatedMonthlySavings: 0, currency: 'USD',
           evidence: { candidateId: 'service-1', evidenceLevel: 'COST_ONLY', sourceFacts: [], assumptions: [], confidence: 0.7 },
         },
       ] }),
@@ -392,13 +445,11 @@ describe('FinOpsAiService', () => {
     const recommendations = new FakeRecommendationRepository();
     const service = new FinOpsAiService(new FakeCostAnalyticsRepository(), recommendations, gateway);
 
-    const response = await service.generateRecommendations({ tenantId: 'tenant-1', persist: true });
-
-    expect(response.recommendations).toHaveLength(1);
-    expect(recommendations.created[0]?.evidence).toMatchObject({
-      candidateId: 'usage-1',
-      aiAudit: { verdict: 'APPROVED', score: 93 },
-    });
+    const result = await service.generateRecommendations({ tenantId: 'tenant-1', persist: true });
+    expect(result.recommendations).toHaveLength(0);
+    expect(result.persisted).toBe(false);
+    expect(recommendations.created).toHaveLength(0);
+    expect(gateway.requests).toHaveLength(0);
   });
 
   test('uses approved learning context when generating recommendations', async () => {
@@ -410,12 +461,17 @@ describe('FinOpsAiService', () => {
           severity: 'HIGH',
           title: 'Reducir EC2 con evidencia de utilizacion',
           description: 'Validar metricas tecnicas antes del rightsizing de EC2.',
-          estimatedMonthlySavings: 18.25,
+          estimatedMonthlySavings: 0,
           currency: 'USD',
           evidence: {
             serviceName: 'Amazon Elastic Compute Cloud',
             evidenceLevel: 'COST_ONLY',
             requiresTechnicalValidation: true,
+            candidateId: 'resource-1',
+            externalResourceId: 'i-prod-001',
+            observedCost: 14.9,
+            normalizedMonthlyCost: 14.9,
+            maxEstimatedMonthlySavings: 2.68,
           },
         },
       ],
@@ -435,6 +491,9 @@ describe('FinOpsAiService', () => {
       recommendations,
       gateway,
       learningContextProvider,
+      undefined,
+      undefined,
+      new FakeTechnicalEvidenceProvider(),
     );
 
     await service.generateRecommendations({
@@ -464,7 +523,7 @@ describe('FinOpsAiService', () => {
           severity: 'MEDIUM',
           title: 'Reducir capacidad de la instancia',
           description: 'La instancia presenta CPU y memoria bajas con cobertura técnica suficiente.',
-          estimatedMonthlySavings: 3.7,
+          estimatedMonthlySavings: 0,
           currency: 'USD',
           evidence: {
             candidateId: 'resource-1',
@@ -529,6 +588,9 @@ describe('FinOpsAiService', () => {
       recommendations,
       gateway,
       learningContextProvider,
+      undefined,
+      undefined,
+      new FakeTechnicalEvidenceProvider(),
     );
 
     await service.generateRecommendations({
@@ -560,10 +622,14 @@ describe('FinOpsAiService', () => {
     const baselineRepository = new FakeRecommendationRepository();
     const learnedRepository = new FakeRecommendationRepository();
 
-    await new FinOpsAiService(new FakeCostAnalyticsRepository(), baselineRepository, baselineGateway)
+    await new FinOpsAiService(
+      new FakeCostAnalyticsRepository(), baselineRepository, baselineGateway,
+      undefined, undefined, undefined, new FakeTechnicalEvidenceProvider(),
+    )
       .generateRecommendations({ tenantId: 'tenant-1', persist: true, externalResourceId: 'i-prod-001' });
     await new FinOpsAiService(
       new FakeCostAnalyticsRepository(), learnedRepository, learnedGateway, new FakeLearningContextProvider(),
+      undefined, undefined, new FakeTechnicalEvidenceProvider(),
     ).generateRecommendations({ tenantId: 'tenant-1', persist: true, externalResourceId: 'i-prod-001' });
 
     expect(baselineGateway.requests[0]?.messages[0]?.content).toContain('no hay patrones previos relevantes');
@@ -583,12 +649,17 @@ describe('FinOpsAiService', () => {
             severity: 'HIGH',
             title: 'Reducir EC2 sobredimensionado',
             description: 'EC2 domina el costo del periodo; revisar instancias con baja utilizacion.',
-            estimatedMonthlySavings: 18.25,
+            estimatedMonthlySavings: 0,
             currency: 'USD',
             evidence: {
               serviceName: 'Amazon Elastic Compute Cloud',
               evidenceLevel: 'COST_ONLY',
               requiresTechnicalValidation: true,
+              candidateId: 'resource-1',
+              externalResourceId: 'i-prod-001',
+              observedCost: 14.9,
+              normalizedMonthlyCost: 14.9,
+              maxEstimatedMonthlySavings: 2.68,
             },
           },
         ],
@@ -602,10 +673,15 @@ describe('FinOpsAiService', () => {
       }),
     ]);
     const recommendations = new FakeRecommendationRepository();
+    const traceRepository = { createAiContextTrace: vi.fn().mockResolvedValue(undefined) };
     const service = new FinOpsAiService(
       new FakeCostAnalyticsRepository(),
       recommendations,
       gateway,
+      undefined,
+      undefined,
+      new AiObservabilityService(traceRepository as never),
+      new FakeTechnicalEvidenceProvider(),
     );
 
     await expect(service.generateRecommendations({
@@ -614,36 +690,47 @@ describe('FinOpsAiService', () => {
     })).rejects.toThrow('AI audit rejected recommendation output');
 
     expect(recommendations.created).toHaveLength(0);
+    expect(traceRepository.createAiContextTrace).toHaveBeenCalledWith(expect.objectContaining({
+      operation: 'RECOMMENDATION',
+      status: 'ERROR',
+      errorMessage: 'AI audit rejected recommendation output',
+    }));
   });
 
-  test('rejects an auditor-approved recommendation when deterministic evidence is insufficient', async () => {
-    const gateway = new FakeAiGateway([
-      JSON.stringify({
-        recommendations: [{
-          cloudAccountId: 'account-focus-aws-prod',
-          type: 'RIGHTSIZING',
-          severity: 'HIGH',
-          title: 'Reducir EC2 sin evidencia',
-          description: 'Cambiar capacidad sin validacion tecnica previa.',
-          estimatedMonthlySavings: 18.25,
-          currency: 'USD',
-          evidence: { serviceName: 'Amazon Elastic Compute Cloud', evidenceLevel: 'COST_ONLY' },
-        }],
-      }),
-      JSON.stringify({
-        verdict: 'APPROVED',
-        score: 99,
-        checks: [],
-        blockingIssues: [],
-        requiredChanges: [],
-      }),
-    ]);
+  test('records a recommendation error trace when the provider fails before producing drafts', async () => {
+    const gateway = new FakeAiGateway([]);
+    const traceRepository = { createAiContextTrace: vi.fn().mockResolvedValue(undefined) };
+    const service = new FinOpsAiService(
+      new FakeCostAnalyticsRepository(),
+      new FakeRecommendationRepository(),
+      gateway,
+      undefined,
+      undefined,
+      new AiObservabilityService(traceRepository as never),
+      new FakeTechnicalEvidenceProvider(),
+    );
+
+    await expect(service.generateRecommendations({
+      tenantId: 'tenant-1',
+      persist: false,
+    })).rejects.toThrow('No fake AI response configured');
+
+    expect(traceRepository.createAiContextTrace).toHaveBeenCalledWith(expect.objectContaining({
+      operation: 'RECOMMENDATION',
+      status: 'ERROR',
+    }));
+  });
+
+  test('abstains before the auditor when no deterministic candidate is eligible', async () => {
+    const gateway = new FakeAiGateway('the model must not be called');
     const recommendations = new FakeRecommendationRepository();
     const service = new FinOpsAiService(new FakeCostAnalyticsRepository(), recommendations, gateway);
 
-    await expect(service.generateRecommendations({ tenantId: 'tenant-1', persist: true }))
-      .rejects.toThrow('AI audit rejected recommendation output');
+    const result = await service.generateRecommendations({ tenantId: 'tenant-1', persist: true });
+    expect(result.recommendations).toHaveLength(0);
+    expect(result.persisted).toBe(false);
     expect(recommendations.created).toHaveLength(0);
+    expect(gateway.requests).toHaveLength(0);
   });
 
   test('rejects a scoped analysis before calling the LLM when the resource is absent from the tenant snapshot', async () => {
@@ -663,7 +750,7 @@ describe('FinOpsAiService', () => {
     expect(gateway.requests).toHaveLength(0);
   });
 
-  test('rejects an auditor-approved scoped output that points to another resource', async () => {
+  test('keeps a scoped recommendation bound to the server-resolved resource despite a model ID mismatch', async () => {
     const gateway = new FakeAiGateway([
       JSON.stringify({
         recommendations: [{
@@ -675,7 +762,7 @@ describe('FinOpsAiService', () => {
           estimatedMonthlySavings: 0,
           currency: 'USD',
           evidence: {
-            candidateId: 'resource-i-prod-001',
+            candidateId: 'resource-1',
             evidenceLevel: 'COST_ONLY',
             requiresTechnicalValidation: true,
             externalResourceId: 'i-other-resource',
@@ -688,15 +775,20 @@ describe('FinOpsAiService', () => {
       JSON.stringify({ verdict: 'APPROVED', score: 99, checks: [], blockingIssues: [], requiredChanges: [] }),
     ]);
     const recommendations = new FakeRecommendationRepository();
-    const service = new FinOpsAiService(new FakeCostAnalyticsRepository(), recommendations, gateway);
+    const service = new FinOpsAiService(
+      new FakeCostAnalyticsRepository(), recommendations, gateway,
+      undefined, undefined, undefined, new FakeTechnicalEvidenceProvider(),
+    );
 
-    await expect(service.generateRecommendations({
+    const response = await service.generateRecommendations({
       tenantId: 'tenant-1',
       persist: true,
       externalResourceId: 'i-prod-001',
-    })).rejects.toThrow('AI audit rejected recommendation output');
+    });
 
-    expect(recommendations.created).toHaveLength(0);
+    expect(response.recommendations).toHaveLength(1);
+    expect(recommendations.created[0]?.evidence).toMatchObject({ externalResourceId: 'i-prod-001' });
+    expect(JSON.stringify(recommendations.created[0]?.evidence)).not.toContain('i-other-resource');
     expect(gateway.requests[0]?.messages[0]?.content).toContain('evidence.externalResourceId="i-prod-001"');
   });
 
@@ -710,12 +802,17 @@ describe('FinOpsAiService', () => {
             severity: 'HIGH',
             title: 'Reducir EC2',
             description: 'Revisar EC2.',
-            estimatedMonthlySavings: 18.25,
+            estimatedMonthlySavings: 0,
             currency: 'USD',
             evidence: {
               serviceName: 'Amazon Elastic Compute Cloud',
               evidenceLevel: 'COST_ONLY',
               requiresTechnicalValidation: true,
+              candidateId: 'resource-1',
+              externalResourceId: 'i-prod-001',
+              observedCost: 14.9,
+              normalizedMonthlyCost: 14.9,
+              maxEstimatedMonthlySavings: 2.68,
             },
           },
         ],
@@ -735,12 +832,17 @@ describe('FinOpsAiService', () => {
             severity: 'HIGH',
             title: 'Reducir EC2 con validacion previa',
             description: 'Revisar utilizacion antes del cambio y documentar rollback.',
-            estimatedMonthlySavings: 18.25,
+            estimatedMonthlySavings: 0,
             currency: 'USD',
             evidence: {
               serviceName: 'Amazon Elastic Compute Cloud',
               evidenceLevel: 'COST_ONLY',
               requiresTechnicalValidation: true,
+              candidateId: 'resource-1',
+              externalResourceId: 'i-prod-001',
+              observedCost: 14.9,
+              normalizedMonthlyCost: 14.9,
+              maxEstimatedMonthlySavings: 2.68,
             },
           },
         ],
@@ -758,6 +860,10 @@ describe('FinOpsAiService', () => {
       new FakeCostAnalyticsRepository(),
       recommendations,
       gateway,
+      undefined,
+      undefined,
+      undefined,
+      new FakeTechnicalEvidenceProvider(),
     );
 
     const response = await service.generateRecommendations({
@@ -765,7 +871,7 @@ describe('FinOpsAiService', () => {
       persist: true,
     });
 
-    expect(response.recommendations[0]?.title).toBe('Reducir EC2 con validacion previa');
+    expect(response.recommendations[0]?.title).toBe('Revisar capacidad y rendimiento de Amazon Elastic Compute Cloud (i-prod-001)');
     expect(gateway.requests).toHaveLength(4);
     expect(gateway.requests[2]?.messages.at(-1)?.content).toContain('Agregar validaciones previas y rollback');
   });
@@ -782,7 +888,7 @@ describe('FinOpsAiService', () => {
       validation: ['Comparar costo diario antes y despues del cambio.'],
       risks: ['Posible degradacion si la instancia esta subdimensionada.'],
       rollback: ['Restaurar el tamano anterior de la instancia.'],
-      successCriteria: ['Ahorro mensual cercano a 18.25 USD sin degradacion.'],
+      successCriteria: ['Mantener el rendimiento y validar el impacto despues del cambio.'],
       estimatedSavings: {
         amount: 18.25,
         currency: 'USD',
@@ -822,6 +928,7 @@ describe('FinOpsAiService', () => {
       generatedByUserId: 'user-1',
       auditVerdict: 'APPROVED',
       auditScore: 92,
+      content: { estimatedSavings: { amount: 0, currency: 'USD' } },
     });
     expect(gateway.requests[0]?.messages[0]?.content).toContain('plan de ejecucion');
     expect(gateway.requests[1]?.messages[0]?.content).toContain('agente auditor');

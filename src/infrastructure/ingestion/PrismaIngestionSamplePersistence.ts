@@ -14,6 +14,8 @@ import { normalizeExternalResourceId, resolveExactResourceLink } from '../../dom
 import { PrismaMetricStreamSummaryPersistence } from './PrismaMetricStreamSummaryPersistence.js';
 
 const METRIC_INSERT_BATCH_SIZE = 5_000;
+const METRIC_INSERT_DEADLOCK_RETRIES = 3;
+const METRIC_INSERT_DEADLOCK_BACKOFF_MS = 50;
 
 export interface MetricSamplePersistenceResult extends ResourceLinkageRunStats {
   readonly received: number;
@@ -206,7 +208,9 @@ async function insertMetricSampleBatch(
     ingestion_job_id: row.ingestionJobId ?? null,
   }));
 
-  return tx.$executeRaw(PrismaNamespace.sql`
+  const orderedRecords = [...records].sort(compareMetricInsertRecords);
+  return withPostgresDeadlockRetry(
+    () => tx.$executeRaw(PrismaNamespace.sql`
     INSERT INTO "resource_metric_samples" (
       "id", "tenant_id", "cloud_connection_id", "cloud_resource_id",
       "resource_link_reason", "provider", "external_resource_id",
@@ -235,7 +239,7 @@ async function insertMetricSampleBatch(
       payload.source_type::"IngestionSourceType",
       payload.raw_metric,
       payload.ingestion_job_id
-    FROM jsonb_to_recordset(${JSON.stringify(records)}::jsonb) AS payload(
+    FROM jsonb_to_recordset(${JSON.stringify(orderedRecords)}::jsonb) AS payload(
       id text,
       tenant_id text,
       cloud_connection_id text,
@@ -262,7 +266,75 @@ async function insertMetricSampleBatch(
       "external_resource_id", "metric_name", "statistic",
       "granularity_seconds", "sampled_at", "dimensions_hash"
     ) DO NOTHING
-  `);
+  `),
+  );
+}
+
+/**
+ * Concurrent backfills can contend on the samples unique index even when each
+ * job owns a different time window. Retry only PostgreSQL deadlocks; all other
+ * errors still fail the job immediately so data errors are not hidden.
+ */
+export async function withPostgresDeadlockRetry<T>(
+  operation: () => Promise<T>,
+  sleep: (milliseconds: number) => Promise<void> = defaultSleep,
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isPostgresDeadlock(error) || attempt >= METRIC_INSERT_DEADLOCK_RETRIES) throw error;
+      await sleep(METRIC_INSERT_DEADLOCK_BACKOFF_MS * (attempt + 1));
+    }
+  }
+}
+
+function compareMetricInsertRecords(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): number {
+  const leftKey = [
+    left.cloud_connection_id,
+    left.provider_namespace,
+    left.region_id,
+    left.external_resource_id,
+    left.metric_name,
+    left.statistic,
+    left.granularity_seconds,
+    left.sampled_at,
+    left.dimensions_hash,
+  ].join('|');
+  const rightKey = [
+    right.cloud_connection_id,
+    right.provider_namespace,
+    right.region_id,
+    right.external_resource_id,
+    right.metric_name,
+    right.statistic,
+    right.granularity_seconds,
+    right.sampled_at,
+    right.dimensions_hash,
+  ].join('|');
+  return leftKey.localeCompare(rightKey);
+}
+
+function isPostgresDeadlock(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as { readonly code?: unknown; readonly message?: unknown; readonly meta?: unknown };
+  const message = typeof candidate.message === 'string' ? candidate.message : '';
+  const meta = typeof candidate.meta === 'object' && candidate.meta !== null
+    ? JSON.stringify(candidate.meta)
+    : '';
+  return candidate.code === '40P01'
+    || candidate.code === 'P2034'
+    || message.includes('40P01')
+    || /deadlock detected/i.test(message)
+    || meta.includes('40P01')
+    || /deadlock detected/i.test(meta);
+}
+
+function defaultSleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function chunkArray<T>(values: readonly T[], size: number): readonly (readonly T[])[] {

@@ -1,4 +1,5 @@
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
+import type { AiTraceSource } from '../../../domain/models/AgentContext.js';
 import type { CreateRecommendationInput } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
 import type { AiAuditReport, AiCandidateAuditArtifact } from '../../../domain/models/RecommendationExecutionPlan.js';
@@ -39,6 +40,8 @@ export interface AiChatInput {
   readonly tenantId: string;
   /** Usuario que origina la consulta (opcional; usado para trazas de observabilidad). */
   readonly userId?: string;
+  /** Origen interno de la llamada; el controlador web asigna WEB, no se toma del payload. */
+  readonly traceSource?: AiTraceSource;
   /** Pregunta del usuario; se valida que no esté vacía. */
   readonly message: string;
   /** Historial de conversación previo (se normaliza y limita a los últimos turnos). */
@@ -76,6 +79,8 @@ export interface GenerateAiRecommendationsInput {
   readonly analysisRunId?: string;
   /** Preparación factual ya calculada para garantizar que generador y auditor usen el mismo snapshot. */
   readonly prepared?: PreparedRecommendationAnalysis;
+  /** Las corridas durables desactivan la reparación para respetar el SLO de 120 s. */
+  readonly allowRepair?: boolean;
   readonly onStage?: (stage: 'AI_GENERATION' | 'AI_AUDIT' | 'PERSISTENCE') => Promise<void> | void;
 }
 
@@ -124,4 +129,4 @@ export interface GenerateExecutionPlanInput {
 }
 
 /** Borrador de recomendación generado por IA, sin el `tenantId` (se inyecta después). */
-export type AiRecommendationDraft = Omit<CreateRecommendationInput, 'tenantId'>;
+export type AiRecommendationDraft = Omit<CreateRecommendationInput, 'tenantId' | 'costEvidenceScope'>;

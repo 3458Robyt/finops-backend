@@ -107,7 +107,11 @@ export function createApplicationComposition(
   const credentialCipher = config.security.credentialEncryptionKey !== undefined
     ? new CredentialCipher(config.security.credentialEncryptionKey, config.security.credentialKeyVersion)
     : undefined;
-  const cloudConnectionRepository = new PrismaCloudConnectionRepository(prisma, credentialCipher);
+  const cloudConnectionRepository = new PrismaCloudConnectionRepository(
+    prisma,
+    credentialCipher,
+    config.schedulers.ingestion.validationMaxAgeMinutes,
+  );
   const fxRateRepository = new PrismaFxRateRepository(prisma);
   const fxRateProvider = new ColombiaTrmProvider();
   const currencyConverter = new CurrencyConverter(fxRateRepository, fxRateProvider);
@@ -178,7 +182,7 @@ export function createApplicationComposition(
     emailClient,
   );
   const ingestionProviders = [new AwsSdkIngestionProvider(), new OciSdkIngestionProvider()];
-  const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository, ingestionProviders);
+  const cloudConnectionService = new CloudConnectionService(cloudConnectionRepository, ingestionProviders, resourceMetricRepository);
   const technicalMetricsService = new TechnicalMetricsService(resourceMetricRepository);
   const resourceLinkageReadinessService = new ResourceLinkageReadinessService(
     resourceLinkageReadinessRepository,

@@ -4,18 +4,47 @@ import type {
   CloudIngestionResult,
   NormalizedFocusCostLineItem,
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
+import { FOCUS_1_0_MANDATORY_COLUMNS } from './focusSchemaValidation.js';
 import { OciSdkIngestionProvider } from './OciSdkIngestionProvider.js';
 
 describe('OciSdkIngestionProvider', () => {
 it('reports every capability as not configured without exposing credentials', async () => {
 const result = await new OciSdkIngestionProvider().validate({
 id: 'connection_1', tenantId: 'tenant_1', providerCode: 'oci',
-rootExternalId: 'ocid1.tenancy.oc1.test', defaultRegion: 'sa-bogota-1', credentials: [],
+rootExternalId: 'ocid1.tenancy.oc1..exampleid0027', defaultRegion: 'sa-bogota-1', credentials: [],
 });
 
 expect(result.capabilities).toHaveLength(5);
 expect(result.capabilities.every((item) => item.status === 'NOT_CONFIGURED')).toBe(true);
 expect(JSON.stringify(result)).not.toMatch(/privateKey|passphrase|fingerprint/i);
+});
+
+it('does not guess an Object Storage bucket when FOCUS is not configured', async () => {
+const provider = new OciSdkIngestionProvider();
+let storageClientCreated = false;
+Object.assign(provider as unknown as Record<string, unknown>, {
+createObjectStorageClient: () => {
+storageClientCreated = true;
+throw new Error('storage client should not be created');
+},
+});
+
+const result = await (provider as unknown as {
+validateStorageCapability: (
+connection: CloudIngestionJobContext['connection'],
+job: CloudIngestionJobContext,
+checkedAt: Date,
+  ) => Promise<{ status: string; message: string; metadata?: Record<string, unknown> }>;
+}).validateStorageCapability(
+buildMetricJob().connection,
+{ ...buildMetricJob(), sourceType: 'INVENTORY' },
+new Date(),
+);
+
+expect(result.status).toBe('NOT_CONFIGURED');
+expect(result.message).toContain('OCI Usage API');
+expect(result.metadata).toMatchObject({ reasonCode: 'FOCUS_SOURCE_NOT_CONFIGURED' });
+expect(storageClientCreated).toBe(false);
 });
 
 it('collects compute inventory resources through the OCI SDK', async () => {
@@ -30,7 +59,7 @@ createComputeClient: () => ({
 listInstances: async () => ({
 items: [
 {
-id: 'ocid1.instance.oc1.test',
+id: 'ocid1.instance.oc1..exampleid0017',
 displayName: 'api-prod',
 lifecycleState: 'RUNNING',
 shape: 'VM.Standard.E4.Flex',
@@ -49,7 +78,7 @@ sourceType: 'INVENTORY',
 expect(result.resources).toEqual([
 expect.objectContaining({
 provider: 'OCI',
-externalResourceId: 'ocid1.instance.oc1.test',
+externalResourceId: 'ocid1.instance.oc1..exampleid0017',
 name: 'api-prod',
 resourceType: 'COMPUTE_INSTANCE',
 serviceName: 'Oracle Compute',
@@ -100,7 +129,7 @@ credentials: [{ purpose: 'INVENTORY_READ', payload: {} }],
 });
 
 expect(listedCompartments).toEqual(['root', 'page-2']);
-expect(listedInstances).toEqual(['ocid1.tenancy.oc1.test', 'compartment-a', 'compartment-b']);
+expect(listedInstances).toEqual(['ocid1.tenancy.oc1..exampleid0027', 'compartment-a', 'compartment-b']);
 expect(result.resources).toHaveLength(3);
 expect(result.coverage).toMatchObject({
 inventoryCompartmentDiscovery: 'COMPLETE',
@@ -126,7 +155,7 @@ compartmentCount: 3,
               {
                 namespace: 'oci_computeagent',
                 name: 'CpuUtilization',
-                dimensions: { resourceId: 'ocid1.instance.oc1.test' },
+                dimensions: { resourceId: 'ocid1.instance.oc1..exampleid0017' },
                 aggregatedDatapoints: [
                   { timestamp: new Date('2026-06-04T01:30:00Z'), value: 4.2 },
                 ],
@@ -147,7 +176,7 @@ compartmentCount: 3,
     expect(samples).toEqual([
       expect.objectContaining({
         provider: 'OCI',
-        externalResourceId: 'ocid1.instance.oc1.test',
+        externalResourceId: 'ocid1.instance.oc1..exampleid0017',
         metricName: 'CpuUtilization',
         value: 4.2,
         granularitySeconds: 1800,
@@ -195,7 +224,7 @@ compartmentCount: 3,
     expect(focusRows[0]).toMatchObject({
       provider: 'OCI',
       serviceName: 'Compute',
-      resourceId: 'ocid1.instance.oc1.test',
+      resourceId: 'ocid1.instance.oc1..exampleid0017',
       billedCost: 8.75,
       consumedQuantity: 2,
       consumedUnit: 'Hours',
@@ -203,6 +232,7 @@ compartmentCount: 3,
     expect(result.coverage).toMatchObject({
       objectsDiscovered: 1,
       rowsParsed: 'streamed',
+      focusSchemaValidation: { status: 'CONFORMANT', filesChecked: 1, filesConformant: 1 },
     });
     expect(result.warnings).toEqual([]);
   });
@@ -248,7 +278,7 @@ compartmentCount: 3,
     expect(getObjectCalls).toBe(1);
     expect(result.objectsProcessed).toBe(1);
     expect(focusRows).toHaveLength(1);
-    expect(focusRows[0]?.resourceId).toBe('ocid1.instance.oc1.test');
+    expect(focusRows[0]?.resourceId).toBe('ocid1.instance.oc1..exampleid0017');
   });
 
   it('reads OCI FOCUS object metadata written with OCI CLI field names', async () => {
@@ -381,6 +411,8 @@ compartmentCount: 3,
   });
 
   it('normalizes OCI Usage API costs through the billing collector', async () => {
+    vi.useFakeTimers({ now: new Date('2026-09-22T12:00:00Z') });
+    try {
     const provider = new OciSdkIngestionProvider();
     const requests: unknown[] = [];
     let closed = false;
@@ -396,7 +428,7 @@ compartmentCount: 3,
                 computedAmount: 12.5,
                 computedQuantity: 4,
                 currency: 'USD',
-                resourceId: 'ocid1.instance.oc1.test',
+                resourceId: 'ocid1.instance.oc1..exampleid0017',
                 region: 'sa-bogota-1',
               }],
             },
@@ -417,8 +449,8 @@ compartmentCount: 3,
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({
       requestSummarizedUsagesDetails: {
-        timeUsageStarted: new Date('2026-06-03T00:00:00.000Z'),
-        timeUsageEnded: new Date('2026-06-04T00:00:00.000Z'),
+        timeUsageStarted: new Date('2026-06-04T00:00:00.000Z'),
+        timeUsageEnded: new Date('2026-06-05T00:00:00.000Z'),
         granularity: 'DAILY',
       },
     });
@@ -429,9 +461,9 @@ compartmentCount: 3,
         billedCost: 12.5,
         consumedQuantity: 4,
         billingCurrency: 'USD',
-        resourceId: 'ocid1.instance.oc1.test',
-        chargePeriodStart: new Date('2026-06-03T00:00:00.000Z'),
-        chargePeriodEnd: new Date('2026-06-04T00:00:00.000Z'),
+        resourceId: 'ocid1.instance.oc1..exampleid0017',
+        chargePeriodStart: new Date('2026-06-04T00:00:00.000Z'),
+        chargePeriodEnd: new Date('2026-06-05T00:00:00.000Z'),
       }),
     ]);
     expect(result.coverage).toMatchObject({
@@ -440,6 +472,9 @@ compartmentCount: 3,
       rows: 1,
     });
     expect(closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('falls back to OCI Usage API when AUTO cannot find a managed FOCUS object', async () => {
@@ -465,6 +500,7 @@ compartmentCount: 3,
     });
 
     expect(result.providerCostRows).toHaveLength(1);
+    expect(result.dataOutcome).toBe('DATA_WRITTEN');
     expect(result.coverage).toMatchObject({
       billingSource: 'PROVIDER_API',
       billingSourceFallback: 'FOCUS_TO_PROVIDER_API',
@@ -500,15 +536,15 @@ function buildMetricJob(): CloudIngestionJobContext {
       id: 'connection_1',
       tenantId: 'tenant_1',
       providerCode: 'oci',
-      rootExternalId: 'ocid1.tenancy.oc1.test',
+      rootExternalId: 'ocid1.tenancy.oc1..exampleid0027',
       credentials: [],
       metadata: {
         ociMetricDefinitions: [
           {
-            compartmentId: 'ocid1.tenancy.oc1.test',
+            compartmentId: 'ocid1.tenancy.oc1..exampleid0027',
             namespace: 'oci_computeagent',
             metricName: 'CpuUtilization',
-            resourceId: 'ocid1.instance.oc1.test',
+            resourceId: 'ocid1.instance.oc1..exampleid0017',
           },
         ],
       },
@@ -528,7 +564,7 @@ function buildOciFocusJob(): CloudIngestionJobContext {
       id: 'connection_1',
       tenantId: 'tenant_1',
       providerCode: 'oci',
-      rootExternalId: 'ocid1.tenancy.oc1.test',
+      rootExternalId: 'ocid1.tenancy.oc1..exampleid0027',
       credentials: [],
       metadata: {
         ociFocusReportLocations: [
@@ -546,40 +582,35 @@ function buildOciFocusJob(): CloudIngestionJobContext {
 }
 
 function buildFocusCsv(): string {
+  const values: Readonly<Record<string, string>> = {
+    BilledCost: '8.75',
+    BillingAccountId: 'tenancy-1',
+    BillingAccountName: 'Test tenancy',
+    BillingCurrency: 'USD',
+    BillingPeriodEnd: '2026-07-01 00:00:00',
+    BillingPeriodStart: '2026-06-01 00:00:00',
+    ChargeCategory: 'Usage',
+    ChargeClass: 'Usage',
+    ChargePeriodEnd: '2026-06-04 02:00:00',
+    ChargePeriodStart: '2026-06-04 01:30:00',
+    ContractedCost: '8.75',
+    ConsumedQuantity: '2',
+    ConsumedUnit: 'Hours',
+    EffectiveCost: '8',
+    InvoiceIssuer: 'Oracle Cloud Infrastructure',
+    ListCost: '9',
+    PricingUnit: 'Hours',
+    Provider: 'Oracle Cloud Infrastructure',
+    ProviderName: 'Oracle Cloud Infrastructure',
+    Publisher: 'Oracle',
+    RegionId: 'sa-bogota-1',
+    ResourceId: 'ocid1.instance.oc1..exampleid0017',
+    ServiceCategory: 'Compute',
+    ServiceName: 'Compute',
+    SubAccountId: 'compartment-1',
+  };
   return [
-    [
-      'BilledCost',
-      'BillingCurrency',
-      'BillingAccountId',
-      'ChargeCategory',
-      'ChargePeriodStart',
-      'ChargePeriodEnd',
-      'ConsumedQuantity',
-      'ConsumedUnit',
-      'EffectiveCost',
-      'ListCost',
-      'ProviderName',
-      'RegionId',
-      'ResourceId',
-      'ServiceName',
-      'SubAccountId',
-    ].join(','),
-    [
-      '8.75',
-      'USD',
-      'tenancy-1',
-      'Usage',
-      '2026-06-04 01:30:00',
-      '2026-06-04 02:00:00',
-      '2',
-      'Hours',
-      '8',
-      '9',
-      'Oracle Cloud Infrastructure',
-      'sa-bogota-1',
-      'ocid1.instance.oc1.test',
-      'Compute',
-      'compartment-1',
-    ].join(','),
+    [...FOCUS_1_0_MANDATORY_COLUMNS, 'ConsumedQuantity', 'ConsumedUnit', 'ListCost', 'ProviderName', 'RegionId', 'ResourceId', 'SubAccountId'].join(','),
+    [...FOCUS_1_0_MANDATORY_COLUMNS, 'ConsumedQuantity', 'ConsumedUnit', 'ListCost', 'ProviderName', 'RegionId', 'ResourceId', 'SubAccountId'].map((header) => values[header] ?? '').join(','),
   ].join('\n');
 }

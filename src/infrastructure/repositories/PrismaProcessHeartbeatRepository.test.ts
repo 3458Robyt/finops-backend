@@ -37,4 +37,38 @@ describe('PrismaProcessHeartbeatRepository', () => {
       data: { status: 'STOPPED', stoppedAt, lastHeartbeatAt: stoppedAt },
     });
   });
+
+  it('marks stale running processes without changing their last heartbeat timestamp', async () => {
+    const prisma = { runtimeProcessHeartbeat: {
+      updateMany: vi.fn().mockResolvedValue({ count: 4 }),
+    }, $transaction: vi.fn().mockImplementation(async (callback: (transaction: unknown) => Promise<unknown>) => callback(prisma)) };
+    const repository = new PrismaProcessHeartbeatRepository(prisma as never);
+    const staleBefore = new Date('2026-08-12T13:59:00.000Z');
+    const stoppedAt = new Date('2026-08-12T14:00:00.000Z');
+
+    await expect(repository.markStale(staleBefore, stoppedAt)).resolves.toBe(4);
+    expect(prisma.runtimeProcessHeartbeat.updateMany).toHaveBeenCalledWith({
+      where: { status: 'RUNNING', lastHeartbeatAt: { lt: staleBefore } },
+      data: { status: 'STOPPED', stoppedAt },
+    });
+  });
+
+  it('does not wrap single heartbeat operations in an interactive transaction', async () => {
+    const prisma = {
+      $transaction: vi.fn(),
+      runtimeProcessHeartbeat: {
+        upsert: vi.fn().mockResolvedValue(undefined),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
+    };
+    const repository = new PrismaProcessHeartbeatRepository(prisma as never);
+    const now = new Date('2026-09-21T00:00:00.000Z');
+
+    await repository.upsert({ processId: 'api-1', processRole: 'api', startedAt: now, heartbeatAt: now });
+    await repository.markStopped('api-1', now);
+    await repository.findById('api-1');
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
 });

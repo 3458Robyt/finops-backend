@@ -7,8 +7,10 @@ import { promisify } from 'node:util';
 import { Pool } from 'pg';
 import {
   assertIntegrationSchema,
+  assertLocalIntegrationDatabase,
   runIntegrationCommand,
 } from './integrationRuntime.js';
+import { latestMigrationId } from './latestMigrationId.js';
 
 // Supabase API smoke includes two authenticated suites and can take several
 // minutes over a remote PostgreSQL connection. Keep it bounded without
@@ -25,6 +27,7 @@ if (sourceUrl === undefined || sourceUrl.trim() === '') {
   }, null, 2));
   process.exit(0);
 }
+assertLocalIntegrationDatabase(sourceUrl);
 
 const schema = `finops_e2e_api_${Date.now().toString(36)}`;
 const isolatedUrl = withSchema(sourceUrl, schema);
@@ -67,7 +70,7 @@ try {
       APP_PROCESS_ROLE: 'api',
       DB_RUNTIME_ENFORCE: 'true',
       DB_RUNTIME_ROLE: 'finops_runtime',
-      DB_EXPECTED_MIGRATION: '202609140002_advisor_rls_hardening',
+      DB_EXPECTED_MIGRATION: latestMigrationId(),
       PROCESS_HEARTBEAT_ENABLED: 'false',
       INGESTION_WORKER_ENABLED: 'false',
       INGESTION_SCHEDULER_ENABLED: 'false',
@@ -94,6 +97,7 @@ try {
   const onboardingResult = await runIntegrationCommand(process.execPath, [tsxCli, 'scripts/testing/cloud-onboarding-api-smoke.ts'], {
     API_BASE_URL: apiBaseUrl,
     E2E_FIXTURE_FILE: fixtureFile,
+    EXPECT_WAITING_FOR_WORKER: 'true',
   });
   process.stdout.write(onboardingResult.stdout);
   process.stderr.write(onboardingResult.stderr);

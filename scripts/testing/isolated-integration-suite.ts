@@ -3,9 +3,11 @@ import 'dotenv/config';
 import { resolve } from 'node:path';
 import {
   assertIntegrationSchema,
+  assertLocalIntegrationDatabase,
   createIntegrationPool,
   runIntegrationCommand,
 } from './integrationRuntime.js';
+import { latestMigrationId } from './latestMigrationId.js';
 
 // The complete remote PostgreSQL suite includes fixture-heavy performance
 // checks. Keep it bounded, but allow normal Supabase latency without forcing
@@ -13,14 +15,17 @@ import {
 // minutes and still validates any explicit override.
 process.env['TEST_COMMAND_TIMEOUT_MS'] ??= '600000';
 
-const sourceUrl = process.env['DATABASE_URL'];
+// Prefer the explicit test target so a developer's dotenv DATABASE_URL cannot
+// silently redirect destructive integration setup to a different environment.
+const sourceUrl = process.env['TEST_DATABASE_URL'] ?? process.env['DATABASE_URL'];
 if (sourceUrl === undefined || sourceUrl.trim() === '') {
   console.log(JSON.stringify({
     status: 'SKIPPED',
-    reason: 'DATABASE_URL is required to create the isolated PostgreSQL integration schema.',
+    reason: 'TEST_DATABASE_URL or DATABASE_URL is required to create the isolated PostgreSQL integration schema.',
   }, null, 2));
   process.exit(0);
 }
+assertLocalIntegrationDatabase(sourceUrl);
 
 const schema = `finops_e2e_suite_${Date.now().toString(36)}`;
 const isolatedUrl = withSchema(sourceUrl, schema);
@@ -30,8 +35,13 @@ const vitestCli = resolve('node_modules/vitest/vitest.mjs');
 const tsxCli = resolve('node_modules/tsx/dist/cli.mjs');
 const integrationTests = [
   'src/testing/e2eFixtures.test.ts',
+  'src/testing/ingestionJobCancellation.integration.test.ts',
+  'src/testing/ingestionJobLeaseRecovery.integration.test.ts',
+  'src/testing/metricCoverageFilters.integration.test.ts',
+  'src/testing/metricDefinitionCatalog.integration.test.ts',
   'src/testing/technicalMetrics.integration.test.ts',
   'src/testing/recommendationAnalysis.integration.test.ts',
+  'src/testing/recommendationCostEvidence.integration.test.ts',
   'src/testing/verifiedSavingsMeasurement.integration.test.ts',
   'src/testing/valueRealization.integration.test.ts',
   'src/testing/tenantContext.integration.test.ts',
@@ -47,7 +57,7 @@ const isolatedEnv = {
   RUN_DB_INTEGRATION_TESTS: 'true',
   DB_RUNTIME_ENFORCE: 'true',
   DB_RUNTIME_ROLE: 'finops_runtime',
-  DB_EXPECTED_MIGRATION: '202609140002_advisor_rls_hardening',
+  DB_EXPECTED_MIGRATION: latestMigrationId(),
 };
 
 let schemaCreated = false;

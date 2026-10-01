@@ -11,6 +11,7 @@ interface RawFastSummaryRow {
   readonly external_resource_id: string;
   readonly cloud_resource_id: string | null;
   readonly cloud_connection_id: string | null;
+  readonly resource_name: string | null;
   readonly provider_namespace: string | null;
   readonly region_id: string | null;
   readonly dimensions_hash: string | null;
@@ -33,7 +34,7 @@ interface RawFastSummaryRow {
 }
 
 /**
- * Bounded overview projection backed by daily PostgreSQL rollups.
+ * Bounded overview projection backed by peak-preserving PostgreSQL rollups.
  *
  * Raw samples remain canonical for evidence, auditing, and drill-down. This
  * reader intentionally serves the interactive overview only; its weighted
@@ -46,8 +47,61 @@ export class PrismaResourceMetricSummaryReader {
     tenantId: string,
     filters: TechnicalMetricSummaryFilters,
   ): Promise<readonly TechnicalMetricSummaryItem[]> {
+    // The daily projection is the bounded overview source. Reading all source
+    // resolutions first made a large tenant scan millions of rollup rows even
+    // though the query later selected daily rows. If the projection is absent
+    // (fresh database/fixture), retain the compatibility fallback.
+    let rows = await this.listRollupSummaries(tenantId, filters, { exactBucketSeconds: 86400 });
+    if (rows.length === 0) {
+      rows = await this.listRollupSummaries(tenantId, filters, { maxBucketSeconds: 86400 });
+    }
+    return rows.map(toSummaryItem);
+  }
+
+  private async listRollupSummaries(
+    tenantId: string,
+    filters: TechnicalMetricSummaryFilters,
+    options: { readonly exactBucketSeconds?: number; readonly maxBucketSeconds?: number },
+  ): Promise<readonly RawFastSummaryRow[]> {
     const where = buildWhere(tenantId, filters);
-    const rows = await this.prisma.$queryRaw<RawFastSummaryRow[]>(Prisma.sql`
+    const exactBucket = options.exactBucketSeconds !== undefined;
+    const bucketFilter = exactBucket
+      ? Prisma.sql`r.bucket_seconds = ${options.exactBucketSeconds}`
+      : Prisma.sql`r.bucket_seconds <= ${options.maxBucketSeconds ?? 86400}`;
+    // The normal path already fixes the daily bucket. Avoid the preferred-bucket
+    // self-join there; it is only needed by the compatibility fallback.
+    const withClause = exactBucket
+      ? Prisma.empty
+      : Prisma.sql`WITH filtered AS (
+        SELECT r.*
+        FROM resource_metric_rollups r
+        WHERE ${where} AND ${bucketFilter}
+      ), preferred AS (
+        SELECT tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id, provider_namespace,
+          region_id, dimensions_hash, metric_name, statistic, max(bucket_seconds) AS bucket_seconds
+        FROM filtered
+        GROUP BY tenant_id, cloud_connection_id, cloud_resource_id, external_resource_id, provider_namespace,
+          region_id, dimensions_hash, metric_name, statistic
+      )`;
+    const sourceClause = exactBucket
+      ? Prisma.sql`FROM resource_metric_rollups r
+        LEFT JOIN cloud_resources cr ON cr.id = r.cloud_resource_id
+        WHERE ${where} AND ${bucketFilter}`
+      : Prisma.sql`FROM filtered r
+        INNER JOIN preferred p
+          ON p.tenant_id = r.tenant_id
+         AND p.cloud_connection_id = r.cloud_connection_id
+         AND p.cloud_resource_id IS NOT DISTINCT FROM r.cloud_resource_id
+         AND p.external_resource_id = r.external_resource_id
+         AND p.provider_namespace = r.provider_namespace
+         AND p.region_id = r.region_id
+         AND p.dimensions_hash = r.dimensions_hash
+         AND p.metric_name = r.metric_name
+         AND p.statistic = r.statistic
+         AND p.bucket_seconds = r.bucket_seconds
+        LEFT JOIN cloud_resources cr ON cr.id = r.cloud_resource_id`;
+    return this.prisma.$queryRaw<RawFastSummaryRow[]>(Prisma.sql`
+      ${withClause}
       SELECT
         r.provider::text AS provider,
         r.external_resource_id,
@@ -56,13 +110,14 @@ export class PrismaResourceMetricSummaryReader {
         r.provider_namespace,
         r.region_id,
         r.dimensions_hash,
+        max(cr.name) AS resource_name,
         max(cr.resource_type) AS resource_type,
         max(cr.service_name) AS service_name,
         r.metric_name,
         max(r.metric_unit) AS metric_unit,
         r.statistic::text AS statistic,
         sum(r.sample_count)::bigint AS sample_count,
-        count(DISTINCT r.bucket_start)::bigint AS coverage_days,
+        count(DISTINCT date_trunc('day', r.bucket_start))::bigint AS coverage_days,
         min(r.min_value)::float8 AS min_value,
         max(r.max_value)::float8 AS max_value,
         (sum(r.sum_value) / nullif(sum(r.sample_count), 0))::float8 AS avg_value,
@@ -75,9 +130,7 @@ export class PrismaResourceMetricSummaryReader {
         (array_agg(r.latest_value ORDER BY r.bucket_start DESC, r.latest_sampled_at DESC))[1]::float8 AS latest_value,
         min(r.min_sampled_at) AS first_sampled_at,
         max(r.latest_sampled_at) AS latest_sampled_at
-      FROM resource_metric_rollups r
-      LEFT JOIN cloud_resources cr ON cr.id = r.cloud_resource_id
-      WHERE ${where}
+      ${sourceClause}
       GROUP BY r.provider, r.external_resource_id, r.cloud_resource_id,
         r.cloud_connection_id, r.provider_namespace, r.region_id,
         r.dimensions_hash, r.metric_name, r.statistic
@@ -86,8 +139,6 @@ export class PrismaResourceMetricSummaryReader {
         r.region_id ASC, r.metric_name ASC, r.dimensions_hash ASC
       LIMIT ${filters.limit}
     `);
-
-    return rows.map(toSummaryItem);
   }
 }
 
@@ -97,7 +148,6 @@ function buildWhere(
 ): Prisma.Sql {
   const clauses: Prisma.Sql[] = [
     Prisma.sql`r.tenant_id = ${tenantId}`,
-    Prisma.sql`r.bucket_seconds = 86400`,
   ];
   if (filters.startDate !== undefined) clauses.push(Prisma.sql`r.bucket_start >= ${filters.startDate}`);
   if (filters.endDate !== undefined) clauses.push(Prisma.sql`r.bucket_start <= ${filters.endDate}`);
@@ -120,6 +170,7 @@ function toSummaryItem(row: RawFastSummaryRow): TechnicalMetricSummaryItem {
     externalResourceId: row.external_resource_id,
     ...(row.cloud_resource_id !== null ? { cloudResourceId: row.cloud_resource_id } : {}),
     ...(row.cloud_connection_id !== null ? { cloudConnectionId: row.cloud_connection_id } : {}),
+    ...(row.resource_name !== null ? { resourceName: row.resource_name } : {}),
     ...(row.provider_namespace !== null && row.provider_namespace !== ''
       ? { providerNamespace: row.provider_namespace }
       : {}),

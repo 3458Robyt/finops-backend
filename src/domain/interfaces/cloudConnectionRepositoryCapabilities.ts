@@ -110,6 +110,7 @@ export interface ICloudIngestionRepository {
     tenantId: string,
     cloudConnectionId: string,
     sourceType: IngestionSourceType,
+    actorUserId: string,
   ): Promise<number>;
   getIngestionHealth(
     tenantId: string,

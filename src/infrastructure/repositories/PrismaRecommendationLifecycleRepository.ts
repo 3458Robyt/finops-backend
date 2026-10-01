@@ -9,6 +9,7 @@ import type {
 } from "../../domain/interfaces/IRecommendationRepository.js";
 import type { FinOpsRecommendation } from "../../domain/models/FinOpsRecommendation.js";
 import type { RecommendationExecutionPlan } from "../../domain/models/RecommendationExecutionPlan.js";
+import { FinOpsBaseError } from "../../domain/errors/errors.js";
 import { Prisma, type PrismaClient } from "../../generated/prisma/client.js";
 import { CurrencyConverter } from "../finance/CurrencyConverter.js";
 import {
@@ -24,6 +25,10 @@ import {
   projectRecommendation,
   projectRecommendations,
 } from './recommendationCurrencyProjection.js';
+import {
+  hasRecommendationCandidateEvidence,
+  resolveRecommendationCostEvidence,
+} from './recommendationCostEvidencePersistence.js';
 
 /** Persists recommendation identity, lifecycle and manual execution state. */
 export class PrismaRecommendationLifecycleRepository {
@@ -117,7 +122,42 @@ export class PrismaRecommendationLifecycleRepository {
     }
 
     const rows = await Promise.all(
-      input.map((item) => {
+      input.map(async (item) => {
+        if (item.deduplicationKey !== undefined) {
+          const existing = await this.prisma.recommendation.findUnique({
+            where: {
+              tenantId_deduplicationKey: {
+                tenantId: item.tenantId,
+                deduplicationKey: item.deduplicationKey,
+              },
+            },
+          });
+          if (existing !== null) return existing;
+        }
+        if ((item.origin ?? 'AI_GENERATED') === 'AI_GENERATED' && hasRecommendationCandidateEvidence(item.evidence)
+          && item.costEvidenceScope === undefined) {
+          throw new FinOpsBaseError(
+            "La recomendación generada no conserva un alcance canónico de evidencia de costos.",
+            "AI_EVIDENCE_RESOLUTION_FAILED",
+          );
+        }
+        if (item.costEvidenceScope !== undefined
+          && (item.cloudAccountId !== item.costEvidenceScope.cloudAccountId
+            || item.cloudResourceId !== item.costEvidenceScope.cloudResourceId)) {
+          throw new FinOpsBaseError(
+            'La cuenta o recurso de la recomendación no coincide con su evidencia canónica.',
+            'AI_EVIDENCE_RESOLUTION_FAILED',
+          );
+        }
+        const costEvidence = item.costEvidenceScope === undefined
+          ? undefined
+          : await resolveRecommendationCostEvidence(this.prisma, item.tenantId, item.costEvidenceScope);
+        if (item.costEvidenceScope !== undefined && costEvidence?.length === 0) {
+          throw new FinOpsBaseError(
+            "No se encontraron líneas de costo para la evidencia canónica de la recomendación.",
+            "AI_EVIDENCE_RESOLUTION_FAILED",
+          );
+        }
         const data = {
           tenantId: item.tenantId,
           cloudAccountId: item.cloudAccountId,
@@ -141,6 +181,7 @@ export class PrismaRecommendationLifecycleRepository {
             ? { estimatedMonthlySavings: item.estimatedMonthlySavings }
             : {}),
           currency: item.currency,
+          ...(costEvidence === undefined ? {} : { costEvidenceLines: { createMany: { data: costEvidence } } }),
         };
 
         return item.deduplicationKey === undefined

@@ -9,7 +9,7 @@ describe('ExecutiveSummaryDeliveryService', () => {
   it('encola por correo y Telegram con una clave diaria por usuario/canal', async () => {
     const created: Array<Record<string, unknown>> = [];
     const outbound = {
-      findTenantUsers: vi.fn(async () => [{ id: 'user-1', email: 'user@example.com', name: 'User', status: 'ACTIVE' as const }]),
+      findTenantUsers: vi.fn(async () => [{ id: 'user-1', email: 'test-user-0027@example.test', name: 'User', status: 'ACTIVE' as const }]),
       create: vi.fn(async (input: Record<string, unknown>) => {
         created.push(input);
         return delivery(input);

@@ -185,38 +185,76 @@ export class PrismaMetricProjectionWorker {
 
   private async project(claimed: ClaimedProjection, workerId: string): Promise<MetricProjectionWorkerRunResult> {
     const startedAt = Date.now();
+    const stageDurationsMs: Record<string, number> = {};
     try {
-      await this.prisma.$transaction(async (tx) => {
-        const now = new Date();
-        await this.streamSummaries.refreshMetricStreamSummariesForJob(tx, claimed.id, now);
-        await this.rollups.refreshForJob(tx, claimed.id);
-        await this.coverage.refreshForJob(tx, claimed.id, now);
+      // Each projection is idempotent and can scan a different amount of history.
+      // Keep them in separate transactions so a slow rollup cannot expire the
+      // transaction that already built the stream summary.
+      let stageStartedAt = Date.now();
+      await this.prisma.$transaction(
+        (tx) => this.streamSummaries.refreshMetricStreamSummariesForJob(tx, claimed.id, new Date()),
+        { maxWait: 10_000, timeout: this.transactionTimeoutMs },
+      );
+      stageDurationsMs.streamSummaries = Date.now() - stageStartedAt;
+      this.metrics?.observe('metric_projection_stage_duration_ms', stageDurationsMs.streamSummaries, {
+        stage: 'stream_summaries',
+        outcome: 'success',
+      });
 
-        const completed = await tx.ingestionJob.updateMany({
-          where: {
-            id: claimed.id,
-            status: 'SUCCESS',
-            projectionStatus: 'RUNNING',
-            projectionLockedBy: workerId,
-            projectionAttempts: claimed.attempt,
-          },
-          data: {
+      stageStartedAt = Date.now();
+      await this.prisma.$transaction(
+        async (tx) => {
+          // The affected-stream sort spills at the default 32 MB work_mem on
+          // large connections. Keep this transaction-local so other API work
+          // does not inherit a high per-query memory budget.
+          await tx.$executeRaw`SET LOCAL work_mem = '64MB'`;
+          return this.rollups.refreshForJob(tx, claimed.id);
+        },
+        { maxWait: 10_000, timeout: this.transactionTimeoutMs },
+      );
+      stageDurationsMs.rollups = Date.now() - stageStartedAt;
+      this.metrics?.observe('metric_projection_stage_duration_ms', stageDurationsMs.rollups, {
+        stage: 'rollups',
+        outcome: 'success',
+      });
+
+      stageStartedAt = Date.now();
+      await this.prisma.$transaction(
+        (tx) => this.coverage.refreshForJob(tx, claimed.id, new Date()),
+        { maxWait: 10_000, timeout: this.transactionTimeoutMs },
+      );
+      stageDurationsMs.coverage = Date.now() - stageStartedAt;
+      this.metrics?.observe('metric_projection_stage_duration_ms', stageDurationsMs.coverage, {
+        stage: 'coverage',
+        outcome: 'success',
+      });
+
+      const completedAt = new Date();
+      const completed = await this.prisma.ingestionJob.updateMany({
+        where: {
+          id: claimed.id,
+          status: 'SUCCESS',
+          projectionStatus: 'RUNNING',
+          projectionLockedBy: workerId,
+          projectionAttempts: claimed.attempt,
+        },
+        data: {
+          projectionStatus: 'SUCCESS',
+          projectionAvailableAt: null,
+          projectionLockedAt: null,
+          projectionLockedBy: null,
+          projectionCompletedAt: completedAt,
+          projectionErrorMessage: null,
+          progress: {
+            phase: 'COMPLETED',
+            message: 'Ingesta raw y proyección técnica completadas correctamente.',
             projectionStatus: 'SUCCESS',
-            projectionAvailableAt: null,
-            projectionLockedAt: null,
-            projectionLockedBy: null,
-            projectionCompletedAt: now,
-            projectionErrorMessage: null,
-            progress: {
-              phase: 'COMPLETED',
-              message: 'Ingesta raw y proyección técnica completadas correctamente.',
-              projectionStatus: 'SUCCESS',
-              updatedAt: now.toISOString(),
-            } as unknown as Prisma.InputJsonValue,
-          },
-        });
-        if (completed.count !== 1) throw new Error('La proyección perdió el lease antes de completar.');
-      }, { maxWait: 10_000, timeout: this.transactionTimeoutMs });
+            projectionStageDurationsMs: stageDurationsMs,
+            updatedAt: completedAt.toISOString(),
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+      if (completed.count !== 1) throw new Error('La proyección perdió el lease antes de completar.');
 
       this.metrics?.increment('metric_projection_runs_total', { outcome: 'success' });
       this.metrics?.observe('metric_projection_duration_ms', Date.now() - startedAt, { outcome: 'success' });
@@ -257,6 +295,7 @@ export class PrismaMetricProjectionWorker {
               : 'Datos raw disponibles, pero la proyección técnica agotó sus intentos.',
             projectionStatus: retryScheduled ? 'PENDING' : 'FAILED',
             projectionError: message,
+            projectionStageDurationsMs: stageDurationsMs,
             ...(availableAt === undefined ? {} : { nextProjectionAttemptAt: availableAt.toISOString() }),
             updatedAt: new Date().toISOString(),
           } as unknown as Prisma.InputJsonValue,

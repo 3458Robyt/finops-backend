@@ -58,17 +58,17 @@ export async function queryResourceLinkageConnections(
     `),
     prisma.$queryRaw<ConnectionRow[]>(Prisma.sql`
       SELECT cloud_connection_id,
-        count(*)::bigint AS total, count(*)::bigint AS eligible,
-        count(*) FILTER (WHERE cloud_resource_id IS NOT NULL)::bigint AS linked,
+        COALESCE(sum(sample_count), 0)::bigint AS total, COALESCE(sum(sample_count), 0)::bigint AS eligible,
+        COALESCE(sum(sample_count) FILTER (WHERE cloud_resource_id IS NOT NULL), 0)::bigint AS linked,
         0::bigint AS not_eligible,
-        count(*) FILTER (WHERE cloud_resource_id IS NULL)::bigint AS unresolved,
-        count(*) FILTER (WHERE cloud_resource_id IS NULL AND resource_link_reason = 'AMBIGUOUS_RESOURCE_ID')::bigint AS ambiguous
-      FROM resource_metric_samples WHERE tenant_id = ${tenantId}
+        COALESCE(sum(sample_count) FILTER (WHERE cloud_resource_id IS NULL), 0)::bigint AS unresolved,
+        0::bigint AS ambiguous
+      FROM resource_metric_stream_summaries WHERE tenant_id = ${tenantId}
       GROUP BY cloud_connection_id
     `),
     prisma.$queryRaw<ConnectionReasonRow[]>(Prisma.sql`
       SELECT cloud_connection_id, resource_link_reason AS reason, count(*)::bigint AS count
-      FROM resource_metric_samples
+        FROM resource_metric_samples
       WHERE tenant_id = ${tenantId} AND cloud_resource_id IS NULL AND resource_link_reason IS NOT NULL
       GROUP BY cloud_connection_id, resource_link_reason
     `),
@@ -93,8 +93,8 @@ export async function queryResourceLinkageConnections(
         SELECT cloud_connection_id, NULL::timestamptz, max(charge_period_end), NULL::timestamptz
         FROM cost_metrics WHERE tenant_id = ${tenantId} AND cloud_connection_id IS NOT NULL GROUP BY cloud_connection_id
         UNION ALL
-        SELECT cloud_connection_id, NULL::timestamptz, NULL::timestamptz, max(sampled_at)
-        FROM resource_metric_samples WHERE tenant_id = ${tenantId} GROUP BY cloud_connection_id
+        SELECT cloud_connection_id, NULL::timestamptz, NULL::timestamptz, max(last_sampled_at)
+        FROM resource_metric_stream_summaries WHERE tenant_id = ${tenantId} GROUP BY cloud_connection_id
       ) source_dates GROUP BY cloud_connection_id
     `),
   ]);

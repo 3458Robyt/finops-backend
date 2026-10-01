@@ -59,7 +59,7 @@ describe('buildDeterministicOpportunityCatalog', () => {
     const catalog = buildDeterministicOpportunityCatalog(readiness({
       inventoryResources: 3,
       resources: [{
-        id: 'resource-1', cloudConnectionId: 'connection-1', externalResourceId: 'ocid1.instance.1',
+        id: 'resource-1', cloudConnectionId: 'connection-1', externalResourceId: 'ocid1.instance.oc1..exampleid0008',
         provider: 'OCI', serviceName: 'Compute', resourceType: 'instance', status: 'ACTIVE',
         costMetrics: 12, metricSamples: 0, recommendations: 0, coverage: 'COST_ONLY',
         evidenceStatus: 'COST_ONLY', freshness: {

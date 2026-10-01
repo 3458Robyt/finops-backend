@@ -20,6 +20,7 @@ import type {
   SavingsKpis,
 } from '../../../domain/interfaces/IRecommendationRepository.js';
 import type { PrismaClient } from '../../../generated/prisma/client.js';
+import { hasApprovedSavings, hasPotentialSavings } from '../../../domain/models/recommendationEconomics.js';
 import type { CurrencyConverter } from '../../finance/CurrencyConverter.js';
 import { computeProjectedSavingsKpis } from './recommendationKpiCurrencyProjection.js';
 import {
@@ -32,8 +33,8 @@ import { computeAdoptionEngagement } from './adoptionKpiQueries.js';
  * Calcula los KPIs de ahorro de un tenant (ahorro estimado, observado,
  * confirmado y ahorro perdido por inacción).
  *
- * Ejecuta en paralelo: (1) suma del ahorro mensual estimado de todas las
- * recomendaciones; (2) suma del ahorro mensual observado en ejecuciones
+ * Ejecuta en paralelo: (1) lee las recomendaciones activas para separar
+ * potencial y ahorro aprobado; (2) suma el ahorro mensual observado en ejecuciones
  * `EXECUTED`/`PARTIAL`; (3) recuento de recomendaciones distintas efectivamente
  * ejecutadas (groupBy); y (4) recomendaciones pendientes/aprobadas con ahorro
  * estimado positivo. Sobre estas últimas calcula el "ahorro perdido"
@@ -60,10 +61,19 @@ export async function computeSavingsKpis(
   const savingsMeasurementModel = (prisma as PrismaClient & {
     readonly recommendationSavingsMeasurement?: PrismaClient['recommendationSavingsMeasurement'];
   }).recommendationSavingsMeasurement;
-  const [estimated, reported, observed, verified, costIncrease, executed, pendingSavings] = await Promise.all([
-    prisma.recommendation.aggregate({
+  const [recommendations, reported, observed, verified, costIncrease, executed] = await Promise.all([
+    prisma.recommendation.findMany({
       where: { tenantId },
-      _sum: { estimatedMonthlySavings: true },
+      select: {
+        id: true,
+        title: true,
+        estimatedMonthlySavings: true,
+        currency: true,
+        status: true,
+        evidence: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
     }),
     prisma.recommendationManualExecution.aggregate({
       where: {
@@ -99,16 +109,13 @@ export async function computeSavingsKpis(
         status: { in: ['EXECUTED', 'PARTIAL'] },
       },
     }),
-    prisma.recommendation.findMany({
-      where: {
-        tenantId,
-        status: { in: ['PENDING', 'APPROVED'] },
-        estimatedMonthlySavings: { gt: 0 },
-      },
-      orderBy: { createdAt: 'desc' },
-    }),
   ]);
 
+  const potentialRecommendations = recommendations.filter(hasPotentialSavings);
+  const approvedRecommendations = recommendations.filter(hasApprovedSavings);
+  const pendingSavings = potentialRecommendations.filter((recommendation) => recommendation.status === 'PENDING' || recommendation.status === 'APPROVED');
+  const potentialMonthlySavings = potentialRecommendations.reduce((total, recommendation) => total + Number(recommendation.estimatedMonthlySavings ?? 0), 0);
+  const approvedMonthlySavings = approvedRecommendations.reduce((total, recommendation) => total + Number(recommendation.estimatedMonthlySavings ?? 0), 0);
   const userReportedMonthlySavings = Number(reported._sum.observedMonthlySavings ?? 0);
   const observedMonthlySavings = Number(observed._sum.projectedMonthlySavings ?? 0);
   const verifiedMonthlySavings = Number(verified._sum.projectedMonthlySavings ?? 0);
@@ -129,7 +136,8 @@ export async function computeSavingsKpis(
     .sort((left, right) => right.missedSavingsAmount - left.missedSavingsAmount)[0];
 
   return {
-    estimatedMonthlySavings: Number(estimated._sum.estimatedMonthlySavings ?? 0),
+    estimatedMonthlySavings: roundCurrency(potentialMonthlySavings),
+    approvedMonthlySavings: roundCurrency(approvedMonthlySavings),
     observedMonthlySavings,
     userReportedMonthlySavings,
     verifiedMonthlySavings,

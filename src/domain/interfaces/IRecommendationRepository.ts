@@ -30,6 +30,18 @@ export interface RecommendationQuery {
 /**
  * Datos de entrada para crear una recomendación FinOps.
  */
+export interface RecommendationCostEvidenceScope {
+  readonly provider: 'AWS' | 'OCI' | 'AZURE' | 'GCP' | 'CUSTOM';
+  readonly cloudAccountId: string;
+  readonly cloudResourceId: string;
+  readonly resourceId: string;
+  readonly serviceName: string;
+  readonly expectedMetricCount: number;
+  readonly cloudConnectionId?: string;
+  readonly periodStart: string;
+  readonly periodEnd: string;
+}
+
 export interface CreateRecommendationInput {
   readonly tenantId: string;
   readonly cloudAccountId: string;
@@ -51,6 +63,8 @@ export interface CreateRecommendationInput {
   readonly estimatedMonthlySavings?: number;
   /** Código de moneda de los importes. */
   readonly currency: string;
+  /** Alcance interno derivado del servidor; nunca se acepta desde la salida del modelo. */
+  readonly costEvidenceScope?: RecommendationCostEvidenceScope;
 }
 
 /**
@@ -171,8 +185,10 @@ export interface RecommendationTimelineEvent {
  * Indicadores (KPIs) de ahorro derivados de las recomendaciones de un tenant.
  */
 export interface SavingsKpis {
-  /** Ahorro mensual estimado agregado de las recomendaciones. */
+  /** Potencial mensual de recomendaciones activas con evidencia accionable. */
   readonly estimatedMonthlySavings: number;
+  /** Potencial mensual de recomendaciones aprobadas por una persona. */
+  readonly approvedMonthlySavings: number;
   /** Ahorro mensual observado agregado tras ejecuciones. */
   readonly observedMonthlySavings: number;
   /** Importe que el usuario declaró al registrar una ejecución. */

@@ -1,5 +1,5 @@
 import { validateRuntimeConfig } from './runtimeConfig.js';
-import type { ProcessRole, RuntimeConfig, SameSitePolicy, TrustProxy } from './runtimeConfigTypes.js';
+import type { AiReasoningEffort, ProcessRole, RuntimeConfig, SameSitePolicy, TrustProxy } from './runtimeConfigTypes.js';
 
 /**
  * Reads environment variables once at the composition boundary and exposes a
@@ -11,7 +11,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
 
   const nodeEnv = env['NODE_ENV'] ?? 'development';
   const processRole = readProcessRole(env['APP_PROCESS_ROLE']);
-  const corsOrigins = readCsv(env['CORS_ORIGIN'], ['http://localhost:5173']);
+  const corsOrigins = readCsv(env['CORS_ORIGIN'], ['http://localhost:5173', 'http://127.0.0.1:5173']);
 
   return {
     environment: {
@@ -58,6 +58,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
       auditorModel: readString(env['AI_AUDITOR_MODEL'], readString(env['AI_MODEL'], 'gpt-5.6-luna')),
       timeoutMs: readPositiveInteger(env['AI_TIMEOUT_MS'], 60_000),
       maxRetries: readNonNegativeInteger(env['AI_MAX_RETRIES'], 1),
+      reasoningEffort: readAiReasoningEffort(env['AI_REASONING_EFFORT']),
       learningAuditTimeoutMs: readPositiveInteger(env['LEARNING_AUDIT_TIMEOUT_MS'], 15_000),
       ...optionalAiPricing(env),
     },
@@ -103,7 +104,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
         intervalMs: readPositiveInteger(env['METRIC_PROJECTION_WORKER_INTERVAL_MS'], 1_000),
         leaseMs: readPositiveInteger(env['METRIC_PROJECTION_LEASE_MS'], 300_000),
         retryBackoffMs: readPositiveInteger(env['METRIC_PROJECTION_RETRY_BACKOFF_MS'], 5_000),
-        transactionTimeoutMs: readPositiveInteger(env['METRIC_PROJECTION_TRANSACTION_TIMEOUT_MS'], 120_000),
+        transactionTimeoutMs: readPositiveInteger(env['METRIC_PROJECTION_TRANSACTION_TIMEOUT_MS'], 300_000),
       },
       learning: {
         enabled: readBoolean(env['AGENT_LEARNING_WORKER_ENABLED'], false),
@@ -241,6 +242,15 @@ function readNonNegativeInteger(value: string | undefined, fallback: number): nu
 function readPositiveNumber(value: string | undefined, fallback: number): number {
   const parsed = Number.parseFloat(value ?? '');
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function readAiReasoningEffort(value: string | undefined): AiReasoningEffort {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === 'none' || normalized === 'minimal' || normalized === 'low'
+    || normalized === 'medium' || normalized === 'high' || normalized === 'xhigh') {
+    return normalized;
+  }
+  return 'low';
 }
 
 function readOptionalNonNegativeNumber(value: string | undefined): number | undefined {

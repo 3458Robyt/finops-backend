@@ -9,6 +9,7 @@ describe('PrismaResourceMetricCoverageReader', () => {
       $queryRaw: async () => {
         queryCalls += 1;
         return [{
+          rollup_rows: 1n,
           total_samples: 96n,
           metric_count: 2n,
           resource_count: 1n,
@@ -47,5 +48,37 @@ describe('PrismaResourceMetricCoverageReader', () => {
       }],
       days: [{ date: '2026-08-20', sampleCount: 48, metricCount: 2 }],
     });
+  });
+
+  it('falls back to raw coverage when the daily projection is empty', async () => {
+    let queryCalls = 0;
+    const prisma = {
+      $queryRaw: async () => {
+        queryCalls += 1;
+        return queryCalls === 1
+          ? []
+          : [{
+            total_samples: 2n,
+            metric_count: 1n,
+            resource_count: 1n,
+            min_sampled_at: new Date('2026-08-20T00:00:00.000Z'),
+            max_sampled_at: new Date('2026-08-20T00:30:00.000Z'),
+            metrics: [{
+              metricName: 'CpuUtilization',
+              sampleCount: 2n,
+              daysWithData: 1n,
+              minSampledAt: '2026-08-20T00:00:00.000Z',
+              maxSampledAt: '2026-08-20T00:30:00.000Z',
+            }],
+            days: [{ date: '2026-08-20', sampleCount: 2n, metricCount: 1n }],
+          }];
+      },
+    } as unknown as PrismaClient;
+
+    const result = await new PrismaResourceMetricCoverageReader(prisma).getForTenant('tenant-1', {});
+
+    expect(queryCalls).toBe(2);
+    expect(result.totalSamples).toBe(2);
+    expect(result.metrics[0]?.metricName).toBe('CpuUtilization');
   });
 });

@@ -99,7 +99,8 @@ export function queryMonthlyCostRows(
   const clauses = buildSeriesClauses([Prisma.sql`tenant_id = ${tenantId}`], filters);
 
   return prisma.$queryRaw<MonthlyCostRow[]>`
-    select date_trunc('month', charge_period_start)::timestamptz as month,
+    select (date_trunc('month', charge_period_start at time zone 'UTC') at time zone 'UTC') as month,
+           (date_trunc('day', charge_period_start at time zone 'UTC') at time zone 'UTC') as conversion_date,
            ${groupBy} as group_by,
            ${expression} as group_key,
            max(provider::text) as provider,
@@ -112,7 +113,7 @@ export function queryMonthlyCostRows(
            coalesce(sum(billed_cost), 0)::float8 as total_cost
     from cost_metrics
     where ${Prisma.join(clauses, ' and ')}
-     group by date_trunc('month', charge_period_start), ${expression}, billing_currency
+     group by date_trunc('month', charge_period_start at time zone 'UTC'), date_trunc('day', charge_period_start at time zone 'UTC'), ${expression}, billing_currency
     order by month asc, total_cost desc
   `;
 }
@@ -145,7 +146,8 @@ export function queryMonthlyUsageRows(
   );
 
   return prisma.$queryRaw<MonthlyUsageRow[]>`
-    select date_trunc('month', charge_period_start)::timestamptz as month,
+    select (date_trunc('month', charge_period_start at time zone 'UTC') at time zone 'UTC') as month,
+           (date_trunc('day', charge_period_start at time zone 'UTC') at time zone 'UTC') as conversion_date,
            ${groupBy} as group_by,
            ${expression} as group_key,
            max(provider::text) as provider,
@@ -160,7 +162,7 @@ export function queryMonthlyUsageRows(
            coalesce(sum(billed_cost), 0)::float8 as total_cost
     from cost_metrics
     where ${Prisma.join(clauses, ' and ')}
-     group by date_trunc('month', charge_period_start), ${expression}, consumed_unit, billing_currency
+     group by date_trunc('month', charge_period_start at time zone 'UTC'), date_trunc('day', charge_period_start at time zone 'UTC'), ${expression}, consumed_unit, billing_currency
     order by month asc, total_cost desc, consumed_quantity desc
   `;
 }

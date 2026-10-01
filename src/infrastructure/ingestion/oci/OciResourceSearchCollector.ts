@@ -13,9 +13,11 @@ import { acceptsOciCompartment, readOciCompartmentFilter } from './OciCompartmen
 
 export function createOciResourceSearchClient(
   authenticationDetailsProvider: AuthenticationDetailsProvider,
+  signal?: AbortSignal,
 ): OciResourceSearchClient {
   return new resourcesearch.ResourceSearchClient({
     authenticationDetailsProvider,
+    ...(signal === undefined ? {} : { httpOptions: { signal } }),
   }) as unknown as OciResourceSearchClient;
 }
 
@@ -28,31 +30,42 @@ export interface OciResourceSearchCollectionResult {
 }
 
 export interface OciResourceSearchDependencies {
-  readonly createClient: (job: CloudIngestionJobContext) => OciResourceSearchClient;
-  readonly withRetry: <T>(operation: () => Promise<T>) => Promise<T>;
+  readonly createClient: (job: CloudIngestionJobContext, signal?: AbortSignal) => OciResourceSearchClient;
+  readonly withRetry: <T>(operation: (signal?: AbortSignal) => Promise<T>, signal?: AbortSignal) => Promise<T>;
+  readonly withRateLimit?: <T>(job: CloudIngestionJobContext, operation: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
 }
 
 export async function collectOciResourceSearchInventory(
   job: CloudIngestionJobContext,
   dependencies: OciResourceSearchDependencies,
+  signal?: AbortSignal,
 ): Promise<OciResourceSearchCollectionResult> {
   const resourceQuery = resolveResourceQuery(job);
-  const client = dependencies.createClient(job);
   const resources: NormalizedCloudResource[] = [];
   const warnings: string[] = [];
   let apiCallCount = 0;
   let filteredResourceCount = 0;
   const compartmentFilter = readOciCompartmentFilter(job);
 
-  try {
-    let page: string | undefined;
-    do {
+  let page: string | undefined;
+  do {
+      throwIfAborted(signal);
       apiCallCount += 1;
-      const response = await dependencies.withRetry(() => client.searchResources({
-        searchDetails: { type: 'Structured', query: resourceQuery.query },
-        limit: 1000,
-        ...(page !== undefined ? { page } : {}),
-      }));
+      const request = () => dependencies.withRetry(async (attemptSignal) => {
+        const client = dependencies.createClient(job, attemptSignal);
+        try {
+          return await client.searchResources({
+            searchDetails: { type: 'Structured', query: resourceQuery.query },
+            limit: 1000,
+            ...(page !== undefined ? { page } : {}),
+          });
+        } finally {
+          client.close?.();
+        }
+      }, signal);
+      const response = dependencies.withRateLimit === undefined
+        ? await request()
+        : await dependencies.withRateLimit(job, request, signal);
       for (const summary of response.resourceSummaryCollection?.items ?? []) {
         if (!acceptsOciCompartment(compartmentFilter, summary.compartmentId)) {
           filteredResourceCount += 1;
@@ -66,10 +79,7 @@ export async function collectOciResourceSearchInventory(
         }
       }
       page = response.opcNextPage;
-    } while (page !== undefined && page !== '');
-  } finally {
-    client.close?.();
-  }
+  } while (page !== undefined && page !== '');
 
   return {
     apiCallCount,
@@ -78,6 +88,10 @@ export async function collectOciResourceSearchInventory(
     warnings,
     filteredResourceCount,
   };
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted === true) throw new Error('OCI inventory operation cancelled');
 }
 
 function resolveResourceQuery(job: CloudIngestionJobContext): {

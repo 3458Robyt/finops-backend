@@ -99,11 +99,10 @@ export function registerApiRoutes(app: Express, dependencies: ServerDependencies
   app.use('/api/v1/auth/mfa', authSensitiveLimiter);
   app.use('/api/v1/auth/password-reset', authSensitiveLimiter);
   app.use('/api/v1/auth/client-invitations/accept', authSensitiveLimiter);
-  app.use('/api/v1/ai', aiLimiter);
   app.use('/api/v1/telegram/webhook', telegramWebhookLimiter);
 
   app.use('/api/v1/agent', createAgentRoutes(controllers.agent, requireAuth));
-  app.use('/api/v1/ai', createAiRoutes(controllers.ai, controllers.analysis, requireAuth, requireRecommendationGenerator));
+  app.use('/api/v1/ai', createAiRoutes(controllers.ai, controllers.analysis, requireAuth, requireRecommendationGenerator, aiLimiter));
   app.use('/api/v1/analytics', createAnalyticsRoutes(controllers.analytics, requireAuth));
   app.use('/api/v1/budgets', createBudgetRoutes(controllers.budget, requireAuth));
   app.use('/api/v1/cost-allocation', createCostAllocationRoutes(controllers.costAllocation, requireAuth));

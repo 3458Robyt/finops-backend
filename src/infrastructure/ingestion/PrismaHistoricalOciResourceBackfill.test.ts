@@ -5,7 +5,7 @@ describe('backfillHistoricalOciResources', () => {
   test('paginates exact supported OCI cost identities and remains dry-run safe', async () => {
     const queryRaw = vi.fn()
       .mockResolvedValueOnce([{
-        cloud_connection_id: 'connection-1', resource_id: 'ocid1.vnic.oc1.test',
+        cloud_connection_id: 'connection-1', resource_id: 'ocid1.vnic.oc1..exampleid0034',
         first_seen_at: new Date('2026-05-01T00:00:00Z'), last_seen_at: new Date('2026-05-03T00:00:00Z'),
         service_name: 'NETWORK', region_id: 'sa-bogota-1',
       }])
@@ -25,7 +25,7 @@ describe('backfillHistoricalOciResources', () => {
   test('inserts historical references idempotently in apply mode', async () => {
     const queryRaw = vi.fn()
       .mockResolvedValueOnce([{
-        cloud_connection_id: 'connection-1', resource_id: 'ocid1.bootvolume.oc1.test',
+        cloud_connection_id: 'connection-1', resource_id: 'ocid1.bootvolume.oc1..exampleid0002',
         first_seen_at: new Date('2026-05-01T00:00:00Z'), last_seen_at: new Date('2026-05-03T00:00:00Z'),
         service_name: 'BLOCK_STORAGE', region_id: null,
       }])

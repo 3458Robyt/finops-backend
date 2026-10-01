@@ -1,5 +1,5 @@
 import type { BuiltAiContext } from '../../../domain/interfaces/IContextEngineService.js';
-import type { AiContextOperation } from '../../../domain/models/AgentContext.js';
+import type { AiContextOperation, AiTraceSource } from '../../../domain/models/AgentContext.js';
 import type { AiObservabilityService } from '../AiObservabilityService.js';
 import { safeErrorMessage } from '../../observability/safeError.js';
 
@@ -21,6 +21,7 @@ export interface AiTraceInput {
   readonly tenantId: string;
   readonly userId?: string;
   readonly operation: AiContextOperation;
+  readonly source?: AiTraceSource;
   readonly model: string;
   readonly builtContext?: BuiltAiContext;
   /** Marca de inicio (`Date.now()`) para calcular la latencia. */
@@ -60,6 +61,7 @@ export class AiTraceRecorder {
       tenantId: input.tenantId,
       ...(input.userId !== undefined ? { userId: input.userId } : {}),
       operation: input.operation,
+      ...(input.source !== undefined ? { source: input.source } : {}),
       model: input.model,
       status: error === undefined ? 'SUCCESS' : 'ERROR',
       ...(builtContext?.profileVersion !== undefined ? { profileVersion: builtContext.profileVersion } : {}),

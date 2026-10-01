@@ -9,7 +9,7 @@ import { RecommendationAnalysisController } from './RecommendationAnalysisContro
 const auth: AuthContext = {
   userId: 'user-1',
   tenantId: 'tenant-1',
-  email: 'admin@example.com',
+  email: 'test-user-0002@example.test',
   role: 'ADMIN',
   jwtId: 'jwt-1',
 };

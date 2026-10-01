@@ -13,6 +13,7 @@ export interface IngestionJobExecutionSummary {
   readonly providerCode: string;
   readonly sourceType: IngestionSourceType;
   readonly dataOutcome: IngestionDataOutcome;
+  readonly effectiveRange?: { readonly start: Date; readonly end: Date };
   readonly apiCallCount: number;
   readonly objectsProcessed: number;
   readonly focusRows: number;
@@ -38,10 +39,11 @@ export class PrismaIngestionJobCompletionSupport {
   public async updateWatermark(
     tx: PrismaIngestionPersistenceClient,
     job: CloudIngestionJobContext,
-    dataOutcome: IngestionDataOutcome,
+    summary: IngestionJobExecutionSummary,
   ): Promise<void> {
-    if (dataOutcome !== 'DATA_WRITTEN' && dataOutcome !== 'NO_DATA') return;
+    if (summary.dataOutcome !== 'DATA_WRITTEN' && summary.dataOutcome !== 'NO_DATA') return;
     const scopeKey = this.resolveScopeKey(job);
+    const range = summary.effectiveRange ?? { start: job.targetStart, end: job.targetEnd };
     await tx.ingestionWatermark.upsert({
       where: {
         cloudConnectionId_sourceType_scopeKey: {
@@ -51,12 +53,12 @@ export class PrismaIngestionJobCompletionSupport {
         },
       },
       update: {
-        watermarkStart: job.targetStart,
-        watermarkEnd: job.targetEnd,
+        watermarkStart: range.start,
+        watermarkEnd: range.end,
         lastSuccessfulRunAt: new Date(),
-        ...(dataOutcome === 'DATA_WRITTEN' ? { lastDataAt: new Date() } : {}),
+        ...(summary.dataOutcome === 'DATA_WRITTEN' ? { lastDataAt: new Date() } : {}),
         ...(job.configurationHash !== undefined ? { configurationHash: job.configurationHash } : {}),
-        freshnessDeadlineAt: this.calculateFreshnessDeadline(job),
+        freshnessDeadlineAt: this.calculateFreshnessDeadline(job, range.end),
       },
       create: {
         tenantId: job.tenantId,
@@ -64,11 +66,11 @@ export class PrismaIngestionJobCompletionSupport {
         sourceType: job.sourceType,
         scopeKey,
         ...(job.configurationHash !== undefined ? { configurationHash: job.configurationHash } : {}),
-        watermarkStart: job.targetStart,
-        watermarkEnd: job.targetEnd,
+        watermarkStart: range.start,
+        watermarkEnd: range.end,
         lastSuccessfulRunAt: new Date(),
-        ...(dataOutcome === 'DATA_WRITTEN' ? { lastDataAt: new Date() } : {}),
-        freshnessDeadlineAt: this.calculateFreshnessDeadline(job),
+        ...(summary.dataOutcome === 'DATA_WRITTEN' ? { lastDataAt: new Date() } : {}),
+        freshnessDeadlineAt: this.calculateFreshnessDeadline(job, range.end),
       },
     });
   }
@@ -92,10 +94,12 @@ export class PrismaIngestionJobCompletionSupport {
         sourceType: job.sourceType,
         scopeKey: this.resolveScopeKey(job),
         status,
-        targetStart: job.targetStart,
-        targetEnd: job.targetEnd,
+        targetStart: summary.effectiveRange?.start ?? job.targetStart,
+        targetEnd: summary.effectiveRange?.end ?? job.targetEnd,
         ...(job.configurationHash !== undefined ? { configurationHash: job.configurationHash } : {}),
-        rowsWritten: summary.focusRowsInserted,
+        rowsWritten: summary.coverage['billingSource'] === 'PROVIDER_API'
+          ? summary.costMetricsInserted
+          : summary.focusRowsInserted,
         samplesWritten: summary.metricSamplesInserted,
         objectsProcessed: summary.objectsProcessed,
         evidence: summary.coverage as Prisma.InputJsonValue,
@@ -184,8 +188,15 @@ export class PrismaIngestionJobCompletionSupport {
       metricSamplesLinkedToResource,
       resourceLinkage: { costs: costMetricProjection.linkage, metrics: metricLinkage },
       warnings: result.warnings,
+      ...(result.effectiveRange === undefined ? {} : { effectiveRange: result.effectiveRange }),
       coverage: {
         ...result.coverage,
+        ...(result.effectiveRange === undefined ? {} : {
+          effectiveRange: {
+            start: result.effectiveRange.start.toISOString(),
+            end: result.effectiveRange.end.toISOString(),
+          },
+        }),
         historicalResourcesInserted: costMetricProjection.historicalResourcesInserted ?? 0,
       },
     };
@@ -217,8 +228,8 @@ export class PrismaIngestionJobCompletionSupport {
     return typeof value === 'string' && value.trim() !== '' ? value.trim() : 'global';
   }
 
-  private calculateFreshnessDeadline(job: CloudIngestionJobContext): Date {
+  private calculateFreshnessDeadline(job: CloudIngestionJobContext, rangeEnd = job.targetEnd): Date {
     const hours = job.sourceType === 'BILLING_EXPORT' ? 30 : 1;
-    return new Date(job.targetEnd.getTime() + hours * 60 * 60 * 1000);
+    return new Date(rangeEnd.getTime() + hours * 60 * 60 * 1000);
   }
 }

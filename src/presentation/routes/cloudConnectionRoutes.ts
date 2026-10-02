@@ -44,6 +44,7 @@ export function createCloudConnectionRoutes(
   router.post('/:id/credentials/:credentialId/validate', requireAuth, requireManager, cloudConnectionController.validateCredential);
   router.post('/:id/validate', requireAuth, requireManager, cloudConnectionController.validateConnection);
   router.post('/:id/focus-preview', requireAuth, requireManager, cloudConnectionController.previewFocusSource);
+  router.post('/:id/metric-definitions/discover', requireAuth, requireManager, cloudConnectionController.previewMetricDefinitions);
   router.post('/:id/activate', requireAuth, requireManager, cloudConnectionController.activateConnection);
   router.post('/:id/ingestion-jobs', requireAuth, requireManager, cloudConnectionController.queueIngestion);
   router.post('/:id/ingestion-jobs/retry-failed', requireAuth, requireManager, cloudConnectionController.retryFailedIngestionJobs);

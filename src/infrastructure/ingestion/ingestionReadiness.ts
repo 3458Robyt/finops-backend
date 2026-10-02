@@ -5,6 +5,7 @@ import type {
   IngestionReadinessSummary,
 } from '../../domain/interfaces/ICloudConnectionRepository.js';
 import type { IngestionSourceType, ProviderCode } from '../../domain/models/CloudConnection.js';
+import { DEFAULT_INGESTION_VALIDATION_MAX_AGE_MINUTES, isIngestionValidationFresh } from './ingestionValidationFreshness.js';
 
 export interface IngestionReadinessConnectionInput {
   readonly id: string;
@@ -14,7 +15,16 @@ export interface IngestionReadinessConnectionInput {
   readonly lastValidatedAt?: Date | null;
   readonly lastValidationAttemptAt?: Date | null;
   readonly metadata: unknown;
+  /** Enabled definitions are persisted in the relational table, not only in metadata. */
+  readonly configuredMetricDefinitionCount?: number;
   readonly credentialPurposes: readonly string[];
+  /**
+   * Source types that have completed successfully in the connection history.
+   * This is supplied by the repository because `recentJobs` is intentionally
+   * bounded for the UI and can otherwise hide older INVENTORY/BILLING jobs
+   * behind a large technical-metric backfill.
+   */
+  readonly successfulSourceTypes?: readonly string[];
   readonly recentJobs: readonly IngestionReadinessJobInput[];
 }
 
@@ -32,6 +42,7 @@ export interface IngestionReadinessJobInput {
 export interface BuildIngestionReadinessInput {
   readonly generatedAt: Date;
   readonly connections: readonly IngestionReadinessConnectionInput[];
+  readonly validationMaxAgeMinutes?: number;
   readonly globalIssues?: readonly IngestionReadinessIssue[];
   readonly missingProviderMessageSuffix?: string;
   readonly operational?: IngestionOperationalReadiness;
@@ -44,8 +55,17 @@ export function buildIngestionReadinessSummary(
   const connections = input.connections.map((connection) => {
     const metadata = isPlainRecord(connection.metadata) ? connection.metadata : {};
     const credentialPurposes = [...new Set(connection.credentialPurposes)].sort();
-    const metadataCounts = summarizeReadinessMetadata(connection.providerCode, metadata);
+    const metadataCounts = summarizeReadinessMetadata(
+      connection.providerCode,
+      metadata,
+      connection.configuredMetricDefinitionCount,
+    );
     const capabilities = readCapabilityValidation(metadata);
+    const validationIsFresh = isIngestionValidationFresh(
+      connection.lastValidatedAt,
+      input.generatedAt,
+      input.validationMaxAgeMinutes ?? DEFAULT_INGESTION_VALIDATION_MAX_AGE_MINUTES,
+    );
 
     issues.push(...assessReadinessConnection({
       connectionId: connection.id,
@@ -62,6 +82,17 @@ export function buildIngestionReadinessSummary(
         message: 'La conexión todavía no tiene una validación guardada.',
         affectedData: ['Activación inicial'],
         action: 'Ejecuta “Validar acceso” antes de activar la sincronización.',
+        actionCode: 'VALIDATE_ACCESS',
+      });
+    } else if (!validationIsFresh) {
+      issues.push({
+        provider: connection.providerCode,
+        connectionId: connection.id,
+        severity: 'BLOCKER',
+        capability: 'CREDENTIALS',
+        message: 'La validación de capacidades expiró; vuelve a validar antes de ingerir.',
+        affectedData: ['Inventario', 'Costos', 'Métricas'],
+        action: 'Ejecuta “Validar acceso” para renovar la validación antes de activar la ingesta.',
         actionCode: 'VALIDATE_ACCESS',
       });
     }
@@ -107,7 +138,7 @@ export function buildIngestionReadinessSummary(
       ...(connection.lastValidationAttemptAt !== null && connection.lastValidationAttemptAt !== undefined
         ? { lastValidationAttemptAt: connection.lastValidationAttemptAt }
         : {}),
-      onboardingStatus: resolveOnboardingStatus(connection, credentialPurposes, capabilities),
+      onboardingStatus: resolveOnboardingStatus(connection, credentialPurposes, capabilities, validationIsFresh),
       credentialPurposes,
       ...(authentication === undefined ? {} : { authentication }),
       capabilities,
@@ -201,12 +232,18 @@ export function assessReadinessConnection(input: {
 export function summarizeReadinessMetadata(
   provider: ProviderCode,
   metadata: Readonly<Record<string, unknown>>,
+  configuredMetricDefinitionCount = 0,
 ): Readonly<Record<string, number>> {
   const keys = provider === 'aws'
     ? ['awsMetricDefinitions', 'awsFocusExportObjects', 'awsFocusExportLocations']
     : ['ociMetricDefinitions', 'ociFocusReportObjects', 'ociFocusReportLocations'];
 
-  return Object.fromEntries(keys.map((key) => [key, Array.isArray(metadata[key]) ? metadata[key].length : 0]));
+  const counts = Object.fromEntries(keys.map((key) => [key, Array.isArray(metadata[key]) ? metadata[key].length : 0]));
+  const metricKey = provider === 'aws' ? 'awsMetricDefinitions' : 'ociMetricDefinitions';
+  if (Number.isFinite(configuredMetricDefinitionCount) && configuredMetricDefinitionCount > 0) {
+    counts[metricKey] = Math.max(counts[metricKey] ?? 0, Math.floor(configuredMetricDefinitionCount));
+  }
+  return counts;
 }
 
 export function summarizeReadinessJobResult(resultSummary: unknown): Readonly<Record<string, unknown>> | null {
@@ -214,6 +251,7 @@ export function summarizeReadinessJobResult(resultSummary: unknown): Readonly<Re
     return null;
   }
 
+  const retryTelemetry = readRetryTelemetry(resultSummary);
   return {
     durationMs: resultSummary['durationMs'],
     providerCode: resultSummary['providerCode'],
@@ -226,7 +264,26 @@ export function summarizeReadinessJobResult(resultSummary: unknown): Readonly<Re
     costMetricsInserted: resultSummary['costMetricsInserted'],
     metricSamples: resultSummary['metricSamples'],
     warnings: resultSummary['warnings'],
+    ...(retryTelemetry === undefined ? {} : { retryTelemetry }),
   };
+}
+
+function readRetryTelemetry(
+  resultSummary: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, number>> | undefined {
+  const coverage = isPlainRecord(resultSummary['coverage']) ? resultSummary['coverage'] : resultSummary;
+  const keys = [
+    'providerRetries',
+    'providerRateLimitRetries',
+    'providerTimeoutRetries',
+    'providerTransientRetries',
+  ] as const;
+  const telemetry = Object.fromEntries(
+    keys.flatMap((key) => typeof coverage[key] === 'number' && Number.isFinite(coverage[key])
+      ? [[key, coverage[key]]]
+      : []),
+  );
+  return Object.keys(telemetry).length === 0 ? undefined : telemetry;
 }
 
 function readCapabilityValidation(
@@ -276,16 +333,17 @@ function resolveOnboardingStatus(
   connection: IngestionReadinessConnectionInput,
   credentialPurposes: readonly string[],
   capabilities: IngestionReadinessConnectionSummary['capabilities'],
+  validationIsFresh: boolean,
 ): IngestionReadinessConnectionSummary['onboardingStatus'] {
   if (credentialPurposes.length === 0) return 'NO_CREDENTIAL';
   if (connection.recentJobs.some((job) => job.status === 'PENDING' || job.status === 'RUNNING')) return 'SYNCING';
-  if (connection.lastValidatedAt === null || connection.lastValidatedAt === undefined) return 'REQUIRES_VALIDATION';
+  if (!validationIsFresh) return 'REQUIRES_VALIDATION';
 
   const available = capabilities.filter((item) => item.status === 'AVAILABLE').length;
   const failed = capabilities.some((item) => item.status === 'DENIED' || item.status === 'ERROR');
   if (failed) return available > 0 ? 'PARTIAL' : 'REQUIRES_ATTENTION';
 
-  const successfulSources = new Set(connection.recentJobs
+  const successfulSources = new Set(connection.successfulSourceTypes ?? connection.recentJobs
     .filter((job) => job.status === 'SUCCESS')
     .map((job) => job.sourceType));
   return ['INVENTORY', 'BILLING_EXPORT', 'TECHNICAL_METRIC'].every((source) => successfulSources.has(source))

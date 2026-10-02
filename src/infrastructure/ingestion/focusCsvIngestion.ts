@@ -19,6 +19,7 @@ export interface ParseFocusCsvInput {
   readonly provider: CloudProvider;
   readonly focusVersion: string;
   readonly csvText: string;
+  readonly onHeader?: (headers: readonly string[]) => void;
 }
 
 export function decodeMaybeGzip(buffer: Uint8Array, objectName: string): string {
@@ -103,7 +104,10 @@ export async function* parseFocusCsvStream(
     : source;
   const parser = decoded.pipe(parseStream({
     bom: true,
-    columns: true,
+    columns: (headers) => {
+      input.onHeader?.(headers);
+      return headers;
+    },
     relax_column_count: true,
     skip_empty_lines: true,
     trim: true,

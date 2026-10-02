@@ -9,6 +9,11 @@ import type {
   NormalizedProviderCostLineItem,
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
 import { parseFocusCsvStream, toAsyncByteChunks } from '../focusCsvIngestion.js';
+import {
+  createFocusSchemaValidationSummary,
+  recordFocusSchemaAssessment,
+  type FocusSchemaValidationSummary,
+} from '../focusSchemaValidation.js';
 import { readBillingSourceMode, resolveBillingSource } from '../billingSourceMode.js';
 import type {
   OciFocusReportObject,
@@ -74,27 +79,20 @@ export class OciBillingCollector {
     job: CloudIngestionJobContext,
     options: CloudIngestionCollectOptions,
   ): Promise<CloudIngestionResult> {
-    const client = this.dependencies.createObjectStorageClient(job, options.signal);
-    let discovery: Awaited<ReturnType<typeof discoverOciFocusObjects>>;
-    try {
-      discovery = await discoverOciFocusObjects(
-        job,
-        client,
-        (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
-        false,
-        (operation, signal) => this.call(job, 'objectstorage', operation, signal),
-        options.signal,
-        true,
-      );
-    } catch (error) {
-      client.close?.();
-      throw error;
-    }
+    const createClient = (signal?: AbortSignal) => this.dependencies.createObjectStorageClient(job, signal);
+    const discovery = await discoverOciFocusObjects(
+      job,
+      createClient,
+      (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
+      false,
+      (operation, signal) => this.call(job, 'objectstorage', operation, signal),
+      options.signal,
+      true,
+    );
 
     const discoveredObjects = uniqueFocusObjects([...readOciFocusObjects(job), ...discovery.objects]);
     const objects = discoveredObjects.filter((object) => isOciFocusObjectInWindow(object.objectName, job));
     if (objects.length === 0) {
-      client.close?.();
       return this.emptyResult(discovery.apiCallCount, [
         discoveredObjects.length === 0
           ? 'No se encontraron objetos de reporte FOCUS OCI configurados o descubiertos. Configura ociFocusReportObjects u ociFocusReportLocations.'
@@ -110,15 +108,18 @@ export class OciBillingCollector {
       });
     }
 
+    const warnings: string[] = [];
+    const schemaValidation = createFocusSchemaValidationSummary();
+
     return {
       apiCallCount: discovery.apiCallCount + objects.length,
       objectsProcessed: objects.length,
       sourceObjects: objects.map(toIngestionObjectDescriptor),
       focusRows: [],
-      focusBatches: this.streamFocusObjects(job, client, objects, options),
+      focusBatches: this.streamFocusObjects(job, createClient, objects, options, warnings, schemaValidation),
       resources: [],
       metricSamples: [],
-      warnings: [],
+      warnings,
       coverage: {
         costSource: 'OCI Cost Reports FOCUS',
         expectedRefreshHours: 6,
@@ -126,6 +127,7 @@ export class OciBillingCollector {
         objectsDiscovered: discovery.objects.length,
         prefixesConfigured: readOciFocusLocations(job).length,
         rowsParsed: 'streamed',
+        focusSchemaValidation: schemaValidation,
       },
     };
   }
@@ -134,28 +136,34 @@ export class OciBillingCollector {
     job: CloudIngestionJobContext,
     options: CloudIngestionCollectOptions,
   ): Promise<CloudIngestionResult> {
-    const client = this.dependencies.createUsageClient(job, options.signal);
-    try {
-      const range = normalizeOciDailyUsageRange(job.targetStart, job.targetEnd);
-      const rows: NormalizedProviderCostLineItem[] = [];
-      let itemsWithoutCurrency = 0;
-      let nextPage: string | undefined;
-      let apiCallCount = 0;
-      do {
-        await ensureNotCancelled(options);
-        const response = await this.call(job, 'usage', () => withOciProviderRetry(() => client.requestSummarizedUsages({
-          ...(nextPage !== undefined ? { page: nextPage } : {}),
-          requestSummarizedUsagesDetails: {
-            tenantId: job.connection.rootExternalId,
-            timeUsageStarted: range.start,
-            timeUsageEnded: range.end,
-            granularity: usageapi.models.RequestSummarizedUsagesDetails.Granularity.Daily,
-            queryType: usageapi.models.RequestSummarizedUsagesDetails.QueryType.Cost,
-             groupBy: ['service', 'resourceId', 'region', 'skuName'],
-          },
-        }), undefined, undefined, undefined, options.signal), options.signal);
-        apiCallCount += 1;
-        for (const item of response.usageAggregation?.items ?? []) {
+    const range = normalizeOciDailyUsageRange(job.targetStart, job.targetEnd);
+    const requestedRangeCovered = coversRequestedRange(job, range);
+    const rows: NormalizedProviderCostLineItem[] = [];
+    let itemsWithoutCurrency = 0;
+    let nextPage: string | undefined;
+    let apiCallCount = 0;
+    do {
+      await ensureNotCancelled(options);
+      const response = await this.call(job, 'usage', () => withOciProviderRetry(async (attemptSignal) => {
+        const client = this.dependencies.createUsageClient(job, attemptSignal);
+        try {
+          return await client.requestSummarizedUsages({
+            ...(nextPage !== undefined ? { page: nextPage } : {}),
+            requestSummarizedUsagesDetails: {
+              tenantId: job.connection.rootExternalId,
+              timeUsageStarted: range.start,
+              timeUsageEnded: range.end,
+              granularity: usageapi.models.RequestSummarizedUsagesDetails.Granularity.Daily,
+              queryType: usageapi.models.RequestSummarizedUsagesDetails.QueryType.Cost,
+              groupBy: ['service', 'resourceId', 'region', 'skuName'],
+            },
+          });
+        } finally {
+          client.close?.();
+        }
+      }, undefined, undefined, undefined, options.signal), options.signal);
+      apiCallCount += 1;
+      for (const item of response.usageAggregation?.items ?? []) {
         const amount = item.computedAmount;
         if (amount === undefined || !Number.isFinite(amount)) continue;
         const chargePeriodStart = parseUsageTimestamp(item.timeUsageStarted, range.start);
@@ -188,25 +196,27 @@ export class OciBillingCollector {
           rawRow,
           lineItemHash: createHash('sha256').update(JSON.stringify(rawRow)).digest('hex'),
         });
-        }
-        nextPage = response.opcNextPage;
-      } while (nextPage !== undefined && nextPage !== '');
-      return {
-        apiCallCount,
-        objectsProcessed: 0,
-        focusRows: [],
-        providerCostRows: rows,
-        resources: [],
-        metricSamples: [],
-         warnings: [
-           ...(rows.length === 0 ? ['OCI Usage API returned no costs for the requested range.'] : []),
-           ...(itemsWithoutCurrency > 0 ? [`OCI Usage API omitted currency for ${itemsWithoutCurrency} rows; USD was used as the compatibility fallback.`] : []),
-         ],
-         coverage: { billingSource: 'PROVIDER_API', costSource: 'OCI Usage API', rows: rows.length, groupedBy: ['service', 'resourceId', 'region', 'skuName'], itemsWithoutCurrency },
-      };
-    } finally {
-      client.close?.();
-    }
+      }
+      nextPage = response.opcNextPage;
+    } while (nextPage !== undefined && nextPage !== '');
+    return {
+      apiCallCount,
+      objectsProcessed: 0,
+      focusRows: [],
+      providerCostRows: rows,
+      resources: [],
+      metricSamples: [],
+      effectiveRange: range,
+      dataOutcome: !requestedRangeCovered ? 'PARTIAL' : rows.length > 0 ? 'DATA_WRITTEN' : 'NO_DATA',
+      warnings: [
+        ...(!requestedRangeCovered ? [
+          'OCI Usage API consulta días UTC completos; la ventana solicitada no quedó cubierta íntegramente y el día en curso se recuperará cuando cierre.',
+        ] : []),
+        ...(rows.length === 0 ? ['OCI Usage API returned no costs for the requested range.'] : []),
+        ...(itemsWithoutCurrency > 0 ? [`OCI Usage API omitted currency for ${itemsWithoutCurrency} rows; USD was used as the compatibility fallback.`] : []),
+      ],
+      coverage: { billingSource: 'PROVIDER_API', costSource: 'OCI Usage API', rows: rows.length, groupedBy: ['service', 'resourceId', 'region', 'skuName'], itemsWithoutCurrency },
+    };
   }
 
   private async collectProviderApiWithFallback(
@@ -219,6 +229,13 @@ export class OciBillingCollector {
       const result = await this.collectProviderApiCosts(job, options);
       return {
         ...result,
+        // A missing FOCUS object is a source warning, not a failed billing
+        // execution. Mark successful Usage API rows as written so the
+        // scheduler advances the watermark instead of requeueing the same
+        // window forever.
+        dataOutcome: result.effectiveRange !== undefined && !coversRequestedRange(job, result.effectiveRange)
+          ? 'PARTIAL'
+          : (result.providerCostRows?.length ?? 0) > 0 ? 'DATA_WRITTEN' : 'NO_DATA',
         warnings: [warning, ...result.warnings],
         coverage: {
           ...result.coverage,
@@ -249,43 +266,49 @@ export class OciBillingCollector {
 
   private async *streamFocusObjects(
     job: CloudIngestionJobContext,
-    client: OciObjectStorageClient,
+    createClient: (signal?: AbortSignal) => OciObjectStorageClient,
     objects: readonly OciFocusReportObject[],
     options: CloudIngestionCollectOptions,
+    warnings: string[],
+    schemaValidation: FocusSchemaValidationSummary,
   ): AsyncGenerator<readonly NormalizedFocusCostLineItem[]> {
     const batch: NormalizedFocusCostLineItem[] = [];
-    try {
-      for (const object of objects) {
-        await ensureNotCancelled(options);
-        const response = await this.call(job, 'objectstorage', () => withOciProviderRetry(() => client.getObject({
-          namespaceName: object.namespaceName,
-          bucketName: object.bucketName,
-          objectName: object.objectName,
-        }), undefined, undefined, undefined, options.signal), options.signal);
-        for await (const line of parseFocusCsvStream(
-          toAsyncByteChunks(response.getObjectBody ?? response.value),
-          {
-            tenantId: job.tenantId,
-            cloudConnectionId: job.cloudConnectionId,
-            provider: 'OCI',
-            focusVersion: object.focusVersion,
-          },
-          object.objectName,
-        )) {
-          if (!isFocusRowInWindow(line, job)) continue;
-          batch.push(line);
-          if (batch.length >= 1000) {
-            await ensureNotCancelled(options);
-            yield batch.splice(0, batch.length);
-          }
+    for (const object of objects) {
+      await ensureNotCancelled(options);
+      const response = await this.call(job, 'objectstorage', () => withOciProviderRetry(async (attemptSignal) => {
+        const client = createClient(attemptSignal);
+        try {
+          return await client.getObject({
+            namespaceName: object.namespaceName,
+            bucketName: object.bucketName,
+            objectName: object.objectName,
+          });
+        } finally {
+          client.close?.();
+        }
+      }, undefined, undefined, undefined, options.signal), options.signal);
+      for await (const line of parseFocusCsvStream(
+        toAsyncByteChunks(response.getObjectBody ?? response.value),
+        {
+          tenantId: job.tenantId,
+          cloudConnectionId: job.cloudConnectionId,
+          provider: 'OCI',
+          focusVersion: object.focusVersion,
+          onHeader: (headers) => recordFocusSchemaAssessment(object.focusVersion, headers, schemaValidation, warnings),
+        },
+        object.objectName,
+      )) {
+        if (!isFocusRowInWindow(line, job)) continue;
+        batch.push(line);
+        if (batch.length >= 1000) {
+          await ensureNotCancelled(options);
+          yield batch.splice(0, batch.length);
         }
       }
-      if (batch.length > 0) {
-        await ensureNotCancelled(options);
-        yield batch;
-      }
-    } finally {
-      client.close?.();
+    }
+    if (batch.length > 0) {
+      await ensureNotCancelled(options);
+      yield batch;
     }
   }
 
@@ -353,6 +376,13 @@ function parseUsageTimestamp(value: Date | string | undefined, fallback: Date): 
     if (!Number.isNaN(parsed.getTime())) return parsed;
   }
   return fallback;
+}
+
+function coversRequestedRange(
+  job: CloudIngestionJobContext,
+  effectiveRange: { readonly start: Date; readonly end: Date },
+): boolean {
+  return effectiveRange.start <= job.targetStart && effectiveRange.end >= job.targetEnd;
 }
 
 async function ensureNotCancelled(options: CloudIngestionCollectOptions): Promise<void> {

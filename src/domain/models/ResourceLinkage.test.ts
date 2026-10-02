@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildResourceFreshness,
   classifyResourceEvidenceStatus,
+  isKnownUnsupportedResourceId,
   normalizeExternalResourceId,
   resolveExactResourceLink,
   resourceLookupKey,
@@ -31,7 +32,7 @@ describe('ResourceLinkage', () => {
     const links = new Map<string, readonly string[]>();
 
     expect(normalizeExternalResourceId('  ')).toBeUndefined();
-    expect(normalizeExternalResourceId('OCID1.INSTANCE.OC1.IAD.Example')).toBe('ocid1.instance.oc1.iad.example');
+    expect(normalizeExternalResourceId('ocid1.instance.oc1..exampleid0015')).toBe('ocid1.instance.oc1..exampleid0015');
     expect(normalizeExternalResourceId('MyCaseSensitiveResource')).toBe('MyCaseSensitiveResource');
     expect(resolveExactResourceLink({
       cloudConnectionId: 'connection-a',
@@ -46,6 +47,15 @@ describe('ResourceLinkage', () => {
       externalResourceId: 'ocid-1',
       resourceIdsByKey: links,
     })).toEqual({ reason: 'CONNECTION_NOT_AVAILABLE' });
+    expect(isKnownUnsupportedResourceId('dbbackupiad/bT9ej7zNsA6m3HEWavcJ')).toBe(true);
+    expect(isKnownUnsupportedResourceId('UnknownBucket')).toBe(true);
+    expect(isKnownUnsupportedResourceId('ocid1.volume.oc1..exampleid0036')).toBe(false);
+    expect(resolveExactResourceLink({
+      cloudConnectionId: 'connection-a',
+      externalResourceId: 'dbbackupiad/bT9ej7zNsA6m3HEWavcJ',
+      resourceIdsByKey: links,
+      unsupportedResourceId: true,
+    })).toEqual({ reason: 'UNSUPPORTED_RESOURCE_ID' });
   });
 
   it('does not accept ambiguous matches', () => {

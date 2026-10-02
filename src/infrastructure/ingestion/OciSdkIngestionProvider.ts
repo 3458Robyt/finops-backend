@@ -8,6 +8,8 @@ import type {
   CloudIngestionJobContext,
   CloudIngestionCollectOptions,
   CloudIngestionConnection,
+  CloudMetricDiscoveryScope,
+  CloudMetricDiscoveryResult,
   CloudConnectionValidationResult,
   CloudCapabilityValidation,
   CloudIngestionProvider,
@@ -42,7 +44,7 @@ import { collectOciInventory } from './oci/OciInventoryCollector.js';
 import { createOciResourceSearchClient } from './oci/OciResourceSearchCollector.js';
 import { discoverOciInventoryCompartments } from './oci/OciCompartmentDiscovery.js';
 import { discoverOciRegions } from './oci/OciRegionDiscovery.js';
-import { discoverOciMetricDefinitions, type OciMetricDiscoveryResult } from './oci/OciMetricDiscovery.js';
+import { discoverOciMetricDefinitions } from './oci/OciMetricDiscovery.js';
 import {
   buildOciFocusPreviewResult,
   discoverOciFocusObjects,
@@ -84,40 +86,35 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
 
   public async previewFocus(connection: CloudIngestionConnection, limit: number): Promise<FocusSourcePreviewResult> {
     const job = buildOciValidationJob(connection);
-    const client = this.createObjectStorageClient(job);
-    try {
-      const configured = readOciFocusObjects(job);
-      const discovery = await discoverOciFocusObjects(
-        job,
-        client,
-        (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
-        true,
-        (operation) => this.rateCoordinator.run(
-          `oci:${connection.rootExternalId}:objectstorage`,
-          { requestsPerSecond: 5, maxConcurrent: 2 },
-          operation,
-        ),
-      );
-      const objects = [
-        ...configured.map((object) => ({ object, source: 'configured' as const })),
-        ...discovery.objects.map((object) => ({ object, source: 'discovered' as const })),
-      ].slice(0, limit).map(({ object, source }) => ({
-        name: object.objectName,
-        location: `oci://${object.namespaceName}/${object.bucketName}/${object.objectName}`,
-        source,
-        ...(object.sizeBytes !== undefined ? { sizeBytes: object.sizeBytes } : {}),
-        ...(object.lastModified !== undefined ? { lastModified: object.lastModified } : {}),
-      }));
-      return buildOciFocusPreviewResult(
-        readOciFocusLocations(job).length,
-        configured.length,
-        discovery.objects.length,
-        objects,
-        discovery.errors,
-      );
-    } finally {
-      client.close?.();
-    }
+    const configured = readOciFocusObjects(job);
+    const discovery = await discoverOciFocusObjects(
+      job,
+      (signal) => this.createObjectStorageClient(job, signal),
+      (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
+      true,
+      (operation) => this.rateCoordinator.run(
+        `oci:${connection.rootExternalId}:objectstorage`,
+        { requestsPerSecond: 5, maxConcurrent: 2 },
+        operation,
+      ),
+    );
+    const objects = [
+      ...configured.map((object) => ({ object, source: 'configured' as const })),
+      ...discovery.objects.map((object) => ({ object, source: 'discovered' as const })),
+    ].slice(0, limit).map(({ object, source }) => ({
+      name: object.objectName,
+      location: `oci://${object.namespaceName}/${object.bucketName}/${object.objectName}`,
+      source,
+      ...(object.sizeBytes !== undefined ? { sizeBytes: object.sizeBytes } : {}),
+      ...(object.lastModified !== undefined ? { lastModified: object.lastModified } : {}),
+    }));
+    return buildOciFocusPreviewResult(
+      readOciFocusLocations(job).length,
+      configured.length,
+      discovery.objects.length,
+      objects,
+      discovery.errors,
+    );
   }
 
   public async collect(job: CloudIngestionJobContext, options: CloudIngestionCollectOptions = {}): Promise<CloudIngestionResult> {
@@ -130,27 +127,21 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
   }
 
   /** Read-only discovery used by onboarding; streams remain disabled until confirmation. */
-  public async discoverMetricDefinitions(connection: CloudIngestionConnection): Promise<OciMetricDiscoveryResult> {
+  public async discoverMetricDefinitions(
+    connection: CloudIngestionConnection,
+    scope: CloudMetricDiscoveryScope,
+    signal?: AbortSignal,
+  ): Promise<CloudMetricDiscoveryResult> {
     return discoverOciMetricDefinitions(connection, {
-      createClient: (context) => this.createMonitoringClient(context),
-      discoverRegions: async (context) => {
-        const result = await discoverOciRegions(context, {
-          createIdentityClient: (target) => this.createIdentityClient(this.createAuthProvider(target)),
-          withRetry: withOciProviderRetry,
-        });
-        return { regions: result.regionIds, apiCallCount: result.apiCallCount, warnings: result.warnings };
-      },
-      discoverCompartments: (context) => discoverOciInventoryCompartments(context, {
-        createIdentityClient: (target) => this.createIdentityClient(this.createAuthProvider(target)),
-        withRetry: withOciProviderRetry,
-      }),
-      withRetry: withOciProviderRetry,
-      withRateLimit: (operation) => this.rateCoordinator.run(
+      createClient: (context, requestSignal) => this.createMonitoringClient(context, requestSignal),
+      withRetry: (operation, requestSignal) => withOciProviderRetry(operation, undefined, undefined, undefined, requestSignal),
+      withRateLimit: (operation, requestSignal) => this.rateCoordinator.run(
         this.monitoringRateKey(connection),
         { requestsPerSecond: 8, maxConcurrent: 2 },
         operation,
+        requestSignal,
       ),
-    });
+    }, scope, signal);
   }
 
   private async collectInternal(job: CloudIngestionJobContext, options: CloudIngestionCollectOptions): Promise<CloudIngestionResult> {
@@ -160,25 +151,27 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
 
     if (job.sourceType === 'INVENTORY') {
       const inventory = await collectOciInventory(job, {
-        createComputeClient: (context) => this.createComputeClient(context),
-        createResourceSearchClient: (context) => createOciResourceSearchClient(this.createAuthProvider(context)),
-        discoverCompartments: (context) => discoverOciInventoryCompartments(context, {
-          createIdentityClient: (target) => this.createIdentityClient(this.createAuthProvider(target)),
-          withRetry: withOciProviderRetry,
-        }),
-        discoverRegions: (context) => discoverOciRegions(context, {
-          createIdentityClient: (target) => this.createIdentityClient(this.createAuthProvider(target)),
-          withRetry: withOciProviderRetry,
-        }),
-        withRetry: withOciProviderRetry,
-        withRateLimit: (context, api, operation) => this.rateCoordinator.run(
+        createComputeClient: (context, signal) => this.createComputeClient(context, signal),
+        createObjectStorageClient: (context, signal) => this.createObjectStorageClient(context, signal),
+        createResourceSearchClient: (context, signal) => createOciResourceSearchClient(this.createAuthProvider(context), signal),
+        discoverCompartments: (context, signal) => discoverOciInventoryCompartments(context, {
+          createIdentityClient: (target, attemptSignal) => this.createIdentityClient(this.createAuthProvider(target), attemptSignal),
+          withRetry: (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
+        }, signal),
+        discoverRegions: (context, signal) => discoverOciRegions(context, {
+          createIdentityClient: (target, attemptSignal) => this.createIdentityClient(this.createAuthProvider(target), attemptSignal),
+          withRetry: (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
+        }, signal),
+        withRetry: (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
+        withRateLimit: (context, api, operation, signal) => this.rateCoordinator.run(
           `oci:${context.connection.rootExternalId}:${this.regionKey(context)}:${api}`,
           api === 'resourceSearch'
             ? { requestsPerSecond: 3, maxConcurrent: 2 }
             : { requestsPerSecond: 5, maxConcurrent: 2 },
           operation,
+          signal,
         ),
-      });
+      }, options.signal);
       return {
         apiCallCount: inventory.apiCallCount,
         objectsProcessed: inventory.resources.length,
@@ -201,11 +194,12 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
 
     return collectOciTechnicalMetrics(job, {
       createClient: (context, signal) => this.createMonitoringClient(context, signal),
-      withRetry: (operation, signal) => withOciProviderRetry(operation, undefined, undefined, undefined, signal),
-      withRateLimit: (context, operation) => this.rateCoordinator.run(
+      withRetry: (operation, signal, onRetry) => withOciProviderRetry(operation, undefined, undefined, undefined, signal, onRetry),
+      withRateLimit: (context, operation, signal) => this.rateCoordinator.run(
         this.monitoringRateKey(context.connection),
         { requestsPerSecond: 8, maxConcurrent: 4 },
         operation,
+        signal,
       ),
     }, options);
   }
@@ -254,10 +248,18 @@ const explicitPrefix = optionalString(location?.['prefix'])
 const autoDetected = connection.providerCode === 'oci'
   && explicitNamespaceName === undefined
   && explicitBucketName === undefined;
-const namespaceName = explicitNamespaceName ?? (autoDetected ? 'bling' : undefined);
-const bucketName = explicitBucketName ?? (autoDetected ? connection.rootExternalId : undefined);
-const prefix = explicitPrefix ?? (autoDetected ? 'FOCUS Reports' : '');
-if (namespaceName === undefined || bucketName === undefined) {
+if (autoDetected) {
+return {
+capability: 'STORAGE',
+status: 'NOT_CONFIGURED',
+message: 'No hay una ubicación FOCUS configurada; se usará OCI Usage API cuando billing esté en modo AUTO.',
+checkedAt,
+metadata: { reasonCode: 'FOCUS_SOURCE_NOT_CONFIGURED' },
+};
+}
+const bucketName = explicitBucketName;
+const prefix = explicitPrefix ?? '';
+if (bucketName === undefined) {
 return {
 capability: 'STORAGE',
 status: 'NOT_CONFIGURED',
@@ -269,15 +271,16 @@ checkedAt,
 return validateOciCall('STORAGE', checkedAt, () => withOciClient(
 this.createObjectStorageClient(job, signal),
 async (client) => {
-await client.listObjects({
-namespaceName,
-bucketName,
-prefix,
-limit: 1,
-});
+const namespaceName = explicitNamespaceName
+  ?? optionalString((await client.getNamespace({ compartmentId: connection.rootExternalId })).value);
+if (namespaceName === undefined) {
+throw new Error('OCI Object Storage no devolvió el namespace de la tenancy.');
+}
+let resolvedBucketName = bucketName;
+await client.listObjects({ namespaceName, bucketName: resolvedBucketName, prefix, limit: 1 });
 return {
 message: 'Lectura del almacenamiento FOCUS en OCI Object Storage disponible.',
- metadata: { namespaceName, bucketName, prefix, autoDetected },
+ metadata: { namespaceName, bucketName: resolvedBucketName, prefix, autoDetected },
 };
 },
 ));

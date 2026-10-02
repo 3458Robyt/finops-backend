@@ -23,9 +23,9 @@ const enabledConfig: RuntimeConfig['email'] = {
   host: 'smtp.example.test',
   port: 587,
   secure: false,
-  user: 'alerts@example.test',
+  user: 'test-user-0003@example.test',
   password: 'fixture-password',
-  from: 'alerts@example.test',
+  from: 'test-user-0003@example.test',
   fromName: 'FinOps',
 };
 
@@ -50,7 +50,7 @@ describe('EmailClient', () => {
       rateLimit: 20,
     }));
 
-    await expect(client.send({ to: 'user@example.test', subject: 'Test', text: 'Hello' }))
+    await expect(client.send({ to: 'test-user-0028@example.test', subject: 'Test', text: 'Hello' }))
       .resolves.toEqual({ messageId: '<fixture-message-id>' });
   });
 

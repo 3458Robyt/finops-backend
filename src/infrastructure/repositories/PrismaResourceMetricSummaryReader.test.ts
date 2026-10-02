@@ -10,7 +10,7 @@ describe('PrismaResourceMetricSummaryReader', () => {
         queryCalls += 1;
         return [{
           provider: 'OCI',
-          external_resource_id: 'ocid1.instance.example',
+          external_resource_id: 'ocid1.instance.oc1..exampleid0010',
           cloud_resource_id: 'resource-1',
           cloud_connection_id: 'connection-1',
           provider_namespace: 'oci_computeagent',
@@ -44,7 +44,7 @@ describe('PrismaResourceMetricSummaryReader', () => {
     expect(queryCalls).toBe(1);
     expect(result).toEqual([expect.objectContaining({
       provider: 'OCI',
-      externalResourceId: 'ocid1.instance.example',
+      externalResourceId: 'ocid1.instance.oc1..exampleid0010',
       cloudResourceId: 'resource-1',
       metricName: 'CpuUtilization',
       sampleCount: 48,

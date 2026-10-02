@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { assertIntegrationSchema, runIntegrationCommand } from '../../scripts/testing/integrationRuntime.js';
+import { assertIntegrationSchema, createIntegrationPool, runIntegrationCommand } from '../../scripts/testing/integrationRuntime.js';
 
 describe('isolated integration runtime', () => {
   afterEach(() => {
@@ -10,6 +10,12 @@ describe('isolated integration runtime', () => {
     expect(() => assertIntegrationSchema('finops_e2e_runtime')).not.toThrow();
     expect(() => assertIntegrationSchema('public')).toThrow();
     expect(() => assertIntegrationSchema('finops_e2e_runtime; DROP SCHEMA public')).toThrow();
+  });
+
+  it('rejects remote databases at the shared pool boundary', () => {
+    expect(() => createIntegrationPool('postgresql://db.example.test:5432/postgres')).toThrow(
+      'Refusing destructive integration tests against remote database host db.example.test',
+    );
   });
 
   it('executes a command and captures its output', async () => {

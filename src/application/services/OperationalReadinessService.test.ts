@@ -40,6 +40,8 @@ class FakeHeartbeatRepository implements IProcessHeartbeatRepository {
 
   public async markStopped(): Promise<boolean> { return true; }
 
+  public async markStale(): Promise<number> { return 0; }
+
   public async findById(id: string) {
     this.observedWorkerId = getDatabaseContext()?.workerId;
     if (id !== processId) return null;

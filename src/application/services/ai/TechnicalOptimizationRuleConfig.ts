@@ -27,7 +27,7 @@ export interface TechnicalOptimizationRuleConfig {
  * threshold or the ratio is intentionally ignored by the engine.
  */
 export const defaultTechnicalOptimizationRuleConfig: TechnicalOptimizationRuleConfig = {
-  version: 'technical-rules-2026-08-11.v1',
+  version: 'technical-rules-2026-09-27.v2',
   minimumSamples: 48,
   minimumCoverageDays: 7,
   recentSampleMaxAgeDays: 7,

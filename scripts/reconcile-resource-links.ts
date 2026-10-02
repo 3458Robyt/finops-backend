@@ -3,7 +3,9 @@ import 'dotenv/config';
 import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
 import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
 import {
+  isKnownUnsupportedResourceId,
   normalizeExternalResourceId,
+  resourceExternalIdAliases,
   resolveExactResourceLink,
   resourceLookupKey,
   type ResourceLinkReasonCode,
@@ -11,6 +13,7 @@ import {
 import type { PrismaClient } from '../src/generated/prisma/client.js';
 import { Prisma } from '../src/generated/prisma/client.js';
 import { backfillHistoricalOciResources } from '../src/infrastructure/ingestion/PrismaHistoricalOciResourceBackfill.js';
+import { isOciAggregateResourceId } from '../src/infrastructure/ingestion/oci/OciHistoricalResourceCatalog.js';
 
 const defaultBatchSize = 500;
 const reasonCodes: readonly ResourceLinkReasonCode[] = [
@@ -51,6 +54,7 @@ interface ResourceRow {
   readonly cloudConnectionId: string;
   readonly externalResourceId: string;
   readonly tenantId: string;
+  readonly rawResource: unknown;
 }
 
 interface CostMetricRow {
@@ -71,6 +75,11 @@ interface RecommendationRow {
   readonly evidence: unknown;
 }
 
+interface ResourceCatalog {
+  readonly index: ReadonlyMap<string, readonly string[]>;
+  readonly byId: ReadonlyMap<string, ResourceRow>;
+}
+
 function createCounters(): LinkCounters {
   return {
     examined: 0,
@@ -87,10 +96,14 @@ function createCounters(): LinkCounters {
 }
 
 async function main(): Promise<void> {
-  const prisma = getPrismaClient();
-  const apply = process.argv.includes('--apply');
+  const apply = process.argv.includes('--apply')
+    || process.env['RESOURCE_LINK_RECONCILE_APPLY'] === 'true'
+    || process.env['npm_config_apply'] === 'true';
   const batchSize = parseBatchSize();
   const tenantFilter = readArgument('--tenant=');
+  const only = readOnlyTable();
+  assertSafeScope(tenantFilter);
+  const prisma = getPrismaClient();
 
   try {
     const tenants = await runWithDatabaseContext(
@@ -106,7 +119,7 @@ async function main(): Promise<void> {
     for (const tenant of tenants) {
       const result = await runWithDatabaseContext(
         { tenantId: tenant.id, userId: 'resource-linkage-reconciler', role: 'MASTER_ADMIN' },
-        () => reconcileTenant(prisma, tenant.id, batchSize, apply),
+        () => reconcileTenant(prisma, tenant.id, batchSize, apply, only),
       );
       results.push(result);
     }
@@ -115,6 +128,7 @@ async function main(): Promise<void> {
       success: true,
       mode: apply ? 'APPLY' : 'DRY_RUN',
       batchSize,
+      only,
       tenants: results,
     }, null, 2));
   } finally {
@@ -127,11 +141,19 @@ async function reconcileTenant(
   tenantId: string,
   batchSize: number,
   apply: boolean,
+  only: 'all' | 'cost_metrics' | 'resource_metric_samples' | 'recommendations',
 ): Promise<Record<string, unknown>> {
   const historicalOciResources = await backfillHistoricalOciResources(prisma, tenantId, batchSize, apply);
-  const costMetrics = await safelyReconcile('cost_metrics', () => reconcileCostMetrics(prisma, tenantId, batchSize, apply));
-  const metricSamples = await safelyReconcile('resource_metric_samples', () => reconcileMetricSamples(prisma, tenantId, batchSize, apply));
-  const recommendations = await safelyReconcile('recommendations', () => reconcileRecommendations(prisma, tenantId, batchSize, apply));
+  const resources = await loadResourceCatalog(prisma, tenantId);
+  const costMetrics = only === 'all' || only === 'cost_metrics'
+    ? await safelyReconcile('cost_metrics', () => reconcileCostMetrics(prisma, tenantId, batchSize, apply, resources))
+    : createCounters();
+  const metricSamples = only === 'all' || only === 'resource_metric_samples'
+    ? await safelyReconcile('resource_metric_samples', () => reconcileMetricSamples(prisma, tenantId, batchSize, apply, resources))
+    : createCounters();
+  const recommendations = only === 'all' || only === 'recommendations'
+    ? await safelyReconcile('recommendations', () => reconcileRecommendations(prisma, tenantId, batchSize, apply, resources))
+    : createCounters();
   const summary = { historicalOciResources, costMetrics, metricSamples, recommendations };
 
   if (apply) {
@@ -175,6 +197,7 @@ async function reconcileCostMetrics(
   tenantId: string,
   batchSize: number,
   apply: boolean,
+  resources: ResourceCatalog,
 ): Promise<LinkCounters> {
   const counters = createCounters();
   let cursor: { readonly start: Date; readonly hash: string } | undefined;
@@ -199,11 +222,6 @@ async function reconcileCostMetrics(
     `);
     if (rows.length === 0) break;
 
-    const resourceIndex = await loadResourceIndex(prisma, tenantId, rows.map((row) => ({
-      cloudConnectionId: row.cloud_connection_id,
-      externalResourceId: row.resource_id,
-    })));
-    const existingResources = await loadResourcesByIds(prisma, tenantId, rows.map((row) => row.cloud_resource_id));
     const actions = rows.map((row) => ({
       chargePeriodStart: row.charge_period_start,
       metricIdentityHash: row.metric_identity_hash,
@@ -212,8 +230,9 @@ async function reconcileCostMetrics(
         externalResourceId: row.resource_id,
         currentCloudResourceId: row.cloud_resource_id,
         currentReason: row.resource_link_reason,
-        existingResource: existingResources.get(row.cloud_resource_id ?? ''),
-        resourceIndex,
+        existingResource: resources.byId.get(row.cloud_resource_id ?? ''),
+        resourceIndex: resources.index,
+        unsupportedResourceId: isKnownUnsupportedResourceId(row.resource_id),
         serviceLevel: isServiceLevelCost(row.resource_id, row.provider_raw),
       }),
     }));
@@ -232,6 +251,7 @@ async function reconcileMetricSamples(
   tenantId: string,
   batchSize: number,
   apply: boolean,
+  resources: ResourceCatalog,
 ): Promise<LinkCounters> {
   const counters = createCounters();
   let cursor: string | undefined;
@@ -252,8 +272,6 @@ async function reconcileMetricSamples(
     });
     if (rows.length === 0) break;
 
-    const resourceIndex = await loadResourceIndex(prisma, tenantId, rows);
-    const existingResources = await loadResourcesByIds(prisma, tenantId, rows.map((row) => row.cloudResourceId));
     const actions = rows.map((row) => ({
       id: row.id,
       ...resolveAction({
@@ -261,8 +279,8 @@ async function reconcileMetricSamples(
         externalResourceId: row.externalResourceId,
         currentCloudResourceId: row.cloudResourceId,
         currentReason: row.resourceLinkReason,
-        existingResource: existingResources.get(row.cloudResourceId ?? ''),
-        resourceIndex,
+        existingResource: resources.byId.get(row.cloudResourceId ?? ''),
+        resourceIndex: resources.index,
       }),
     }));
 
@@ -280,6 +298,7 @@ async function reconcileRecommendations(
   tenantId: string,
   batchSize: number,
   apply: boolean,
+  resources: ResourceCatalog,
 ): Promise<LinkCounters> {
   const counters = createCounters();
   let cursor: string | undefined;
@@ -300,16 +319,9 @@ async function reconcileRecommendations(
     });
     if (rows.length === 0) break;
 
-    const evidenceResourceIds = rows
-      .map((row) => readString(row.evidence, 'cloudResourceId'))
-      .filter((value): value is string => value !== undefined);
-    const existingResources = await loadResourcesByIds(prisma, tenantId, [
-      ...rows.map((row) => row.cloudResourceId),
-      ...evidenceResourceIds,
-    ]);
     const actions = rows.map((row) => ({
       id: row.id,
-      ...resolveRecommendationAction(row, existingResources),
+      ...resolveRecommendationAction(row, resources.byId),
     }));
 
     recordActions(counters, actions);
@@ -356,6 +368,7 @@ function resolveAction(input: {
   readonly currentReason: string | null;
   readonly existingResource?: ResourceRow;
   readonly resourceIndex: ReadonlyMap<string, readonly string[]>;
+  readonly unsupportedResourceId?: boolean;
   readonly serviceLevel?: boolean;
 }): Pick<LinkAction, 'cloudResourceId' | 'reason' | 'currentCloudResourceId' | 'currentReason'> {
   if (input.currentCloudResourceId !== null) {
@@ -365,7 +378,10 @@ function resolveAction(input: {
       && input.cloudConnectionId !== null
       && existing.cloudConnectionId === input.cloudConnectionId
       && normalizedExternalId !== undefined
-      && normalizeExternalResourceId(existing.externalResourceId) === normalizedExternalId;
+      && resourceExternalIdAliases(
+        existing.rawResource as Readonly<Record<string, unknown>> | null,
+        existing.externalResourceId,
+      ).includes(normalizedExternalId);
     return isValid
       ? { cloudResourceId: input.currentCloudResourceId, currentCloudResourceId: input.currentCloudResourceId, currentReason: input.currentReason }
       : { reason: 'INVALID_EXISTING_REFERENCE', currentCloudResourceId: input.currentCloudResourceId, currentReason: input.currentReason };
@@ -375,6 +391,7 @@ function resolveAction(input: {
     cloudConnectionId: input.cloudConnectionId ?? undefined,
     externalResourceId: input.externalResourceId,
     resourceIdsByKey: input.resourceIndex,
+    ...(input.unsupportedResourceId === true ? { unsupportedResourceId: true } : {}),
     ...(input.serviceLevel === true ? { serviceLevel: true } : {}),
   });
   return {
@@ -385,39 +402,26 @@ function resolveAction(input: {
   };
 }
 
-async function loadResourceIndex(
+async function loadResourceCatalog(
   prisma: PrismaClient,
   tenantId: string,
-  rows: readonly { readonly cloudConnectionId: string | null; readonly externalResourceId: unknown }[],
-): Promise<ReadonlyMap<string, readonly string[]>> {
-  const connectionIds = [...new Set(rows.map((row) => row.cloudConnectionId).filter((value): value is string => value !== null && value.trim() !== ''))];
-  const externalResourceIds = [...new Set(rows.map((row) => normalizeExternalResourceId(row.externalResourceId)).filter((value): value is string => value !== undefined))];
-  if (connectionIds.length === 0 || externalResourceIds.length === 0) return new Map();
-
+): Promise<ResourceCatalog> {
   const resources = await prisma.cloudResource.findMany({
-    where: { tenantId, cloudConnectionId: { in: connectionIds }, externalResourceId: { in: externalResourceIds } },
-    select: { id: true, tenantId: true, cloudConnectionId: true, externalResourceId: true },
+    where: { tenantId },
+    select: { id: true, tenantId: true, cloudConnectionId: true, externalResourceId: true, rawResource: true },
   });
   const index = new Map<string, string[]>();
   for (const resource of resources) {
-    const key = resourceLookupKey(resource.cloudConnectionId, normalizeExternalResourceId(resource.externalResourceId) ?? resource.externalResourceId);
-    index.set(key, [...(index.get(key) ?? []), resource.id]);
+    for (const externalResourceId of resourceExternalIdAliases(
+      resource.rawResource as Readonly<Record<string, unknown>> | null,
+      resource.externalResourceId,
+    )) {
+      const key = resourceLookupKey(resource.cloudConnectionId, externalResourceId);
+      const matches = index.get(key) ?? [];
+      if (!matches.includes(resource.id)) index.set(key, [...matches, resource.id]);
+    }
   }
-  return index;
-}
-
-async function loadResourcesByIds(
-  prisma: PrismaClient,
-  tenantId: string,
-  ids: readonly (string | null)[],
-): Promise<ReadonlyMap<string, ResourceRow>> {
-  const resourceIds = [...new Set(ids.filter((value): value is string => value !== null && value.trim() !== ''))];
-  if (resourceIds.length === 0) return new Map();
-  const resources = await prisma.cloudResource.findMany({
-    where: { tenantId, id: { in: resourceIds } },
-    select: { id: true, tenantId: true, cloudConnectionId: true, externalResourceId: true },
-  });
-  return new Map(resources.map((resource) => [resource.id, resource]));
+  return { index, byId: new Map(resources.map((resource) => [resource.id, resource])) };
 }
 
 function recordActions(counters: LinkCounters, actions: readonly LinkAction[]): void {
@@ -505,6 +509,7 @@ function isUnchanged(action: LinkAction): boolean {
 }
 
 function isServiceLevelCost(resourceId: string, providerRaw: unknown): boolean {
+  if (isOciAggregateResourceId(resourceId)) return true;
   if (resourceId.trim() !== '') return false;
   const raw = readRecord(providerRaw)?.['raw'];
   const sourceRow = readRecord(raw) ?? readRecord(providerRaw);
@@ -528,9 +533,29 @@ function readRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 function readArgument(prefix: string): string | undefined {
-  const value = process.argv.find((argument) => argument.startsWith(prefix));
-  const parsed = value?.slice(prefix.length).trim();
+  const argumentName = prefix.replace(/=$/, '');
+  const inline = process.argv.find((argument) => argument.startsWith(prefix));
+  const positionalIndex = process.argv.indexOf(argumentName);
+  const positional = positionalIndex >= 0 ? process.argv[positionalIndex + 1] : undefined;
+  const suffix = argumentName.slice(2).replaceAll('-', '_').toUpperCase();
+  const configured = process.env[`RESOURCE_LINK_RECONCILE_${suffix}`]
+    ?? process.env[`npm_config_${suffix.toLowerCase()}`]
+    ?? process.env[`NPM_CONFIG_${suffix}`];
+  const value = inline !== undefined
+    ? inline.slice(prefix.length)
+    : positional !== undefined && !positional.startsWith('--')
+      ? positional
+      : configured;
+  const parsed = value?.trim();
   return parsed === undefined || parsed === '' ? undefined : parsed;
+}
+
+function assertSafeScope(tenantFilter: string | undefined): void {
+  const runningThroughNpm = process.env['npm_lifecycle_event'] !== undefined;
+  const explicitAll = process.argv.includes('--all') || process.env['RESOURCE_LINK_RECONCILE_ALL'] === 'true';
+  if (runningThroughNpm && tenantFilter === undefined && !explicitAll) {
+    throw new Error('El script npm exige --tenant=<id> o RESOURCE_LINK_RECONCILE_ALL=true para reconciliar todos los tenants de forma explícita.');
+  }
 }
 
 function parseBatchSize(): number {
@@ -541,6 +566,14 @@ function parseBatchSize(): number {
     throw new Error('--batch-size must be an integer between 1 and 5000');
   }
   return parsed;
+}
+
+function readOnlyTable(): 'all' | 'cost_metrics' | 'resource_metric_samples' | 'recommendations' {
+  const value = readArgument('--only=') ?? 'all';
+  if (value === 'all' || value === 'cost_metrics' || value === 'resource_metric_samples' || value === 'recommendations') {
+    return value;
+  }
+  throw new Error('--only debe ser all, cost_metrics, resource_metric_samples o recommendations.');
 }
 
 main().catch((error: unknown) => {

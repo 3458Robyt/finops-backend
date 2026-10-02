@@ -4,7 +4,7 @@ import type { ICostAllocationRepository } from '../../domain/interfaces/ICostAll
 import type { CostAllocationRule } from '../../domain/models/CostAllocation.js';
 import type { CostAllocationRuleInput } from '../../domain/interfaces/ICostAllocationRepository.js';
 
-const actor = { userId: 'user-1', tenantId: 'tenant-1', email: 'admin@example.com', role: 'ADMIN', jwtId: 'jwt-1' } as const;
+const actor = { userId: 'user-1', tenantId: 'tenant-1', email: 'test-user-0002@example.test', role: 'ADMIN', jwtId: 'jwt-1' } as const;
 const ruleInput = { name: 'Compute producción', priority: 10, status: 'DRAFT' as const, serviceName: 'Compute', costCenter: 'CC-100' };
 
 describe('CostAllocationService', () => {

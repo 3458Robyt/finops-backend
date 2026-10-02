@@ -28,6 +28,7 @@ const connection = firstConnection(connections);
 const accessibleTenants = await request('/auth/tenants', adminToken, 200);
 const onboarding = await request(`/cloud-connections/${encodeURIComponent(connection.id)}/onboarding`, adminToken, 200);
 const readiness = await request('/ingestion/readiness', adminToken, 200);
+assertWaitingForWorkerWhenRequested(readiness);
 const operationalReads = [
     '/kpis/savings',
     '/costs',
@@ -48,6 +49,7 @@ for (const mutation of [
     { path: `/cloud-connections/${connection.id}/credentials/nonexistent`, method: 'DELETE' },
     { path: `/cloud-connections/${connection.id}/validate`, method: 'POST' },
     { path: `/cloud-connections/${connection.id}/focus-preview`, method: 'POST' },
+    { path: `/cloud-connections/${connection.id}/metric-definitions/discover`, method: 'POST' },
     { path: `/cloud-connections/${connection.id}/activate`, method: 'POST' },
     { path: `/cloud-connections/${connection.id}/ingestion-jobs`, method: 'POST' },
     { path: `/cloud-connections/${connection.id}/ingestion-jobs/retry-failed`, method: 'POST' },
@@ -58,6 +60,7 @@ for (const mutation of [
   await request(mutation.path, viewerToken, 403, { method: mutation.method, body: '{}' });
 }
 let crossTenantReadHidden = false;
+let metricDiscoveryInvalidScopeRejected = false;
 const otherTenantId = adminLogin.availableTenantIds.find((tenantId) => tenantId !== connection.tenantId);
 if (otherTenantId !== undefined) {
   const switched = await request('/auth/switch-tenant', adminToken, 200, {
@@ -69,6 +72,24 @@ if (otherTenantId !== undefined) {
   }
   await request(`/cloud-connections/${encodeURIComponent(connection.id)}/onboarding`, switched['accessToken'], 404);
   crossTenantReadHidden = true;
+
+  const otherConnections = await request('/cloud-connections', switched['accessToken'], 200);
+  const ociConnection = readArray(otherConnections, 'connections').find((item) =>
+    isRecord(item) && item['providerCode'] === 'oci' && typeof item['id'] === 'string',
+  );
+  if (!isRecord(ociConnection) || typeof ociConnection['id'] !== 'string') {
+    throw new Error('The isolated second tenant did not expose its expected OCI connection.');
+  }
+  const invalidDiscovery = await request(
+    `/cloud-connections/${encodeURIComponent(ociConnection['id'])}/metric-definitions/discover`,
+    switched['accessToken'],
+    400,
+    { method: 'POST', body: JSON.stringify({ scope: { regionId: 'bad region', compartmentId: 'ocid1.compartment.oc1..exampleid0006' } }) },
+  );
+  if (!isRecord(invalidDiscovery) || invalidDiscovery['code'] !== 'VALIDATION_ERROR') {
+    throw new Error('Invalid OCI metric discovery scope was not rejected by the API.');
+  }
+  metricDiscoveryInvalidScopeRejected = true;
 }
 
 const serialized = JSON.stringify(onboarding);
@@ -87,8 +108,9 @@ console.log(JSON.stringify({
   readinessConnections: arrayLength(readiness, 'readiness', 'connections'),
   safeOnboardingPayloadBytes: Buffer.byteLength(serialized),
   operationalReads: operationalReads.length,
-  viewerMutationsDenied: 13,
+  viewerMutationsDenied: 14,
   crossTenantReadHidden,
+  metricDiscoveryInvalidScopeRejected,
 }, null, 2));
 
 async function readCredentials(): Promise<Credentials> {
@@ -180,4 +202,20 @@ function requireEnv(name: string): string {
 
 function isFileMissing(error: unknown): boolean {
   return isRecord(error) && error['code'] === 'ENOENT';
+}
+
+function assertWaitingForWorkerWhenRequested(value: unknown): void {
+  if (process.env['EXPECT_WAITING_FOR_WORKER'] !== 'true') return;
+  const summary = isRecord(value) && isRecord(value['readiness']) ? value['readiness'] : undefined;
+  const operational = summary !== undefined && isRecord(summary['operational']) ? summary['operational'] : undefined;
+  const queue = operational !== undefined && isRecord(operational['queue']) ? operational['queue'] : undefined;
+  const worker = operational !== undefined && isRecord(operational['worker']) ? operational['worker'] : undefined;
+  if (
+    operational?.['state'] !== 'WAITING_FOR_WORKER'
+    || typeof queue?.['pending'] !== 'number'
+    || queue['pending'] < 1
+    || worker?.['available'] !== false
+  ) {
+    throw new Error(`El readiness no clasificó la cola sin worker: ${JSON.stringify(operational)}`);
+  }
 }

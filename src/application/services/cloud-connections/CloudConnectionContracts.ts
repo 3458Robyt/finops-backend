@@ -11,6 +11,7 @@ import type {
 } from '../../../domain/models/CloudConnection.js';
 import type {
   CloudConnectionValidationResult,
+  CloudMetricDiscoveryScope,
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
 
 export interface RegisterCloudConnectionInput {
@@ -37,6 +38,12 @@ export interface QueueTechnicalBackfillInput {
   readonly cloudConnectionId: string;
   readonly lookbackDays?: number;
   readonly windowHours?: number;
+  readonly metricFilter?: Readonly<{
+    readonly namespace: string;
+    readonly metricName: 'CpuUtilization' | 'MemoryUtilization';
+    readonly resourceId: string;
+    readonly regionId: string;
+  }>;
 }
 
 export interface TechnicalBackfillWindow {
@@ -152,4 +159,12 @@ export interface PreviewFocusSourceInput {
   readonly userId: string;
   readonly cloudConnectionId: string;
   readonly limit?: number;
+}
+
+export interface PreviewMetricDefinitionsInput {
+  readonly tenantId: string;
+  readonly userId: string;
+  readonly cloudConnectionId: string;
+  readonly scope: CloudMetricDiscoveryScope;
+  readonly signal?: AbortSignal;
 }

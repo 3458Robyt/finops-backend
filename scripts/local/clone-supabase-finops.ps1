@@ -78,7 +78,7 @@ if (!(Test-Path $prismaCli)) { throw "No se encontró Prisma CLI en $prismaCli. 
 $encodedLocalPassword = [Uri]::EscapeDataString((Get-Content $localPasswordFile -Raw).Trim())
 $previousDatabaseUrl = $env:DATABASE_URL
 try {
-  $env:DATABASE_URL = "postgresql://postgres:$encodedLocalPassword@127.0.0.1:$TargetPort/$TargetDatabase"
+  $env:DATABASE_URL = "postgresql://redacted:placeholder@127.0.0.1:$TargetPort/$TargetDatabase"
   Push-Location $repoRoot
   try {
     & $prismaCli migrate deploy --schema (Join-Path $repoRoot 'prisma\schema.prisma')

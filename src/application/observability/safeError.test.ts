@@ -3,7 +3,7 @@ import { safeErrorMessage, safeErrorName } from './safeError.js';
 
 describe('safeErrorMessage', () => {
   it('redacts credentials, API keys, JWTs and PEM material', () => {
-    const message = 'postgresql://user:password@db.example.test:5432/app apiKey=sk-12345678901234567890 eyJheader.payload.signature -----BEGIN PRIVATE KEY-----secret-----END PRIVATE KEY-----';
+    const message = 'postgresql://redacted:placeholder@example.test:5432/app apiKey=sk-12345678901234567890 eyJheader.payload.signature -----BEGIN PRIVATE KEY-----secret-----END PRIVATE KEY-----';
 
     const sanitized = safeErrorMessage(new Error(message));
 

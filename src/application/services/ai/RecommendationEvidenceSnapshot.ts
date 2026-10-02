@@ -11,6 +11,12 @@ export type RecommendationEvidenceAvailability =
 export interface RecommendationEvidenceMetric {
   readonly metricName: string;
   readonly metricUnit?: string;
+  readonly providerNamespace?: string;
+  readonly regionId?: string;
+  readonly compartmentId?: string;
+  readonly dimensionsHash?: string;
+  readonly statistic?: string;
+  readonly granularitySeconds?: number;
   readonly sampleCount: number;
   readonly coverageDays: number;
   readonly min: number;
@@ -31,6 +37,7 @@ export interface RecommendationEvidenceResource {
   readonly externalResourceId: string;
   readonly cloudResourceId?: string;
   readonly cloudConnectionId?: string;
+  readonly resourceName?: string;
   readonly provider: string;
   readonly resourceType?: string;
   readonly serviceName?: string;
@@ -60,8 +67,18 @@ export interface RecommendationEvidenceSnapshot {
   readonly periodEnd: string;
   readonly generatedAt: string;
   readonly availability: RecommendationEvidenceAvailability;
+  /** Fail closed when the bounded raw query cannot include every stream. */
+  readonly summaryTruncated?: boolean;
   readonly resources: readonly RecommendationEvidenceResource[];
   readonly deterministicRules: readonly TechnicalResourceRuleEvaluation[];
+  readonly sourceDiagnostics?: readonly {
+    readonly externalResourceId: string;
+    readonly cloudConnectionId: string;
+    readonly metricName: 'CpuUtilization' | 'MemoryUtilization';
+    readonly catalogStatus: 'NOT_DISCOVERED' | 'DISABLED' | 'ENABLED';
+    readonly lastDiscoveredAt?: string;
+    readonly latestJobStatus?: string;
+  }[];
 }
 
 export function hashRecommendationEvidenceSnapshot(
@@ -71,11 +88,14 @@ export function hashRecommendationEvidenceSnapshot(
   return createHash('sha256').update(JSON.stringify(stableFacts)).digest('hex');
 }
 
-export function formatRecommendationEvidenceSnapshot(snapshot: RecommendationEvidenceSnapshot): string {
+export function formatRecommendationEvidenceSnapshot(
+  snapshot: RecommendationEvidenceSnapshot,
+  candidateResources?: readonly Readonly<{ readonly resourceId?: string; readonly cloudResourceId?: string }>[],
+): string {
   return [
     'Evidencia tecnica canonica:',
     JSON.stringify({
-      snapshot,
+      snapshot: compactRecommendationEvidenceSnapshot(snapshot, candidateResources),
       rules: [
         'Solo usa COST_USAGE_AND_TECHNICAL cuando la recomendacion cite referencias existentes del snapshot.',
         'Si linkQuality no es COST_AND_TECHNICAL o las reglas tienen blockers, exige requiresTechnicalValidation=true.',
@@ -83,4 +103,39 @@ export function formatRecommendationEvidenceSnapshot(snapshot: RecommendationEvi
       ],
     }),
   ].join('\n');
+}
+
+/**
+ * Proyección para el prompt: conserva hechos necesarios y elimina la copia
+ * redundante de `metricSummary` y reglas de recursos que no entran en el lote
+ * de candidatos. El snapshot completo sigue siendo el que se persiste y se
+ * usa en las compuertas determinísticas.
+ */
+export function compactRecommendationEvidenceSnapshot(
+  snapshot: RecommendationEvidenceSnapshot,
+  candidateResources?: readonly Readonly<{ readonly resourceId?: string; readonly cloudResourceId?: string }>[],
+): Readonly<Record<string, unknown>> {
+  const { sourceDiagnostics: _sourceDiagnostics, ...promptSnapshot } = snapshot;
+  const resources = snapshot.resources
+    .filter((resource) => candidateResources === undefined || candidateResources.some((candidate) => (
+      candidate.resourceId === resource.externalResourceId
+      && (candidate.cloudResourceId === undefined || candidate.cloudResourceId === resource.cloudResourceId)
+    )))
+    .map((resource) => ({
+    ...resource,
+    ruleEvaluation: compactRuleEvaluation(resource.ruleEvaluation),
+    }));
+
+  return {
+    ...promptSnapshot,
+    resources,
+    deterministicRules: resources.map((resource) => resource.ruleEvaluation),
+  };
+}
+
+function compactRuleEvaluation(
+  evaluation: RecommendationEvidenceSnapshot['resources'][number]['ruleEvaluation'],
+): Readonly<Record<string, unknown>> {
+  const { metricSummary: _metricSummary, ...compact } = evaluation;
+  return compact;
 }

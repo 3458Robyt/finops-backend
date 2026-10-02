@@ -19,7 +19,9 @@ import { safeErrorMessage } from '../../../application/observability/safeError.j
  * Manejador centralizado de errores que traduce excepciones de dominio a
  * códigos de estado HTTP:
  * - {@link FinOpsBaseError} con código `NOT_FOUND` -> 404; `AUTHORIZATION_FAILED`
- *   -> 403; `AI_AUDIT_REJECTED` -> 409; cualquier otro código -> 400.
+ *   -> 403; `AI_AUDIT_REJECTED` -> 409; `PROVIDER_UNAVAILABLE` -> 503;
+ *   `PROVIDER_TIMEOUT` -> 504;
+ *   `AI_RESPONSE_ERROR`/`PROVIDER_ERROR` -> 502; cualquier otro código -> 400.
  * - Error no controlado -> 500 con `fallbackMessage`.
  */
 export function respondWithRecommendationError(
@@ -34,7 +36,13 @@ export function respondWithRecommendationError(
         ? 403
         : error.code === 'AI_AUDIT_REJECTED'
           ? 409
-          : 400;
+          : error.code === 'PROVIDER_UNAVAILABLE'
+            ? 503
+          : error.code === 'PROVIDER_TIMEOUT'
+            ? 504
+            : ['AI_RESPONSE_ERROR', 'PROVIDER_ERROR'].includes(error.code)
+              ? 502
+              : 400;
 
     res.status(status).json({
       success: false,

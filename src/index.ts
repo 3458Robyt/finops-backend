@@ -117,7 +117,7 @@ async function bootstrap(): Promise<void> {
   };
   process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
   process.once('SIGINT', () => { void shutdown('SIGINT'); });
-  startBackgroundProcesses({
+  await startBackgroundProcesses({
     config,
     capabilities,
     composition,

@@ -43,7 +43,7 @@ function createRequest(query: Record<string, unknown>): Request {
     auth: {
       userId: 'user-1',
       tenantId: 'tenant-1',
-      email: 'admin@example.com',
+      email: 'test-user-0002@example.test',
       role: 'ADMIN',
       jwtId: 'jwt-1',
     },

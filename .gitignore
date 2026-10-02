@@ -3,6 +3,7 @@ dist/
 .env
 .env.*
 !.env.example
+secrets/
 downloads/
 src/generated/prisma/
 docs/erd/

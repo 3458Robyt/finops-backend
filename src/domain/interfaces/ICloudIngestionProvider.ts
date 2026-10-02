@@ -232,8 +232,41 @@ export interface CloudIngestionResult {
   readonly metricBatches?: AsyncIterable<readonly NormalizedResourceMetricSample[]>;
   readonly warnings: readonly string[];
   readonly coverage: Readonly<Record<string, unknown>>;
+  /** Provider-reported range actually queried; it may differ from the job window. */
+  readonly effectiveRange?: { readonly start: Date; readonly end: Date };
   /** Optional explicit result; legacy providers are classified centrally. */
   readonly dataOutcome?: IngestionDataOutcome;
+}
+
+export interface CloudMetricDiscoveryScope {
+  readonly regionId: string;
+  readonly compartmentId: string;
+  readonly namespace?: string;
+}
+
+export interface CloudMetricDefinitionCandidate {
+  readonly compartmentId: string;
+  readonly namespace: string;
+  readonly metricName: string;
+  readonly resourceId: string;
+  readonly regionId?: string;
+  readonly dimensions?: Readonly<Record<string, string>>;
+  readonly statistics?: readonly MetricStatistic[];
+  readonly unit?: string;
+  /** Exact tenant+connection inventory match; attached only to read-only previews. */
+  readonly inventoryLinkage?: {
+    readonly status: 'MATCHED' | 'NOT_FOUND' | 'NOT_VERIFIED' | 'MISSING_RESOURCE_ID';
+    readonly resourceName?: string;
+  };
+}
+
+export interface CloudMetricDiscoveryResult {
+  readonly definitions: readonly CloudMetricDefinitionCandidate[];
+  readonly regions: readonly string[];
+  readonly compartments: readonly string[];
+  readonly apiCallCount: number;
+  readonly truncated: boolean;
+  readonly warnings: readonly string[];
 }
 
 export interface CloudIngestionCollectOptions {
@@ -241,11 +274,22 @@ export interface CloudIngestionCollectOptions {
   readonly signal?: AbortSignal;
   /** Allows streaming collectors to stop before scheduling the next request. */
   readonly isCancellationRequested?: () => Promise<boolean>;
+  /** Reports bounded provider progress while a streaming collection is active. */
+  readonly onProgress?: (progress: CloudIngestionProviderProgress) => Promise<void> | void;
+}
+
+export interface CloudIngestionProviderProgress {
+  readonly providerCalls: number;
+  readonly samples: number;
+  readonly activeTasks?: number;
+  readonly completedTasks?: number;
+  readonly totalTasks?: number;
 }
 
 export interface CloudIngestionProvider {
   readonly providerCode: ProviderCode;
   validate(connection: CloudIngestionConnection): Promise<CloudConnectionValidationResult>;
   previewFocus?(connection: CloudIngestionConnection, limit: number): Promise<FocusSourcePreviewResult>;
+  discoverMetricDefinitions?(connection: CloudIngestionConnection, scope: CloudMetricDiscoveryScope, signal?: AbortSignal): Promise<CloudMetricDiscoveryResult>;
   collect(job: CloudIngestionJobContext, options?: CloudIngestionCollectOptions): Promise<CloudIngestionResult>;
 }

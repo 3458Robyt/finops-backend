@@ -5,13 +5,14 @@ import { collectOciResourceSearchInventory } from './OciResourceSearchCollector.
 describe('collectOciResourceSearchInventory', () => {
   test('paginates configured resource types and normalizes exact OCI identities', async () => {
     const close = vi.fn();
+    let rateLimitCalls = 0;
     const searchResources = vi.fn()
       .mockResolvedValueOnce({
         resourceSummaryCollection: {
           items: [{
             resourceType: 'bootvolume',
-            identifier: 'ocid1.bootvolume.oc1.test',
-            compartmentId: 'ocid1.compartment.oc1.test',
+            identifier: 'ocid1.bootvolume.oc1..exampleid0002',
+            compartmentId: 'ocid1.compartment.oc1..exampleid0005',
             displayName: 'Boot principal',
             lifecycleState: 'AVAILABLE',
             freeformTags: { owner: 'finops' },
@@ -23,8 +24,8 @@ describe('collectOciResourceSearchInventory', () => {
         resourceSummaryCollection: {
           items: [{
             resourceType: 'bootvolumebackup',
-            identifier: 'ocid1.bootvolumebackup.oc1.test',
-            compartmentId: 'ocid1.compartment.oc1.test',
+            identifier: 'ocid1.bootvolumebackup.oc1..exampleid0003',
+            compartmentId: 'ocid1.compartment.oc1..exampleid0005',
             lifecycleState: 'TERMINATED',
           }],
         },
@@ -33,6 +34,10 @@ describe('collectOciResourceSearchInventory', () => {
     const result = await collectOciResourceSearchInventory(buildJob(), {
       createClient: () => ({ close, searchResources }),
       withRetry: (operation) => operation(),
+      withRateLimit: async (_job, operation) => {
+        rateLimitCalls += 1;
+        return operation();
+      },
     });
 
     expect(searchResources).toHaveBeenNthCalledWith(1, expect.objectContaining({
@@ -40,23 +45,24 @@ describe('collectOciResourceSearchInventory', () => {
       limit: 1000,
     }));
     expect(searchResources).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 'page-2' }));
-    expect(close).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(rateLimitCalls).toBe(2);
     expect(result.apiCallCount).toBe(2);
     expect(result.resources).toEqual([
       expect.objectContaining({
-        externalResourceId: 'ocid1.bootvolume.oc1.test',
+        externalResourceId: 'ocid1.bootvolume.oc1..exampleid0002',
         resourceType: 'BOOT_VOLUME',
         serviceName: 'Oracle Block Volume',
         status: 'ACTIVE',
         tags: { owner: 'finops' },
         rawResource: expect.objectContaining({
           source: 'OCI_RESOURCE_SEARCH',
-          compartmentId: 'ocid1.compartment.oc1.test',
+          compartmentId: 'ocid1.compartment.oc1..exampleid0005',
           normalizerVersion: 'oci-resource-search-v1',
         }),
       }),
       expect.objectContaining({
-        externalResourceId: 'ocid1.bootvolumebackup.oc1.test',
+        externalResourceId: 'ocid1.bootvolumebackup.oc1..exampleid0003',
         resourceType: 'BOOT_VOLUME_BACKUP',
         status: 'TERMINATED',
       }),
@@ -80,6 +86,36 @@ describe('collectOciResourceSearchInventory', () => {
 
     expect(result.resources.map((resource) => resource.externalResourceId)).toEqual(['included-id']);
     expect(result.filteredResourceCount).toBe(2);
+  });
+
+  test('normalizes OCI Resource Search date strings without losing the resource', async () => {
+    const result = await collectOciResourceSearchInventory(buildJob(), {
+      createClient: () => ({
+        searchResources: async () => ({
+          resourceSummaryCollection: {
+            items: [{
+              resourceType: 'instance',
+              identifier: 'ocid1.instance.oc1..exampleid0017',
+              compartmentId: 'tenancy-1',
+              displayName: 'Instancia con fecha serializada',
+              timeCreated: '2026-09-21T00:00:00.000Z',
+              lifecycleState: 'RUNNING',
+            }],
+          },
+        }),
+      }),
+      withRetry: (operation) => operation(),
+    });
+
+    expect(result.warnings).toEqual([]);
+    expect(result.resources).toEqual([
+      expect.objectContaining({
+        externalResourceId: 'ocid1.instance.oc1..exampleid0017',
+        rawResource: expect.objectContaining({
+          timeCreated: '2026-09-21T00:00:00.000Z',
+        }),
+      }),
+    ]);
   });
 });
 

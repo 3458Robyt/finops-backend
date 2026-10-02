@@ -68,6 +68,14 @@ export interface CostAnalyticsEnvironmentItem {
  */
 export interface CostAnalyticsResourceItem {
   readonly resourceId: string;
+  /** Cuenta cloud exacta que originó el cargo. */
+  readonly cloudAccountId?: string;
+  /** Conexión exacta usada para ingerir el cargo. */
+  readonly cloudConnectionId?: string;
+  /** Recurso normalizado, cuando el cargo ya pudo enlazarse. */
+  readonly cloudResourceId?: string;
+  /** Nombre entregado por el proveedor o por el inventario. */
+  readonly resourceName?: string;
   readonly serviceName: string;
   readonly provider: string;
   readonly totalCost: number;
@@ -110,6 +118,12 @@ export interface CostAnalyticsSnapshot {
   readonly periodStart: string;
   /** Fin del periodo cubierto, en formato ISO 8601. */
   readonly periodEnd: string;
+  /** Último periodo de cargo realmente observado, no el fin teórico del mes. */
+  readonly observedThrough?: string;
+  /** Días calendario con al menos un cargo dentro del rango. */
+  readonly coveredDays?: number;
+  /** Indica si el rango solicitado está completo según sus días observados. */
+  readonly isComplete?: boolean;
   readonly totalCost: number;
   readonly currency: string;
   /** Native totals retained for audit and reconciliation. */
@@ -288,6 +302,8 @@ export interface CostAnomaly {
   readonly evidence?: unknown;
   /** Instante de detección de la anomalía, en formato ISO 8601. */
   readonly detectedAt: string;
+  /** El periodo de costos observado avanzó después del análisis. */
+  readonly isStale?: boolean;
 }
 
 /**

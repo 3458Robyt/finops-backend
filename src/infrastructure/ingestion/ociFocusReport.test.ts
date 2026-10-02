@@ -48,7 +48,7 @@ const header = [
 const row = [
   '',
   '0.125',
-  'ocid1.tenancy.oc1..root',
+  'ocid1.tenancy.oc1..exampleid0024',
   'Personal tenancy',
   'USD',
   '2026-05-01T00:00Z',
@@ -65,18 +65,18 @@ const row = [
   'OCPU hour',
   'Oracle Cloud Infrastructure',
   'sa-bogota-1',
-  'ocid1.instance.oc1.sa-bogota-1.example',
+  'ocid1.instance.oc1..exampleid0016',
   'demo-vm',
   'ComputeInstance',
   'Compute',
   'COMPUTE',
-  'ocid1.compartment.oc1..demo',
+  'ocid1.compartment.oc1..exampleid0004',
   'Demo compartment',
-  '"{""environment"":""personal"",""owner"":""david""}"',
+  '"{""environment"":""demo"",""owner"":""sample-owner""}"',
   '1',
   'OCPU hour',
-  '0001000001091847',
-  'ocid1.compartment.oc1..demo',
+  '0000000000000001',
+  'ocid1.compartment.oc1..exampleid0004',
   'Demo compartment',
 ].join(',');
 
@@ -97,8 +97,8 @@ describe('OCI FOCUS report parser', () => {
     expect(parsed?.usageUnit).toBe('OCPU hour');
     expect(parsed?.pricingQuantity).toBe(1);
     expect(parsed?.pricingUnit).toBe('OCPU hour');
-    expect(parsed?.tags).toEqual({ environment: 'personal', owner: 'david' });
-    expect(parsed?.oci['oci_ReferenceNumber']).toBe('0001000001091847');
+    expect(parsed?.tags).toEqual({ environment: 'demo', owner: 'sample-owner' });
+    expect(parsed?.oci['oci_ReferenceNumber']).toBe('0000000000000001');
   });
 
   it('builds stable natural hashes for duplicate billing rows', () => {

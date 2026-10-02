@@ -24,8 +24,8 @@ describe('PrismaCloudResourceCatalog', () => {
 
   test('uses provider observation times when upserting live resources', async () => {
     const findUnique = vi.fn().mockResolvedValue(null);
-    const create = vi.fn().mockResolvedValue({ id: 'resource-1', externalResourceId: 'ocid1.instance.oc1.test' });
-    const resource = { ...historicalResource(), externalResourceId: 'ocid1.instance.oc1.test' };
+    const create = vi.fn().mockResolvedValue({ id: 'resource-1', externalResourceId: 'ocid1.instance.oc1..exampleid0017' });
+    const resource = { ...historicalResource(), externalResourceId: 'ocid1.instance.oc1..exampleid0017' };
 
     const ids = await upsertNormalizedCloudResources({ cloudResource: { findUnique, create } } as never, [resource]);
 
@@ -38,15 +38,15 @@ describe('PrismaCloudResourceCatalog', () => {
   test('does not let metric-derived identity overwrite authoritative inventory fields', async () => {
     const findUnique = vi.fn().mockResolvedValue({
       id: 'resource-1',
-      externalResourceId: 'ocid1.instance.oc1.test',
+      externalResourceId: 'ocid1.instance.oc1..exampleid0017',
       identityPriority: 4,
       lastSeenAt: new Date('2026-05-03T00:00:00Z'),
     });
-    const update = vi.fn().mockResolvedValue({ id: 'resource-1', externalResourceId: 'ocid1.instance.oc1.test' });
+    const update = vi.fn().mockResolvedValue({ id: 'resource-1', externalResourceId: 'ocid1.instance.oc1..exampleid0017' });
 
     await upsertNormalizedCloudResources({ cloudResource: { findUnique, update } } as never, [{
       ...historicalResource(),
-      externalResourceId: 'ocid1.instance.oc1.test',
+      externalResourceId: 'ocid1.instance.oc1..exampleid0017',
       name: undefined,
       identitySource: 'METRIC_DERIVED',
       identityPriority: 0,
@@ -58,12 +58,33 @@ describe('PrismaCloudResourceCatalog', () => {
     }));
     expect(update.mock.calls[0]?.[0].data).toEqual({ lastSeenAt: expect.any(Date) });
   });
+
+  test('indexes provider aliases without creating a second cloud resource', async () => {
+    const findUnique = vi.fn().mockResolvedValue(null);
+    const create = vi.fn().mockResolvedValue({
+      id: 'resource-bucket',
+      externalResourceId: 'namespace-1/cost-reports',
+    });
+    const resource = {
+      ...historicalResource(),
+      externalResourceId: 'namespace-1/cost-reports',
+      resourceType: 'OBJECT_STORAGE_BUCKET',
+      serviceName: 'Oracle Object Storage',
+      rawResource: { source: 'OCI_OBJECT_STORAGE_SDK', aliases: ['cost-reports'] },
+    };
+
+    const ids = await upsertNormalizedCloudResources({ cloudResource: { findUnique, create } } as never, [resource]);
+
+    expect(ids.get('namespace-1/cost-reports')).toBe('resource-bucket');
+    expect(ids.get('cost-reports')).toBe('resource-bucket');
+    expect(create).toHaveBeenCalledOnce();
+  });
 });
 
 function historicalResource(): NormalizedCloudResource {
   return {
     tenantId: 'tenant-1', cloudConnectionId: 'connection-1', provider: 'OCI',
-    externalResourceId: 'ocid1.bootvolume.oc1.test', name: 'boot', resourceType: 'BOOT_VOLUME',
+    externalResourceId: 'ocid1.bootvolume.oc1..exampleid0002', name: 'boot', resourceType: 'BOOT_VOLUME',
     serviceName: 'Oracle Block Volume', status: 'UNKNOWN',
     firstSeenAt: new Date('2026-05-01T00:00:00Z'), lastSeenAt: new Date('2026-05-03T00:00:00Z'),
     rawResource: { source: 'OCI_FOCUS_HISTORICAL_REFERENCE' },

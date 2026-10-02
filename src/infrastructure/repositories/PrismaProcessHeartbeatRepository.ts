@@ -10,42 +10,47 @@ export class PrismaProcessHeartbeatRepository implements IProcessHeartbeatReposi
   public constructor(private readonly prisma: PrismaClient) {}
 
   public async upsert(input: UpsertProcessHeartbeatInput): Promise<void> {
-    await this.prisma.$transaction((transaction) =>
-      transaction.runtimeProcessHeartbeat.upsert({
-        where: { processId: input.processId },
-        create: {
-          processId: input.processId,
-          processRole: input.processRole,
-          ...(input.pid === undefined ? {} : { pid: input.pid }),
-          startedAt: input.startedAt,
-          lastHeartbeatAt: input.heartbeatAt,
-        },
-        update: {
-          processRole: input.processRole,
-          ...(input.pid === undefined ? {} : { pid: input.pid }),
-          startedAt: input.startedAt,
-          lastHeartbeatAt: input.heartbeatAt,
-          status: 'RUNNING',
-          stoppedAt: null,
-        },
-      }),
-    );
+    await this.prisma.runtimeProcessHeartbeat.upsert({
+      where: { processId: input.processId },
+      create: {
+        processId: input.processId,
+        processRole: input.processRole,
+        ...(input.pid === undefined ? {} : { pid: input.pid }),
+        startedAt: input.startedAt,
+        lastHeartbeatAt: input.heartbeatAt,
+      },
+      update: {
+        processRole: input.processRole,
+        ...(input.pid === undefined ? {} : { pid: input.pid }),
+        startedAt: input.startedAt,
+        lastHeartbeatAt: input.heartbeatAt,
+        status: 'RUNNING',
+        stoppedAt: null,
+      },
+    });
   }
 
   public async markStopped(processId: string, stoppedAt: Date): Promise<boolean> {
-    const result = await this.prisma.$transaction((transaction) =>
-      transaction.runtimeProcessHeartbeat.updateMany({
-        where: { processId, status: 'RUNNING' },
-        data: { status: 'STOPPED', stoppedAt, lastHeartbeatAt: stoppedAt },
-      }),
-    );
+    const result = await this.prisma.runtimeProcessHeartbeat.updateMany({
+      where: { processId, status: 'RUNNING' },
+      data: { status: 'STOPPED', stoppedAt, lastHeartbeatAt: stoppedAt },
+    });
     return result.count === 1;
   }
 
+  public async markStale(staleBefore: Date, stoppedAt: Date): Promise<number> {
+    const result = await this.prisma.runtimeProcessHeartbeat.updateMany({
+      where: {
+        status: 'RUNNING',
+        lastHeartbeatAt: { lt: staleBefore },
+      },
+      data: { status: 'STOPPED', stoppedAt },
+    });
+    return result.count;
+  }
+
   public async findById(processId: string): Promise<ProcessHeartbeatRecord | null> {
-    const row = await this.prisma.$transaction((transaction) =>
-      transaction.runtimeProcessHeartbeat.findUnique({ where: { processId } }),
-    );
+    const row = await this.prisma.runtimeProcessHeartbeat.findUnique({ where: { processId } });
     return row === null ? null : toRecord(row);
   }
 

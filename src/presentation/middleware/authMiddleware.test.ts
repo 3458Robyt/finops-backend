@@ -8,7 +8,7 @@ import { createAuthMiddleware } from './authMiddleware.js';
 const auth: AuthContext = {
   userId: 'user-1',
   tenantId: 'tenant-1',
-  email: 'user@example.com',
+  email: 'test-user-0027@example.test',
   role: 'ADMIN',
   jwtId: 'jwt-1',
 };

@@ -73,6 +73,7 @@ export class RecommendationAnalysisService {
     readonly candidatesSkipped: number;
     readonly readinessReport: PreparedRecommendationAnalysis['readinessReport'];
   }> {
+    this.requireObserver(actor);
     const externalResourceId = input.externalResourceId?.trim();
     const cloudResourceId = input.cloudResourceId?.trim();
     if (cloudResourceId !== undefined && cloudResourceId !== '' && (externalResourceId === undefined || externalResourceId === '')) {
@@ -97,7 +98,8 @@ export class RecommendationAnalysisService {
     };
   }
 
-  public list(actor: AuthContext, limit?: number): Promise<RecommendationAnalysisRun[]> {
+  public async list(actor: AuthContext, limit?: number): Promise<RecommendationAnalysisRun[]> {
+    this.requireObserver(actor);
     return this.repository.listByTenant(actor.tenantId, limit);
   }
 
@@ -121,7 +123,8 @@ export class RecommendationAnalysisService {
         };
   }
 
-  public get(actor: AuthContext, runId: string): Promise<RecommendationAnalysisRun | null> {
+  public async get(actor: AuthContext, runId: string): Promise<RecommendationAnalysisRun | null> {
+    this.requireObserver(actor);
     return this.repository.findById(actor.tenantId, runId);
   }
 
@@ -150,5 +153,9 @@ export class RecommendationAnalysisService {
 
   private requireManager(actor: AuthContext): void {
     requirePermission(actor.role, 'RECOMMENDATION_GENERATE', 'No tienes permiso para iniciar o modificar corridas de análisis.');
+  }
+
+  private requireObserver(actor: AuthContext): void {
+    requirePermission(actor.role, 'AGENT_OBSERVE', 'No tienes permiso para consultar el gobierno del agente.');
   }
 }

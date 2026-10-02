@@ -36,14 +36,17 @@ export interface RawMetricSummaryRow {
   readonly external_resource_id: string;
   readonly cloud_resource_id: string | null;
   readonly cloud_connection_id: string | null;
+  readonly resource_name: string | null;
   readonly provider_namespace?: string;
   readonly region_id?: string;
+  readonly compartment_id?: string;
   readonly dimensions_hash?: string;
   readonly resource_type: string | null;
   readonly service_name: string | null;
   readonly metric_name: string;
   readonly metric_unit: string | null;
   readonly statistic: string;
+  readonly granularity_seconds: number;
   readonly sample_count: number;
   readonly coverage_days: number;
   readonly min_value: number;
@@ -206,9 +209,10 @@ export function buildMetricWhereClause(
 export function buildMetricRollupWhereClause(
   tenantId: string,
   filters: MetricWhereFilters,
-  bucketSeconds: number,
+  bucketSeconds?: number,
 ): Prisma.Sql {
-  const clauses: Prisma.Sql[] = [Prisma.sql`tenant_id = ${tenantId}`, Prisma.sql`bucket_seconds = ${bucketSeconds}`];
+  const clauses: Prisma.Sql[] = [Prisma.sql`tenant_id = ${tenantId}`];
+  if (bucketSeconds !== undefined) clauses.push(Prisma.sql`bucket_seconds = ${bucketSeconds}`);
   if (filters.startDate !== undefined) clauses.push(Prisma.sql`bucket_start >= ${filters.startDate}`);
   if (filters.endDate !== undefined) clauses.push(Prisma.sql`bucket_start <= ${filters.endDate}`);
   if (filters.externalResourceId !== undefined) clauses.push(Prisma.sql`external_resource_id = ${filters.externalResourceId}`);

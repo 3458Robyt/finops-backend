@@ -12,10 +12,10 @@ export interface ProcessHeartbeatRuntimeInput {
 }
 
 /** Persists the liveness of the current API, worker or scheduler process. */
-export function startProcessHeartbeat(
+export async function startProcessHeartbeat(
   input: ProcessHeartbeatRuntimeInput,
   service: ProcessHeartbeatService,
-): void {
+): Promise<void> {
   const options = input.config.operations.processHeartbeat;
   if (!options.enabled) return;
 
@@ -24,6 +24,28 @@ export function startProcessHeartbeat(
   const processId = createProcessIdentity(processRole, process.env['HOSTNAME'], process.pid);
   let stopping = false;
   let lastRun = Promise.resolve();
+
+  try {
+    const reconciled = await runWithDatabaseContext(
+      { workerId: 'process-heartbeat-reconciler', role: 'MASTER_ADMIN' },
+      () => service.reconcileStale(startedAt),
+    );
+    if (reconciled > 0) {
+      console.log(JSON.stringify({
+        level: 'info',
+        event: 'process_heartbeat_stale_reconciled',
+        processId,
+        stoppedCount: reconciled,
+      }));
+    }
+  } catch (error) {
+    console.warn(JSON.stringify({
+      level: 'warn',
+      event: 'process_heartbeat_stale_reconciliation_failed',
+      processId,
+      error: safeErrorMessage(error),
+    }));
+  }
 
   input.startBackgroundLoop({
     intervalMs: options.intervalMs,

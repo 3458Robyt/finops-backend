@@ -101,6 +101,70 @@ describe('recommendation analysis PostgreSQL integration', () => {
         }),
       ]);
 
+      const reviewRun = await repository.queue({
+        tenantId: tenantA.id,
+        requestedByUserId: user.id,
+        trigger: 'MANUAL',
+        scope: 'RESOURCE',
+        externalResourceId: 'review-resource',
+      });
+      const claimedReviewRun = await repository.claimNext('worker-review', new Date(0));
+      expect(claimedReviewRun?.id).toBe(reviewRun.run.id);
+      await repository.savePrepared(reviewRun.run.id, {
+        periodStart: new Date('2026-06-01T00:00:00.000Z'),
+        periodEnd: new Date('2026-07-01T00:00:00.000Z'),
+        evidenceHash: 'review-only-evidence',
+        snapshot: { totalCost: 100 },
+        readinessReport: { candidates: [], reviewCandidates: [{ id: 'review-candidate' }], blocked: [] },
+        resourcesEvaluated: 1,
+        candidatesFound: 1,
+        candidatesSkipped: 1,
+        candidateResults: [{
+          candidateId: 'review-candidate',
+          readiness: 'BLOCKED_NO_EVIDENCE',
+          outcome: 'REVIEW_DRAFT',
+          reasons: ['Borrador informativo'],
+        }],
+        model: 'fixture-generator',
+        auditorModel: 'fixture-auditor',
+      });
+      const reviewCompleted = await repository.complete(reviewRun.run.id, {
+        status: 'COMPLETED',
+        recommendationsGenerated: 0,
+        recommendationsRejected: 0,
+        candidateResults: [{
+          candidateId: 'review-candidate',
+          readiness: 'BLOCKED_NO_EVIDENCE',
+          outcome: 'REVIEW_DRAFT',
+          reasons: ['Borrador informativo'],
+        }],
+        recommendationLinks: [],
+        candidateAudits: [{
+          tenantId: tenantA.id,
+          candidateId: 'review-candidate',
+          draftIndex: 0,
+          draft: { title: 'Revisión técnica', estimatedMonthlySavings: 0 },
+          auditVerdict: 'APPROVED',
+          auditScore: 95,
+          auditChecks: [{ name: 'evidence', passed: true, notes: 'Sin ahorro cuantificado' }],
+          blockingIssues: [],
+          requiredChanges: [],
+          repairAttempt: 0,
+          finalDisposition: 'REVIEW_DRAFT',
+          model: 'fixture-generator',
+          auditorModel: 'fixture-auditor',
+          evidenceHash: 'review-only-evidence',
+        }],
+        promptTokenEstimate: 100,
+        responseTokenEstimate: 50,
+        latencyMs: 25,
+      });
+      expect(reviewCompleted.recommendations).toEqual([]);
+      const reviewDetail = await repository.findById(tenantA.id, reviewRun.run.id);
+      expect(reviewDetail?.candidateAudits).toEqual([
+        expect.objectContaining({ candidateId: 'review-candidate', finalDisposition: 'REVIEW_DRAFT' }),
+      ]);
+
       const pending = await repository.queue({
         tenantId: tenantA.id,
         requestedByUserId: user.id,

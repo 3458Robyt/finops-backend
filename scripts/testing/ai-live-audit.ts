@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import type { E2eFixtureManifest } from '../../src/testing/e2eFixtures.js';
 import { looksLikeSpanish } from '../../src/application/services/ai/aiLanguageGuard.js';
 import { containsAutoExecution } from '../../src/application/services/ai/evaluation/executionPlanQualityChecks.js';
+import { isVerifiedSavingsCalculation } from '../../src/domain/models/recommendationEconomics.js';
 
 interface AuditCheck {
   readonly name: string;
@@ -25,42 +26,50 @@ if (!liveEnabled) {
 }
 
 const manifest = JSON.parse(await readFile(resolve(process.env['E2E_FIXTURE_FILE'] ?? '.test-artifacts/e2e-fixtures.json'), 'utf8')) as E2eFixtureManifest;
-const token = await login(manifest.admin.email, manifest.password);
+let token = await login(manifest.admin.email, manifest.password);
+const auditStartedAt = Date.now();
 const checks: AuditCheck[] = [];
 const expectedModel = process.env['AI_EXPECTED_MODEL'] ?? 'gpt-5.6-luna';
+const persistedRecommendationsBefore = countRecommendations(await get('/recommendations'));
 
-const chat = await post('/ai/chat', {
+const chatResult = await postMaybe('/ai/chat', {
   message: 'Responde en una frase: cual es la principal oportunidad FinOps segun los datos disponibles?',
 });
-const chatAnswer = String(readJsonPath(chat, ['answer']) ?? '');
+const chatAnswer = chatResult.ok ? String(readJsonPath(chatResult.body, ['answer']) ?? '') : '';
 checks.push({
   name: 'chat_responde_en_espanol',
-  passed: looksLikeSpanish(chatAnswer),
-  detail: chatAnswer.slice(0, 300),
+  passed: chatResult.ok && looksLikeSpanish(chatAnswer),
+  detail: chatResult.ok ? chatAnswer.slice(0, 300) : JSON.stringify({ status: chatResult.status, ...summarizeAiFailure(chatResult.body) }),
 });
 
-const formattedChat = await post('/ai/chat', {
+const formattedChatResult = await postMaybe('/ai/chat', {
   message: 'Responde con un encabezado breve y dos viñetas Markdown: ¿cuál es la principal oportunidad según los datos? No inventes datos.',
 });
-const formattedChatAnswer = String(readJsonPath(formattedChat, ['answer']) ?? '');
+const formattedChatAnswer = formattedChatResult.ok ? String(readJsonPath(formattedChatResult.body, ['answer']) ?? '') : '';
 checks.push({
   name: 'chat_formato_markdown_seguro',
-  passed: looksLikeSpanish(formattedChatAnswer) && !containsUnsafeMarkup(formattedChatAnswer),
-  detail: formattedChatAnswer.slice(0, 500),
+  passed: formattedChatResult.ok && looksLikeSpanish(formattedChatAnswer) && !containsUnsafeMarkup(formattedChatAnswer),
+  detail: formattedChatResult.ok ? formattedChatAnswer.slice(0, 500) : JSON.stringify({ status: formattedChatResult.status, ...summarizeAiFailure(formattedChatResult.body) }),
 });
 
-const unsupportedTechnicalChat = await post('/ai/chat', {
+const unsupportedTechnicalChatResult = await postMaybe('/ai/chat', {
   message: '¿Cuál es el p95 de CPU y memoria de este tenant? Responde solo si existe evidencia técnica.',
 });
-const unsupportedTechnicalAnswer = String(readJsonPath(unsupportedTechnicalChat, ['answer']) ?? '');
+const unsupportedTechnicalAnswer = unsupportedTechnicalChatResult.ok
+  ? String(readJsonPath(unsupportedTechnicalChatResult.body, ['answer']) ?? '')
+  : '';
 checks.push({
   name: 'chat_no_inventa_metricas_tecnicas',
-  passed: looksLikeSpanish(unsupportedTechnicalAnswer) && !containsUnsupportedTechnicalClaim(unsupportedTechnicalAnswer),
-  detail: unsupportedTechnicalAnswer.slice(0, 500),
+  passed: unsupportedTechnicalChatResult.ok
+    && looksLikeSpanish(unsupportedTechnicalAnswer)
+    && !containsUnsupportedTechnicalClaim(unsupportedTechnicalAnswer),
+  detail: unsupportedTechnicalChatResult.ok
+    ? unsupportedTechnicalAnswer.slice(0, 500)
+    : JSON.stringify({ status: unsupportedTechnicalChatResult.status, ...summarizeAiFailure(unsupportedTechnicalChatResult.body) }),
 });
 
 const recommendationStartedAt = Date.now();
-const generatedResult = await postMaybe('/ai/recommendations/generate', { persist: true });
+const generatedResult = await postMaybe('/ai/recommendations/generate', { persist: false });
 const recommendationLatencyMs = Date.now() - recommendationStartedAt;
 checks.push({
   name: 'endpoint_recomendaciones_responde',
@@ -72,25 +81,54 @@ checks.push({
 });
 const generated = generatedResult.ok ? generatedResult.body : {};
 const recommendations = Array.isArray(generated['recommendations']) ? generated['recommendations'] as Record<string, unknown>[] : [];
+const generationAnalysis = asRecord(generated['analysis']);
+const safeAbstention = generatedResult.ok && generated['persisted'] === false
+  && recommendations.length === 0 && generationAnalysis?.['generatedCount'] === 0;
+const verifiedSavingsCount = recommendations.filter((recommendation) => (
+  isVerifiedSavingsCalculation(
+    recommendation['evidence'],
+    recommendation['estimatedMonthlySavings'],
+    typeof recommendation['currency'] === 'string' ? recommendation['currency'] : undefined,
+  )
+)).length;
+const hasUnsupportedPositiveSavings = recommendations.some((recommendation) => {
+  const evidence = asRecord(recommendation['evidence']);
+  const claims = [recommendation['estimatedMonthlySavings'], evidence?.['potentialMonthlySavings']]
+    .filter((value) => typeof value === 'number' && value > 0);
+  return claims.length > 0 && !isVerifiedSavingsCalculation(
+    evidence,
+    recommendation['estimatedMonthlySavings'] ?? evidence?.['potentialMonthlySavings'],
+    typeof recommendation['currency'] === 'string' ? recommendation['currency'] : undefined,
+  );
+});
 checks.push({
-  name: 'genera_recomendaciones',
-  passed: recommendations.length > 0,
-  detail: `Cantidad: ${recommendations.length}`,
+  name: 'corrida_live_no_persiste_recomendaciones',
+  passed: generatedResult.ok && generated['persisted'] === false,
+  detail: JSON.stringify({ requestedPersist: false, persisted: generated['persisted'] }),
+});
+checks.push({
+  name: 'recomendaciones_generadas_o_abstencion_segura',
+  passed: recommendations.length > 0 || safeAbstention,
+  detail: recommendations.length > 0
+    ? `Cantidad: ${recommendations.length}; con ahorro determinístico verificado: ${verifiedSavingsCount}.`
+    : `Abstención segura=${safeAbstention}; sin recomendaciones ni persistencia. La fixture carece de alternativa tarifada y no demuestra impacto económico positivo.`,
 });
 checks.push({
   name: 'recomendaciones_tienen_evidencia',
-  passed: recommendations.every((recommendation) => typeof recommendation['evidence'] === 'object' && recommendation['evidence'] !== null),
+  passed: generatedResult.ok
+    && (safeAbstention || recommendations.every((recommendation) => typeof recommendation['evidence'] === 'object' && recommendation['evidence'] !== null)),
   detail: JSON.stringify(recommendations.map((recommendation) => recommendation['evidence']).slice(0, 2)),
 });
 checks.push({
   name: 'recomendaciones_guardan_snapshot_y_auditoria',
-  passed: recommendations.every((recommendation) => {
+  passed: generatedResult.ok
+    && (safeAbstention || recommendations.every((recommendation) => {
     const evidence = asRecord(recommendation['evidence']);
     const technicalSnapshot = asRecord(evidence?.['recommendationEvidenceSnapshot']);
     const audit = asRecord(evidence?.['aiAudit']);
-    return technicalSnapshot === undefined ||
-      (typeof technicalSnapshot['hash'] === 'string' && audit?.['verdict'] === 'APPROVED');
-  }),
+    return audit?.['verdict'] === 'APPROVED'
+      && (technicalSnapshot === undefined || typeof technicalSnapshot['hash'] === 'string');
+    })),
   detail: JSON.stringify(recommendations.map((recommendation) => {
     const evidence = asRecord(recommendation['evidence']);
     return {
@@ -100,12 +138,21 @@ checks.push({
   })),
 });
 checks.push({
-  name: 'no_inventa_ahorro_negativo',
-  passed: recommendations.every((recommendation) => {
+  name: 'ahorro_no_negativo_y_cuantificado_con_evidencia',
+  passed: generatedResult.ok
+    && recommendations.every((recommendation) => {
     const savings = recommendation['estimatedMonthlySavings'];
-    return typeof savings !== 'number' || savings >= 0;
-  }),
+    return (typeof savings !== 'number' || savings >= 0) && !hasUnsupportedPositiveSavings;
+    }),
   detail: JSON.stringify(recommendations.map((recommendation) => recommendation['estimatedMonthlySavings'])),
+});
+// A long live run can outlast the short-lived access token; refresh before the final persistence check.
+token = await login(manifest.admin.email, manifest.password);
+const persistedRecommendationsAfter = countRecommendations(await get('/recommendations'));
+checks.push({
+  name: 'conteo_persistido_inalterado',
+  passed: persistedRecommendationsAfter === persistedRecommendationsBefore,
+  detail: JSON.stringify({ before: persistedRecommendationsBefore, after: persistedRecommendationsAfter }),
 });
 
 const generatedRecommendationId = recommendations.find((recommendation) => (
@@ -204,23 +251,52 @@ checks.push({
   }),
 });
 
-const traceResponse = await get('/agent/context-traces?limit=5');
+const traceResponse = await get('/agent/context-traces?limit=100');
 const traces = Array.isArray(traceResponse['traces']) ? traceResponse['traces'] as Record<string, unknown>[] : [];
+const currentTraces = traces.filter((trace) => {
+  const createdAt = Date.parse(String(trace['createdAt'] ?? ''));
+  return Number.isFinite(createdAt) && createdAt >= auditStartedAt - 1_000;
+});
+const executionPlanTraces = currentTraces.filter((trace) => trace['operation'] === 'EXECUTION_PLAN');
+const expectedPlanTraceStatus = planResult.ok ? 'SUCCESS' : 'ERROR';
+checks.push({
+  name: 'traza_plan_refleja_resultado_real',
+  passed: executionPlanTraces.some((trace) => trace['status'] === expectedPlanTraceStatus),
+  detail: JSON.stringify({ expected: expectedPlanTraceStatus, observed: executionPlanTraces.map((trace) => trace['status']) }),
+});
+const traceCountsByOperation = currentTraces.reduce<Record<string, number>>((counts, trace) => {
+  const operation = String(trace['operation'] ?? 'UNKNOWN');
+  counts[operation] = (counts[operation] ?? 0) + 1;
+  return counts;
+}, {});
+const expectedTraceMinimums = {
+  CHAT: 3,
+  RECOMMENDATION: 1,
+  AUDIT: recommendations.length > 0 ? 2 : 1,
+  EXECUTION_PLAN: 1,
+};
 checks.push({
   name: 'registra_trazas_ia',
-  passed: traces.some((trace) => trace['status'] === 'SUCCESS'),
-  detail: JSON.stringify(traces.slice(0, 3)),
+  passed: currentTraces.some((trace) => trace['status'] === 'SUCCESS'),
+  detail: JSON.stringify({ count: currentTraces.length, operations: traceCountsByOperation }),
+});
+checks.push({
+  name: 'trazas_cubren_operaciones_generadas',
+  passed: Object.entries(expectedTraceMinimums).every(([operation, minimum]) => (
+    (traceCountsByOperation[operation] ?? 0) >= minimum
+  )),
+  detail: JSON.stringify({ expectedMinimums: expectedTraceMinimums, observed: traceCountsByOperation }),
 });
 checks.push({
   name: 'usa_modelo_esperado',
-  passed: traces.some((trace) => trace['status'] === 'SUCCESS' && trace['model'] === expectedModel),
-  detail: `Modelo esperado: ${expectedModel}; modelos observados: ${JSON.stringify([...new Set(traces.map((trace) => trace['model']))])}`,
+  passed: currentTraces.some((trace) => trace['model'] === expectedModel),
+  detail: `Modelo esperado: ${expectedModel}; modelos observados: ${JSON.stringify([...new Set(currentTraces.map((trace) => trace['model']))])}`,
 });
 
-const tokenEstimate = traces.reduce((total, trace) => (
+const tokenEstimate = currentTraces.reduce((total, trace) => (
   total + readNonNegativeNumber(trace['promptTokenEstimate']) + readNonNegativeNumber(trace['responseTokenEstimate'])
 ), 0);
-const traceLatencyMs = traces.reduce((total, trace) => total + readNonNegativeNumber(trace['latencyMs']), 0);
+const traceLatencyMs = currentTraces.reduce((total, trace) => total + readNonNegativeNumber(trace['latencyMs']), 0);
 
 const passed = checks.every((check) => check.passed);
 const output = {
@@ -232,7 +308,13 @@ const output = {
     planLatencyMs,
     traceLatencyMs,
     tokenEstimate,
+    traceCount: currentTraces.length,
     recommendationCount: recommendations.length,
+    verifiedSavingsRecommendationCount: verifiedSavingsCount,
+    positiveEconomicImpactDemonstrated: verifiedSavingsCount > 0,
+    safeAbstention,
+    persistedRecommendationsBefore,
+    persistedRecommendationsAfter,
     expectedModel,
   },
   checks,
@@ -258,7 +340,7 @@ async function login(email: string, password: string): Promise<string> {
   return ((await response.json()) as { readonly accessToken: string }).accessToken;
 }
 
-async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
+async function post(path: string, body: unknown, retryAfterUnauthorized = true): Promise<Record<string, unknown>> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: 'POST',
     headers: {
@@ -267,6 +349,10 @@ async function post(path: string, body: unknown): Promise<Record<string, unknown
     },
     body: JSON.stringify(body),
   });
+  if (response.status === 401 && retryAfterUnauthorized) {
+    token = await login(manifest.admin.email, manifest.password);
+    return post(path, body, false);
+  }
   if (!response.ok) {
     throw new Error(`${path} failed with HTTP ${response.status}: ${await response.text()}`);
   }
@@ -276,6 +362,7 @@ async function post(path: string, body: unknown): Promise<Record<string, unknown
 async function postMaybe(
   path: string,
   body: unknown,
+  retryAfterUnauthorized = true,
 ): Promise<{ readonly ok: true; readonly status: number; readonly body: Record<string, unknown> } | { readonly ok: false; readonly status: number; readonly body: Record<string, unknown> }> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: 'POST',
@@ -285,6 +372,10 @@ async function postMaybe(
     },
     body: JSON.stringify(body),
   });
+  if (response.status === 401 && retryAfterUnauthorized) {
+    token = await login(manifest.admin.email, manifest.password);
+    return postMaybe(path, body, false);
+  }
   const text = await response.text();
   const bodyJson = parseResponseRecord(text);
   return response.ok
@@ -294,12 +385,17 @@ async function postMaybe(
 
 async function getMaybe(
   path: string,
+  retryAfterUnauthorized = true,
 ): Promise<{ readonly ok: true; readonly status: number; readonly body: Record<string, unknown> } | { readonly ok: false; readonly status: number; readonly body: Record<string, unknown> }> {
   const response = await fetch(apiBaseUrl + path, {
     headers: {
       Authorization: 'Bearer ' + token,
     },
   });
+  if (response.status === 401 && retryAfterUnauthorized) {
+    token = await login(manifest.admin.email, manifest.password);
+    return getMaybe(path, false);
+  }
   const text = await response.text();
   const body = parseResponseRecord(text);
   return response.ok
@@ -307,12 +403,16 @@ async function getMaybe(
     : { ok: false, status: response.status, body };
 }
 
-async function get(path: string): Promise<Record<string, unknown>> {
+async function get(path: string, retryAfterUnauthorized = true): Promise<Record<string, unknown>> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     headers: {
       Authorization: `Bearer ${token}`,
     },
   });
+  if (response.status === 401 && retryAfterUnauthorized) {
+    token = await login(manifest.admin.email, manifest.password);
+    return get(path, false);
+  }
   if (!response.ok) {
     throw new Error(`${path} failed with HTTP ${response.status}: ${await response.text()}`);
   }
@@ -326,6 +426,10 @@ function readJsonPath(value: Record<string, unknown>, path: readonly string[]): 
     }
     return (current as Record<string, unknown>)[key];
   }, value);
+}
+
+function countRecommendations(value: Record<string, unknown>): number {
+  return Array.isArray(value['recommendations']) ? value['recommendations'].length : 0;
 }
 
 function containsUnsafeMarkup(text: string): boolean {

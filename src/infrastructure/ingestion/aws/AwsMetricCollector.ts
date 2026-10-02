@@ -60,74 +60,77 @@ export async function collectAwsTechnicalMetrics(
   for (const [region, regionDefinitions] of groupAwsMetricsByRegion(definitions, baseRegion)) {
     const client = dependencies.createCloudWatchClient(region, assumed);
     try {
-    for (const batch of chunkAwsItems(regionDefinitions, 500)) {
-      let nextToken: string | undefined;
-      const seenTokens = new Set<string>();
-      do {
-        apiCallCount += 1;
-        const response = await client.send(new GetMetricDataCommand({
-          StartTime: job.targetStart,
-          EndTime: job.targetEnd,
-          ScanBy: 'TimestampAscending',
-          ...(nextToken === undefined ? {} : { NextToken: nextToken }),
-          MetricDataQueries: batch.map((definition, index): MetricDataQuery => ({
-            Id: `m${index}`,
-            ReturnData: true,
-            MetricStat: {
-              Period: 1800,
-              Stat: definition.stat,
-              Metric: {
-                Namespace: definition.namespace,
-                MetricName: definition.metricName,
-                Dimensions: [...definition.dimensions],
-              },
-            },
-          })),
-        }));
+      for (const window of buildAwsMetricWindows(job.targetStart, job.targetEnd)) {
+        for (const batch of chunkAwsItems(regionDefinitions, 500)) {
+          let nextToken: string | undefined;
+          const seenTokens = new Set<string>();
+          do {
+            apiCallCount += 1;
+            const response = await client.send(new GetMetricDataCommand({
+              StartTime: window.start,
+              EndTime: window.end,
+              ScanBy: 'TimestampAscending',
+              MaxDatapoints: 100_800,
+              ...(nextToken === undefined ? {} : { NextToken: nextToken }),
+              MetricDataQueries: batch.map((definition, index): MetricDataQuery => ({
+                Id: `m${index}`,
+                ReturnData: true,
+                MetricStat: {
+                  Period: window.periodSeconds,
+                  Stat: definition.stat,
+                  Metric: {
+                    Namespace: definition.namespace,
+                    MetricName: definition.metricName,
+                    Dimensions: [...definition.dimensions],
+                  },
+                },
+              })),
+            }));
 
-        for (const result of response.MetricDataResults ?? []) {
-          if (result.StatusCode !== undefined && result.StatusCode !== 'Complete') {
-            warnings.push(`CloudWatch devolvió ${result.StatusCode} para una serie ${result.Id ?? 'desconocida'} en ${region}.`);
-          }
-          for (const message of result.Messages ?? []) {
-            if (message.Value !== undefined && message.Value.trim() !== '') {
-              warnings.push(`CloudWatch: ${message.Value.trim()}`);
+            for (const result of response.MetricDataResults ?? []) {
+              if (result.StatusCode !== undefined && result.StatusCode !== 'Complete') {
+                warnings.push(`CloudWatch devolvió ${result.StatusCode} para una serie ${result.Id ?? 'desconocida'} en ${region}.`);
+              }
+              for (const message of result.Messages ?? []) {
+                if (message.Value !== undefined && message.Value.trim() !== '') {
+                  warnings.push(`CloudWatch: ${message.Value.trim()}`);
+                }
+              }
+              const definition = batch[Number(result.Id?.slice(1) ?? -1)];
+              if (definition === undefined) continue;
+              const statistic = normalizeAwsStatistic(definition.stat);
+              const timestamps = result.Timestamps ?? [];
+              const values = result.Values ?? [];
+              for (let index = 0; index < timestamps.length; index += 1) {
+                const timestamp = timestamps[index];
+                const value = values[index];
+                if (timestamp === undefined || value === undefined) continue;
+                samples.push({
+                  tenantId: job.tenantId,
+                  cloudConnectionId: job.cloudConnectionId,
+                  provider: 'AWS',
+                  externalResourceId: definition.externalResourceId,
+                  metricName: definition.metricName,
+                  statistic,
+                  value,
+                  sampledAt: timestamp,
+                  granularitySeconds: window.periodSeconds,
+                  ...(definition.unit !== undefined ? { metricUnit: definition.unit } : {}),
+                  rawMetric: { namespace: definition.namespace, stat: definition.stat, statistic, region },
+                });
+              }
             }
-          }
-          const definition = batch[Number(result.Id?.slice(1) ?? -1)];
-          if (definition === undefined) continue;
-          const statistic = normalizeAwsStatistic(definition.stat);
-          const timestamps = result.Timestamps ?? [];
-          const values = result.Values ?? [];
-          for (let index = 0; index < timestamps.length; index += 1) {
-            const timestamp = timestamps[index];
-            const value = values[index];
-            if (timestamp === undefined || value === undefined) continue;
-            samples.push({
-              tenantId: job.tenantId,
-              cloudConnectionId: job.cloudConnectionId,
-              provider: 'AWS',
-              externalResourceId: definition.externalResourceId,
-              metricName: definition.metricName,
-              statistic,
-              value,
-              sampledAt: timestamp,
-              granularitySeconds: 1800,
-              ...(definition.unit !== undefined ? { metricUnit: definition.unit } : {}),
-              rawMetric: { namespace: definition.namespace, stat: definition.stat, statistic, region },
-            });
-          }
+            const receivedToken = response.NextToken;
+            if (receivedToken !== undefined && seenTokens.has(receivedToken)) {
+              warnings.push(`CloudWatch devolvió un cursor repetido para ${region}; se detuvo la paginación para evitar un ciclo.`);
+              nextToken = undefined;
+            } else {
+              if (receivedToken !== undefined) seenTokens.add(receivedToken);
+              nextToken = receivedToken;
+            }
+          } while (nextToken !== undefined);
         }
-        const receivedToken = response.NextToken;
-        if (receivedToken !== undefined && seenTokens.has(receivedToken)) {
-          warnings.push(`CloudWatch devolvió un cursor repetido para ${region}; se detuvo la paginación para evitar un ciclo.`);
-          nextToken = undefined;
-        } else {
-          if (receivedToken !== undefined) seenTokens.add(receivedToken);
-          nextToken = receivedToken;
-        }
-      } while (nextToken !== undefined);
-    }
+      }
     } finally {
       client.destroy?.();
     }
@@ -148,6 +151,39 @@ export async function collectAwsTechnicalMetrics(
       memoryRequiresCloudWatchAgent: true,
     },
   };
+}
+
+export interface AwsMetricCollectionWindow {
+  readonly start: Date;
+  readonly end: Date;
+  readonly periodSeconds: 60 | 300 | 3600;
+}
+
+/**
+ * Splits a CloudWatch range at retention boundaries so each request uses the
+ * finest period that AWS still retains for that part of the range.
+ */
+export function buildAwsMetricWindows(
+  start: Date,
+  end: Date,
+  now = new Date(),
+): readonly AwsMetricCollectionWindow[] {
+  if (start >= end) return [];
+
+  const boundaries = [
+    { at: new Date(now.getTime() - 63 * 24 * 60 * 60 * 1000), periodSeconds: 3600 as const },
+    { at: new Date(now.getTime() - 15 * 24 * 60 * 60 * 1000), periodSeconds: 300 as const },
+    { at: end, periodSeconds: 60 as const },
+  ]
+    .filter((boundary) => boundary.at > start && boundary.at < end)
+    .sort((left, right) => left.at.getTime() - right.at.getTime());
+  const points = [start, ...boundaries.map((boundary) => boundary.at), end];
+  return points.slice(0, -1).map((windowStart, index) => {
+    const windowEnd = points[index + 1]!;
+    const ageDays = (now.getTime() - windowEnd.getTime()) / (24 * 60 * 60 * 1000);
+    const periodSeconds: 60 | 300 | 3600 = ageDays < 15 ? 60 : ageDays < 63 ? 300 : 3600;
+    return { start: windowStart, end: windowEnd, periodSeconds };
+  });
 }
 
 async function discoverAwsMetricDefinitions(

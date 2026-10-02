@@ -38,8 +38,11 @@ export interface GlobalLearningCanaryEvaluation {
  *
  * La función es deliberadamente estricta: ambos brazos deben producir salidas
  * auditadas, sin ahorros negativos ni salidas inválidas; el brazo candidato no
- * puede perder puntuación ni aprobaciones y debe demostrar una mejora estricta
- * de calidad. La función no llama al proveedor ni persiste nada.
+ * puede perder recomendaciones aprobadas y debe demostrar una mejora estricta
+ * en resultados observables. El score del auditor se usa como umbral de
+ * seguridad por brazo, no como comparación entre brazos, porque el proveedor
+ * puede variar ese score aun con el mismo artefacto. La función no llama al
+ * proveedor ni persiste nada.
  */
 export function evaluateGlobalLearningCanary(
   evidence: GlobalLearningCanaryEvidence,
@@ -52,8 +55,7 @@ export function evaluateGlobalLearningCanary(
   validateArm('baseline', evidence.baseline, blockers);
   validateArm('candidate', evidence.candidate, blockers);
 
-  const noDegradation = evidence.candidate.qualityScore >= evidence.baseline.qualityScore
-    && evidence.candidate.approvedRecommendationCount >= evidence.baseline.approvedRecommendationCount
+  const noDegradation = evidence.candidate.approvedRecommendationCount >= evidence.baseline.approvedRecommendationCount
     && evidence.candidate.recommendationCount >= evidence.baseline.recommendationCount
     && evidence.candidate.invalidOutputCount === 0
     && evidence.candidate.nonNegativeSavings;
@@ -61,8 +63,8 @@ export function evaluateGlobalLearningCanary(
 
   const safetyPassed = blockers.length === 0;
 
-  const qualityImproved = evidence.candidate.qualityScore > evidence.baseline.qualityScore
-    || evidence.candidate.approvedRecommendationCount > evidence.baseline.approvedRecommendationCount;
+  const qualityImproved = evidence.candidate.approvedRecommendationCount > evidence.baseline.approvedRecommendationCount
+    || evidence.candidate.recommendationCount > evidence.baseline.recommendationCount;
   if (!qualityImproved) blockers.push('El candidato no demuestra una mejora estricta frente a la línea base.');
 
   return {
@@ -85,6 +87,9 @@ function validateArm(
   if (arm.invalidOutputCount > 0) blockers.push(`El brazo ${name} contiene salidas inválidas.`);
   if (!arm.nonNegativeSavings) blockers.push(`El brazo ${name} contiene ahorro negativo.`);
   if (!Number.isFinite(arm.qualityScore) || arm.qualityScore < 0 || arm.qualityScore > 100) blockers.push(`El score del brazo ${name} está fuera de rango.`);
+  if (arm.auditScore !== undefined && (!Number.isFinite(arm.auditScore) || arm.auditScore < 80 || arm.auditScore > 100)) {
+    blockers.push(`El score del auditor del brazo ${name} es inválido o inferior a 80.`);
+  }
   if (!Number.isFinite(arm.tokenEstimate) || arm.tokenEstimate < 0) blockers.push(`El consumo de tokens del brazo ${name} no es válido.`);
   if (!Number.isFinite(arm.latencyMs) || arm.latencyMs < 0) blockers.push(`La latencia del brazo ${name} no es válida.`);
 }

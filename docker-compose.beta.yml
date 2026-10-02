@@ -1,0 +1,141 @@
+name: finops-beta
+
+services:
+  db:
+    image: postgres:17-bookworm
+    platform: linux/arm64
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env.beta}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.beta}
+      FINOPS_RUNTIME_DB_PASSWORD: ${FINOPS_RUNTIME_DB_PASSWORD:?Set FINOPS_RUNTIME_DB_PASSWORD in .env.beta}
+    volumes:
+      - beta-postgres-data:/var/lib/postgresql/data
+      - ./scripts/deploy/beta-bootstrap-roles.sql:/docker-entrypoint-initdb.d/10-beta-roles.sql:ro
+      - ./scripts/deploy/beta-create-runtime-login.psql:/run/finops/beta-create-runtime-login.psql:ro
+    networks:
+      - beta-data
+    mem_limit: 4g
+    cpus: 2.0
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  migrate:
+    profiles: [migrate]
+    platform: linux/arm64
+    build:
+      context: .
+      target: migrate
+    env_file: .env.beta.runtime
+    environment:
+      DATABASE_URL: ${MIGRATION_DATABASE_URL:?Set MIGRATION_DATABASE_URL in .env.beta}
+    networks:
+      - beta-data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    platform: linux/arm64
+    build: .
+    env_file: .env.beta.runtime
+    environment:
+      APP_PROCESS_ROLE: api
+      NODE_ENV: production
+      TRUST_PROXY: "1"
+      CORS_ORIGIN: ${CORS_ORIGIN:?Set CORS_ORIGIN in .env.beta}
+    expose:
+      - "3000"
+    networks:
+      - beta-app
+      - beta-data
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 768m
+    cpus: 0.75
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  worker:
+    platform: linux/arm64
+    build: .
+    env_file: .env.beta.runtime
+    environment:
+      APP_PROCESS_ROLE: worker
+      NODE_ENV: production
+      TRUST_PROXY: "1"
+      CORS_ORIGIN: ${CORS_ORIGIN:?Set CORS_ORIGIN in .env.beta}
+      INGESTION_WORKER_ENABLED: "true"
+      INGESTION_WORKER_CONCURRENCY: "2"
+      METRIC_PROJECTION_WORKER_ENABLED: "true"
+      AGENT_LEARNING_WORKER_ENABLED: "true"
+      RECOMMENDATION_ANALYSIS_WORKER_ENABLED: "true"
+      INGESTION_SCHEDULER_ENABLED: "false"
+      RECOMMENDATION_ANALYSIS_SCHEDULER_ENABLED: "false"
+      MESSAGE_SCHEDULER_ENABLED: "false"
+      AUTH_CLEANUP_SCHEDULER_ENABLED: "false"
+      BUDGET_SCHEDULER_ENABLED: "false"
+      SAVINGS_RECONCILIATION_SCHEDULER_ENABLED: "false"
+      SAVINGS_RECONCILIATION_ENABLED: "false"
+      VALUE_REALIZATION_OUTBOUND_ENABLED: "false"
+      EMAIL_ENABLED: "false"
+      TELEGRAM_ENABLED: "false"
+      TELEGRAM_INBOUND_WORKER_ENABLED: "false"
+    networks:
+      - beta-app
+      - beta-data
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 1536m
+    cpus: 1.0
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # This role intentionally has no HTTP listener; liveness is recorded in PostgreSQL.
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
+  frontend:
+    platform: linux/arm64
+    build:
+      context: ../finops-app
+      target: runtime-beta
+      args:
+        VITE_API_BASE_URL: /api/v1
+    ports:
+      - "127.0.0.1:18443:8080"
+    networks:
+      - beta-app
+    depends_on:
+      api:
+        condition: service_healthy
+    mem_limit: 256m
+    cpus: 0.25
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+networks:
+  beta-app:
+  beta-data:
+    internal: true
+
+volumes:
+  beta-postgres-data:
+    name: finops-beta-postgres

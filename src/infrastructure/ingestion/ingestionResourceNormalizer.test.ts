@@ -15,16 +15,16 @@ describe('ingestionResourceNormalizer', () => {
       cloudConnectionId: 'connection-1',
       defaultRegion: 'us-ashburn-1',
     }, [
-      metricSample('  ocid1.instance.demo  ', 'CpuUtilization', { namespace: 'oci_computeagent' }),
-      metricSample('ocid1.instance.demo', 'MemoryUtilization', { namespace: 'oci_computeagent', resourceName: 'api-1' }),
+      metricSample('  ocid1.instance.oc1..exampleid0009  ', 'CpuUtilization', { namespace: 'oci_computeagent' }),
+      metricSample('ocid1.instance.oc1..exampleid0009', 'MemoryUtilization', { namespace: 'oci_computeagent', resourceName: 'api-1' }),
       metricSample('', 'CpuUtilization', { namespace: 'oci_computeagent' }),
     ]);
 
     expect(resources).toEqual([expect.objectContaining({
       tenantId: 'tenant-1',
       cloudConnectionId: 'connection-1',
-      externalResourceId: 'ocid1.instance.demo',
-      name: 'ocid1.instance.demo',
+      externalResourceId: 'ocid1.instance.oc1..exampleid0009',
+      name: 'ocid1.instance.oc1..exampleid0009',
       resourceType: 'COMPUTE_INSTANCE',
       serviceName: 'Oracle Compute',
       regionId: 'us-ashburn-1',
@@ -44,12 +44,23 @@ describe('ingestionResourceNormalizer', () => {
     expect(mergeNormalizedResources([inventory, derived])).toEqual([inventory]);
   });
 
+  test('does not rebuild metric-derived resources already seen in the same ingestion', () => {
+    const resources = buildMetricDerivedResources({
+      tenantId: 'tenant-1',
+      cloudConnectionId: 'connection-1',
+    }, [metricSample('ocid1.instance.oc1..exampleid0011', 'CpuUtilization', { namespace: 'oci_computeagent' })], new Set([
+      'ocid1.instance.oc1..exampleid0011',
+    ]));
+
+    expect(resources).toEqual([]);
+  });
+
   test('uses the provider regionId before the legacy region field', () => {
     const [resource] = buildMetricDerivedResources({
       tenantId: 'tenant-1',
       cloudConnectionId: 'connection-1',
       defaultRegion: 'us-ashburn-1',
-    }, [metricSample('ocid1.instance.demo', 'CpuUtilization', {
+    }, [metricSample('ocid1.instance.oc1..exampleid0009', 'CpuUtilization', {
       namespace: 'oci_computeagent',
       regionId: 'us-phoenix-1',
       region: 'legacy-wrong-region',
@@ -82,7 +93,7 @@ function resource(rawResource: Readonly<Record<string, unknown>>, name: string):
     tenantId: 'tenant-1',
     cloudConnectionId: 'connection-1',
     provider: 'OCI',
-    externalResourceId: 'ocid1.instance.demo',
+    externalResourceId: 'ocid1.instance.oc1..exampleid0009',
     name,
     resourceType: 'COMPUTE_INSTANCE',
     serviceName: 'Oracle Compute',

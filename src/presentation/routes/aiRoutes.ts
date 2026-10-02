@@ -20,6 +20,9 @@ import { RecommendationAnalysisController } from '../controllers/RecommendationA
  * @param requireAuth Middleware que valida el Bearer token y rellena `req.auth`.
  * @param requireAnalysisManager Middleware que restringe generación/análisis a
  * roles con permiso `RECOMMENDATION_GENERATE`.
+ * @param aiLimiter Limitador reservado para operaciones costosas de IA. Las
+ * lecturas de estado quedan protegidas por el limitador global de la API para
+ * no bloquear la navegación normal del frontend.
  * @returns Router de Express con las rutas de IA.
  */
 export function createAiRoutes(
@@ -27,19 +30,20 @@ export function createAiRoutes(
   recommendationAnalysisController: RecommendationAnalysisController,
   requireAuth: RequestHandler,
   requireAnalysisManager: RequestHandler,
+  aiLimiter: RequestHandler,
 ): Router {
   const router = Router();
 
   router.get('/analysis-runs/readiness', requireAuth, recommendationAnalysisController.preview);
-  router.post('/analysis-runs', requireAuth, requireAnalysisManager, recommendationAnalysisController.queue);
+  router.post('/analysis-runs', requireAuth, requireAnalysisManager, aiLimiter, recommendationAnalysisController.queue);
   router.get('/analysis-runs', requireAuth, recommendationAnalysisController.list);
   router.get('/analysis-runs/:id', requireAuth, recommendationAnalysisController.get);
-  router.post('/analysis-runs/:id/cancel', requireAuth, requireAnalysisManager, recommendationAnalysisController.cancel);
-  router.post('/analysis-runs/:id/retry', requireAuth, requireAnalysisManager, recommendationAnalysisController.retry);
+  router.post('/analysis-runs/:id/cancel', requireAuth, requireAnalysisManager, aiLimiter, recommendationAnalysisController.cancel);
+  router.post('/analysis-runs/:id/retry', requireAuth, requireAnalysisManager, aiLimiter, recommendationAnalysisController.retry);
   router.get('/learning/summary', requireAuth, aiController.getLearningSummary);
   router.patch('/learning/memories/:memoryId/deactivate', requireAuth, aiController.deactivateLearningMemory);
-  router.post('/chat', requireAuth, aiController.chat);
-  router.post('/recommendations/generate', requireAuth, requireAnalysisManager, aiController.generateRecommendations);
+  router.post('/chat', requireAuth, aiLimiter, aiController.chat);
+  router.post('/recommendations/generate', requireAuth, requireAnalysisManager, aiLimiter, aiController.generateRecommendations);
 
   return router;
 }

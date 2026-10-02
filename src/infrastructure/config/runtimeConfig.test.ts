@@ -47,6 +47,30 @@ describe('validateRuntimeConfig', () => {
     warning.mockRestore();
   });
 
+  it('rejects an unsupported AI reasoning effort during development', () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(() => validateRuntimeConfig({ NODE_ENV: 'development', AI_REASONING_EFFORT: 'extreme' }))
+      .toThrow('AI_REASONING_EFFORT');
+    warning.mockRestore();
+  });
+
+  it('rejects minimal reasoning for GPT-5.6 Luna before provider requests fail', () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    for (const env of [
+      { NODE_ENV: 'development', AI_REASONING_EFFORT: 'minimal' },
+      { NODE_ENV: 'development', AI_MODEL: 'gpt-5.6-luna', AI_REASONING_EFFORT: 'minimal' },
+      {
+        NODE_ENV: 'development',
+        AI_MODEL: 'another-model',
+        AI_AUDITOR_MODEL: 'gpt-5.6-luna',
+        AI_REASONING_EFFORT: 'minimal',
+      },
+    ]) {
+      expect(() => validateRuntimeConfig(env)).toThrow('AI_REASONING_EFFORT');
+    }
+    warning.mockRestore();
+  });
+
   it.each(['yes', '1', 'enabled', ''])('rejects an invalid boolean configuration value: %s', (value) => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(() => validateRuntimeConfig({ NODE_ENV: 'development', EMAIL_ENABLED: value }))
@@ -81,7 +105,7 @@ describe('validateRuntimeConfig', () => {
     expect(() => validateRuntimeConfig({ ...productionEnv, APP_PROCESS_ROLE: role })).not.toThrow();
   });
 
-  it.each(['*', ',', 'https://finops.example.com/app', 'https://user:password@finops.example.com'])('rejects an unsafe production CORS origin: %s', (origin) => {
+  it.each(['*', ',', 'https://finops.example.com/app', 'https://redacted:placeholder@example.test'])('rejects an unsafe production CORS origin: %s', (origin) => {
     expect(() => validateRuntimeConfig({ ...productionEnv, CORS_ORIGIN: origin }))
       .toThrow(`Configuracion runtime invalida.`);
   });
@@ -120,6 +144,22 @@ describe('validateRuntimeConfig', () => {
   it.each(['1000', '86400001'])('rejects a process heartbeat interval outside the production range: %s', (value) => {
     expect(() => validateRuntimeConfig({ ...productionEnv, PROCESS_HEARTBEAT_INTERVAL_MS: value }))
       .toThrow(`Configuracion runtime invalida.`);
+  });
+
+  it('rejects an ingestion heartbeat that cannot renew a lease safely', () => {
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      INGESTION_JOB_LEASE_MS: '30000',
+      INGESTION_JOB_HEARTBEAT_MS: '15000',
+    })).toThrow('INGESTION_JOB_HEARTBEAT_MS');
+  });
+
+  it('accepts an ingestion heartbeat with a safe lease margin', () => {
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      INGESTION_JOB_LEASE_MS: '90000',
+      INGESTION_JOB_HEARTBEAT_MS: '30000',
+    })).not.toThrow();
   });
 
   it('requires credentials for enabled outbound integrations and actor-backed scheduler targets', () => {
@@ -161,7 +201,7 @@ describe('validateRuntimeConfig', () => {
       ...productionEnv,
       EMAIL_ENABLED: 'true',
       SMTP_HOST: 'smtp.example.test',
-      SMTP_USER: 'alerts@example.test',
+      SMTP_USER: 'test-user-0003@example.test',
       SMTP_PASSWORD: 'smtp-secret',
       PASSWORD_RESET_URL: 'https://finops.example.test/reset-password',
       TELEGRAM_ENABLED: 'true',

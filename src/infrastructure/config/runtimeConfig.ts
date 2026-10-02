@@ -47,6 +47,7 @@ const booleanConfigKeys = [
 export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): void {
   const issues: RuntimeValidationIssue[] = [];
   validateBooleanVariables(env, issues);
+  validateAiReasoningEffort(env['AI_REASONING_EFFORT'], env, issues);
   const isProduction = env['NODE_ENV'] === 'production';
 
   // An omitted role is a valid development shorthand for `all`, but an
@@ -116,6 +117,9 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
     validatePositiveBound(env, 'METRIC_PROJECTION_LEASE_MS', 30_000, 24 * 60 * 60 * 1000, issues);
     validatePositiveBound(env, 'METRIC_PROJECTION_RETRY_BACKOFF_MS', 100, 24 * 60 * 60 * 1000, issues);
     validatePositiveBound(env, 'METRIC_PROJECTION_TRANSACTION_TIMEOUT_MS', 5_000, 10 * 60 * 1000, issues);
+    validatePositiveBound(env, 'INGESTION_JOB_LEASE_MS', 30_000, 24 * 60 * 60 * 1000, issues);
+    validatePositiveBound(env, 'INGESTION_JOB_HEARTBEAT_MS', 1_000, 24 * 60 * 60 * 1000, issues);
+    validateIngestionLeaseSettings(env, issues);
     validatePositiveBound(env, 'INGESTION_SCHEDULER_METRIC_CATCHUP_DAYS', 1, 90, issues);
     validatePositiveBound(env, 'INGESTION_SCHEDULER_METRIC_CATCHUP_WINDOW_MINUTES', 30, 24 * 60, issues);
     validateIntegerBound(env, 'INGESTION_SCHEDULER_MAX_METRIC_BACKFILL_JOBS_PER_CONNECTION', 1, 500, issues);
@@ -218,6 +222,27 @@ function validateProcessRole(value: string | undefined, issues: RuntimeValidatio
   }
 }
 
+function validateAiReasoningEffort(
+  value: string | undefined,
+  env: NodeJS.ProcessEnv,
+  issues: RuntimeValidationIssue[],
+): void {
+  if (isBlank(value)) return;
+  const normalized = value!.trim().toLowerCase();
+  if (!['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(normalized)) {
+    issues.push({ key: 'AI_REASONING_EFFORT', message: 'Debe ser none, minimal, low, medium, high o xhigh.' });
+    return;
+  }
+  const mainModel = env['AI_MODEL']?.trim().toLowerCase() || 'gpt-5.6-luna';
+  const auditorModel = env['AI_AUDITOR_MODEL']?.trim().toLowerCase() || mainModel;
+  if (normalized === 'minimal' && [mainModel, auditorModel].includes('gpt-5.6-luna')) {
+    issues.push({
+      key: 'AI_REASONING_EFFORT',
+      message: 'GPT-5.6 Luna no admite minimal; usa none, low, medium, high o xhigh.',
+    });
+  }
+}
+
 function validateEnabledIntegrations(env: NodeJS.ProcessEnv, issues: RuntimeValidationIssue[]): void {
   if (isEnabled(env['EMAIL_ENABLED'])) {
     for (const key of ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD']) {
@@ -286,4 +311,22 @@ function validateIntegerBound(
   if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
     issues.push({ key, message: `Debe ser un entero entre ${minimum} y ${maximum}.` });
   }
+}
+
+function validateIngestionLeaseSettings(env: NodeJS.ProcessEnv, issues: RuntimeValidationIssue[]): void {
+  const leaseMs = readIntegerOrDefault(env['INGESTION_JOB_LEASE_MS'], 300_000);
+  const heartbeatMs = readIntegerOrDefault(env['INGESTION_JOB_HEARTBEAT_MS'], 60_000);
+  if (!Number.isFinite(leaseMs) || !Number.isFinite(heartbeatMs)) return;
+  if (heartbeatMs >= leaseMs / 2) {
+    issues.push({
+      key: 'INGESTION_JOB_HEARTBEAT_MS',
+      message: 'Debe ser menor que la mitad de INGESTION_JOB_LEASE_MS para evitar que el lease expire durante un trabajo largo.',
+    });
+  }
+}
+
+function readIntegerOrDefault(value: string | undefined, fallback: number): number {
+  if (value === undefined || value.trim() === '') return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) ? parsed : Number.NaN;
 }

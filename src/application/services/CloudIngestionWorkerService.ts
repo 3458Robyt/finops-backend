@@ -4,6 +4,7 @@ import type {
   PrismaCloudIngestionJobRepository,
 } from '../../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
 import type { IngestionJobProgress } from '../../infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
+import type { CloudIngestionProviderProgress } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import { runWithDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 import { safeErrorMessage } from '../observability/safeError.js';
 import type { MetricsRegistry } from '../observability/MetricsRegistry.js';
@@ -40,11 +41,15 @@ export class CloudIngestionWorkerService {
     this.onSuccessfulIngestion = onSuccessfulIngestion;
   }
 
-  public async runOnce(workerId: string): Promise<CloudIngestionWorkerRunResult> {
+  public async runOnce(
+    workerId: string,
+    cloudConnectionId?: string,
+    sourceType?: string,
+  ): Promise<CloudIngestionWorkerRunResult> {
     const startedAt = Date.now();
     try {
       const result = await runWithDatabaseContext({ workerId, role: 'MASTER_ADMIN' }, async () => {
-        const job = await this.jobs.claimNextPendingJob(workerId);
+        const job = await this.jobs.claimNextPendingJob(workerId, cloudConnectionId, sourceType);
         if (job === null) {
           return { processed: false };
         }
@@ -68,9 +73,14 @@ export class CloudIngestionWorkerService {
     }
   }
 
-  public async runBatch(workerId: string, concurrency = this.defaultConcurrency): Promise<readonly CloudIngestionWorkerRunResult[]> {
+  public async runBatch(
+    workerId: string,
+    concurrency = this.defaultConcurrency,
+    cloudConnectionId?: string,
+    sourceType?: string,
+  ): Promise<readonly CloudIngestionWorkerRunResult[]> {
     const slots = Math.max(1, Math.min(16, Math.floor(concurrency)));
-    return Promise.all(Array.from({ length: slots }, () => this.runOnce(workerId)));
+    return Promise.all(Array.from({ length: slots }, () => this.runOnce(workerId, cloudConnectionId, sourceType)));
   }
 
   private async processClaimedJob(
@@ -96,9 +106,10 @@ export class CloudIngestionWorkerService {
     }
 
     let leaseLost = false;
+    let backgroundTimersStopped = false;
     const abortController = new AbortController();
     const markLeaseLost = (): void => {
-      if (leaseLost) return;
+      if (leaseLost || backgroundTimersStopped) return;
       leaseLost = true;
       this.metrics?.increment('ingestion_job_lease_lost_total', { provider: job.connection.providerCode });
       console.warn(JSON.stringify({
@@ -129,15 +140,17 @@ export class CloudIngestionWorkerService {
       return { processed: true, jobId: job.id, providerCode: job.connection.providerCode, errorMessage: 'Cancelado por el usuario.' };
     }
     const heartbeat = setInterval(() => {
+      if (backgroundTimersStopped) return;
       void this.jobs.refreshJobLease(job.id, workerId, job.attempt)
-        .then((renewed) => { if (!renewed) markLeaseLost(); })
-        .catch(() => { markLeaseLost(); });
+        .then((renewed) => { if (!backgroundTimersStopped && !renewed) markLeaseLost(); })
+        .catch(() => { if (!backgroundTimersStopped) markLeaseLost(); });
     }, this.heartbeatMs);
 
     const progressTimer = setInterval(() => {
+      if (backgroundTimersStopped) return;
       void this.writeProgress(job.id, workerId, job.attempt, progress)
-        .then((updated) => { if (!updated) markLeaseLost(); })
-        .catch(() => { markLeaseLost(); });
+        .then((updated) => { if (!backgroundTimersStopped && !updated) markLeaseLost(); })
+        .catch(() => { if (!backgroundTimersStopped) markLeaseLost(); });
     }, this.progressUpdateMs);
     let cancellationPollInFlight = false;
     const cancellationTimer = setInterval(() => {
@@ -151,10 +164,30 @@ export class CloudIngestionWorkerService {
         .finally(() => { cancellationPollInFlight = false; });
     }, Math.min(this.progressUpdateMs, 1_000));
 
+    let lastProviderProgressWriteAt = 0;
+    let providerProgressWrite = Promise.resolve();
+    const reportProviderProgress = (next: CloudIngestionProviderProgress): Promise<void> => {
+      progress = {
+        phase: 'FETCHING',
+        message: formatProviderProgress(next),
+        providerCalls: next.providerCalls,
+        samples: next.samples,
+        updatedAt: new Date().toISOString(),
+      };
+      const now = Date.now();
+      if (now - lastProviderProgressWriteAt < this.progressUpdateMs) return providerProgressWrite;
+      lastProviderProgressWriteAt = now;
+      providerProgressWrite = providerProgressWrite.then(async () => {
+        if (!await this.writeProgress(job.id, workerId, job.attempt, progress)) markLeaseLost();
+      });
+      return providerProgressWrite;
+    };
+
     try {
       const result = await provider.collect(job, {
         signal: abortController.signal,
         isCancellationRequested: () => this.cancellationRequested(job.id, workerId, job.attempt),
+        onProgress: reportProviderProgress,
       });
       if (await this.cancellationRequested(job.id, workerId, job.attempt)) {
         await this.cancel(job, workerId);
@@ -168,9 +201,12 @@ export class CloudIngestionWorkerService {
           errorMessage: 'Ingestion job lease was lost while collecting provider data',
         };
       }
+      const streamingCollection = result.metricBatches !== undefined;
       progress = {
-          phase: 'PERSISTING_RAW',
-        message: 'Persistiendo datos normalizados y controles de calidad.',
+        phase: streamingCollection ? 'FETCHING' : 'PERSISTING_RAW',
+        message: streamingCollection
+          ? 'Recibiendo métricas del proveedor; la persistencia comenzará con el primer lote.'
+          : 'Persistiendo datos normalizados y controles de calidad.',
         providerCalls: result.apiCallCount,
         rowsRead: result.focusRows.length,
         resources: result.resources.length,
@@ -246,6 +282,7 @@ export class CloudIngestionWorkerService {
         errorMessage: safeErrorMessage(error),
       };
     } finally {
+      backgroundTimersStopped = true;
       clearInterval(heartbeat);
       clearInterval(progressTimer);
       clearInterval(cancellationTimer);
@@ -273,4 +310,12 @@ export class CloudIngestionWorkerService {
   private async cancel(job: Parameters<PrismaCloudIngestionJobRepository['markCancelled']>[0], workerId: string): Promise<void> {
     if (typeof this.jobs.markCancelled === 'function') await this.jobs.markCancelled(job, workerId);
   }
+}
+
+function formatProviderProgress(progress: CloudIngestionProviderProgress): string {
+  const taskProgress = progress.totalTasks === undefined
+    ? ''
+    : ` ${progress.completedTasks ?? 0}/${progress.totalTasks} tareas.`;
+  const activeTasks = progress.activeTasks === undefined ? '' : ` Activas: ${progress.activeTasks}.`;
+  return `Consultando proveedor: ${progress.providerCalls} llamadas, ${progress.samples} muestras.${taskProgress}${activeTasks}`;
 }

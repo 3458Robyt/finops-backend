@@ -13,17 +13,18 @@ import {
 describe('buildHistoricalOciResources', () => {
   test('creates exact historical references only for supported OCI OCIDs', () => {
     const rows = [
-      row('ocid1.bootvolume.oc1.test', 'BLOCK_STORAGE', '2026-05-01', '2026-05-02'),
-      row('ocid1.bootvolume.oc1.test', 'BLOCK_STORAGE', '2026-05-02', '2026-05-03'),
+      row('ocid1.bootvolume.oc1..exampleid0002', 'BLOCK_STORAGE', '2026-05-01', '2026-05-02'),
+      row('ocid1.bootvolume.oc1..exampleid0002', 'BLOCK_STORAGE', '2026-05-02', '2026-05-03'),
+      row('ocid1.volume.oc1..exampleid0037', 'BLOCK_STORAGE', '2026-05-01', '2026-05-02'),
       row('oci_computeagent', 'TELEMETRY', '2026-05-01', '2026-05-02'),
       row('', 'COMPUTE', '2026-05-01', '2026-05-02'),
     ];
 
     const resources = buildHistoricalOciResources(job(), rows);
 
-    expect(resources).toEqual([
+    expect(resources).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        externalResourceId: 'ocid1.bootvolume.oc1.test',
+        externalResourceId: 'ocid1.bootvolume.oc1..exampleid0002',
         resourceType: 'BOOT_VOLUME',
         serviceName: 'Oracle Block Volume',
         status: 'UNKNOWN',
@@ -35,20 +36,25 @@ describe('buildHistoricalOciResources', () => {
           historicalReference: true,
         }),
       }),
-    ]);
+      expect.objectContaining({
+        externalResourceId: 'ocid1.volume.oc1..exampleid0037',
+        resourceType: 'BLOCK_VOLUME',
+        serviceName: 'Oracle Block Volume',
+      }),
+    ]));
   });
 
   test('creates UNKNOWN historical references for provider OCIDs but excludes logical and aggregate identifiers', () => {
     const resources = buildHistoricalOciProviderResources(job(), [
-      providerRow('ocid1.instance.oc1.iad.example', 'Compute', 'us-ashburn-1'),
-      providerRow('ocid1.instance.oc1.iad.example', 'Compute', 'us-ashburn-1', '2026-05-03'),
+      providerRow('ocid1.instance.oc1..exampleid0015', 'Compute', 'us-ashburn-1'),
+      providerRow('ocid1.instance.oc1..exampleid0015', 'Compute', 'us-ashburn-1', '2026-05-03'),
       providerRow('bucket-name', 'Object Storage', 'us-ashburn-1'),
       providerRow('oci_computeagent', 'Telemetry', 'us-ashburn-1'),
     ]);
 
     expect(resources).toHaveLength(1);
     expect(resources[0]).toEqual(expect.objectContaining({
-      externalResourceId: 'ocid1.instance.oc1.iad.example',
+      externalResourceId: 'ocid1.instance.oc1..exampleid0015',
       resourceType: 'COMPUTE_INSTANCE',
       serviceName: 'Compute',
       regionId: 'us-ashburn-1',

@@ -63,6 +63,21 @@ export class MasterAdminIngestionController {
     }
   };
 
+  public reprocess = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const body = req.body !== null && typeof req.body === 'object' && !Array.isArray(req.body)
+        ? req.body as Record<string, unknown>
+        : {};
+      const reason = typeof body['reason'] === 'string' && body['reason'].trim() !== ''
+        ? body['reason']
+        : 'Reprocesamiento administrativo solicitado para validar una ventana con datos tardíos o incompletos.';
+      const result = await this.service.reprocess(this.requireActor(req), this.requireParam(req, 'jobId'), reason);
+      res.status(result.reusedActiveJob ? 200 : 202).json({ success: true, ...result });
+    } catch (error: unknown) {
+      this.respond(res, error);
+    }
+  };
+
   private requireActor(req: Request): string {
     if (req.auth === undefined) throw new FinOpsBaseError('Authentication required', 'AUTHENTICATION_REQUIRED');
     return req.auth.userId;

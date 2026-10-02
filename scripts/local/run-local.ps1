@@ -12,16 +12,37 @@ if (!(Test-Path $passwordFile)) { throw "No existe $passwordFile. Prepara Postgr
 & (Join-Path $PSScriptRoot 'start-postgres17.ps1')
 $password = (Get-Content -LiteralPath $passwordFile -Raw).Trim()
 $encodedPassword = [Uri]::EscapeDataString($password)
-$env:DATABASE_URL = "postgresql://postgres:$encodedPassword@127.0.0.1:5433/finops_local"
+$env:DATABASE_URL = "postgresql://redacted:placeholder@127.0.0.1:5433/finops_local"
 $env:DB_RUNTIME_ENFORCE = 'true'
 $env:DB_RUNTIME_ROLE = 'finops_runtime'
-$env:DB_EXPECTED_MIGRATION = '202609140002_advisor_rls_hardening'
+$latestMigration = Get-ChildItem -LiteralPath (Join-Path $repoRoot 'prisma\migrations') -Directory |
+  Where-Object { $_.Name -match '^\d{12}_[a-z0-9_]+$' } |
+  Sort-Object Name |
+  Select-Object -Last 1
+if ($null -eq $latestMigration) { throw 'No se encontró una migración Prisma para comprobar readiness.' }
+$env:DB_EXPECTED_MIGRATION = $latestMigration.Name
+$env:CORS_ORIGIN = if ($env:CORS_ORIGIN) { $env:CORS_ORIGIN } else { 'http://localhost:5173,http://127.0.0.1:5173' }
 $env:ENABLE_OCI_PROVIDER = 'true'
 $env:INGESTION_SCHEDULER_PROVIDER = 'oci'
 $isApi = $Mode -eq 'dev'
 $isWorker = $Mode -eq 'worker'
 $isAnalysisWorker = $Mode -eq 'analysis-worker'
 $isScheduler = $Mode -eq 'scheduler'
+
+# Fail before spawning the hidden recommendation worker when the API port is
+# already occupied. Otherwise a failed API start can leave an orphan worker
+# polling the database after this launcher exits.
+if ($isApi) {
+  $configuredPort = 3000
+  if ($env:PORT -match '^\d+$') {
+    $configuredPort = [int]$env:PORT
+  }
+  $listener = Get-NetTCPConnection -LocalPort $configuredPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($null -ne $listener) {
+    throw "El puerto $configuredPort ya está ocupado (PID $($listener.OwningProcess)). Cierra el backend existente antes de iniciar otro proceso local."
+  }
+}
+
 $env:APP_PROCESS_ROLE = if ($isApi) { 'api' } elseif ($isWorker) { 'worker' } elseif ($isAnalysisWorker) { 'recommendation-analysis-worker' } else { 'scheduler' }
 $env:INGESTION_WORKER_ENABLED = if ($isWorker) { 'true' } else { 'false' }
 $env:INGESTION_SCHEDULER_ENABLED = if ($Mode -eq 'scheduler') { 'true' } else { 'false' }
@@ -63,8 +84,22 @@ Set-Location $repoRoot
   }
   $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
  } finally {
-  if ($null -ne $recommendationWorkerProcess -and -not $recommendationWorkerProcess.HasExited) {
-    & taskkill.exe /PID $recommendationWorkerProcess.Id /T /F | Out-Null
+  if ($null -ne $recommendationWorkerProcess) {
+    # The launcher can exit before its child worker when the API port is already
+    # occupied. Kill the recorded worker subtree even if the PowerShell parent
+    # has already disappeared, otherwise orphan workers keep polling the queue.
+    $workerRootPid = $recommendationWorkerProcess.Id
+    $workerPids = @($workerRootPid) + @(
+      Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+          $_.ParentProcessId -eq $workerRootPid -and
+          $_.CommandLine -match 'run-local\.ps1.*-Mode\s+analysis-worker'
+        } |
+        Select-Object -ExpandProperty ProcessId
+    )
+    foreach ($workerPid in ($workerPids | Select-Object -Unique)) {
+      & taskkill.exe /PID $workerPid /T /F 2>$null | Out-Null
+    }
   }
 }
  exit $exitCode

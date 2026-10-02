@@ -5,6 +5,7 @@ import type { IRecommendationRepository } from '../../domain/interfaces/IRecomme
 import type { IResourceLinkageReadinessRepository } from '../../domain/interfaces/IResourceLinkageReadinessRepository.js';
 import type { IValueRealizationRepository } from '../../domain/interfaces/IValueRealizationRepository.js';
 import type { CostAnalyticsService } from './CostAnalyticsService.js';
+import { hasPotentialSavings } from '../../domain/models/recommendationEconomics.js';
 
 export class ExecutiveSummaryService implements IExecutiveSummaryService {
   constructor(
@@ -35,8 +36,9 @@ export class ExecutiveSummaryService implements IExecutiveSummaryService {
     })));
     const currentTrend = aggregateLatestPeriods(series);
     const active = recommendations.filter((item) => item.status === 'PENDING' || item.status === 'APPROVED');
+    const economicOpportunities = active.filter(hasPotentialSavings);
     const potentialByCurrency: Record<string, number> = {};
-    for (const recommendation of active) {
+    for (const recommendation of economicOpportunities) {
       const amount = recommendation.estimatedMonthlySavings ?? 0;
       if (amount > 0) potentialByCurrency[recommendation.currency] = (potentialByCurrency[recommendation.currency] ?? 0) + amount;
     }
@@ -54,8 +56,7 @@ export class ExecutiveSummaryService implements IExecutiveSummaryService {
       opportunities: {
         count: active.length,
         potentialByCurrency,
-        top: active
-          .filter((item) => (item.estimatedMonthlySavings ?? 0) > 0)
+          top: economicOpportunities
           .sort((left, right) => (right.estimatedMonthlySavings ?? 0) - (left.estimatedMonthlySavings ?? 0))
           .slice(0, 5)
           .map((item) => ({ id: item.id, title: item.title, type: item.type, currency: item.currency, estimatedMonthlySavings: item.estimatedMonthlySavings ?? 0, severity: item.severity, status: item.status })),

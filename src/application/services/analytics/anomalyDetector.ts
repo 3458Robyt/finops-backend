@@ -11,8 +11,8 @@ import { groupCostSeries, sortByMonth } from './costSeriesGrouping.js';
  * Detector de anomalías de costo
  * ═══════════════════════════════════════════════════════════════
  *
- * Función pura que detecta anomalías de costo por grupo comparando el
- * último mes con su historia reciente. Se extrae del servicio para aislar
+ * Función pura que detecta oportunidades de costo por grupo comparando el
+ * último mes calendario completo con su historia reciente. Se extrae del servicio para aislar
  * la heurística estadística y poder probarla de forma independiente.
  *
  * @module application/services/analytics/anomalyDetector
@@ -20,7 +20,7 @@ import { groupCostSeries, sortByMonth } from './costSeriesGrouping.js';
 
 /** Umbrales configurables que gobiernan la detección y la severidad. */
 export interface AnomalyThresholds {
-  /** Delta absoluto mínimo (USD) para considerar una anomalía; filtra ruido. */
+  /** Delta absoluto mínimo en la moneda de reporte para considerar una oportunidad; filtra ruido. */
   readonly minAbsoluteDelta: number;
   /** Incremento porcentual a partir del cual la severidad es MEDIUM. */
   readonly mediumDeltaPercent: number;
@@ -31,16 +31,17 @@ export interface AnomalyThresholds {
 }
 
 /**
- * Detecta anomalías de costo por grupo comparando el último mes contra su
- * historia reciente.
+ * Detecta oportunidades de costo comparando el último mes completo contra su
+ * historia reciente. El mes calendario en curso se omite porque su costo está incompleto.
  *
  * Algoritmo y heurística (por cada grupo):
+ * - Omite el mes calendario en curso y toma el último mes completo.
  * - Ordena los puntos por mes y toma como ventana de baseline los hasta 7
- *   meses previos al último (excluyendo el actual).
+ *   meses previos al último completo.
  * - Calcula la línea base (media), la desviación estándar, el delta absoluto
  *   y porcentual respecto a la baseline, y el z-score (si hay desviación > 0).
  * - Descarta el punto si el delta absoluto es menor que `minAbsoluteDelta`
- *   (USD), o si el incremento porcentual es < `mediumDeltaPercent` y el
+ *   (moneda de reporte), o si el incremento porcentual es < `mediumDeltaPercent` y el
  *   z-score < 1.5 (filtra ruido de bajo impacto y poca significancia estadística).
  * - Asigna severidad con {@link scoreAnomalySeverity} y registra evidencia del
  *   método usado ("z-score + delta" o "delta-threshold").
@@ -57,8 +58,11 @@ export function detectAnomalies(
   tenantId: string,
   series: readonly MonthlyCostPoint[],
   thresholds: AnomalyThresholds,
+  asOf: Date = new Date(),
 ): readonly PersistCostAnomalyInput[] {
-  const byGroup = groupCostSeries(series);
+  const currentMonthStart = Date.UTC(asOf.getUTCFullYear(), asOf.getUTCMonth(), 1);
+  const completedMonths = series.filter((point) => Date.parse(`${point.month.slice(0, 7)}-01T00:00:00.000Z`) < currentMonthStart);
+  const byGroup = groupCostSeries(completedMonths);
   const detected: PersistCostAnomalyInput[] = [];
 
   for (const points of byGroup.values()) {

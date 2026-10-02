@@ -15,7 +15,7 @@ import type { RecommendationOpportunityCandidate } from './ai/RecommendationRead
 const actor: AuthContext = {
   userId: 'user-1',
   tenantId: 'tenant-1',
-  email: 'admin@example.com',
+  email: 'test-user-0002@example.test',
   role: 'ADMIN',
   jwtId: 'jwt-1',
 };
@@ -26,6 +26,34 @@ describe('RecommendationAnalysisService', () => {
 
     await expect(service.queue({ ...actor, role: 'CLIENT_VIEWER' }, {}))
       .rejects.toBeInstanceOf(AuthorizationError);
+  });
+
+  test('bloquea a clientes la lectura del readiness y del historial de gobierno del agente', async () => {
+    const { service, repository, aiService } = createSubject();
+    const client = { ...actor, role: 'CLIENT_VIEWER' as const };
+
+    await expect(service.preview(client, {})).rejects.toBeInstanceOf(AuthorizationError);
+    await expect(service.list(client)).rejects.toBeInstanceOf(AuthorizationError);
+    await expect(service.get(client, 'run-1')).rejects.toBeInstanceOf(AuthorizationError);
+
+    expect(aiService.prepareRecommendationAnalysis).not.toHaveBeenCalled();
+    expect(repository.listByTenant).not.toHaveBeenCalled();
+    expect(repository.findById).not.toHaveBeenCalled();
+  });
+
+  test('permite a un técnico FinOps consultar readiness e historial del agente', async () => {
+    const { service, repository } = createSubject();
+    const technician = { ...actor, role: 'FINOPS_TECHNICIAN' as const };
+
+    await expect(service.preview(technician, {})).resolves.toMatchObject({
+      scope: 'TENANT',
+      resourcesEvaluated: 0,
+    });
+    await expect(service.list(technician)).resolves.toEqual([]);
+    await expect(service.get(technician, 'run-1')).resolves.toBeNull();
+
+    expect(repository.listByTenant).toHaveBeenCalledWith(technician.tenantId, undefined);
+    expect(repository.findById).toHaveBeenCalledWith(technician.tenantId, 'run-1');
   });
 
   test('no encola una corrida cuando el worker no tiene heartbeat vigente', async () => {
@@ -62,6 +90,7 @@ describe('RecommendationAnalysisService', () => {
 
     expect(result?.status).toBe('SKIPPED');
     expect(aiService.generateRecommendations).not.toHaveBeenCalled();
+    expect(aiService.generateRecommendationReviewDrafts).not.toHaveBeenCalled();
     expect(repository.complete).toHaveBeenCalledWith(
       'run-1',
       expect.objectContaining({
@@ -70,6 +99,61 @@ describe('RecommendationAnalysisService', () => {
         recommendationsGenerated: 0,
       }),
     );
+  });
+
+  test('guarda borradores técnicos auditados sin publicarlos ni contarlos como recomendaciones', async () => {
+    const reviewCandidate = {
+      ...buildCandidate('VALIDATION_ONLY'),
+      observedCost: 120,
+      evidenceIssues: [{ code: 'MISSING_MEMORY_METRIC', action: 'Verificar la telemetría de memoria.' }],
+    };
+    const base = buildPrepared([], [reviewCandidate]);
+    const prepared = {
+      ...base,
+      readinessReport: { ...base.readinessReport, reviewCandidates: [reviewCandidate] },
+    };
+    const { service, repository, aiService } = createSubject(prepared);
+    const draft = {
+      cloudAccountId: 'account-1',
+      type: 'TECHNICAL_VALIDATION_REQUIRED',
+      severity: 'LOW',
+      title: 'Validar telemetría de memoria',
+      description: 'Confirmar que Monitoring emita la métrica para esta instancia.',
+      currency: 'USD',
+      evidence: { candidateId: reviewCandidate.id, requiresTechnicalValidation: true },
+    };
+    vi.mocked(aiService.generateRecommendationReviewDrafts).mockResolvedValueOnce({
+      drafts: [{ ...draft, tenantId: actor.tenantId }],
+      approvedDrafts: [{ ...draft, tenantId: actor.tenantId }],
+      rejectedDrafts: [],
+      candidateAudits: [{
+        audit: { index: 0, candidateId: reviewCandidate.id, verdict: 'APPROVED', score: 95, checks: [], blockingIssues: [], requiredChanges: [] },
+        draft,
+        deterministicEvidence: draft.evidence,
+      }],
+      firstRawResponse: '{}',
+      promptTokenEstimate: 300,
+      responseTokenEstimate: 100,
+      model: 'generator-test',
+      auditorModel: 'auditor-test',
+    });
+
+    const result = await service.processNext('worker-1');
+
+    expect(result?.status).toBe('COMPLETED');
+    expect(aiService.generateRecommendations).not.toHaveBeenCalled();
+    expect(repository.complete).toHaveBeenCalledWith('run-1', expect.objectContaining({
+      status: 'COMPLETED',
+      recommendationsGenerated: 0,
+      recommendationsRejected: 0,
+      recommendationLinks: [],
+      candidateAudits: [expect.objectContaining({
+        candidateId: reviewCandidate.id,
+        finalDisposition: 'REVIEW_DRAFT',
+        auditVerdict: 'APPROVED',
+      })],
+      candidateResults: [expect.objectContaining({ outcome: 'REVIEW_DRAFT' })],
+    }));
   });
 
   test('no repite una corrida cuando período y evidencia ya fueron procesados', async () => {
@@ -96,6 +180,30 @@ describe('RecommendationAnalysisService', () => {
           generatedCount: 1,
           blockingIssues: ['El ahorro excede la evidencia disponible.'],
           candidates: [candidate],
+          model: 'generator-test',
+          auditorModel: 'auditor-test',
+          candidateAudits: [{
+            index: 0,
+            candidateId: candidate.id,
+            verdict: 'REJECTED',
+            score: 42,
+            checks: [],
+            blockingIssues: ['El ahorro excede la evidencia disponible.'],
+            requiredChanges: [],
+            draft: { evidence: { candidateId: candidate.id }, title: 'Draft auditado' },
+          }],
+          model: 'generator-test',
+          auditorModel: 'auditor-test',
+          candidateAudits: [{
+            index: 0,
+            candidateId: candidate.id,
+            verdict: 'REJECTED',
+            score: 42,
+            checks: [],
+            blockingIssues: ['El ahorro excede la evidencia disponible.'],
+            requiredChanges: [],
+            draft: { evidence: { candidateId: candidate.id }, title: 'Draft auditado' },
+          }],
         },
       }),
     );
@@ -110,6 +218,16 @@ describe('RecommendationAnalysisService', () => {
         recommendationsRejected: 1,
         recommendationLinks: [],
         errorCode: 'AI_AUDIT_REJECTED',
+        candidateAudits: [expect.objectContaining({
+          candidateId: candidate.id,
+          draft: expect.objectContaining({ title: 'Draft auditado' }),
+          finalDisposition: 'REJECTED',
+        })],
+        candidateAudits: [expect.objectContaining({
+          candidateId: candidate.id,
+          draft: expect.objectContaining({ title: 'Draft auditado' }),
+          finalDisposition: 'REJECTED',
+        })],
       }),
     );
   });
@@ -266,6 +384,7 @@ function createSubject(
   const aiService = {
     prepareRecommendationAnalysis: vi.fn(async () => prepared),
     generateRecommendations: vi.fn(),
+    generateRecommendationReviewDrafts: vi.fn(),
   } as unknown as FinOpsAiService;
   const notifications = {
     create: vi.fn(),
@@ -305,7 +424,7 @@ function buildPrepared(
       topResources: [],
       topUsage: [],
     },
-    readinessReport: { candidates, blocked, deferred: [], summary: 'fixture' },
+    readinessReport: { candidates, blocked, deferred: [], reviewCandidates: [], summary: 'fixture' },
     evidenceHash: 'evidence-1',
     deterministicAnalysis: {
       cost: null,

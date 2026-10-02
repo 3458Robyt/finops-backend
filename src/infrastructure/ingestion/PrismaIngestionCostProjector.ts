@@ -5,6 +5,7 @@ import type {
 } from '../../domain/interfaces/ICloudIngestionProvider.js';
 import {
   normalizeExternalResourceId,
+  resourceExternalIdAliases,
   resolveExactResourceLink,
 } from '../../domain/models/ResourceLinkage.js';
 import { CostBillingSource, Prisma } from '../../generated/prisma/client.js';
@@ -42,6 +43,7 @@ export class PrismaIngestionCostProjector {
     job: CloudIngestionJobContext,
     rows: readonly NormalizedProviderCostLineItem[],
     resourceIdsByExternalId: ReadonlyMap<string, string>,
+    effectiveRange = { start: job.targetStart, end: job.targetEnd },
   ): Promise<FocusCostMetricProjectionResult> {
     if (rows.length === 0) return { projected: 0, inserted: 0, linkage: emptyResourceLinkageStats() };
     const historicalResourcesInserted = await insertHistoricalCloudResources(
@@ -55,7 +57,7 @@ export class PrismaIngestionCostProjector {
       create: { tenantId: job.tenantId, provider: rows[0]!.provider, externalAccountId: job.connection.rootExternalId, name: job.connection.rootExternalId },
       select: { id: true },
     });
-    await tx.costMetric.deleteMany({ where: { cloudConnectionId: job.cloudConnectionId, chargePeriodStart: { gte: job.targetStart, lt: job.targetEnd }, billingSource: CostBillingSource.PROVIDER_API } });
+    await tx.costMetric.deleteMany({ where: { cloudConnectionId: job.cloudConnectionId, chargePeriodStart: { gte: effectiveRange.start, lt: effectiveRange.end }, billingSource: CostBillingSource.PROVIDER_API } });
     const data = rows.map((row) => {
       const normalizedResourceId = normalizeExternalResourceId(row.resourceId);
       const knownResourceId = normalizedResourceId === undefined ? undefined : resolvedResourceIds.get(normalizedResourceId);
@@ -113,11 +115,29 @@ export class PrismaIngestionCostProjector {
     const externalResourceIds = [...new Set(rows.map((row) => normalizeExternalResourceId(row.resourceId)).filter((value): value is string => value !== undefined))];
     if (externalResourceIds.length === 0) return base;
     const persisted = await tx.cloudResource.findMany({
-      where: { cloudConnectionId: job.cloudConnectionId, externalResourceId: { in: externalResourceIds } },
-      select: { id: true, externalResourceId: true },
+      where: {
+        cloudConnectionId: job.cloudConnectionId,
+        OR: [
+          { externalResourceId: { in: externalResourceIds } },
+          { resourceType: 'OBJECT_STORAGE_BUCKET' },
+        ],
+      },
+      select: { id: true, externalResourceId: true, rawResource: true },
     });
     const resolved = new Map(base);
-    for (const resource of persisted) resolved.set(resource.externalResourceId, resource.id);
+    const ambiguousAliases = new Set<string>();
+    for (const resource of persisted) {
+      for (const identifier of resourceExternalIdAliases(resource.rawResource as Readonly<Record<string, unknown>> | null, resource.externalResourceId)) {
+        if (ambiguousAliases.has(identifier)) continue;
+        const existing = resolved.get(identifier);
+        if (existing !== undefined && existing !== resource.id) {
+          resolved.delete(identifier);
+          ambiguousAliases.add(identifier);
+          continue;
+        }
+        resolved.set(identifier, resource.id);
+      }
+    }
     return resolved;
   }
 

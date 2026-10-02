@@ -12,7 +12,7 @@ import type { ITelegramClient } from './TelegramClient.js';
 
 describe('OutboundMessageDeliveryProcessor', () => {
   it('delivers a queued email and marks it as sent', async () => {
-    const repository = new FakeOutboundRepository(queuedDelivery('EMAIL', { to: 'user@example.com' }));
+    const repository = new FakeOutboundRepository(queuedDelivery('EMAIL', { to: 'test-user-0027@example.test' }));
     const email = { enabled: true, send: vi.fn(async () => ({ messageId: 'provider-1' })) } satisfies IEmailClient;
     const telegram = { sendMessage: vi.fn(async () => undefined) } satisfies ITelegramClient;
     const processor = new OutboundMessageDeliveryProcessor(repository, telegram, email, true);
@@ -20,12 +20,12 @@ describe('OutboundMessageDeliveryProcessor', () => {
     const result = await processor.processNext({ workerId: 'scheduler-1', leaseMs: 60_000, retryBackoffMs: 1_000 });
 
     expect(result.processed).toBe(true);
-    expect(email.send).toHaveBeenCalledWith({ to: 'user@example.com', subject: 'Alerta', text: 'Mensaje completo' });
+    expect(email.send).toHaveBeenCalledWith({ to: 'test-user-0027@example.test', subject: 'Alerta', text: 'Mensaje completo' });
     expect(repository.completed[0]).toMatchObject({ id: 'delivery-1', workerId: 'scheduler-1', status: 'SENT', providerMessageId: 'provider-1' });
   });
 
   it('skips a queued email when SMTP is disabled', async () => {
-    const repository = new FakeOutboundRepository(queuedDelivery('EMAIL', { to: 'user@example.com' }));
+    const repository = new FakeOutboundRepository(queuedDelivery('EMAIL', { to: 'test-user-0027@example.test' }));
     const email = { enabled: false, send: vi.fn() } satisfies IEmailClient;
     const processor = new OutboundMessageDeliveryProcessor(repository, { sendMessage: vi.fn() }, email, true);
 

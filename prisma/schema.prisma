@@ -303,6 +303,7 @@ enum RecommendationAnalysisRecommendationDisposition {
 
 enum RecommendationAnalysisCandidateFinalDisposition {
   PUBLISHED
+  REVIEW_DRAFT
   REJECTED
   SKIPPED
 }
@@ -372,6 +373,14 @@ enum AiContextOperation {
   EXECUTION_PLAN
   AUDIT
   LEARNING
+}
+
+enum AiTraceSource {
+  UNKNOWN
+  WEB
+  TELEGRAM
+  EVALUATION
+  SYSTEM
 }
 
 enum ContextBuildRunStatus {
@@ -444,6 +453,7 @@ model Tenant {
   ingestionRuns                 IngestionRun[]
   costMetrics                   CostMetric[]
   recommendations               Recommendation[]
+  recommendationCostEvidence    RecommendationCostEvidence[]
   auditEvents                   AuditEvent[]
   operatorOrganization          OperatorOrganization?              @relation(fields: [operatorOrganizationId], references: [id], onDelete: SetNull)
   accessAssignments             TenantAccessAssignment[]
@@ -950,6 +960,7 @@ model IngestionJob {
 
   @@index([status, availableAt, priority, createdAt], map: "ingestion_jobs_queue_idx")
   @@index([status, sourceType, createdAt])
+  @@index([tenantId, status, cloudConnectionId, sourceType], map: "ingestion_jobs_tenant_status_source_idx")
   @@index([tenantId, cloudConnectionId, sourceType])
   @@index([tenantId, archivedAt, createdAt], map: "ingestion_jobs_tenant_archive_idx")
   @@index([cloudConnectionId], map: "ingestion_jobs_cloud_connection_id_idx")
@@ -1250,7 +1261,10 @@ model ResourceMetricSample {
   metricName         String              @map("metric_name")
   metricUnit         String?             @map("metric_unit")
   statistic          MetricStatistic     @default(MEAN)
-  value              Decimal             @db.Decimal(24, 9)
+  // Provider counters (bytes, requests, cumulative units) can exceed the
+  // precision used by cost values. Keep nine decimal places without
+  // overflowing on large real-world metric streams.
+  value              Decimal             @db.Decimal(38, 9)
   sampledAt          DateTime            @map("sampled_at") @db.Timestamptz(6)
   granularitySeconds Int                 @default(1800) @map("granularity_seconds")
   sourceType         IngestionSourceType @default(TECHNICAL_METRIC) @map("source_type")
@@ -1269,6 +1283,7 @@ model ResourceMetricSample {
   @@index([tenantId, externalResourceId, metricName, statistic, sampledAt])
   @@index([tenantId, providerNamespace, regionId, metricName, statistic, sampledAt], map: "resource_metric_samples_tenant_provider_region_metric_idx")
   @@index([cloudResourceId, sampledAt])
+  @@index([tenantId, cloudResourceId, externalResourceId, metricName, statistic, sampledAt], map: "resource_metric_samples_tenant_cloud_resource_external_idx")
   @@index([ingestionJobId], map: "resource_metric_samples_ingestion_job_id_idx")
   @@map("resource_metric_samples")
 }
@@ -1292,7 +1307,7 @@ model ResourceMetricStreamSummary {
   nonZeroSampleCount Int             @default(0) @map("non_zero_sample_count")
   firstSampledAt     DateTime?       @map("first_sampled_at") @db.Timestamptz(6)
   lastSampledAt      DateTime?       @map("last_sampled_at") @db.Timestamptz(6)
-  latestValue        Decimal?        @map("latest_value") @db.Decimal(24, 9)
+  latestValue        Decimal?        @map("latest_value") @db.Decimal(38, 9)
   state              String          @default("NO_SAMPLES")
   lastIngestedAt     DateTime?       @map("last_ingested_at") @db.Timestamptz(6)
   updatedAt          DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1302,6 +1317,7 @@ model ResourceMetricStreamSummary {
 
   @@unique([cloudConnectionId, providerNamespace, regionId, externalResourceId, metricName, statistic, granularitySeconds, dimensionsHash], map: "resource_metric_stream_summaries_identity_key")
   @@index([tenantId, state, lastSampledAt], map: "resource_metric_stream_summaries_tenant_state_idx")
+  @@index([tenantId, cloudResourceId], map: "resource_metric_stream_summaries_tenant_resource_idx")
   @@index([cloudConnectionId, metricName, statistic, lastSampledAt], map: "resource_metric_stream_summaries_connection_metric_idx")
   @@index([cloudResourceId, lastSampledAt], map: "resource_metric_stream_summaries_resource_idx")
   @@map("resource_metric_stream_summaries")
@@ -1405,6 +1421,7 @@ model CostMetric {
   @@index([tenantId, provider, chargePeriodStart])
   @@index([tenantId, cloudConnectionId, billingSource, chargePeriodStart])
   @@index([tenantId, cloudConnectionId, chargePeriodEnd], map: "cost_metrics_tenant_connection_period_end_idx")
+  @@index([tenantId, chargePeriodEnd], map: "cost_metrics_tenant_period_end_idx")
   @@index([tenantId, cloudResourceId, chargePeriodStart])
   @@index([resourceId])
   @@index([cloudAccountId], map: "cost_metrics_cloud_account_id_idx")
@@ -1446,6 +1463,7 @@ model Recommendation {
   outboundMessageDeliveries OutboundMessageDelivery[]
   analysisRunLinks          RecommendationAnalysisRunRecommendation[]
   candidateAudits           RecommendationAnalysisCandidateAudit[]      @relation("RecommendationCandidateAudits")
+  costEvidenceLines         RecommendationCostEvidence[]
 
   @@unique([tenantId, deduplicationKey])
   @@index([tenantId, createdAt, id], map: "recommendations_tenant_id_created_at_id_idx")
@@ -1455,6 +1473,32 @@ model Recommendation {
   @@index([cloudResourceId], map: "recommendations_cloud_resource_id_idx")
   @@index([sourceChargePeriodStart, sourceMetricIdentityHash])
   @@map("recommendations")
+}
+
+/// Immutable normalized cost facts used as evidence for a recommendation.
+/// Deliberately has no FK to cost_metrics so later source cleanup cannot erase audit lineage.
+model RecommendationCostEvidence {
+  id                 String         @id @default(cuid())
+  tenantId           String         @map("tenant_id")
+  recommendationId   String         @map("recommendation_id")
+  cloudAccountId     String         @map("cloud_account_id")
+  cloudConnectionId  String?        @map("cloud_connection_id")
+  cloudResourceId    String         @map("cloud_resource_id")
+  provider           CloudProvider
+  resourceId         String         @map("resource_id")
+  serviceName        String         @map("service_name")
+  chargePeriodStart  DateTime       @map("charge_period_start") @db.Timestamptz(6)
+  metricIdentityHash String         @map("metric_identity_hash")
+  billingCurrency    String         @map("billing_currency") @db.VarChar(3)
+  billedCost         Decimal        @map("billed_cost") @db.Decimal(18, 6)
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant             Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  recommendation     Recommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+
+  @@unique([recommendationId, chargePeriodStart, metricIdentityHash])
+  @@index([tenantId, recommendationId])
+  @@index([tenantId, chargePeriodStart, metricIdentityHash])
+  @@map("recommendation_cost_evidence")
 }
 
 model RecommendationAnalysisRun {
@@ -1489,6 +1533,7 @@ model RecommendationAnalysisRun {
   promptTokenEstimate      Int                                       @default(0) @map("prompt_token_estimate")
   responseTokenEstimate    Int                                       @default(0) @map("response_token_estimate")
   latencyMs                Int?                                      @map("latency_ms")
+  stageTimings              Json?                                     @map("stage_timings")
   workerId                 String?                                   @map("worker_id")
   lockedAt                 DateTime?                                 @map("locked_at") @db.Timestamptz(6)
   nextAttemptAt            DateTime?                                 @map("next_attempt_at") @db.Timestamptz(6)
@@ -2135,6 +2180,7 @@ model AiContextTrace {
   tenantId              String             @map("tenant_id")
   userId                String?            @map("user_id")
   operation             AiContextOperation
+  source                AiTraceSource      @default(UNKNOWN)
   model                 String
   status                String
   profileVersion        Int?               @map("profile_version")

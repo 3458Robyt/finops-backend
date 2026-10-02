@@ -6,15 +6,19 @@ import { PrismaCloudConnectionRepository } from '../src/infrastructure/repositor
 import { OciSdkIngestionProvider } from '../src/infrastructure/ingestion/OciSdkIngestionProvider.js';
 import type { OciMetricDefinition } from '../src/infrastructure/ingestion/oci/OciSdkContracts.js';
 import { Prisma } from '../src/generated/prisma/client.js';
+import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
 
 /** Discovers OCI metric streams and, only with --persist, stores them disabled. */
 async function main(): Promise<void> {
   const connectionId = readRequiredArgument('--connection-id');
   const prisma = getPrismaClient();
-  const connection = await prisma.cloudConnection.findUnique({
-    where: { id: connectionId },
-    select: { tenantId: true, providerCode: true, status: true },
-  });
+  const connection = await runWithDatabaseContext(
+    { workerId: 'oci-metric-discovery-cli', role: 'MASTER_ADMIN' },
+    () => prisma.cloudConnection.findUnique({
+      where: { id: connectionId },
+      select: { tenantId: true, providerCode: true, status: true },
+    }),
+  );
   if (connection === null) throw new Error('La conexión indicada no existe.');
   if (connection.providerCode !== 'oci') throw new Error('La conexión indicada no es OCI.');
   if (connection.status !== 'ACTIVE') throw new Error('La conexión OCI debe estar ACTIVE.');
@@ -23,11 +27,16 @@ async function main(): Promise<void> {
     prisma,
     new CredentialCipher(process.env.CREDENTIAL_ENCRYPTION_KEY, process.env.CREDENTIAL_KEY_VERSION ?? 'v1'),
   );
-  const ingestionConnection = await repository.getIngestionConnectionForTenant(connection.tenantId, connectionId);
-  if (ingestionConnection === null) throw new Error('No existe una credencial OCI activa para la conexión.');
-
-  const result = await new OciSdkIngestionProvider().discoverMetricDefinitions(ingestionConnection);
-  if (hasFlag('--persist')) await persistCandidates(prisma, ingestionConnection.tenantId, connectionId, result.definitions, result.regions);
+  const result = await runWithDatabaseContext(
+    { tenantId: connection.tenantId, workerId: 'oci-metric-discovery-cli', role: 'MASTER_ADMIN' },
+    async () => {
+      const ingestionConnection = await repository.getIngestionConnectionForTenant(connection.tenantId, connectionId);
+      if (ingestionConnection === null) throw new Error('No existe una credencial OCI activa para la conexión.');
+      const result = await new OciSdkIngestionProvider().discoverMetricDefinitions(ingestionConnection);
+      if (hasFlag('--persist')) await persistCandidates(prisma, ingestionConnection.tenantId, connectionId, result.definitions, result.regions);
+      return result;
+    },
+  );
 
   console.log(JSON.stringify({
     success: true,

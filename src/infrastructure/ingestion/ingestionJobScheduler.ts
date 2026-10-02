@@ -1,7 +1,8 @@
 import type { IngestionJobStatus, IngestionSourceType } from '../../domain/models/CloudConnection.js';
 import { buildIngestionConfigurationHash } from './ingestionConfigurationHash.js';
-import { buildMissingTechnicalMetricJobs } from './ingestionMetricGapPlanner.js';
+import { buildMissingTechnicalMetricJobs, resolveTechnicalMetricFloor } from './ingestionMetricGapPlanner.js';
 import { getCooldownMs, getWindowMs } from './ingestionScheduleWindows.js';
+import { DEFAULT_INGESTION_VALIDATION_MAX_AGE_MINUTES, isIngestionValidationFresh } from './ingestionValidationFreshness.js';
 
 type CredentialPurpose =
   | 'TEMPORARY_ADMIN'
@@ -24,6 +25,7 @@ export interface ScheduleableIngestionConnection {
   readonly metricDefinitions?: readonly ScheduleableMetricDefinition[];
   /** Días que tienen cobertura completa para todos los streams técnicos esperados. */
   readonly metricCoverageWindowStarts?: readonly Date[];
+  readonly metricCoverageWindows?: readonly ScheduleableMetricCoverageWindow[];
 }
 
 export interface ScheduleableCredential {
@@ -135,9 +137,8 @@ function evaluateSource(
     return { kind: 'skip', reason: 'La conexión debe validarse después de su última modificación.' };
   }
 
-  const validationMaxAgeMinutes = options.validationMaxAgeMinutes ?? 24 * 60;
-  const validationAgeMs = options.now.getTime() - connection.lastValidatedAt.getTime();
-  if (!Number.isFinite(validationAgeMs) || validationAgeMs > validationMaxAgeMinutes * 60 * 1000) {
+  const validationMaxAgeMinutes = options.validationMaxAgeMinutes ?? DEFAULT_INGESTION_VALIDATION_MAX_AGE_MINUTES;
+  if (!isIngestionValidationFresh(connection.lastValidatedAt, options.now, validationMaxAgeMinutes)) {
     return { kind: 'skip', reason: 'La validación de capacidades expiró; ejecuta una nueva validación antes de ingerir.' };
   }
 
@@ -222,7 +223,8 @@ function evaluateSource(
   const latestCoveredSegment = connection.ingestionCoverageSegments
     ?.filter((segment) => (
       segment.sourceType === sourceType
-      && (segment.status === 'COVERED' || segment.status === 'PARTIAL')
+      // A partial segment must not move the cursor past its own gap.
+      && segment.status === 'COVERED'
       && (segment.configurationHash === configurationHash || segment.configurationHash === undefined || segment.configurationHash === null)
     ))
     .sort((left, right) => right.targetEnd.getTime() - left.targetEnd.getTime())[0];
@@ -235,7 +237,7 @@ function evaluateSource(
     .sort((left, right) => right.targetEnd.getTime() - left.targetEnd.getTime())[0];
   const defaultStart = new Date(targetEnd.getTime() - windowMs);
   const catchupFloor = sourceType === 'TECHNICAL_METRIC'
-    ? new Date(targetEnd.getTime() - (options.metricCatchupDays ?? 90) * 24 * 60 * 60 * 1000)
+    ? resolveTechnicalMetricFloor(targetEnd, providerCode === 'oci' ? 'oci' : 'aws', options.metricCatchupDays ?? 90)
     : defaultStart;
   const latestCoveredEnd = latestCoveredSegment?.targetEnd ?? latestCoveredJob?.targetEnd;
   const targetStart = latestCoveredEnd === undefined
@@ -351,6 +353,10 @@ export interface ScheduleableCoverageSegment {
 
 export interface ScheduleableMetricDefinition {
   readonly enabled?: boolean;
+}
+export interface ScheduleableMetricCoverageWindow {
+  readonly windowStart: Date;
+  readonly status: 'COVERED' | 'PARTIAL' | 'NO_DATA' | string;
 }
 
 function hasRequiredCapability(

@@ -24,9 +24,7 @@ from pathlib import Path
 from typing import Any
 
 
-ORACLE_USAGE_REPORT_TENANCY_OCID = (
-    "ocid1.tenancy.oc1..aaaaaaaaned4fkpkisbwjlr56u7cj63lf3wffbilvqknstgtvzub7vhqkggq"
-)
+ORACLE_USAGE_REPORT_TENANCY_OCID = "REPLACE_WITH_TENANCY_OCID"
 REPORTING_NAMESPACE = "bling"
 DEFAULT_PREFIX = "FOCUS Reports"
 

@@ -27,6 +27,7 @@ export interface CostMetricQuery {
 }
 
 export interface CostDataOptions {
+  readonly reportingCurrency: string;
   readonly periods: readonly { readonly period: string; readonly metricCount: number }[];
   readonly latestPeriod?: string;
   readonly cloudAccounts: readonly { readonly id: string; readonly name: string; readonly provider: string }[];

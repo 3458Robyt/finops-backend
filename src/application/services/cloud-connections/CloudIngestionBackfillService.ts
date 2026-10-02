@@ -35,6 +35,17 @@ export class CloudIngestionBackfillService {
     const catalogDefinitions = connection.providerCode === 'oci' && this.repository.listEnabledMetricDefinitions !== undefined
       ? await this.repository.listEnabledMetricDefinitions(input.tenantId, input.cloudConnectionId)
       : [];
+    const filter = input.metricFilter;
+    if (filter !== undefined) {
+      if (connection.providerCode !== 'oci' || !['CpuUtilization', 'MemoryUtilization'].includes(filter.metricName)
+        || [filter.namespace, filter.resourceId, filter.regionId].some((value) => value.trim() === '')) {
+        throw new FinOpsBaseError('El backfill dirigido requiere una serie OCI de CPU o memoria y un recurso, namespace y región explícitos.', 'VALIDATION_ERROR');
+      }
+      if (!catalogDefinitions.some((item) => item.namespace === filter.namespace && item.metricName === filter.metricName
+        && item.externalResourceId === filter.resourceId && item.regionId === filter.regionId)) {
+        throw new FinOpsBaseError('La serie solicitada no está confirmada y habilitada para este recurso. Descúbrela y confírmala primero.', 'VALIDATION_ERROR');
+      }
+    }
     const ingestionMetadata = mergeMetricCatalogIntoMetadata(connection.metadata, catalogDefinitions);
     const definitionCount = catalogDefinitions.length > 0
       ? catalogDefinitions.length
@@ -59,7 +70,8 @@ export class CloudIngestionBackfillService {
       const requestContext = {
         interval: window.interval,
         resolutionSeconds: intervalSeconds(window.interval),
-        scopeKey: `technical:${window.interval}`,
+        scopeKey: filter === undefined ? `technical:${window.interval}` : `technical:${window.interval}:${filter.namespace}:${filter.metricName}:${filter.resourceId}:${filter.regionId}`,
+        ...(filter === undefined ? {} : { metricFilter: filter }),
       };
       const configurationHash = buildIngestionConfigurationHash({
         providerCode: connection.providerCode,
@@ -96,7 +108,7 @@ export class CloudIngestionBackfillService {
       rangeEnd,
       createdJobs,
       skippedWindows,
-      estimatedApiCalls: windows.length * definitionCount * 4,
+      estimatedApiCalls: windows.length * (filter === undefined ? definitionCount : 1) * 4,
     };
   }
 

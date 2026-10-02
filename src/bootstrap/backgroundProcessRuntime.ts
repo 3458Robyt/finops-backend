@@ -20,12 +20,12 @@ export interface BackgroundProcessRuntimeInput {
 }
 
 /** Arranca únicamente los procesos permitidos por el rol actual. */
-export function startBackgroundProcesses(input: BackgroundProcessRuntimeInput): void {
+export async function startBackgroundProcesses(input: BackgroundProcessRuntimeInput): Promise<void> {
   const { config, composition } = input;
   const { prisma, recommendationAnalysisRepository, recommendationAnalysisService, valueRealizationService, learningService, ingestionWorker, metricProjectionWorker } = composition;
   const { outboundMessageService, budgetService } = composition.serverDependencies;
 
-  startProcessHeartbeat(input, composition.processHeartbeatService);
+  await startProcessHeartbeat(input, composition.processHeartbeatService);
   startMessageScheduler(input, outboundMessageService);
   startTelegramInboundWorker(input, composition.serverDependencies.telegramBotService);
   startIngestionWorker(input, ingestionWorker);
@@ -91,7 +91,7 @@ function startMessageScheduler(input: BackgroundProcessRuntimeInput, service: Ap
   const systemActor = tenantId !== undefined && userId !== undefined ? {
     tenantId,
     userId,
-    email: 'scheduler@system.local',
+    email: 'test-user-0019@example.test',
     role: 'MASTER_ADMIN' as const,
     jwtId: 'scheduler',
   } : undefined;
@@ -336,7 +336,7 @@ function startBudgetScheduler(input: BackgroundProcessRuntimeInput, service: Bud
   const actor: AuthContext = {
     tenantId,
     userId,
-    email: 'budget-scheduler@system.local',
+    email: 'test-user-0006@example.test',
     role: 'MASTER_ADMIN',
     jwtId: 'budget-scheduler',
   };

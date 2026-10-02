@@ -129,12 +129,16 @@ export function normalizeMetricDefinition(
   if (providerCode === 'oci') {
     const query = optional('query');
     const unit = optional('unit');
+    const regionId = optional('regionId');
+    const dimensions = normalizeOciMetricDimensions(value['dimensions'], index);
     const statistics = normalizeOciStatistics(value, index, query);
     return {
       compartmentId: text('compartmentId'),
       namespace: text('namespace'),
       metricName: text('metricName'),
       resourceId: text('resourceId'),
+      ...(regionId !== undefined ? { regionId } : {}),
+      ...(dimensions === undefined ? {} : { dimensions }),
       ...(query !== undefined ? { query } : {}),
       statistics,
       ...(unit !== undefined ? { unit } : {}),
@@ -166,6 +170,25 @@ export function normalizeMetricDefinition(
     };
   }
   throw new FinOpsBaseError('El proveedor no soporta configuración de métricas.', 'VALIDATION_ERROR');
+}
+
+function normalizeOciMetricDimensions(
+  value: unknown,
+  index: number,
+): Readonly<Record<string, string>> | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || Object.keys(value).length > 50) {
+    throw new FinOpsBaseError(`definitions[${index}].dimensions debe ser un objeto de hasta 50 dimensiones.`, 'VALIDATION_ERROR');
+  }
+  const dimensions: Record<string, string> = {};
+  for (const [key, dimensionValue] of Object.entries(value)) {
+    if (key.trim() === '' || key.length > 128 || typeof dimensionValue !== 'string' || dimensionValue.length > 1024
+      || /[\u0000-\u001f]/.test(key) || /[\u0000-\u001f]/.test(dimensionValue)) {
+      throw new FinOpsBaseError(`definitions[${index}].dimensions contiene una dimensión inválida.`, 'VALIDATION_ERROR');
+    }
+    dimensions[key] = dimensionValue;
+  }
+  return dimensions;
 }
 
 function normalizeOciStatistics(

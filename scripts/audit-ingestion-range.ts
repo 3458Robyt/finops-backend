@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { Prisma } from '../src/generated/prisma/client.js';
 import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
+import { buildIngestionConfigurationHash } from '../src/infrastructure/ingestion/ingestionConfigurationHash.js';
 import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
 
 interface AuditArguments {
@@ -8,7 +9,16 @@ interface AuditArguments {
   readonly connectionId: string;
   readonly start: Date;
   readonly end: Date;
+  readonly gapLimit: number;
   readonly json: boolean;
+}
+
+interface CoverageAggregateRow {
+  readonly status: string;
+  readonly windows: bigint;
+  readonly expected_samples: bigint;
+  readonly observed_samples: bigint;
+  readonly missing_samples: bigint;
 }
 
 /**
@@ -18,6 +28,7 @@ interface AuditArguments {
  * missing data instead of creating synthetic jobs or changing coverage.
  */
 async function main(): Promise<void> {
+  assertAllowedAuditTarget(process.env['DATABASE_URL']);
   const args = readArguments();
   const prisma = getPrismaClient();
   try {
@@ -39,22 +50,36 @@ async function buildReport(
   prisma: ReturnType<typeof getPrismaClient>,
   args: AuditArguments,
 ): Promise<Readonly<Record<string, unknown>>> {
-  const [connection, raw, daily, coverage, focus, costs, resources, jobs] = await Promise.all([
-    prisma.$queryRaw<readonly {
-      readonly id: string;
-      readonly name: string;
-      readonly provider_code: string;
-      readonly status: string;
-      readonly default_region: string | null;
-      readonly last_validated_at: Date | null;
-      readonly authentication_status: string | null;
-    }[]>(Prisma.sql`
-      SELECT id, name, provider_code, status, default_region, last_validated_at,
-        metadata->'capabilityValidation'->'authentication'->>'status' AS authentication_status
-      FROM cloud_connections
-      WHERE tenant_id = ${args.tenantId} AND id = ${args.connectionId}
-      LIMIT 1
-    `),
+  const connection = await prisma.$queryRaw<readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly provider_code: string;
+    readonly status: string;
+    readonly default_region: string | null;
+    readonly last_validated_at: Date | null;
+    readonly authentication_status: string | null;
+    readonly metadata: unknown;
+  }[]>(Prisma.sql`
+    SELECT id, name, provider_code, status, default_region, last_validated_at,
+      metadata,
+      metadata->'capabilityValidation'->'authentication'->>'status' AS authentication_status
+    FROM cloud_connections
+    WHERE tenant_id = ${args.tenantId} AND id = ${args.connectionId}
+    LIMIT 1
+  `);
+  const configurationHash = connection[0] === undefined
+    ? null
+    : buildIngestionConfigurationHash({
+      providerCode: connection[0].provider_code,
+      sourceType: 'TECHNICAL_METRIC',
+      metadata: connection[0].metadata,
+      requestContext: { interval: '30m', resolutionSeconds: 1800 },
+    });
+  const coverageConfigurationFilter = configurationHash === null
+    ? Prisma.sql`AND FALSE`
+    : Prisma.sql`AND configuration_hash = ${configurationHash}`;
+
+  const [raw, daily, coverage, coverageGaps, requestedRangeCoverage, focus, costs, resources, jobs] = await Promise.all([
     prisma.$queryRaw<readonly {
       readonly sample_count: bigint;
       readonly stream_count: bigint;
@@ -119,9 +144,185 @@ async function buildReport(
         AND cloud_connection_id = ${args.connectionId}
         AND window_start < ${args.end}
         AND window_end > ${args.start}
+        ${coverageConfigurationFilter}
       GROUP BY status
       ORDER BY status
     `),
+    prisma.$queryRaw<readonly {
+      readonly status: string;
+      readonly stream_key: string;
+      readonly provider_namespace: string;
+      readonly region_id: string;
+      readonly external_resource_id: string;
+      readonly metric_name: string;
+      readonly statistic: string;
+      readonly granularity_seconds: number;
+      readonly definition_id: string | null;
+      readonly definition_dimensions_hash: string | null;
+      readonly observed_dimensions_hash: string | null;
+      readonly observed_dimensions_hash_count: number;
+      readonly windows: bigint;
+      readonly expected_samples: bigint;
+      readonly observed_samples: bigint;
+      readonly missing_samples: bigint;
+      readonly stream_sample_count: number;
+      readonly first_sampled_at: Date | null;
+      readonly last_sampled_at: Date | null;
+      readonly classification: string;
+    }[]>(Prisma.sql`
+      WITH gap_groups AS (
+        SELECT status::text, stream_key, provider_namespace, region_id, external_resource_id,
+          metric_name, statistic::text, granularity_seconds,
+          cloud_metric_definition_id AS definition_id,
+          COUNT(*)::bigint AS windows,
+          COALESCE(SUM(expected_samples), 0)::bigint AS expected_samples,
+          COALESCE(SUM(observed_samples), 0)::bigint AS observed_samples,
+          COALESCE(SUM(missing_samples), 0)::bigint AS missing_samples
+        FROM resource_metric_coverage_windows
+        WHERE tenant_id = ${args.tenantId}
+          AND cloud_connection_id = ${args.connectionId}
+          AND window_start < ${args.end}
+          AND window_end > ${args.start}
+          AND status IN ('PARTIAL'::"MetricCoverageStatus", 'NO_DATA'::"MetricCoverageStatus")
+          ${coverageConfigurationFilter}
+        GROUP BY status, stream_key, provider_namespace, region_id, external_resource_id,
+          metric_name, statistic, granularity_seconds, cloud_metric_definition_id
+        ORDER BY SUM(missing_samples) DESC, metric_name, external_resource_id
+        LIMIT ${args.gapLimit}
+      ), stream_summaries AS (
+        SELECT md5(concat_ws('|', provider_namespace, region_id, external_resource_id,
+          metric_name, statistic::text, granularity_seconds::text, dimensions_hash)) AS stream_key,
+          dimensions_hash AS observed_dimensions_hash,
+          sample_count AS stream_sample_count, first_sampled_at, last_sampled_at
+        FROM resource_metric_stream_summaries
+        WHERE tenant_id = ${args.tenantId}
+          AND cloud_connection_id = ${args.connectionId}
+          AND sample_count > 0
+          AND first_sampled_at < ${args.end}
+          AND last_sampled_at >= ${args.start}
+      ), identity_summaries AS (
+        SELECT provider_namespace, region_id, external_resource_id, metric_name,
+          statistic::text AS statistic, granularity_seconds,
+          COUNT(DISTINCT dimensions_hash)::int AS observed_dimensions_hash_count,
+          MIN(dimensions_hash) AS alternate_observed_dimensions_hash
+        FROM resource_metric_stream_summaries
+        WHERE tenant_id = ${args.tenantId}
+          AND cloud_connection_id = ${args.connectionId}
+          AND sample_count > 0
+          AND first_sampled_at < ${args.end}
+          AND last_sampled_at >= ${args.start}
+        GROUP BY provider_namespace, region_id, external_resource_id, metric_name,
+          statistic, granularity_seconds
+      )
+      SELECT gap_groups.*,
+        definitions.dimensions_hash AS definition_dimensions_hash,
+        COALESCE(stream_summaries.observed_dimensions_hash,
+          identity_summaries.alternate_observed_dimensions_hash) AS observed_dimensions_hash,
+        COALESCE(identity_summaries.observed_dimensions_hash_count, 0)::int AS observed_dimensions_hash_count,
+        COALESCE(stream_summaries.stream_sample_count, 0)::int AS stream_sample_count,
+        stream_summaries.first_sampled_at,
+        stream_summaries.last_sampled_at,
+        CASE
+          WHEN gap_groups.definition_id IS NULL OR definitions.id IS NULL
+            OR (stream_summaries.observed_dimensions_hash IS NOT NULL
+              AND definitions.dimensions_hash IS DISTINCT FROM stream_summaries.observed_dimensions_hash)
+            THEN 'HISTORICAL_CONFIGURATION_DRIFT'
+          WHEN stream_summaries.stream_key IS NULL
+            AND identity_summaries.observed_dimensions_hash_count > 0
+            AND definitions.dimensions_hash IS DISTINCT FROM identity_summaries.alternate_observed_dimensions_hash
+            THEN 'HISTORICAL_CONFIGURATION_DRIFT_CANDIDATE'
+          WHEN stream_summaries.stream_key IS NULL
+          THEN 'NO_EMISSION_OBSERVED'
+          ELSE 'INTERMITTENT_OR_RECOVERABLE_CANDIDATE'
+        END AS classification
+      FROM gap_groups
+      LEFT JOIN cloud_metric_definitions definitions ON definitions.id = gap_groups.definition_id
+      LEFT JOIN stream_summaries USING (stream_key)
+      LEFT JOIN identity_summaries
+        ON identity_summaries.provider_namespace = gap_groups.provider_namespace
+       AND identity_summaries.region_id = gap_groups.region_id
+       AND identity_summaries.external_resource_id = gap_groups.external_resource_id
+       AND identity_summaries.metric_name = gap_groups.metric_name
+       AND identity_summaries.statistic = gap_groups.statistic
+       AND identity_summaries.granularity_seconds = gap_groups.granularity_seconds
+      ORDER BY gap_groups.missing_samples DESC, gap_groups.metric_name, gap_groups.external_resource_id
+    `),
+    isPartialUtcDayRange(args)
+      ? prisma.$queryRaw<readonly CoverageAggregateRow[]>(Prisma.sql`
+          WITH scoped_windows AS MATERIALIZED (
+            SELECT
+              id,
+              stream_key,
+              granularity_seconds,
+              window_start,
+              window_end,
+              GREATEST(window_start, ${args.start}) AS effective_start,
+              LEAST(window_end, ${args.end}) AS effective_end,
+              provider_namespace,
+              region_id,
+              external_resource_id,
+              metric_name,
+              statistic::text AS statistic
+            FROM resource_metric_coverage_windows
+            WHERE tenant_id = ${args.tenantId}
+              AND cloud_connection_id = ${args.connectionId}
+              AND window_start < ${args.end}
+              AND window_end > ${args.start}
+              ${coverageConfigurationFilter}
+          ), observed_windows AS (
+            SELECT
+              scoped.id,
+              scoped.granularity_seconds,
+              scoped.effective_start,
+              scoped.effective_end,
+              COUNT(samples.id)::bigint AS observed_samples
+            FROM scoped_windows scoped
+            LEFT JOIN resource_metric_samples samples
+              ON samples.tenant_id = ${args.tenantId}
+             AND samples.cloud_connection_id = ${args.connectionId}
+             AND samples.source_type = 'TECHNICAL_METRIC'::"IngestionSourceType"
+             AND samples.provider_namespace = scoped.provider_namespace
+             AND samples.region_id = scoped.region_id
+             AND samples.external_resource_id = scoped.external_resource_id
+             AND samples.metric_name = scoped.metric_name
+             AND samples.statistic::text = scoped.statistic
+             AND samples.granularity_seconds = scoped.granularity_seconds
+             AND md5(concat_ws('|', samples.provider_namespace, samples.region_id,
+               samples.external_resource_id, samples.metric_name, samples.statistic::text,
+               samples.granularity_seconds::text, COALESCE(samples.dimensions_hash, ''))) = scoped.stream_key
+             AND samples.sampled_at >= scoped.effective_start
+             AND samples.sampled_at < scoped.effective_end
+            GROUP BY scoped.id, scoped.granularity_seconds, scoped.effective_start, scoped.effective_end
+          ), calculated AS (
+            SELECT
+              CASE
+                WHEN observed_samples = 0 THEN 'NO_DATA'
+                WHEN expected_samples = 0 OR observed_samples >= CEIL(expected_samples * 0.95)
+                  THEN 'COVERED'
+                ELSE 'PARTIAL'
+              END AS status,
+              expected_samples,
+              observed_samples,
+              GREATEST(expected_samples - observed_samples, 0) AS missing_samples
+            FROM (
+              SELECT
+                CEIL(EXTRACT(EPOCH FROM (effective_end - effective_start))
+                  / NULLIF(granularity_seconds, 0))::bigint AS expected_samples,
+                observed_samples
+              FROM observed_windows
+              WHERE effective_end > effective_start
+            ) scoped_counts
+          )
+          SELECT status,
+            COUNT(*)::bigint AS windows,
+            COALESCE(SUM(expected_samples), 0)::bigint AS expected_samples,
+            COALESCE(SUM(observed_samples), 0)::bigint AS observed_samples,
+            COALESCE(SUM(missing_samples), 0)::bigint AS missing_samples
+          FROM calculated
+          GROUP BY status
+          ORDER BY status
+        `)
+      : Promise.resolve([] as readonly CoverageAggregateRow[]),
     prisma.$queryRaw<readonly {
       readonly row_count: bigint;
       readonly resource_count: bigint;
@@ -213,6 +414,7 @@ async function buildReport(
       lastValidatedAt: connection[0].last_validated_at?.toISOString() ?? null,
       authenticationStatus: connection[0].authentication_status,
     },
+    coverageConfigurationHash: configurationHash,
     technicalMetrics: {
       totals: normalizeRow(raw[0]),
       daily: daily.map((row) => ({
@@ -226,6 +428,35 @@ async function buildReport(
         expectedSamples: toNumber(row.expected_samples),
         observedSamples: toNumber(row.observed_samples),
         missingSamples: toNumber(row.missing_samples),
+      })),
+      gapLimit: args.gapLimit,
+      requestedRangeCoverage: {
+        scope: 'requested_range',
+        ...(isPartialUtcDayRange(args)
+          ? { rows: requestedRangeCoverage.map(normalizeCoverageRow) }
+          : { rows: [], reason: 'requested_range_already_matches_utc_day_boundaries' }),
+      },
+      coverageGaps: coverageGaps.map((row) => ({
+        status: row.status,
+        streamKey: row.stream_key,
+        providerNamespace: row.provider_namespace,
+        regionId: row.region_id,
+        externalResourceId: row.external_resource_id,
+        metricName: row.metric_name,
+        statistic: row.statistic,
+        granularitySeconds: row.granularity_seconds,
+        definitionId: row.definition_id,
+        definitionDimensionsHash: row.definition_dimensions_hash,
+        observedDimensionsHash: row.observed_dimensions_hash,
+        observedDimensionsHashCount: row.observed_dimensions_hash_count,
+        windows: toNumber(row.windows),
+        expectedSamples: toNumber(row.expected_samples),
+        observedSamples: toNumber(row.observed_samples),
+        missingSamples: toNumber(row.missing_samples),
+        streamSampleCount: row.stream_sample_count,
+        firstSampledAt: row.first_sampled_at?.toISOString() ?? null,
+        lastSampledAt: row.last_sampled_at?.toISOString() ?? null,
+        classification: row.classification,
       })),
     },
     focus: normalizeRow(focus[0]),
@@ -250,6 +481,48 @@ function normalizeRow(row: Readonly<Record<string, unknown>> | undefined): Reado
   ]));
 }
 
+/**
+ * The bounded audit is expensive by design. Keep an accidental invocation
+ * from the development .env (which may point to Supabase) from consuming the
+ * remote database's temporary storage. Remote audits remain possible only
+ * through an explicit operator opt-in.
+ */
+function assertAllowedAuditTarget(connectionString: string | undefined): void {
+  if (connectionString === undefined || connectionString.trim() === '') {
+    throw new Error('DATABASE_URL es obligatorio para auditar la ingesta.');
+  }
+
+  const hostname = new URL(connectionString).hostname.toLowerCase();
+  const localHosts = new Set(['127.0.0.1', 'localhost', '::1']);
+  if (localHosts.has(hostname) || process.env['ALLOW_REMOTE_READ_ONLY_AUDIT'] === 'true') return;
+
+  throw new Error(
+    `Auditoría de ingesta rechazada para la base remota ${hostname}. `
+      + 'Usa scripts/local/run-local.ps1 o define ALLOW_REMOTE_READ_ONLY_AUDIT=true solo con autorización explícita.',
+  );
+}
+
+function normalizeCoverageRow(row: CoverageAggregateRow): Readonly<Record<string, unknown>> {
+  return {
+    status: row.status,
+    windows: toNumber(row.windows),
+    expectedSamples: toNumber(row.expected_samples),
+    observedSamples: toNumber(row.observed_samples),
+    missingSamples: toNumber(row.missing_samples),
+  };
+}
+
+function isPartialUtcDayRange(args: AuditArguments): boolean {
+  return !isUtcDayBoundary(args.start) || !isUtcDayBoundary(args.end);
+}
+
+function isUtcDayBoundary(value: Date): boolean {
+  return value.getUTCHours() === 0
+    && value.getUTCMinutes() === 0
+    && value.getUTCSeconds() === 0
+    && value.getUTCMilliseconds() === 0;
+}
+
 function printReport(report: Readonly<Record<string, unknown>>): void {
   const connection = report.connection as Readonly<Record<string, unknown>> | null;
   const metrics = report.technicalMetrics as Readonly<Record<string, unknown>>;
@@ -263,6 +536,23 @@ function printReport(report: Readonly<Record<string, unknown>>): void {
   console.log('Cobertura:');
   for (const row of metrics.coverage as readonly Readonly<Record<string, unknown>>[]) {
     console.log(`  ${row['status']}: ${row['windows']} ventanas · ${row['observedSamples']}/${row['expectedSamples']} muestras · faltan ${row['missingSamples']}`);
+  }
+  const requestedRangeCoverage = metrics['requestedRangeCoverage'] as Readonly<Record<string, unknown>> | undefined;
+  const requestedRows = requestedRangeCoverage?.['rows'] as readonly Readonly<Record<string, unknown>>[] | undefined;
+  if (requestedRows !== undefined && requestedRows.length > 0) {
+    console.log('Cobertura exacta del rango solicitado:');
+    for (const row of requestedRows) {
+      console.log(`  ${row['status']}: ${row['windows']} ventanas · ${row['observedSamples']}/${row['expectedSamples']} muestras · faltan ${row['missingSamples']}`);
+    }
+  }
+  const coverageGaps = report.technicalMetrics === undefined
+    ? []
+    : (report.technicalMetrics as Readonly<Record<string, unknown>>)['coverageGaps'] as readonly Readonly<Record<string, unknown>>[];
+  if (coverageGaps.length > 0) {
+    console.log('Mayores brechas por stream (máximo 10):');
+    for (const row of coverageGaps.slice(0, 10)) {
+      console.log(`  ${row['classification']} · ${row['status']} · ${row['metricName']} ${row['statistic']} · recurso ${row['externalResourceId']} · faltan ${row['missingSamples']}/${row['expectedSamples']}`);
+    }
   }
   console.log(`FOCUS: ${JSON.stringify(report.focus)}`);
   console.log(`Cost metrics: ${JSON.stringify(report.costMetrics)}`);
@@ -280,7 +570,11 @@ function readArguments(): AuditArguments {
   if (end.getTime() - start.getTime() > 91 * 24 * 60 * 60 * 1000) {
     throw new Error('El rango de auditoría no puede superar 91 días.');
   }
-  return { tenantId, connectionId, start, end, json: process.argv.includes('--json') };
+  const gapLimit = readOptionalInteger('--gap-limit', 500);
+  if (gapLimit < 1 || gapLimit > 10000) {
+    throw new Error('--gap-limit debe estar entre 1 y 10000.');
+  }
+  return { tenantId, connectionId, start, end, gapLimit, json: process.argv.includes('--json') };
 }
 
 function readRequired(name: string): string {
@@ -294,6 +588,16 @@ function parseDate(value: string, name: string): Date {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) throw new Error(`${name} debe ser una fecha ISO válida.`);
   return date;
+}
+
+function readOptionalInteger(name: string, fallback: number): number {
+  const index = process.argv.indexOf(name);
+  if (index < 0) return fallback;
+  const value = process.argv[index + 1];
+  if (value === undefined || value.startsWith('--') || !/^\d+$/.test(value)) {
+    throw new Error(`${name} debe ser un entero positivo.`);
+  }
+  return Number(value);
 }
 
 function toNumber(value: bigint | number | null | undefined): number {

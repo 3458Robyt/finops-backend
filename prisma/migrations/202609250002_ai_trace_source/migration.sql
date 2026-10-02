@@ -1,0 +1,4 @@
+CREATE TYPE "AiTraceSource" AS ENUM ('UNKNOWN', 'WEB', 'TELEGRAM', 'EVALUATION', 'SYSTEM');
+
+ALTER TABLE "ai_context_traces"
+ADD COLUMN "source" "AiTraceSource" NOT NULL DEFAULT 'UNKNOWN';

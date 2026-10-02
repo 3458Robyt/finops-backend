@@ -47,6 +47,29 @@ export class ProviderError extends FinOpsBaseError {
   }
 }
 
+/** Error transitorio del proveedor que el cliente puede reintentar sin tratarlo como bug interno. */
+export class ProviderUnavailableError extends FinOpsBaseError {
+  public readonly providerName: string;
+
+  constructor(providerName: string, statusCode?: number, public readonly cause?: Error) {
+    const suffix = statusCode === undefined ? '' : ` (HTTP ${statusCode})`;
+    const message = statusCode === 429
+      ? `El proveedor ${providerName} está limitando temporalmente las solicitudes${suffix}. Intenta nuevamente en unos minutos.`
+      : `El proveedor ${providerName} no está disponible temporalmente${suffix}. Intenta nuevamente en unos minutos.`;
+    super(message, 'PROVIDER_UNAVAILABLE', {
+      retryable: true,
+      ...(statusCode === undefined ? {} : { providerStatus: statusCode }),
+    });
+    this.providerName = providerName;
+  }
+}
+
+export class ProviderTimeoutError extends FinOpsBaseError {
+  constructor(message = 'El proveedor externo excedió el tiempo máximo de respuesta') {
+    super(message, 'PROVIDER_TIMEOUT');
+  }
+}
+
 /**
  * Error lanzado cuando se solicita un proveedor que no está
  * registrado en el sistema.

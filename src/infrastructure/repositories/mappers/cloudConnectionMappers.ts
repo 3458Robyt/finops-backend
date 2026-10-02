@@ -180,6 +180,17 @@ export function isJsonObject(value: Prisma.JsonValue | null): boolean {
 export function toIngestionJobHistoryItem(
   job: NonNullable<PrismaIngestionJob>,
 ): IngestionJobHistoryItem {
+  const progress = isJsonObject(job.progress)
+    ? job.progress as Record<string, unknown>
+    : undefined;
+  const visibleProgress = job.status !== 'CANCELLED' || progress?.['phase'] === 'CANCELLED'
+    ? progress
+    : {
+      ...progress,
+      phase: 'CANCELLED',
+      message: 'Trabajo cancelado. Detalle histórico no disponible.',
+    };
+
   return {
     id: job.id,
     cloudConnectionId: job.cloudConnectionId,
@@ -198,7 +209,7 @@ export function toIngestionJobHistoryItem(
     targetStart: job.targetStart,
     targetEnd: job.targetEnd,
     ...(job.errorMessage !== null ? { errorMessage: job.errorMessage } : {}),
-    ...(isJsonObject(job.progress) ? { progress: job.progress as Record<string, unknown> } : {}),
+    ...(visibleProgress !== undefined ? { progress: visibleProgress } : {}),
     ...(isJsonObject(job.resultSummary) ? { resultSummary: job.resultSummary as Record<string, unknown> } : {}),
     priority: job.priority,
     ...(job.startedAt !== null ? { startedAt: job.startedAt } : {}),

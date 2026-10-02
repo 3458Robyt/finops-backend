@@ -15,7 +15,7 @@ import type { EmailSendInput, IEmailClient } from './EmailClient.js';
 class FakeRecoveryRepository implements IAccountRecoveryRepository {
   public token: PasswordResetTokenRecord | null = null;
   public created: CreatePasswordResetTokenInput | null = null;
-  public target: PasswordResetTarget = { userId: 'user-1', email: 'user@example.com', name: 'User', status: 'ACTIVE' };
+  public target: PasswordResetTarget = { userId: 'user-1', email: 'test-user-0027@example.test', name: 'User', status: 'ACTIVE' };
   public async findUserByEmail(): Promise<PasswordResetTarget | null> { return this.target; }
   public async createPasswordResetToken(input: CreatePasswordResetTokenInput): Promise<void> {
     this.created = input;
@@ -57,7 +57,7 @@ describe('PasswordRecoveryService', () => {
     const email = new FakeEmail();
     const service = new PasswordRecoveryService(repository, new FakeHasher(), sessions, email);
 
-    await expect(service.requestReset({ email: 'USER@EXAMPLE.COM' })).resolves.toEqual({ accepted: true, emailSent: true });
+    await expect(service.requestReset({ email: 'test-user-0027@example.test' })).resolves.toEqual({ accepted: true, emailSent: true });
     expect(repository.created?.tokenHash).toBeDefined();
     const rawToken = new URL(new RegExp('https?[^\\s]+').exec(email.lastText)![0]).searchParams.get('token')!;
     await service.confirmReset({ token: rawToken, password: 'StrongPassword1' });
@@ -70,6 +70,6 @@ describe('PasswordRecoveryService', () => {
     const repository = new FakeRecoveryRepository();
     repository.target = { ...repository.target, status: 'DISABLED' };
     const service = new PasswordRecoveryService(repository, new FakeHasher(), new FakeSessions(), new FakeEmail());
-    await expect(service.requestReset({ email: 'unknown@example.com' })).resolves.toEqual({ accepted: true, emailSent: false });
+    await expect(service.requestReset({ email: 'test-user-0026@example.test' })).resolves.toEqual({ accepted: true, emailSent: false });
   });
 });

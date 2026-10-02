@@ -5,7 +5,7 @@ import type { INotificationRepository } from '../../domain/interfaces/INotificat
 import type { IOutboundMessageRepository } from '../../domain/interfaces/IOutboundMessageRepository.js';
 import type { Budget, BudgetAlert } from '../../domain/models/Budget.js';
 
-const actor = { userId: 'user-1', tenantId: 'tenant-1', email: 'admin@example.com', role: 'ADMIN', jwtId: 'jwt-1' } as const;
+const actor = { userId: 'user-1', tenantId: 'tenant-1', email: 'test-user-0002@example.test', role: 'ADMIN', jwtId: 'jwt-1' } as const;
 
 describe('BudgetService', () => {
   it('creates one threshold event and one notification per user after repeated evaluation', async () => {
@@ -71,6 +71,6 @@ class FakeBudgetRepository {
   public async archive(): Promise<Budget> { return this.budget; }
 }
 class FakeNotifications { public readonly created: unknown[] = []; public async create(input: unknown): Promise<any> { this.created.push(input); return input; } }
-class FakeOutbound { public readonly created: unknown[] = []; public async findTenantUsers() { return [{ id: 'recipient-1', email: 'recipient@example.com', name: 'Recipient', status: 'ACTIVE' as const }]; } public async create(input: unknown): Promise<any> { this.created.push(input); return input; } }
+class FakeOutbound { public readonly created: unknown[] = []; public async findTenantUsers() { return [{ id: 'recipient-1', email: 'test-user-0017@example.test', name: 'Recipient', status: 'ACTIVE' as const }]; } public async create(input: unknown): Promise<any> { this.created.push(input); return input; } }
 class FakeTelegram { public async findLinksByTenant() { return []; } }
 function buildBudget(): Budget { const now = new Date('2026-07-01T00:00:00.000Z'); return { id: 'budget-1', tenantId: 'tenant-1', scope: 'TENANT', scopeKey: '__tenant__', periodStart: now, amount: 100, currency: 'USD', warningThreshold: 0.8, criticalThreshold: 0.9, exceededThreshold: 1, status: 'ACTIVE', createdByUserId: 'user-1', createdAt: now, updatedAt: now }; }

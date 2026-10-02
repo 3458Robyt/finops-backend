@@ -52,8 +52,10 @@ export class ContextEngineService implements IContextEngineService {
   /**
    * Construye el contexto completo para una operación de IA de un tenant.
    *
-   * Recupera en paralelo el perfil TAK activo, las reglas del tenant, los
-   * resúmenes de contexto relevantes a la consulta y la memoria de aprendizaje.
+   * Recupera en paralelo el perfil TAK activo, las reglas del tenant y, cuando
+   * corresponde, los resúmenes de contexto y la memoria de aprendizaje.
+   * Los planes de ejecución omiten esos resúmenes y aprendizajes: se
+   * limitan a la recomendación canónica y su evidencia técnica autorizada.
    * Filtra las reglas de tenant que entran en conflicto con el perfil global,
    * formatea cada sección de evidencia, las concatena y trunca el resultado al
    * presupuesto correspondiente al tipo de operación. Finalmente compone las
@@ -71,15 +73,16 @@ export class ContextEngineService implements IContextEngineService {
    *   perfil y la estimación de tokens del prompt.
    */
   public async buildContext(input: BuildAiContextInput): Promise<BuiltAiContext> {
+    const includeRetrievedContext = input.operation !== 'EXECUTION_PLAN';
     const [profile, tenantRules, summaries, learningContext] = await Promise.all([
       this.instructionService.getActiveProfile(),
       this.repository.listTenantRules(input.tenantId),
-      this.repository.findContextSummaries({
+      includeRetrievedContext ? this.repository.findContextSummaries({
         tenantId: input.tenantId,
         queryText: input.queryText,
         limit: 8,
-      }),
-      this.learningContextProvider?.getRecommendationLearningContext({
+      }) : Promise.resolve([]),
+      includeRetrievedContext ? this.learningContextProvider?.getRecommendationLearningContext({
         tenantId: input.tenantId,
         queryText: input.queryText,
         limit: 5,
@@ -87,7 +90,7 @@ export class ContextEngineService implements IContextEngineService {
         memoryIds: [],
         caseIds: [],
         summary: '',
-      }),
+      }) : Promise.resolve({ memoryIds: [], caseIds: [], summary: '' }),
     ]);
     const { acceptedRules, conflicts } = this.instructionService.filterRulesAgainstProfile({
       tenantId: input.tenantId,
@@ -98,8 +101,10 @@ export class ContextEngineService implements IContextEngineService {
     const rawContext = [
       this.formatProfile(profile.structuredRules, profile.freeformNotes, input.operation),
       this.formatTenantRules(acceptedRules),
-      this.formatSummaries(summaries),
-      this.formatLearning(learningContext.summary),
+      ...(includeRetrievedContext ? [
+        this.formatSummaries(summaries),
+        this.formatLearning(learningContext.summary),
+      ] : []),
     ].filter((section) => section.trim() !== '').join('\n\n');
     const contextText = this.budgeter.truncate(rawContext, budget);
     const systemInstructions = [

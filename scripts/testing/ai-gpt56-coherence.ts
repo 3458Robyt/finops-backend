@@ -67,9 +67,17 @@ console.log(JSON.stringify({ ...output, outputFile }, null, 2));
 if (!output.success) process.exitCode = 1;
 
 function redactError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message
+  const record = typeof error === 'object' && error !== null
+    ? error as Record<string, unknown>
+    : undefined;
+  const message = [
+    error instanceof Error ? error.message : String(record?.['message'] ?? error),
+    typeof record?.['stdout'] === 'string' ? record['stdout'] : '',
+    typeof record?.['stderr'] === 'string' ? record['stderr'] : '',
+  ].filter((part) => part.trim() !== '').join('\n');
+  const redacted = message
     .replace(/(?:sk|nvapi)-[A-Za-z0-9._-]+/gi, '[REDACTED_AI_KEY]')
-    .replace(/(postgres(?:ql)?:\/\/)[^@\s]+@/gi, '$1[REDACTED]@')
-    .slice(0, 500);
+    .replace(/(postgres(?:ql)?:\/\/)[^@\s]+@/gi, '$1[REDACTED]@');
+  if (redacted.length <= 1_500) return redacted;
+  return `${redacted.slice(0, 500)}\n...[truncated]...\n${redacted.slice(-1_000)}`;
 }

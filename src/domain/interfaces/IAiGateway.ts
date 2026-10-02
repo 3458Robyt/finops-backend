@@ -17,6 +17,9 @@ export interface AiGatewayMessage {
   readonly content: string;
 }
 
+/** Nivel de razonamiento soportado por el proveedor OpenAI-compatible. */
+export type AiReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+
 /**
  * Parámetros de una solicitud de generación de texto al gateway de IA.
  */
@@ -35,6 +38,8 @@ export interface AiGatewayRequest {
   readonly responseFormat?: 'text' | 'json';
   /** Modelo específico a utilizar; si se omite, se usa el modelo por defecto del gateway. */
   readonly model?: string;
+  /** Nivel opcional de razonamiento; se omite para conservar el comportamiento del proveedor. */
+  readonly reasoningEffort?: AiReasoningEffort;
 }
 
 /**

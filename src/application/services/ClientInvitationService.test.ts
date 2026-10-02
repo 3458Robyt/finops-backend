@@ -29,13 +29,13 @@ describe('ClientInvitationService', () => {
     const result = await service.create({
       actorUserId: 'master-1',
       tenantId: 'tenant-1',
-      email: '  CLIENT@EXAMPLE.COM ',
+      email: '  test-user-0007@example.test ',
       name: 'Cliente Demo',
       role: 'CLIENT_VIEWER',
       clientPortalUrl: 'https://finops.example.com/',
     });
 
-    expect(result.invitation.email).toBe('client@example.com');
+    expect(result.invitation.email).toBe('test-user-0007@example.test');
     expect(result.inviteUrl).toContain('https://finops.example.com/cliente/oci-demo?invite=');
     expect(result.inviteCode.length).toBeGreaterThanOrEqual(40);
     expect(result.invitation.expiresAt.getTime()).toBeGreaterThan(Date.now());
@@ -52,7 +52,7 @@ describe('ClientInvitationService', () => {
     await expect(service.create({
       actorUserId: 'client-1',
       tenantId: 'tenant-1',
-      email: 'client@example.com',
+      email: 'test-user-0007@example.test',
       role: 'CLIENT_VIEWER',
       clientPortalUrl: 'https://finops.example.com',
     })).rejects.toMatchObject({ code: 'AUTHORIZATION_FAILED' });
@@ -103,14 +103,14 @@ describe('ClientInvitationService', () => {
     const result = await service.create({
       actorUserId: 'master-1',
       tenantId: 'tenant-1',
-      email: 'client@example.com',
+      email: 'test-user-0007@example.test',
       role: 'CLIENT_VIEWER',
       clientPortalUrl: 'https://finops.example.com',
     });
 
     expect(result.emailDelivery).toMatchObject({ status: 'SENT' });
     expect(email.send).toHaveBeenCalledWith(expect.objectContaining({
-      to: 'client@example.com',
+      to: 'test-user-0007@example.test',
       text: expect.stringContaining(result.inviteUrl),
     }));
     const deliveryInput = (outbound.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
@@ -123,7 +123,7 @@ describe('ClientInvitationService', () => {
       accept: vi.fn(async (input) => ({
         userId: 'user-1',
         tenantId: 'tenant-1',
-        email: 'client@example.com',
+        email: 'test-user-0007@example.test',
         name: input.name,
         role: 'CLIENT_VIEWER' as const,
       })),

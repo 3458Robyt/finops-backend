@@ -1,11 +1,18 @@
 import { Prisma } from '../src/generated/prisma/client.js';
 import { getPrismaClient } from '../src/infrastructure/database/prisma.js';
+import { runWithDatabaseContext } from '../src/infrastructure/database/tenantContext.js';
 
 /** Rebuilds the persisted technical-stream coverage projection idempotently. */
 async function main(): Promise<void> {
+  const tenantId = readTenantId(process.argv.slice(2));
+  if (tenantId === undefined) {
+    throw new Error('La reconstrucción requiere --tenant para respetar el aislamiento del tenant.');
+  }
   const prisma = getPrismaClient();
   const now = new Date();
-  const affected = await prisma.$executeRaw(Prisma.sql`
+  const affected = await runWithDatabaseContext(
+    { tenantId, workerId: 'maintenance:metric-stream-summaries', role: 'MASTER_ADMIN' },
+    () => prisma.$executeRaw(Prisma.sql`
     INSERT INTO resource_metric_stream_summaries (
       id, tenant_id, cloud_connection_id, cloud_resource_id, provider, external_resource_id,
       provider_namespace, region_id, compartment_id, dimensions_hash, metric_name, metric_unit,
@@ -31,6 +38,7 @@ async function main(): Promise<void> {
       END,
       ${now}, ${now}
     FROM resource_metric_samples rms
+    WHERE rms.tenant_id = ${tenantId}
     GROUP BY rms.cloud_connection_id, rms.external_resource_id, rms.provider_namespace,
       rms.region_id, rms.dimensions_hash, rms.metric_name, rms.statistic, rms.granularity_seconds
     ON CONFLICT (
@@ -50,9 +58,16 @@ async function main(): Promise<void> {
       state = EXCLUDED.state,
       last_ingested_at = EXCLUDED.last_ingested_at,
       updated_at = EXCLUDED.updated_at
-  `);
-  console.log(JSON.stringify({ event: 'metric_stream_summaries_rebuilt', affected }));
+  `),
+  );
+  console.log(JSON.stringify({ event: 'metric_stream_summaries_rebuilt', tenantId, affected }));
   await prisma.$disconnect();
+}
+
+function readTenantId(args: readonly string[]): string | undefined {
+  const index = args.indexOf('--tenant');
+  const value = index >= 0 ? args[index + 1] : undefined;
+  return value === undefined || value.trim() === '' || value.startsWith('--') ? undefined : value.trim();
 }
 
 void main().catch(async (error: unknown) => {

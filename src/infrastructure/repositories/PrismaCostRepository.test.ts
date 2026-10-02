@@ -3,6 +3,36 @@ import type { IFxRateRepository, FxRateRecord } from '../../domain/interfaces/IF
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { PrismaCostRepository } from './PrismaCostRepository.js';
 
+describe('PrismaCostRepository.getDataOptions', () => {
+  it('returns the reporting currency even when the tenant has no cost periods', async () => {
+    const repository = createOptionsRepository({ reportingCurrency: 'COP', periodRows: [] });
+
+    await expect(repository.getDataOptions('tenant-1')).resolves.toEqual({
+      reportingCurrency: 'COP',
+      periods: [],
+      cloudAccounts: [],
+      services: [],
+      regions: [],
+      currencies: [],
+    });
+  });
+
+  it('keeps reporting currency separate from currencies present in the selected cost period', async () => {
+    const repository = createOptionsRepository({
+      reportingCurrency: 'COP',
+      periodRows: [{ period: new Date('2026-09-01T00:00:00.000Z'), metric_count: 2n }],
+      dimensions: [{ cloudAccountId: 'account-1', serviceName: 'Compute', regionId: 'sa-bogota-1', billingCurrency: 'USD' }],
+      accounts: [{ id: 'account-1', name: 'OCI', provider: 'OCI' }],
+    });
+
+    await expect(repository.getDataOptions('tenant-1')).resolves.toMatchObject({
+      reportingCurrency: 'COP',
+      currencies: ['USD'],
+      latestPeriod: '2026-09',
+    });
+  });
+});
+
 describe('PrismaCostRepository.getCostHistory', () => {
   it('converts native COP amounts, preserves native totals and leaves empty days as gaps', async () => {
     const rate: FxRateRecord = {
@@ -77,6 +107,48 @@ describe('PrismaCostRepository.getCostHistory', () => {
       '2026-08-01T00:00:00.000Z',
     ]);
   });
+
+  it('groups charge periods in UTC instead of the database session timezone', async () => {
+    let queryText = '';
+    let queryValues: unknown[] = [];
+    const prisma = {
+      $queryRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        queryText = Array.from(strings).join('');
+        queryValues = values;
+        return [];
+      },
+    } as unknown as PrismaClient;
+    const repository = new PrismaCostRepository(prisma);
+
+    await repository.getCostHistory({
+      tenantId: 'tenant-1',
+      startDate: new Date('2026-06-25T00:00:00.000Z'),
+      endDate: new Date('2026-06-26T00:00:00.000Z'),
+      reportingCurrency: 'COP',
+      granularity: 'day',
+    });
+
+    expect(queryText).toContain("charge_period_start AT TIME ZONE 'UTC'");
+    expect(queryText.match(/::timestamptz/g)).toHaveLength(2);
+    expect(queryValues).toContain('2026-06-25T00:00:00.000Z');
+    expect(queryValues).toContain('2026-06-26T00:00:00.000Z');
+  });
+
+  it('reads the latest period as an explicit UTC value', async () => {
+    let queryText = '';
+    const prisma = {
+      $queryRaw: async (strings: TemplateStringsArray) => {
+        queryText = Array.from(strings).join('');
+        return [{ latest_period_utc: '2026-09-22T00:00:00.000Z' }];
+      },
+    } as unknown as PrismaClient;
+    const repository = new PrismaCostRepository(prisma);
+
+    const latest = await repository.getLatestCostPeriod('tenant-1');
+
+    expect(queryText).toContain("MAX(charge_period_start) AT TIME ZONE 'UTC'");
+    expect(latest?.toISOString()).toBe('2026-09-22T00:00:00.000Z');
+  });
 });
 
 function createRepository(rows: readonly CostHistoryRowFixture[], rates: readonly FxRateRecord[]): PrismaCostRepository {
@@ -91,12 +163,27 @@ function createRepository(rows: readonly CostHistoryRowFixture[], rates: readonl
 }
 
 interface CostHistoryRowFixture {
-  readonly period: Date;
+  readonly period_utc: string;
   readonly currency: string;
   readonly metric_count: number;
   readonly total_cost: number;
 }
 
 function row(date: string, currency: string, totalCost: number): CostHistoryRowFixture {
-  return { period: new Date(`${date}T00:00:00.000Z`), currency, metric_count: 1, total_cost: totalCost };
+  return { period_utc: date, currency, metric_count: 1, total_cost: totalCost };
+}
+
+function createOptionsRepository(input: {
+  readonly reportingCurrency: string;
+  readonly periodRows: readonly { readonly period: Date; readonly metric_count: bigint }[];
+  readonly dimensions?: readonly { readonly cloudAccountId: string; readonly serviceName: string; readonly regionId: string | null; readonly billingCurrency: string }[];
+  readonly accounts?: readonly { readonly id: string; readonly name: string; readonly provider: string }[];
+}): PrismaCostRepository {
+  const prisma = {
+    $queryRaw: async () => input.periodRows,
+    tenant: { findUnique: async () => ({ reportingCurrency: input.reportingCurrency }) },
+    costMetric: { findMany: async () => input.dimensions ?? [] },
+    cloudAccount: { findMany: async () => input.accounts ?? [] },
+  } as unknown as PrismaClient;
+  return new PrismaCostRepository(prisma);
 }

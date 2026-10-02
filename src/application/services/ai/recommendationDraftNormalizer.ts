@@ -5,6 +5,7 @@ import type {
   RecommendationReadinessReport,
 } from './RecommendationReadinessGate.js';
 import { isRecord } from './jsonReadHelpers.js';
+import { isVerifiedSavingsCalculation } from '../../../domain/models/recommendationEconomics.js';
 
 /**
  * Normaliza borradores generados por el modelo contra los candidatos y el
@@ -16,15 +17,21 @@ export function normalizeRecommendationDrafts(
   readinessReport: RecommendationReadinessReport | undefined,
   technicalEvidenceSnapshot: RecommendationEvidenceSnapshot | undefined,
   cloudResourceId?: string,
+  periodDays?: number,
+  options: {
+    readonly preserveValidationNarrative?: boolean;
+    readonly candidatePool?: readonly RecommendationOpportunityCandidate[];
+  } = {},
 ): readonly AiRecommendationDraft[] {
-  if (readinessReport === undefined) {
-    return drafts;
-  }
+  if (readinessReport === undefined) return [];
+  const candidates = options.candidatePool ?? readinessReport.candidates;
 
-  return drafts.map((draft) => {
-    const candidate = findCandidate(draft, readinessReport.candidates);
+  return drafts
+    .filter((draft) => findCandidate(draft, candidates) !== undefined)
+    .map((draft) => {
+    const candidate = findCandidate(draft, candidates);
     if (candidate === undefined) {
-      return draft;
+      return stripUnverifiedSavings(draft);
     }
 
     const existingEvidence = isRecord(draft.evidence) ? draft.evidence : {};
@@ -59,20 +66,24 @@ export function normalizeRecommendationDrafts(
       || technicalValidationOnly
       ? removeTechnicalEvidenceFields(existingEvidence)
       : existingEvidence;
+    const safeGeneratedEvidence = removeGeneratedSafetyAndCostFields(withoutStaleTechnicalFields);
+    // The readiness gate is authoritative. The model may not upgrade a
+    // cost/usage candidate into a technical-validation candidate by emitting
+    // a conflicting flag in its draft.
     const requiresTechnicalValidation = candidate.requiresTechnicalValidation
       || technicalResource !== undefined
-      || technicalValidationOnly
-      || existingEvidence['requiresTechnicalValidation'] === true;
+      || technicalValidationOnly;
     const resourceIdentifier = technicalResource?.externalResourceId ?? candidate.resourceId;
+    const displayResourceIdentifier = displayResourceName(candidate, technicalResource);
     const safeType = technicalReviewOnly
       ? 'PERFORMANCE_CAPACITY_REVIEW'
       : technicalValidationOnly
         ? 'TECHNICAL_VALIDATION_REQUIRED'
       : candidate.opportunityType;
-    const safeTitle = technicalReviewOnly && resourceIdentifier !== undefined
-      ? `Revisar capacidad y rendimiento de ${resourceIdentifier}`
-      : technicalValidationOnly && resourceIdentifier !== undefined
-        ? `Validar señales técnicas de ${resourceIdentifier}`
+    const safeTitle = technicalReviewOnly && displayResourceIdentifier !== undefined
+      ? `Revisar capacidad y rendimiento de ${displayResourceIdentifier}`
+      : technicalValidationOnly && displayResourceIdentifier !== undefined
+        ? `Validar señales técnicas de ${displayResourceIdentifier}`
       : technicalResource !== undefined
         ? [
             draft.description,
@@ -81,14 +92,14 @@ export function normalizeRecommendationDrafts(
         : candidate.resourceId === undefined
           ? `Revisar costo y consumo de ${candidate.serviceName}`
         : draft.title;
-    const safeDescription = technicalReviewOnly && resourceIdentifier !== undefined
+    const safeDescription = technicalReviewOnly && displayResourceIdentifier !== undefined
       ? [
-          `Revisar la capacidad y el rendimiento del recurso ${resourceIdentifier}.`,
+          `Revisar la capacidad y el rendimiento del recurso ${displayResourceIdentifier}.`,
           'La evidencia permite priorizar una revisión previa. Esta salida es informativa, no es una autorización ni un plan de ejecución. La validación y aprobación manual son obligatorias antes de cualquier cambio operativo.',
         ].join(' ')
-      : technicalValidationOnly && resourceIdentifier !== undefined
+      : technicalValidationOnly && displayResourceIdentifier !== undefined
         ? [
-            `Validar las señales técnicas y el enlace de inventario del recurso ${resourceIdentifier}.`,
+            `Validar las señales técnicas y el enlace de inventario del recurso ${displayResourceIdentifier}.`,
             technicalResource === undefined
               ? 'No hay evidencia técnica enlazada y reciente suficiente para afirmar utilización o recomendar un cambio operativo; confirma el recurso y sus métricas en Monitoring antes de actuar.'
               : 'La evidencia técnica disponible requiere validación adicional antes de cualquier cambio operativo.',
@@ -117,23 +128,33 @@ export function normalizeRecommendationDrafts(
       : {};
     const normalizedCloudResourceId = technicalResource?.cloudResourceId ?? candidate.cloudResourceId;
     const { estimatedMonthlySavings: generatedSavings, ...draftWithoutSavings } = draft;
+    const calculation = candidate.savingsCalculation;
+    const deterministicSavings = calculation !== undefined
+      && isVerifiedSavingsCalculation({ savingsCalculation: calculation }, calculation.amount, candidate.currency)
+      && calculation.amount <= candidate.maxEstimatedMonthlySavings + 0.01
+      ? calculation.amount
+      : undefined;
+    const hasVerifiedCalculation = deterministicSavings !== undefined;
 
     return {
       ...draftWithoutSavings,
-      ...(technicalValidationOnly || technicalReviewOnly || financialReviewOnly || generatedSavings === undefined
-        ? {}
-        : { estimatedMonthlySavings: generatedSavings }),
+      cloudAccountId: candidate.cloudAccountId,
+      currency: candidate.currency,
+      ...(!technicalValidationOnly && !technicalReviewOnly && !financialReviewOnly && deterministicSavings !== undefined
+        ? { estimatedMonthlySavings: deterministicSavings }
+        : {}),
       ...(normalizedCloudResourceId !== undefined ? { cloudResourceId: normalizedCloudResourceId } : {}),
       ...(normalizedCloudResourceId === undefined && candidate.resourceId !== undefined
         ? { resourceLinkReason: 'INVENTORY_RESOURCE_NOT_FOUND' }
         : {}),
       type: safeType,
-      title: safeTitle,
-      description: safeDescription,
+      title: options.preserveValidationNarrative && technicalValidationOnly ? draft.title : safeTitle,
+      description: options.preserveValidationNarrative && technicalValidationOnly ? draft.description : safeDescription,
       evidence: {
-        ...withoutStaleTechnicalFields,
+        ...safeGeneratedEvidence,
         candidateId: candidate.id,
         ...(resourceIdentifier !== undefined ? { externalResourceId: resourceIdentifier } : {}),
+        ...(normalizedCloudResourceId !== undefined ? { cloudResourceId: normalizedCloudResourceId } : {}),
         costEvidenceRefs: candidate.costEvidenceRefs,
         evidenceLevel: candidate.evidenceLevelAllowed,
         evidenceStrength: candidate.evidenceStrength ?? withoutStaleTechnicalFields['evidenceStrength'] ?? 'MEDIUM',
@@ -142,12 +163,19 @@ export function normalizeRecommendationDrafts(
           : candidate.sourceFacts,
         requiresTechnicalValidation,
         ...(candidate.observedCost === undefined ? {} : { observedCost: candidate.observedCost }),
-        maxEstimatedMonthlySavings: candidate.maxEstimatedMonthlySavings,
-        ...(generatedSavings !== undefined && (technicalValidationOnly || technicalReviewOnly || financialReviewOnly)
+        ...(candidate.observedCost === undefined ? {} : {
+          normalizedMonthlyCost: round(normalizeMonthlyAmount(candidate.observedCost, periodDays)),
+        }),
+        maxEstimatedMonthlySavings: deterministicSavings ?? 0,
+        ...(hasVerifiedCalculation ? { savingsCalculation: calculation } : {}),
+        ...(deterministicSavings !== undefined && (technicalValidationOnly || technicalReviewOnly || financialReviewOnly)
           ? {
-              potentialMonthlySavings: generatedSavings,
+              potentialMonthlySavings: deterministicSavings,
               savingsStatus: 'POTENTIAL_NOT_VERIFIED',
             }
+          : {}),
+        ...(deterministicSavings === undefined && generatedSavings !== undefined && generatedSavings > 0
+          ? { savingsStatus: 'UNVERIFIED' }
           : {}),
         readiness: candidate.readiness,
         ...(technicalValidationOnly
@@ -183,13 +211,26 @@ export function dropNonActionableFinancialDrafts(
     const evidence = isRecord(draft.evidence) ? draft.evidence : {};
     const candidateId = typeof evidence['candidateId'] === 'string' ? evidence['candidateId'] : undefined;
     const candidate = candidateId === undefined ? undefined : candidatesById.get(candidateId);
-    const isFinancialCandidate = candidate !== undefined && candidate.resourceId === undefined;
-    const hasPositivePotential = (candidate?.maxEstimatedMonthlySavings ?? 0) > 0;
-    const potential = typeof evidence['potentialMonthlySavings'] === 'number'
-      ? evidence['potentialMonthlySavings']
-      : draft.estimatedMonthlySavings;
-    return !(isFinancialCandidate && hasPositivePotential && (potential ?? 0) <= 0);
-  });
+    const isUnscopedFinancialReview = candidate?.reviewScope === 'FINANCIAL';
+    const calculation = candidate?.savingsCalculation;
+    const hasQuantifiableSavings = candidate !== undefined && calculation !== undefined
+      && isVerifiedSavingsCalculation({ savingsCalculation: calculation }, calculation.amount, candidate.currency)
+      && calculation.amount <= candidate.maxEstimatedMonthlySavings + 0.01;
+    const potential = hasQuantifiableSavings ? calculation.amount : undefined;
+    return !(isUnscopedFinancialReview && (!hasQuantifiableSavings || (potential ?? 0) <= 0));
+    });
+}
+
+function stripUnverifiedSavings(draft: AiRecommendationDraft): AiRecommendationDraft {
+  const { estimatedMonthlySavings, ...withoutAmount } = draft;
+  const evidence = isRecord(draft.evidence) ? removeGeneratedSafetyAndCostFields(draft.evidence) : {};
+  return {
+    ...withoutAmount,
+    evidence: {
+      ...evidence,
+      ...(estimatedMonthlySavings !== undefined && estimatedMonthlySavings > 0 ? { savingsStatus: 'UNVERIFIED' } : {}),
+    },
+  };
 }
 
 function findCandidate(
@@ -267,6 +308,54 @@ function removeTechnicalEvidenceFields(evidence: Record<string, unknown>): Recor
     ...rest
   } = evidence;
   return rest;
+}
+
+function removeGeneratedSafetyAndCostFields(evidence: Record<string, unknown>): Record<string, unknown> {
+  const blockedKeys = new Set([
+    'financialReviewOnly',
+    'reviewScope',
+    'technicalReviewOnly',
+    'operationalAuthorization',
+    'requiresManualValidation',
+    'potentialMonthlySavings',
+    'maxEstimatedMonthlySavings',
+    'savingsCalculation',
+    'savingsStatus',
+  ]);
+  return Object.fromEntries(Object.entries(evidence).filter(([key]) => (
+    !blockedKeys.has(key) && !isGeneratedMonthlyCostField(key)
+  )));
+}
+
+function isGeneratedMonthlyCostField(key: string): boolean {
+  const normalized = key.replaceAll('_', '').toLowerCase();
+  return normalized.includes('monthlycost')
+    || normalized.includes('costmonthly')
+    || normalized.includes('normalizedcost');
+}
+
+function normalizeMonthlyAmount(amount: number, coveredDays: number | undefined): number {
+  return coveredDays !== undefined && Number.isFinite(coveredDays) && coveredDays > 0
+    ? amount * 30 / coveredDays
+    : amount;
+}
+
+function round(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function displayResourceName(
+  candidate: RecommendationOpportunityCandidate,
+  technicalResource: RecommendationEvidenceSnapshot['resources'][number] | undefined,
+): string | undefined {
+  const name = technicalResource?.resourceName ?? candidate.resourceName;
+  if (name !== undefined && name.trim() !== '') return name.trim();
+  const resourceId = technicalResource?.externalResourceId ?? candidate.resourceId;
+  if (resourceId === undefined || resourceId.trim() === '') return undefined;
+  const compactId = resourceId.length > 18
+    ? `${resourceId.slice(0, 8)}…${resourceId.slice(-6)}`
+    : resourceId;
+  return `${candidate.serviceName} (${compactId})`;
 }
 
 /**

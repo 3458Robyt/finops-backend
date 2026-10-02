@@ -5,17 +5,21 @@ import { AwsSdkIngestionProvider } from '../src/infrastructure/ingestion/AwsSdkI
 import { OciSdkIngestionProvider } from '../src/infrastructure/ingestion/OciSdkIngestionProvider.js';
 import { PrismaCloudIngestionJobRepository } from '../src/infrastructure/ingestion/PrismaCloudIngestionJobRepository.js';
 import { CredentialCipher } from '../src/infrastructure/security/CredentialCipher.js';
+import { assertLocalMutationTarget } from '../src/infrastructure/database/assertLocalMutationTarget.js';
 
 async function main(): Promise<void> {
-  if (process.argv.includes('--preflight')) {
-    printPreflight();
+  assertLocalMutationTarget(process.env['DATABASE_URL']);
+  const cloudConnectionId = readOptionalArgument('--connection-id');
+  const sourceType = readSourceType();
+  const concurrency = readConcurrency();
+  if (isFlagSet('--preflight')) {
+    printPreflight({ cloudConnectionId, sourceType, concurrency });
     return;
   }
 
   const startedAt = Date.now();
   const prisma = getPrismaClient();
   const workerId = process.env['INGESTION_WORKER_ID'] ?? `manual-worker-${process.pid}`;
-  const concurrency = readConcurrency();
   const worker = new CloudIngestionWorkerService(
     new PrismaCloudIngestionJobRepository(
       prisma,
@@ -27,23 +31,89 @@ async function main(): Promise<void> {
     ],
   );
 
+  const memorySamples = [readProcessMemory()];
+  const memoryTimer = setInterval(() => memorySamples.push(readProcessMemory()), 250);
+  let result: unknown;
   try {
-    const result = await worker.runBatch(workerId, concurrency);
-    const durationMs = Date.now() - startedAt;
-
-    console.log(JSON.stringify({
-      durationMs,
-      concurrency,
-      result,
-    }, null, 2));
+    result = await worker.runBatch(workerId, concurrency, cloudConnectionId, sourceType);
   } finally {
+    clearInterval(memoryTimer);
+    memorySamples.push(readProcessMemory());
     await prisma.$disconnect();
   }
+
+  console.log(JSON.stringify({
+    durationMs: Date.now() - startedAt,
+    concurrency,
+    ...(cloudConnectionId === undefined ? {} : { cloudConnectionId }),
+    ...(sourceType === undefined ? {} : { sourceType }),
+    memory: summarizeProcessMemory(memorySamples),
+    result,
+  }, null, 2));
+}
+
+interface ProcessMemorySample {
+  readonly rssBytes: number;
+  readonly heapUsedBytes: number;
+  readonly heapTotalBytes: number;
+  readonly externalBytes: number;
+}
+
+function readProcessMemory(): ProcessMemorySample {
+  const usage = process.memoryUsage();
+  return {
+    rssBytes: usage.rss,
+    heapUsedBytes: usage.heapUsed,
+    heapTotalBytes: usage.heapTotal,
+    externalBytes: usage.external,
+  };
+}
+
+function summarizeProcessMemory(samples: readonly ProcessMemorySample[]): Record<string, unknown> {
+  const peak = (field: keyof ProcessMemorySample): number => Math.max(...samples.map((sample) => sample[field]));
+  const first = samples[0] ?? readProcessMemory();
+  const last = samples[samples.length - 1] ?? first;
+  return {
+    sampleCount: samples.length,
+    rssBytes: { first: first.rssBytes, last: last.rssBytes, peak: peak('rssBytes') },
+    heapUsedBytes: { first: first.heapUsedBytes, last: last.heapUsedBytes, peak: peak('heapUsedBytes') },
+    heapTotalBytes: { first: first.heapTotalBytes, last: last.heapTotalBytes, peak: peak('heapTotalBytes') },
+    externalBytes: { first: first.externalBytes, last: last.externalBytes, peak: peak('externalBytes') },
+  };
+}
+
+function readOptionalArgument(name: string): string | undefined {
+  const index = process.argv.indexOf(name);
+  const npmConfigName = `npm_config_${name.replace(/^--/, '').replaceAll('-', '_')}`;
+  const npmConfigValue = process.env[npmConfigName];
+  const value = index >= 0
+    ? process.argv[index + 1]
+    : (npmConfigValue !== undefined && npmConfigValue !== 'true'
+      ? npmConfigValue
+      : npmPassthroughValue(npmArgumentIndex(name)));
+  if (value === undefined) return undefined;
+  if (value === undefined || value.startsWith('--') || value.trim() === '') {
+    throw new Error(`${name} requiere un valor.`);
+  }
+  return value.trim();
+}
+
+function readSourceType(): 'BILLING_EXPORT' | 'TECHNICAL_METRIC' | 'INVENTORY' | undefined {
+  const value = readOptionalArgument('--source-type');
+  if (value === undefined) return undefined;
+  if (value !== 'BILLING_EXPORT' && value !== 'TECHNICAL_METRIC' && value !== 'INVENTORY') {
+    throw new Error('--source-type debe ser BILLING_EXPORT, TECHNICAL_METRIC o INVENTORY.');
+  }
+  return value;
 }
 
 function readConcurrency(): number {
   const index = process.argv.indexOf('--concurrency');
-  const raw = index >= 0 ? process.argv[index + 1] : process.env['INGESTION_WORKER_CONCURRENCY'] ?? '1';
+  const raw = index >= 0
+    ? process.argv[index + 1]
+    : (process.env['npm_config_concurrency'] !== undefined && process.env['npm_config_concurrency'] !== 'true'
+      ? process.env['npm_config_concurrency']
+      : npmPassthroughValue(2) ?? process.env['INGESTION_WORKER_CONCURRENCY'] ?? '1');
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 1 || value > 16) {
     throw new Error('concurrency debe ser un entero entre 1 y 16.');
@@ -51,7 +121,28 @@ function readConcurrency(): number {
   return value;
 }
 
-function printPreflight(): void {
+function isFlagSet(name: string): boolean {
+  const configName = `npm_config_${name.replace(/^--/, '').replaceAll('-', '_')}`;
+  return process.argv.includes(name) || process.env[configName] === 'true';
+}
+
+function npmArgumentIndex(name: string): number | undefined {
+  if (name === '--connection-id') return 0;
+  if (name === '--source-type') return 1;
+  return undefined;
+}
+
+function npmPassthroughValue(index: number | undefined): string | undefined {
+  if (index === undefined || process.env['npm_lifecycle_event'] === undefined) return undefined;
+  const values = process.argv.slice(2).filter((value) => !value.startsWith('--'));
+  return values[index];
+}
+
+function printPreflight(request: {
+  readonly cloudConnectionId: string | undefined;
+  readonly sourceType: 'BILLING_EXPORT' | 'TECHNICAL_METRIC' | 'INVENTORY' | undefined;
+  readonly concurrency: number;
+}): void {
   const checks = {
     DATABASE_URL: isConfigured(process.env['DATABASE_URL']),
     CREDENTIAL_ENCRYPTION_KEY: isValidCredentialKey(process.env['CREDENTIAL_ENCRYPTION_KEY']),
@@ -60,6 +151,7 @@ function printPreflight(): void {
   console.log(JSON.stringify({
     ok: Object.values(checks).every(Boolean),
     checks,
+    request,
     commands: {
       generateCredentialKey: 'node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"',
       runOnce: 'npm run ingestion:worker:once',

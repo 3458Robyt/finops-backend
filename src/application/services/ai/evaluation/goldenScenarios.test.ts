@@ -149,11 +149,12 @@ describe('qualityRubric — recommendations', () => {
     const report = evaluateRecommendationDrafts([
       draft({
         type: 'RIGHTSIZING',
-        estimatedMonthlySavings: 40,
+        estimatedMonthlySavings: 0,
         evidence: {
           evidenceLevel: 'COST_USAGE_AND_TECHNICAL',
           externalResourceId: 'i-requested',
           cloudResourceId: 'resource-1',
+          maxEstimatedMonthlySavings: 0,
           technicalEvidenceRefs: ['resource_metric_samples:i-requested:CpuUtilization:2026-04-30T00:00:00.000Z'],
           technicalSampleCount: 96,
           technicalCoverageDays: 14,
@@ -164,6 +165,27 @@ describe('qualityRubric — recommendations', () => {
 
     expect(report.passed).toBe(true);
     expect(report.checks.find((check) => check.name === 'canonicalTechnicalEvidence')?.passed).toBe(true);
+  });
+
+  test('does not fall back to a utilization percentage when canonical savings cap is zero', () => {
+    const report = evaluateRecommendationDrafts([
+      draft({
+        type: 'RIGHTSIZING',
+        estimatedMonthlySavings: 10,
+        evidence: {
+          evidenceLevel: 'COST_USAGE_AND_TECHNICAL',
+          externalResourceId: 'i-requested',
+          cloudResourceId: 'resource-1',
+          maxEstimatedMonthlySavings: 0,
+          technicalEvidenceRefs: ['resource_metric_samples:i-requested:CpuUtilization:2026-04-30T00:00:00.000Z'],
+          technicalSampleCount: 96,
+          technicalCoverageDays: 14,
+          latestTechnicalSampleAt: '2026-04-30T00:00:00.000Z',
+        },
+      }),
+    ], snapshot, undefined, undefined, buildCanonicalEvidenceSnapshot());
+
+    expect(report.checks.find((check) => check.name === 'canonicalTechnicalEvidence')?.passed).toBe(false);
   });
 
   test('rejects technical evidence without the normalized resource relationship', () => {
@@ -324,6 +346,77 @@ describe('qualityRubric — execution plan', () => {
     expect(evaluateExecutionPlan(safePlan, snapshot).checks.find((check) => check.name === 'noAutoExecution')?.passed).toBe(true);
   });
 
+  test('rejects an unconditioned manual operation even when it says authorized', () => {
+    const plan = {
+      ...validPlan,
+      steps: ['Ejecutar manualmente el cambio autorizado.'],
+    };
+
+    const report = evaluateExecutionPlan(plan, snapshot);
+    expect(report.checks.find((check) => check.name === 'manualGovernance')?.passed).toBe(false);
+  });
+
+  test('allows a manual operation only after explicit external approval', () => {
+    const plan = {
+      ...validPlan,
+      steps: ['Si el responsable obtiene aprobación externa explícita, la persona autorizada puede ejecutar manualmente el cambio.'],
+    };
+
+    const report = evaluateExecutionPlan(plan, snapshot);
+    expect(report.checks.find((check) => check.name === 'manualGovernance')?.passed).toBe(true);
+  });
+
+  test('recognizes explicit external approval expressed as an approval verb', () => {
+    const plan = {
+      ...validPlan,
+      steps: ['Solo después de que el responsable apruebe explícitamente el cambio, la persona autorizada puede ejecutar manualmente el cambio.'],
+    };
+
+    const report = evaluateExecutionPlan(plan, snapshot);
+    expect(report.checks.find((check) => check.name === 'manualGovernance')?.passed).toBe(true);
+  });
+
+  test('does not treat technical validation as approval to operate', () => {
+    const plan = {
+      ...validPlan,
+      steps: ['Solo después de validar las métricas, ejecutar manualmente el cambio.'],
+    };
+
+    const report = evaluateExecutionPlan(plan, snapshot);
+    expect(report.checks.find((check) => check.name === 'manualGovernance')?.passed).toBe(false);
+  });
+
+  test('does not accept an unspecified approval as external human authorization', () => {
+    const plan = {
+      ...validPlan,
+      steps: ['Si el cambio está aprobado, ejecutar manualmente el cambio.'],
+    };
+
+    const report = evaluateExecutionPlan(plan, snapshot);
+    expect(report.checks.find((check) => check.name === 'manualGovernance')?.passed).toBe(false);
+  });
+
+  test('allows POTENTIAL_NOT_VERIFIED as the savings status but not as recommendation status', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-prod-aws',
+      status: 'PENDING',
+    } as FinOpsRecommendation;
+    const savingsStatusPlan = {
+      ...validPlan,
+      estimatedSavings: { amount: 0, currency: 'USD', status: 'POTENTIAL_NOT_VERIFIED' },
+      risks: ['El ahorro conserva el estado POTENTIAL_NOT_VERIFIED.'],
+    };
+    const recommendationStatusPlan = {
+      ...savingsStatusPlan,
+      risks: ['La recomendación conserva el estado POTENTIAL_NOT_VERIFIED.'],
+    };
+
+    expect(evaluateExecutionPlan(savingsStatusPlan, snapshot, recommendation).checks
+      .find((check) => check.name === 'recommendationStateConsistency')?.passed).toBe(true);
+    expect(evaluateExecutionPlan(recommendationStatusPlan, snapshot, recommendation).checks
+      .find((check) => check.name === 'recommendationStateConsistency')?.passed).toBe(false);
+  });
+
   test('fails when the plan contains an executable tool or shell payload', () => {
     const unsafePlan = { ...validPlan, steps: ['Ejecutar tool_call para correr rm -rf /tmp/cache.'] };
     const report = evaluateExecutionPlan(unsafePlan, snapshot);
@@ -370,7 +463,7 @@ describe('qualityRubric — execution plan', () => {
   test('rejects an execution plan that contains an authenticated database URL', () => {
     const report = evaluateExecutionPlan({
       ...validPlan,
-      validation: ['Consultar postgresql://finops:supersecret@db.example.com/finops antes del cambio.'],
+      validation: ['Consultar postgresql://redacted:placeholder@example.test/finops antes del cambio.'],
     }, snapshot);
 
     expect(report.checks.find((check) => check.name === 'noSensitiveOutput')?.passed).toBe(false);
@@ -395,6 +488,136 @@ describe('qualityRubric — execution plan', () => {
     expect(report.checks.find((check) => check.name === 'recommendationScope')?.passed).toBe(false);
   });
 
+  test('requires every canonical resource identifier in the plan scope', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-prod-aws',
+      evidence: { cloudResourceId: 'cloud-resource-1', externalResourceId: 'bucket-logs' },
+    } as FinOpsRecommendation;
+
+    const missingResourceIds = evaluateExecutionPlan({
+      ...validPlan,
+      scope: { cloudAccountId: 'acc-prod-aws', service: 'Amazon S3' },
+    }, snapshot, recommendation);
+    const missingExternalId = evaluateExecutionPlan({
+      ...validPlan,
+      scope: { cloudAccountId: 'acc-prod-aws', cloudResourceId: 'cloud-resource-1' },
+    }, snapshot, recommendation);
+    const exactScope = evaluateExecutionPlan({
+      ...validPlan,
+      scope: {
+        cloudAccountId: 'acc-prod-aws',
+        cloudResourceId: 'cloud-resource-1',
+        externalResourceId: 'bucket-logs',
+      },
+    }, snapshot, recommendation);
+
+    expect(missingResourceIds.checks.find((check) => check.name === 'recommendationScope')?.passed).toBe(false);
+    expect(missingExternalId.checks.find((check) => check.name === 'recommendationScope')?.passed).toBe(false);
+    expect(exactScope.checks.find((check) => check.name === 'recommendationScope')?.passed).toBe(true);
+  });
+
+  test('requires the plan account to match the recommendation, not just any snapshot account', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-other-account',
+      evidence: {},
+    } as FinOpsRecommendation;
+    const report = evaluateExecutionPlan({
+      ...validPlan,
+      scope: { cloudAccountId: 'acc-prod-aws' },
+    }, snapshot, recommendation);
+
+    expect(report.checks.find((check) => check.name === 'recommendationScope')?.passed).toBe(false);
+  });
+
+  test('rejects monetary values that are not present in recommendation evidence', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-prod-aws',
+      cloudResourceId: 'cloud-resource-1',
+      type: 'RIGHTSIZING',
+      status: 'PENDING',
+      currency: 'USD',
+      estimatedMonthlySavings: 42.25,
+      evidence: {
+        observedCost: 169,
+        normalizedMonthlyCost: 169,
+        potentialMonthlySavings: 42.25,
+      },
+    } as FinOpsRecommendation;
+    const plan = {
+      ...validPlan,
+      scope: { cloudAccountId: 'acc-prod-aws', cloudResourceId: 'cloud-resource-1' },
+      estimatedSavings: { amount: 42.25, currency: 'USD' },
+      steps: ['La evidencia autorizada registra 157.50 USD; validar antes de continuar.'],
+    };
+
+    const report = evaluateExecutionPlan(plan, snapshot, recommendation);
+    expect(report.checks.find((check) => check.name === 'costProvenance')?.passed).toBe(false);
+  });
+
+  test('does not treat observed cost as authorized savings', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-prod-aws',
+      status: 'PENDING',
+      currency: 'USD',
+      estimatedMonthlySavings: 0,
+      evidence: { observedCost: 169, normalizedMonthlyCost: 169 },
+    } as FinOpsRecommendation;
+    const plan = {
+      ...validPlan,
+      estimatedSavings: { amount: 169, currency: 'USD' },
+    };
+
+    expect(evaluateExecutionPlan(plan, snapshot, recommendation).checks
+      .find((check) => check.name === 'costProvenance')?.passed).toBe(false);
+  });
+
+  test('accepts only the exact savings amount from a verified priced alternative', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-prod-aws',
+      status: 'PENDING',
+      currency: 'USD',
+      estimatedMonthlySavings: 42.25,
+      evidence: {
+        savingsCalculation: {
+          provenance: 'SERVER_DETERMINISTIC',
+          version: 'priced-alternative/v1',
+          status: 'CALCULATED',
+          formula: 'BASELINE_MINUS_ALTERNATIVE_MONTHLY',
+          baselineMonthlyCost: 169,
+          alternativeMonthlyCost: 126.75,
+          amount: 42.25,
+          currency: 'USD',
+          priceEvidenceRef: 'fixture:price-catalog:instance-type',
+        },
+      },
+    } as FinOpsRecommendation;
+    const plan = {
+      ...validPlan,
+      estimatedSavings: { amount: 42.25, currency: 'USD' },
+    };
+
+    expect(evaluateExecutionPlan(plan, snapshot, recommendation).checks
+      .find((check) => check.name === 'costProvenance')?.passed).toBe(true);
+  });
+
+  test('rejects monetary figures in free-text plan sections', () => {
+    const recommendation = {
+      cloudAccountId: 'acc-prod-aws',
+      status: 'PENDING',
+      currency: 'USD',
+      evidence: {},
+    } as FinOpsRecommendation;
+    const plan = { ...validPlan, steps: ['Validar un costo observado de $169.'] };
+    expect(evaluateExecutionPlan(plan, snapshot, recommendation).checks
+      .find((check) => check.name === 'costProvenance')?.passed).toBe(false);
+  });
+
+  test('rejects positive structured savings when no recommendation is available', () => {
+    const plan = { ...validPlan, estimatedSavings: { amount: 10, currency: 'USD' } };
+    expect(evaluateExecutionPlan(plan, snapshot).checks
+      .find((check) => check.name === 'costProvenance')?.passed).toBe(false);
+  });
+
   test('fails when normalized savings exceed the candidate cap', () => {
     const draft = {
       cloudAccountId: 'acc-prod-aws',
@@ -411,6 +634,90 @@ describe('qualityRubric — execution plan', () => {
     } as AiRecommendationDraft;
 
     const report = evaluateRecommendationDrafts([draft], snapshot);
+    expect(report.checks.find((check) => check.name === 'candidateSavingsCap')?.passed).toBe(false);
+  });
+
+  test('rejects root savings and unverified potential when deterministic candidate cap is zero', () => {
+    const readinessReport = {
+      candidates: [{
+        id: 'usage-1',
+        readiness: 'GENERATABLE',
+        cloudAccountId: 'acc-prod-aws',
+        provider: 'AWS',
+        serviceName: 'Amazon EC2',
+        opportunityType: 'USAGE_OPTIMIZATION',
+        evidenceLevelAllowed: 'COST_AND_USAGE',
+        requiresTechnicalValidation: false,
+        observedCost: 500,
+        maxEstimatedMonthlySavings: 0,
+        currency: 'USD',
+        sourceFacts: ['Consumo y costo FOCUS.'],
+        costEvidenceRefs: ['cost_metrics:aggregate:usage'],
+        technicalEvidenceRefs: [],
+        reasons: [],
+        forbiddenClaims: [],
+      }],
+      blocked: [],
+      deferred: [],
+      summary: 'test',
+    } as unknown as Parameters<typeof evaluateRecommendationDrafts>[5];
+    const unsupported = draft({
+      estimatedMonthlySavings: 10,
+      evidence: {
+        candidateId: 'usage-1',
+        evidenceLevel: 'COST_AND_USAGE',
+        requiresTechnicalValidation: false,
+        maxEstimatedMonthlySavings: 0,
+        observedCost: 500,
+        normalizedMonthlyCost: 500,
+        potentialMonthlySavings: 10,
+      },
+    });
+
+    const report = evaluateRecommendationDrafts([unsupported], snapshot, undefined, undefined, undefined, readinessReport);
+
+    expect(report.checks.find((check) => check.name === 'candidateSavingsCap')?.passed).toBe(false);
+  });
+
+  test('rejects a quantified savings claim in prose when deterministic cap is zero', () => {
+    const readinessReport = {
+      candidates: [{
+        id: 'usage-1', readiness: 'GENERATABLE', cloudAccountId: 'acc-prod-aws', provider: 'AWS',
+        serviceName: 'Amazon EC2', opportunityType: 'USAGE_OPTIMIZATION', evidenceLevelAllowed: 'COST_AND_USAGE',
+        requiresTechnicalValidation: false, observedCost: 500, maxEstimatedMonthlySavings: 0, currency: 'USD',
+        sourceFacts: [], costEvidenceRefs: ['cost_metrics:aggregate:usage'], technicalEvidenceRefs: [], reasons: [], forbiddenClaims: [],
+      }], blocked: [], deferred: [], summary: 'test',
+    } as unknown as Parameters<typeof evaluateRecommendationDrafts>[5];
+    const unsupported = draft({
+      estimatedMonthlySavings: undefined,
+      title: 'Reducir la factura en 25 USD al mes',
+      evidence: {
+        candidateId: 'usage-1', evidenceLevel: 'COST_AND_USAGE', requiresTechnicalValidation: false,
+        maxEstimatedMonthlySavings: 0, observedCost: 500, normalizedMonthlyCost: 500,
+      },
+    });
+
+    const report = evaluateRecommendationDrafts([unsupported], snapshot, undefined, undefined, undefined, readinessReport);
+
+    expect(report.checks.find((check) => check.name === 'savingsNarrativeCap')?.passed).toBe(false);
+  });
+
+  test('rejects unverified potential alone when deterministic candidate cap is zero', () => {
+    const readinessReport = {
+      candidates: [{
+        id: 'usage-1', readiness: 'GENERATABLE', cloudAccountId: 'acc-prod-aws', provider: 'AWS',
+        serviceName: 'Amazon EC2', opportunityType: 'USAGE_OPTIMIZATION', evidenceLevelAllowed: 'COST_AND_USAGE',
+        requiresTechnicalValidation: false, observedCost: 500, maxEstimatedMonthlySavings: 0, currency: 'USD',
+        sourceFacts: ['Consumo y costo FOCUS.'], costEvidenceRefs: ['cost_metrics:aggregate:usage'],
+        technicalEvidenceRefs: [], reasons: [], forbiddenClaims: [],
+      }], blocked: [], deferred: [], summary: 'test',
+    } as unknown as Parameters<typeof evaluateRecommendationDrafts>[5];
+
+    const report = evaluateRecommendationDrafts([draft({
+      estimatedMonthlySavings: undefined,
+      evidence: { candidateId: 'usage-1', maxEstimatedMonthlySavings: 0, potentialMonthlySavings: 10 },
+    })], snapshot, undefined, undefined, undefined, readinessReport);
+
     expect(report.checks.find((check) => check.name === 'candidateSavingsCap')?.passed).toBe(false);
   });
 });

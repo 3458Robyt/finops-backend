@@ -40,7 +40,7 @@ function buildResponse(): Response & { statusCode?: number; body?: unknown } {
 function buildRequest(role: 'FINOPS_TECHNICIAN' | 'VIEWER', days: string): Request {
   return {
     auth: {
-      userId: 'user-1', tenantId: 'tenant-a', email: 'tech@example.com',
+      userId: 'user-1', tenantId: 'tenant-a', email: 'test-user-0022@example.test',
       role, jwtId: 'jwt-1',
     },
     query: { days },
@@ -79,5 +79,28 @@ describe('AgentController quality report', () => {
 
     expect(response.statusCode).toBe(403);
     expect(getReport).not.toHaveBeenCalled();
+  });
+
+  test('does not allow a FinOps technician to activate agent instructions', async () => {
+    const validateAndActivateProfile = vi.fn();
+    const controller = new AgentController(
+      { validateAndActivateProfile } as unknown as AgentInstructionService,
+      {} as IAgentContextRepository,
+      {} as ContextSummaryBuilderService,
+      {} as AgentQualityService,
+    );
+    const response = buildResponse();
+    const request = {
+      auth: {
+        userId: 'user-1', tenantId: 'tenant-a', email: 'test-user-0022@example.test',
+        role: 'FINOPS_TECHNICIAN', jwtId: 'jwt-1',
+      },
+      body: {},
+    } as unknown as Request;
+
+    await controller.activateProfile(request, response);
+
+    expect(response.statusCode).toBe(403);
+    expect(validateAndActivateProfile).not.toHaveBeenCalled();
   });
 });

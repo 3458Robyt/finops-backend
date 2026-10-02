@@ -10,7 +10,7 @@ describe('technical metric query helpers', () => {
     const bucketStart = new Date('2026-08-11T12:00:00.000Z');
     const cursor = buildMetricSeriesCursor({
       bucket_start: bucketStart,
-      external_resource_id: 'ocid1.instance|demo',
+      external_resource_id: 'ocid1.instance.oc1..exampleid0007|demo',
       cloud_resource_id: 'resource-1',
       metric_name: 'CpuUtilization',
       metric_unit: '%',
@@ -27,7 +27,7 @@ describe('technical metric query helpers', () => {
     expect(parseMetricSeriesCursor(cursor)).toEqual({
       kind: 'compound',
       bucketStart,
-      externalResourceId: 'ocid1.instance|demo',
+      externalResourceId: 'ocid1.instance.oc1..exampleid0007|demo',
       cloudResourceId: 'resource-1',
       providerNamespace: '',
       regionId: '',

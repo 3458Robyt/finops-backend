@@ -19,7 +19,7 @@ describe('TelegramLinkService', () => {
     const service = new TelegramLinkService(new LinkRepositoryFake(), new ClientFake());
 
     await expect(service.createLink(clientActor(), {
-      email: 'client@example.com',
+      email: 'test-user-0007@example.test',
       chatId: '123',
     })).rejects.toBeInstanceOf(AuthorizationError);
   });
@@ -29,7 +29,7 @@ describe('TelegramLinkService', () => {
     const service = new TelegramLinkService(repository, new ClientFake());
 
     const link = await service.createLink(adminActor(), {
-      email: 'client@example.com',
+      email: 'test-user-0007@example.test',
       chatId: '123',
       telegramUsername: '@client_user',
     });
@@ -46,7 +46,7 @@ describe('TelegramLinkService', () => {
     const service = new TelegramLinkService(repository, new ClientFake());
 
     await expect(service.createLink(adminActor(), {
-      email: 'client@example.com',
+      email: 'test-user-0007@example.test',
       chatId: '123',
     })).rejects.toMatchObject<Partial<FinOpsBaseError>>({ code: 'CONFLICT' });
   });
@@ -120,7 +120,7 @@ class LinkRepositoryFake implements ITelegramRepository {
   public auditEvents: CreateTelegramAuditEventInput[] = [];
 
   public async findUserByEmailInTenant(tenantId: string, email: string): Promise<TelegramLinkedUser | null> {
-    if (tenantId !== 'tenant-1' || email !== 'client@example.com') {
+    if (tenantId !== 'tenant-1' || email !== 'test-user-0007@example.test') {
       return null;
     }
 
@@ -225,7 +225,7 @@ function adminActor(): AuthContext {
   return {
     userId: 'admin-1',
     tenantId: 'tenant-1',
-    email: 'admin@example.com',
+    email: 'test-user-0002@example.test',
     role: 'ADMIN',
     jwtId: 'jwt-1',
   };
@@ -235,7 +235,7 @@ function clientActor(): AuthContext {
   return {
     userId: 'user-1',
     tenantId: 'tenant-1',
-    email: 'client@example.com',
+    email: 'test-user-0007@example.test',
     role: 'CLIENT_VIEWER',
     jwtId: 'jwt-2',
   };
@@ -255,7 +255,7 @@ function buildLink(overrides: Partial<TelegramChatLink> = {}): TelegramChatLink 
     user: {
       id: 'user-1',
       tenantId: 'tenant-1',
-      email: 'client@example.com',
+      email: 'test-user-0007@example.test',
       name: 'Client',
       role: 'CLIENT_VIEWER',
       status: 'ACTIVE',

@@ -2,6 +2,7 @@ import type { INotificationRepository } from '../../domain/interfaces/INotificat
 import type { IRecommendationRepository } from '../../domain/interfaces/IRecommendationRepository.js';
 import type { InAppNotification } from '../../domain/models/InAppNotification.js';
 import type { FinOpsRecommendation } from '../../domain/models/FinOpsRecommendation.js';
+import { isFinancialReviewEvidence } from '../../domain/models/recommendationEconomics.js';
 
 /** Parámetros de consulta para obtener los recordatorios de ahorro de un usuario. */
 export interface SavingsReminderQuery {
@@ -129,7 +130,8 @@ export class SavingsReminderService {
     now: Date,
   ): InAppNotification[] {
     return recommendations
-      .filter((recommendation) => recommendation.status === 'PENDING' || recommendation.status === 'APPROVED')
+      .filter((recommendation) => (recommendation.status === 'PENDING' || recommendation.status === 'APPROVED')
+        && !isFinancialReviewEvidence(recommendation.evidence))
       .map((recommendation) => this.toSavingsReminderPreview(tenantId, userId, recommendation, now))
       .filter((notification): notification is InAppNotification => notification !== null)
       .sort((left, right) => (right.missedSavingsAmount ?? 0) - (left.missedSavingsAmount ?? 0))

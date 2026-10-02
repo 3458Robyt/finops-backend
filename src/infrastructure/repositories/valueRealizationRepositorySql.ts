@@ -7,6 +7,33 @@ const allowedStatuses = new Set<SavingsMeasurementStatus | 'NO_EXECUTION'>([
   'WAITING_FOR_DATA', 'READY', 'CALCULATED', 'INSUFFICIENT_EVIDENCE', 'VERIFIED', 'REJECTED', 'FAILED', 'NO_EXECUTION',
 ]);
 
+const hasTrustedSavingsCalculation = Prisma.sql`
+  r.evidence -> 'savingsCalculation' ->> 'provenance' = 'SERVER_DETERMINISTIC'
+  AND r.evidence -> 'savingsCalculation' ->> 'version' = 'priced-alternative/v1'
+  AND r.evidence -> 'savingsCalculation' ->> 'status' = 'CALCULATED'
+  AND r.evidence -> 'savingsCalculation' ->> 'formula' = 'BASELINE_MINUS_ALTERNATIVE_MONTHLY'
+  AND upper(r.evidence -> 'savingsCalculation' ->> 'currency') = upper(r.currency)
+  AND COALESCE(r.evidence -> 'savingsCalculation' ->> 'priceEvidenceRef', '') <> ''
+  AND CASE
+    WHEN r.evidence -> 'savingsCalculation' ->> 'baselineMonthlyCost' ~ '^[0-9]+(\\.[0-9]+)?$'
+      AND r.evidence -> 'savingsCalculation' ->> 'alternativeMonthlyCost' ~ '^[0-9]+(\\.[0-9]+)?$'
+      AND r.evidence -> 'savingsCalculation' ->> 'amount' ~ '^[0-9]+(\\.[0-9]+)?$'
+    THEN
+      (r.evidence -> 'savingsCalculation' ->> 'baselineMonthlyCost')::numeric
+        > (r.evidence -> 'savingsCalculation' ->> 'alternativeMonthlyCost')::numeric
+      AND abs(
+        (r.evidence -> 'savingsCalculation' ->> 'baselineMonthlyCost')::numeric
+        - (r.evidence -> 'savingsCalculation' ->> 'alternativeMonthlyCost')::numeric
+        - COALESCE(r.estimated_monthly_savings, 0)::numeric
+      ) <= 0.01
+      AND abs(
+        (r.evidence -> 'savingsCalculation' ->> 'amount')::numeric
+        - COALESCE(r.estimated_monthly_savings, 0)::numeric
+      ) <= 0.01
+    ELSE FALSE
+  END
+`;
+
 export function portfolioCte(tenantId: string): Prisma.Sql {
   return Prisma.sql`
     WITH latest_executions AS (
@@ -40,7 +67,19 @@ export function portfolioCte(tenantId: string): Prisma.Sql {
         r.currency,
         le.currency AS reported_currency,
         lm.currency AS measurement_currency,
-        COALESCE(r.estimated_monthly_savings, 0)::float8 AS estimated_monthly_savings,
+        CASE
+          WHEN r.evidence ->> 'reviewScope' = 'FINANCIAL' OR r.evidence ->> 'financialReviewOnly' = 'true' THEN 0
+          WHEN ${hasTrustedSavingsCalculation} THEN COALESCE(r.estimated_monthly_savings, 0)::float8
+          ELSE 0
+        END AS estimated_monthly_savings,
+        CASE
+          WHEN r.status::text IN ('APPROVED', 'MANUAL_COMPLETED')
+            AND COALESCE(r.evidence ->> 'reviewScope', '') <> 'FINANCIAL'
+            AND COALESCE(r.evidence ->> 'financialReviewOnly', '') <> 'true'
+            AND ${hasTrustedSavingsCalculation}
+          THEN COALESCE(r.estimated_monthly_savings, 0)::float8
+          ELSE 0
+        END AS approved_monthly_savings,
         COALESCE(le.observed_monthly_savings, 0)::float8 AS reported_monthly_savings,
         le.id AS manual_execution_id,
         le.status::text AS manual_execution_status,

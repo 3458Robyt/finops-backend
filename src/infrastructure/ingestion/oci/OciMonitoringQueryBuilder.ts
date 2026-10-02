@@ -113,7 +113,14 @@ export function buildOciResourceMetricQuery(
   statistic: MetricStatistic = 'MEAN',
   interval = '30m',
 ): string {
-  return `${definition.metricName}[${interval}]{resourceId = "${escapeMqlValue(definition.resourceId)}"}.${ociStatisticExpression(statistic)}`;
+  const dimensions = {
+    resourceId: definition.resourceId,
+    ...nonResourceDimensions(definition.dimensions),
+  };
+  const selector = Object.entries(dimensions)
+    .map(([key, value]) => `${key} = "${escapeMqlValue(value)}"`)
+    .join(', ');
+  return `${definition.metricName}[${interval}]{${selector}}.${ociStatisticExpression(statistic)}`;
 }
 
 function nonResourceDimensions(

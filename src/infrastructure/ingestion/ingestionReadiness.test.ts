@@ -5,8 +5,18 @@ import {
   summarizeReadinessJobResult,
   summarizeReadinessMetadata,
 } from './ingestionReadiness.js';
+import { isIngestionValidationFresh } from './ingestionValidationFreshness.js';
 
 describe('ingestionReadiness', () => {
+  it('uses an inclusive freshness limit and rejects future validation timestamps', () => {
+    const now = new Date('2026-09-24T19:36:00.000Z');
+
+    expect(isIngestionValidationFresh(new Date('2026-09-23T19:36:00.000Z'), now)).toBe(true);
+    expect(isIngestionValidationFresh(new Date('2026-09-23T19:35:59.999Z'), now)).toBe(false);
+    expect(isIngestionValidationFresh(new Date('2026-09-24T19:36:00.001Z'), now)).toBe(false);
+    expect(isIngestionValidationFresh(null, now)).toBe(false);
+  });
+
   it('summarizes provider-specific metadata counts', () => {
     expect(summarizeReadinessMetadata('oci', {
       ociMetricDefinitions: [{ metricName: 'CpuUtilization' }],
@@ -26,6 +36,14 @@ describe('ingestionReadiness', () => {
       awsMetricDefinitions: 0,
       awsFocusExportObjects: 1,
       awsFocusExportLocations: 0,
+    });
+  });
+
+  it('uses enabled table definitions when connection metadata is stale', () => {
+    expect(summarizeReadinessMetadata('oci', {}, 372)).toMatchObject({
+      ociMetricDefinitions: 372,
+      ociFocusReportObjects: 0,
+      ociFocusReportLocations: 0,
     });
   });
 
@@ -113,12 +131,78 @@ describe('ingestionReadiness', () => {
     expect(summary.connections[0]?.onboardingStatus).toBe('NO_CREDENTIAL');
   });
 
+  it('does not hide successful sources behind a bounded technical job history', () => {
+    const summary = buildIngestionReadinessSummary({
+      generatedAt: new Date('2026-09-22T12:00:00.000Z'),
+      connections: [{
+        id: 'oci-2',
+        name: 'OCI TAK',
+        providerCode: 'oci',
+        lastValidatedAt: new Date('2026-09-22T11:00:00.000Z'),
+        metadata: { ociMetricDefinitions: [{ metricName: 'CpuUtilization' }] },
+        credentialPurposes: ['OPERATIONAL'],
+        successfulSourceTypes: ['INVENTORY', 'BILLING_EXPORT', 'TECHNICAL_METRIC'],
+        recentJobs: Array.from({ length: 5 }, (_, index) => ({
+          id: `metric-${index}`,
+          sourceType: 'TECHNICAL_METRIC',
+          status: 'SUCCESS' as const,
+          targetStart: new Date('2026-09-22T10:00:00.000Z'),
+          targetEnd: new Date('2026-09-22T10:30:00.000Z'),
+          resultSummary: { metricSamples: 10 },
+        })),
+      }],
+    });
+
+    expect(summary.connections[0]?.onboardingStatus).toBe('READY');
+  });
+
+  it('blocks readiness when the latest capability validation is older than the scheduler limit', () => {
+    const summary = buildIngestionReadinessSummary({
+      generatedAt: new Date('2026-09-24T19:36:00.000Z'),
+      connections: [{
+        id: 'oci-stale-validation',
+        name: 'OCI stale validation',
+        providerCode: 'oci',
+        lastValidatedAt: new Date('2026-09-19T15:18:50.000Z'),
+        metadata: {
+          capabilityValidation: {
+            checkedAt: '2026-09-19T15:18:50.000Z',
+            capabilities: ['IDENTITY', 'INVENTORY', 'COSTS', 'METRICS'].map((capability) => ({
+              capability,
+              status: 'AVAILABLE',
+              message: 'Available',
+            })),
+          },
+        },
+        credentialPurposes: ['OPERATIONAL'],
+        successfulSourceTypes: ['INVENTORY', 'BILLING_EXPORT', 'TECHNICAL_METRIC'],
+        recentJobs: [],
+      }],
+    });
+
+    expect(summary.ok).toBe(false);
+    expect(summary.connections[0]?.onboardingStatus).toBe('REQUIRES_VALIDATION');
+    expect(summary.issues).toContainEqual(expect.objectContaining({
+      connectionId: 'oci-stale-validation',
+      severity: 'BLOCKER',
+      message: 'La validación de capacidades expiró; vuelve a validar antes de ingerir.',
+      actionCode: 'VALIDATE_ACCESS',
+    }));
+  });
+
   it('summarizes only safe job result fields', () => {
     expect(summarizeReadinessJobResult({
       providerCode: 'oci',
       sourceType: 'TECHNICAL_METRIC',
       apiCallCount: 11,
       metricSamples: 11,
+      coverage: {
+        providerRetries: 2,
+        providerRateLimitRetries: 1,
+        providerTimeoutRetries: 1,
+        providerTransientRetries: 0,
+        secret: 'do-not-return',
+      },
       secret: 'do-not-return',
     })).toEqual({
       providerCode: 'oci',
@@ -128,6 +212,12 @@ describe('ingestionReadiness', () => {
       focusRows: undefined,
       metricSamples: 11,
       warnings: undefined,
+      retryTelemetry: {
+        providerRetries: 2,
+        providerRateLimitRetries: 1,
+        providerTimeoutRetries: 1,
+        providerTransientRetries: 0,
+      },
     });
   });
 

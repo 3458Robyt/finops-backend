@@ -42,6 +42,13 @@ export class ProcessHeartbeatService {
     return stopped;
   }
 
+  public async reconcileStale(now = new Date()): Promise<number> {
+    const staleBefore = new Date(now.getTime() - this.staleAfterMs);
+    const stopped = await this.repository.markStale(staleBefore, now);
+    this.metricsRegistry?.increment('process_heartbeat_stale_reconciliations_total', { outcome: 'success' });
+    return stopped;
+  }
+
   public async isFresh(processId: string, now = new Date()): Promise<boolean> {
     const heartbeat = await this.repository.findById(processId);
     return heartbeat !== null && isFreshHeartbeat(heartbeat, now, this.staleAfterMs);

@@ -4,6 +4,7 @@ import {
   type ScheduleableIngestionConnection,
 } from './ingestionJobScheduler.js';
 import { buildIngestionConfigurationHash } from './ingestionConfigurationHash.js';
+import { buildMissingTechnicalMetricJobs } from './ingestionMetricGapPlanner.js';
 
 const now = new Date('2026-06-05T12:00:00.000Z');
 const defaultOptions = {
@@ -43,7 +44,7 @@ describe('buildIngestionSchedulePlan', () => {
       cloudConnectionId: 'oci_1',
       providerCode: 'oci',
       sourceType: 'TECHNICAL_METRIC',
-      targetStart: new Date('2026-03-07T12:00:00.000Z'),
+      targetStart: new Date('2026-03-07T18:00:00.000Z'),
       targetEnd: now,
       maxAttempts: 1,
     }));
@@ -250,6 +251,60 @@ describe('buildIngestionSchedulePlan', () => {
     }));
   });
 
+  it('does not schedule an OCI metric window on the exact rolling-retention boundary', () => {
+    const schedule = buildIngestionSchedulePlan([buildOciConnection()], {
+      ...defaultOptions,
+      now: new Date('2026-06-05T23:00:00.000Z'),
+      metricCatchupDays: 90,
+    });
+
+    expect(schedule.jobs).toContainEqual(expect.objectContaining({
+      sourceType: 'TECHNICAL_METRIC',
+      targetStart: new Date('2026-03-08T05:00:00.000Z'),
+    }));
+  });
+
+  it('retries a partial coverage segment instead of treating it as complete', () => {
+    const plan = buildIngestionSchedulePlan([buildOciConnection({
+      metricCoverageWindowStarts: undefined,
+      ingestionCoverageSegments: [{
+        sourceType: 'TECHNICAL_METRIC',
+        status: 'PARTIAL',
+        targetStart: new Date('2026-06-04T12:00:00.000Z'),
+        targetEnd: new Date('2026-06-04T18:00:00.000Z'),
+      }],
+    })], { ...defaultOptions, metricCatchupDays: 1, metricCatchupWindowMinutes: 360, maxMetricBackfillJobsPerConnection: 1 });
+
+    expect(plan.jobs).toContainEqual(expect.objectContaining({
+      sourceType: 'TECHNICAL_METRIC',
+      targetStart: new Date('2026-06-04T12:00:00.000Z'),
+      targetEnd: now,
+      reason: 'Metricas tecnicas configuradas; se recupera la ventana faltante desde la última cobertura.',
+    }));
+  });
+
+  it('creates a bounded gap job for a partial segment in the metric gap planner', () => {
+    const jobs = buildMissingTechnicalMetricJobs(
+      buildOciConnection({
+        ingestionCoverageSegments: [{
+          sourceType: 'TECHNICAL_METRIC',
+          status: 'PARTIAL',
+          targetStart: new Date('2026-06-04T12:00:00.000Z'),
+          targetEnd: new Date('2026-06-04T18:00:00.000Z'),
+        }],
+      }),
+      'oci',
+      { ...defaultOptions, metricCatchupDays: 1, metricCatchupWindowMinutes: 360, maxMetricBackfillJobsPerConnection: 1 },
+      technicalConfigurationHash(),
+      undefined,
+    );
+
+    expect(jobs).toEqual([expect.objectContaining({
+      targetStart: new Date('2026-06-04T12:00:00.000Z'),
+      targetEnd: new Date('2026-06-04T18:00:00.000Z'),
+    })]);
+  });
+
   it('does not recreate a successful window explicitly classified as no data', () => {
     const plan = buildIngestionSchedulePlan([
       buildOciConnection({
@@ -261,6 +316,23 @@ describe('buildIngestionSchedulePlan', () => {
           targetStart: new Date('2026-06-04T12:00:00.000Z'),
           targetEnd: new Date('2026-06-04T18:00:00.000Z'),
           resultSummary: { coverage: { samples: 0 } },
+        }],
+      }),
+    ], { ...defaultOptions, metricCatchupDays: 1, metricCatchupWindowMinutes: 360, maxMetricBackfillJobsPerConnection: 1 });
+
+    expect(plan.jobs).not.toContainEqual(expect.objectContaining({
+      sourceType: 'TECHNICAL_METRIC',
+      targetStart: new Date('2026-06-04T12:00:00.000Z'),
+    }));
+  });
+
+  it('does not enqueue a window already classified as no data by coverage', () => {
+    const plan = buildIngestionSchedulePlan([
+      buildOciConnection({
+        metricCoverageWindowStarts: [],
+        metricCoverageWindows: [{
+          windowStart: new Date('2026-06-04T12:00:00.000Z'),
+          status: 'NO_DATA',
         }],
       }),
     ], { ...defaultOptions, metricCatchupDays: 1, metricCatchupWindowMinutes: 360, maxMetricBackfillJobsPerConnection: 1 });

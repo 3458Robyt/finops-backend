@@ -22,6 +22,7 @@ export function createMasterAdminRoutes(
   router.post('/ingestion-jobs/reconcile', requireAuth, ingestionController.reconcile);
   router.delete('/ingestion-jobs/pending', requireAuth, ingestionController.deletePending);
   router.post('/ingestion-jobs/:jobId/cancel', requireAuth, ingestionController.cancel);
+  router.post('/ingestion-jobs/:jobId/reprocess', requireAuth, ingestionController.reprocess);
   router.post('/ingestion-jobs/:jobId/archive', requireAuth, ingestionController.archive);
 
   return router;

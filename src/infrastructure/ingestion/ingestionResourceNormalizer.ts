@@ -13,6 +13,7 @@ export interface MetricResourceContext {
 export function buildMetricDerivedResources(
   context: MetricResourceContext,
   samples: readonly NormalizedResourceMetricSample[],
+  knownExternalResourceIds?: ReadonlySet<string>,
 ): readonly NormalizedCloudResource[] {
   const byExternalResourceId = new Map<string, {
     readonly sample: NormalizedResourceMetricSample;
@@ -23,6 +24,9 @@ export function buildMetricDerivedResources(
   for (const sample of samples) {
     const externalResourceId = normalizeExternalResourceId(sample.externalResourceId);
     if (externalResourceId === undefined) {
+      continue;
+    }
+    if (knownExternalResourceIds?.has(externalResourceId) === true) {
       continue;
     }
 

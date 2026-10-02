@@ -32,13 +32,13 @@ describe('OutboundChannelDeliveryService', () => {
     const result = await service.sendEmail({
       tenantId: 'tenant-1',
       userId: 'user-1',
-      to: 'user@example.com',
+      to: 'test-user-0027@example.test',
       subject: 'Prueba',
       text: 'Mensaje',
       messageType: 'TEST',
     });
 
-    expect(result).toMatchObject({ channel: 'EMAIL', status: 'PENDING', metadata: { to: 'user@example.com' } });
+    expect(result).toMatchObject({ channel: 'EMAIL', status: 'PENDING', metadata: { to: 'test-user-0027@example.test' } });
     expect(email.send).not.toHaveBeenCalled();
   });
 

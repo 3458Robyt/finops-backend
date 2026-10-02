@@ -1,12 +1,13 @@
 import 'dotenv/config';
 
 import { resolve } from 'node:path';
-import { assertIntegrationSchema, createIntegrationPool, runIntegrationCommand } from './integrationRuntime.js';
+import { assertIntegrationSchema, assertLocalIntegrationDatabase, createIntegrationPool, runIntegrationCommand } from './integrationRuntime.js';
 
 const sourceUrl = process.env['DATABASE_URL'];
 if (sourceUrl === undefined || sourceUrl.trim() === '') {
   throw new Error('DATABASE_URL is required to run the isolated AI quality integration suite.');
 }
+assertLocalIntegrationDatabase(sourceUrl);
 
 const schema = `finops_e2e_agent_quality_${Date.now().toString(36)}`;
 const isolatedUrl = withSchema(sourceUrl, schema);

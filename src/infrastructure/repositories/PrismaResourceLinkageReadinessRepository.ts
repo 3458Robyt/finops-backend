@@ -39,6 +39,7 @@ interface ResourceRow {
   readonly id: string;
   readonly cloud_connection_id: string;
   readonly external_resource_id: string;
+  readonly name: string | null;
   readonly provider: string;
   readonly service_name: string;
   readonly resource_type: string;
@@ -80,6 +81,7 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
   ) {}
 
   public async getForTenant(tenantId: string, resourceLimit: number): Promise<ResourceLinkageReadiness> {
+    const startedAt = Date.now();
     const costCoverage = await queryCostLinkageCoverage(this.prisma, tenantId);
     const cost = costCoverage.total.coverage;
     const [metric, recommendations, inventory, resources, resourceCounts, connections, freshness, latestReconciliation, tagGovernance] = await Promise.all([
@@ -114,6 +116,12 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
 
     return {
       generatedAt: new Date(),
+      performance: {
+        queryMs: Date.now() - startedAt,
+        metricCoverageSource: 'STREAM_SUMMARIES',
+        metricResourceSource: 'STREAM_SUMMARIES',
+        metricFreshnessSource: 'STREAM_SUMMARIES',
+      },
       status: !hasData
         ? 'NO_DATA'
         : inventory === 0 && (cost.eligible > 0 || metric.eligible > 0)
@@ -146,13 +154,13 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
     const [countRows, reasonRows] = await Promise.all([
       this.prisma.$queryRaw<CountRow[]>(Prisma.sql`
         SELECT
-          count(*)::bigint AS total,
-          count(*)::bigint AS eligible,
-          count(*) FILTER (WHERE cloud_resource_id IS NOT NULL)::bigint AS linked,
+          COALESCE(SUM(sample_count), 0)::bigint AS total,
+          COALESCE(SUM(sample_count), 0)::bigint AS eligible,
+          COALESCE(SUM(sample_count) FILTER (WHERE cloud_resource_id IS NOT NULL), 0)::bigint AS linked,
           0::bigint AS not_eligible,
-          count(*) FILTER (WHERE cloud_resource_id IS NULL)::bigint AS unresolved
-          ,count(*) FILTER (WHERE cloud_resource_id IS NULL AND resource_link_reason = 'AMBIGUOUS_RESOURCE_ID')::bigint AS ambiguous
-        FROM resource_metric_samples
+          COALESCE(SUM(sample_count) FILTER (WHERE cloud_resource_id IS NULL), 0)::bigint AS unresolved,
+          0::bigint AS ambiguous
+        FROM resource_metric_stream_summaries
         WHERE tenant_id = ${tenantId}
       `),
       this.prisma.$queryRaw<ReasonRow[]>(Prisma.sql`
@@ -196,7 +204,7 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
         WHERE tenant_id = ${tenantId} AND cloud_resource_id IS NOT NULL
       ), metric_resources AS (
         SELECT DISTINCT cloud_resource_id
-        FROM resource_metric_samples
+        FROM resource_metric_stream_summaries
         WHERE tenant_id = ${tenantId} AND cloud_resource_id IS NOT NULL
       )
       SELECT
@@ -212,7 +220,7 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
       SELECT
         (SELECT max(last_seen_at) FROM cloud_resources WHERE tenant_id = ${tenantId}) AS inventory_at,
         (SELECT max(charge_period_end) FROM cost_metrics WHERE tenant_id = ${tenantId}) AS costs_at,
-        (SELECT max(sampled_at) FROM resource_metric_samples WHERE tenant_id = ${tenantId}) AS metrics_at
+        (SELECT max(last_sampled_at) FROM resource_metric_stream_summaries WHERE tenant_id = ${tenantId}) AS metrics_at
     `);
     const row = rows[0];
     return buildResourceFreshness({
@@ -228,6 +236,7 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
         SELECT id,
                cloud_connection_id,
                external_resource_id,
+               name,
                provider::text AS provider,
                service_name,
                resource_type,
@@ -244,8 +253,8 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
         WHERE cm.tenant_id = ${tenantId}
         GROUP BY cm.cloud_resource_id
       ), metric_counts AS (
-        SELECT rms.cloud_resource_id, count(*)::bigint AS count, max(rms.sampled_at) AS latest_metric_at
-        FROM resource_metric_samples rms
+        SELECT rms.cloud_resource_id, sum(rms.sample_count)::bigint AS count, max(rms.last_sampled_at) AS latest_metric_at
+        FROM resource_metric_stream_summaries rms
         INNER JOIN base_resources br ON br.id = rms.cloud_resource_id
         WHERE rms.tenant_id = ${tenantId}
         GROUP BY rms.cloud_resource_id
@@ -260,6 +269,7 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
         br.id,
         br.cloud_connection_id,
         br.external_resource_id,
+        br.name,
         br.provider,
         br.service_name,
         br.resource_type,
@@ -289,6 +299,9 @@ export class PrismaResourceLinkageReadinessRepository implements IResourceLinkag
         id: row.id,
         cloudConnectionId: row.cloud_connection_id,
         externalResourceId: row.external_resource_id,
+        ...(row.name?.trim() !== undefined && row.name.trim() !== '' && row.name !== row.external_resource_id
+          ? { name: row.name.trim() }
+          : {}),
         provider: row.provider,
         serviceName: row.service_name,
         resourceType: row.resource_type,

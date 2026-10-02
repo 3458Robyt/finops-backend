@@ -4,6 +4,7 @@ import type {
   AgentInstructionValidationReport,
   AiContextOperation,
   AiContextTrace,
+  AiTraceSource,
   ContextArtifact,
   ContextBuildRunStatus,
   TenantAgentRule,
@@ -84,6 +85,7 @@ export interface CreateAiContextTraceInput {
   readonly userId?: string;
   /** Operación de IA que generó la traza. */
   readonly operation: AiContextOperation;
+  readonly source?: AiTraceSource;
   /** Modelo utilizado. */
   readonly model: string;
   /** Estado del resultado de la invocación. */

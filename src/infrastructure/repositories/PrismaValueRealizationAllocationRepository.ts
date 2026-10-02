@@ -32,19 +32,129 @@ export class PrismaValueRealizationAllocationRepository {
       ), latest_measurements AS (
         SELECT m.*, ROW_NUMBER() OVER (PARTITION BY m.manual_execution_id ORDER BY CASE WHEN m.status = 'VERIFIED' THEN 0 WHEN m.status = 'REJECTED' THEN 2 ELSE 1 END, m.created_at DESC, m.id DESC) AS measurement_rn
         FROM recommendation_savings_measurements m WHERE m.tenant_id = ${input.tenantId}
-      ), attributed AS (
-        SELECT r.id AS recommendation_id, r.currency, l.allocation_key,
-               CASE WHEN r.status <> 'REJECTED' THEN COALESCE(r.estimated_monthly_savings, 0) * l.allocation_amount / NULLIF(l.source_amount, 0) ELSE 0 END AS potential_savings,
-               CASE WHEN r.status IN ('APPROVED', 'MANUAL_COMPLETED') THEN COALESCE(r.estimated_monthly_savings, 0) * l.allocation_amount / NULLIF(l.source_amount, 0) ELSE 0 END AS approved_savings,
-               CASE WHEN lm.status = 'VERIFIED' THEN COALESCE(lm.projected_monthly_savings, 0) * l.allocation_amount / NULLIF(l.source_amount, 0) ELSE 0 END AS verified_savings,
-               CASE WHEN lm.status <> 'REJECTED' THEN COALESCE(lm.observed_savings, 0) * l.allocation_amount / NULLIF(l.source_amount, 0) ELSE 0 END AS observed_savings
+      ), source_evidence AS (
+        SELECT e.tenant_id, e.recommendation_id, e.charge_period_start, e.metric_identity_hash,
+               e.billing_currency AS source_currency, e.billed_cost AS source_amount,
+               e.cloud_account_id, e.provider::text AS provider, e.cloud_resource_id
+        FROM recommendation_cost_evidence e
+        WHERE e.tenant_id = ${input.tenantId}
+        UNION ALL
+        SELECT r.tenant_id, r.id, r.source_charge_period_start, r.source_metric_identity_hash,
+               NULL::varchar(3), NULL::numeric, NULL::text, NULL::text, r.cloud_resource_id
         FROM recommendations r
-        INNER JOIN cost_allocation_closure_lines l ON l.tenant_id = r.tenant_id AND l.currency = r.currency AND l.cloud_resource_id = r.cloud_resource_id AND l.metric_identity_hash = r.source_metric_identity_hash AND l.charge_period_start = r.source_charge_period_start AND l.source_amount > 0
-        INNER JOIN closed_periods c ON c.id = l.closure_id AND c.closure_rn = 1 AND r.source_charge_period_start >= c.period_start AND r.source_charge_period_start < c.period_start + INTERVAL '1 month'
+        WHERE r.tenant_id = ${input.tenantId}
+          AND r.source_charge_period_start IS NOT NULL
+          AND r.source_metric_identity_hash IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM recommendation_cost_evidence e
+            WHERE e.tenant_id = r.tenant_id AND e.recommendation_id = r.id
+          )
+      ), expected_evidence AS (
+        SELECT r.id AS recommendation_id, c.id AS closure_id, COUNT(*)::int AS expected_count
+        FROM recommendations r
+        INNER JOIN source_evidence e ON e.tenant_id = r.tenant_id AND e.recommendation_id = r.id
+        INNER JOIN closed_periods c ON c.tenant_id = r.tenant_id AND c.closure_rn = 1
+          AND c.currency = r.currency
+          AND e.charge_period_start >= c.period_start
+          AND e.charge_period_start < c.period_start + INTERVAL '1 month'
+        WHERE r.tenant_id = ${input.tenantId}
+          AND r.status <> 'REJECTED'
+          AND COALESCE(r.estimated_monthly_savings, 0) > 0
+          AND COALESCE(r.evidence ->> 'reviewScope', '') <> 'FINANCIAL'
+          AND COALESCE(r.evidence ->> 'financialReviewOnly', '') <> 'true'
+          AND (e.source_amount IS NULL OR e.source_amount > 0)
+          ${input.currency === undefined ? Prisma.empty : Prisma.sql`AND r.currency = ${input.currency}`}
+        GROUP BY r.id, c.id
+      ), matched_evidence AS (
+        SELECT r.id AS recommendation_id, r.tenant_id, r.currency, r.status, r.created_at,
+               r.estimated_monthly_savings, c.id AS closure_id,
+               e.cloud_account_id, e.provider, e.cloud_resource_id,
+               e.charge_period_start, e.metric_identity_hash,
+               MIN(l.source_amount) AS source_amount
+        FROM recommendations r
+        INNER JOIN source_evidence e ON e.tenant_id = r.tenant_id AND e.recommendation_id = r.id
+        INNER JOIN closed_periods c ON c.tenant_id = r.tenant_id AND c.closure_rn = 1
+          AND c.currency = r.currency
+          AND e.charge_period_start >= c.period_start
+          AND e.charge_period_start < c.period_start + INTERVAL '1 month'
+          AND (e.source_currency IS NULL OR e.source_currency = c.currency)
+        INNER JOIN cost_allocation_closure_lines l ON l.tenant_id = r.tenant_id AND l.closure_id = c.id
+          AND l.charge_period_start = e.charge_period_start
+          AND l.metric_identity_hash = e.metric_identity_hash
+          AND l.currency = c.currency
+          AND l.cloud_resource_id IS NOT DISTINCT FROM e.cloud_resource_id
+          AND (e.cloud_account_id IS NULL OR l.cloud_account_id = e.cloud_account_id)
+          AND (e.provider IS NULL OR l.provider::text = e.provider)
+          AND (e.source_amount IS NULL OR l.source_amount = e.source_amount)
+          AND l.source_amount > 0
+        WHERE r.tenant_id = ${input.tenantId}
+          AND r.status <> 'REJECTED'
+          AND COALESCE(r.estimated_monthly_savings, 0) > 0
+          AND COALESCE(r.evidence ->> 'reviewScope', '') <> 'FINANCIAL'
+          AND COALESCE(r.evidence ->> 'financialReviewOnly', '') <> 'true'
+          ${input.currency === undefined ? Prisma.empty : Prisma.sql`AND r.currency = ${input.currency}`}
+        GROUP BY r.id, r.tenant_id, r.currency, r.status, r.created_at,
+                 r.estimated_monthly_savings, c.id, e.cloud_account_id, e.provider,
+                 e.cloud_resource_id, e.charge_period_start, e.metric_identity_hash
+        HAVING MIN(l.source_amount) = MAX(l.source_amount)
+      ), ranked_evidence AS (
+        SELECT e.*,
+               ROW_NUMBER() OVER (
+                 PARTITION BY e.closure_id, e.charge_period_start, e.metric_identity_hash
+                 ORDER BY CASE WHEN e.status IN ('APPROVED', 'MANUAL_COMPLETED') THEN 0 ELSE 1 END,
+                          e.estimated_monthly_savings DESC, e.created_at ASC, e.recommendation_id ASC
+               ) AS claim_rank
+        FROM matched_evidence e
+      ), ownership AS (
+        SELECT expected.recommendation_id, expected.closure_id, expected.expected_count,
+               COUNT(ranked.metric_identity_hash)::int AS matched_count,
+               COUNT(*) FILTER (WHERE ranked.claim_rank = 1)::int AS owned_count
+        FROM expected_evidence expected
+        LEFT JOIN ranked_evidence ranked
+          ON ranked.recommendation_id = expected.recommendation_id
+         AND ranked.closure_id = expected.closure_id
+        GROUP BY expected.recommendation_id, expected.closure_id, expected.expected_count
+      ), eligible_recommendations AS (
+        SELECT recommendation_id, closure_id
+        FROM ownership
+        WHERE expected_count > 0 AND matched_count = expected_count AND owned_count = expected_count
+      ), evidence_totals AS (
+        SELECT eligible.recommendation_id, eligible.closure_id,
+               SUM(evidence.source_amount) AS source_total
+        FROM eligible_recommendations eligible
+        INNER JOIN ranked_evidence evidence ON evidence.recommendation_id = eligible.recommendation_id
+          AND evidence.closure_id = eligible.closure_id AND evidence.claim_rank = 1
+        GROUP BY eligible.recommendation_id, eligible.closure_id
+      ), allocation_totals AS (
+        SELECT eligible.recommendation_id, eligible.closure_id, line.allocation_key, closure.currency,
+               SUM(line.allocation_amount) AS allocation_amount
+        FROM eligible_recommendations eligible
+        INNER JOIN ranked_evidence evidence ON evidence.recommendation_id = eligible.recommendation_id
+          AND evidence.closure_id = eligible.closure_id AND evidence.claim_rank = 1
+        INNER JOIN cost_allocation_closure_lines line ON line.tenant_id = evidence.tenant_id
+          AND line.closure_id = evidence.closure_id
+          AND line.charge_period_start = evidence.charge_period_start
+          AND line.metric_identity_hash = evidence.metric_identity_hash
+          AND line.source_amount = evidence.source_amount
+          AND line.cloud_resource_id IS NOT DISTINCT FROM evidence.cloud_resource_id
+          AND (evidence.cloud_account_id IS NULL OR line.cloud_account_id = evidence.cloud_account_id)
+          AND (evidence.provider IS NULL OR line.provider::text = evidence.provider)
+          AND line.currency = evidence.currency
+        INNER JOIN closed_periods closure ON closure.id = eligible.closure_id AND closure.closure_rn = 1
+        GROUP BY eligible.recommendation_id, eligible.closure_id, line.allocation_key, closure.currency
+      ), attributed AS (
+        SELECT r.id AS recommendation_id, r.currency, allocations.allocation_key,
+               COALESCE(r.estimated_monthly_savings, 0) * allocations.allocation_amount / NULLIF(totals.source_total, 0) AS potential_savings,
+               CASE WHEN r.status IN ('APPROVED', 'MANUAL_COMPLETED')
+                    THEN COALESCE(r.estimated_monthly_savings, 0) * allocations.allocation_amount / NULLIF(totals.source_total, 0)
+                    ELSE 0 END AS approved_savings,
+               CASE WHEN lm.status = 'VERIFIED' THEN COALESCE(lm.projected_monthly_savings, 0) * allocations.allocation_amount / NULLIF(totals.source_total, 0) ELSE 0 END AS verified_savings,
+               CASE WHEN lm.status <> 'REJECTED' THEN COALESCE(lm.observed_savings, 0) * allocations.allocation_amount / NULLIF(totals.source_total, 0) ELSE 0 END AS observed_savings
+        FROM allocation_totals allocations
+        INNER JOIN evidence_totals totals ON totals.recommendation_id = allocations.recommendation_id AND totals.closure_id = allocations.closure_id
+        INNER JOIN recommendations r ON r.id = allocations.recommendation_id AND r.tenant_id = ${input.tenantId}
         LEFT JOIN latest_executions le ON le.recommendation_id = r.id AND le.execution_rn = 1
         LEFT JOIN latest_measurements lm ON lm.manual_execution_id = le.id AND lm.measurement_rn = 1
-        WHERE r.tenant_id = ${input.tenantId} AND r.source_charge_period_start IS NOT NULL AND r.source_metric_identity_hash IS NOT NULL
-          ${input.currency === undefined ? Prisma.empty : Prisma.sql`AND r.currency = ${input.currency}`}
       )
       SELECT ${period.toISOString().slice(0, 7)} AS period, allocation_key, currency,
              COALESCE(SUM(potential_savings), 0)::float8 AS potential_savings,

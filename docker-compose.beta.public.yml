@@ -1,0 +1,23 @@
+services:
+  frontend:
+    profiles:
+      - beta-public
+    networks:
+      - dokploy
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${DOKPLOY_NETWORK:-dokploy-network}
+      traefik.http.routers.finops-beta-http.rule: 'Host(`<beta-host>`)'
+      traefik.http.routers.finops-beta-http.entrypoints: web
+      traefik.http.routers.finops-beta-http.middlewares: finops-beta-https
+      traefik.http.middlewares.finops-beta-https.redirectscheme.scheme: https
+      traefik.http.routers.finops-beta.rule: 'Host(`<beta-host>`)'
+      traefik.http.routers.finops-beta.entrypoints: websecure
+      traefik.http.routers.finops-beta.tls: "true"
+      traefik.http.routers.finops-beta.tls.certresolver: letsencrypt
+      traefik.http.services.finops-beta.loadbalancer.server.port: "8080"
+
+networks:
+  dokploy:
+    external: true
+    name: ${DOKPLOY_NETWORK:-dokploy-network}

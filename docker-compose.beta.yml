@@ -40,6 +40,29 @@ services:
       db:
         condition: service_healthy
 
+  bootstrap-master-admin:
+    profiles: [beta-bootstrap]
+    platform: linux/arm64
+    build: .
+    env_file: .env.beta.runtime
+    environment:
+      NODE_ENV: production
+      BETA_BOOTSTRAP_DATABASE_URL: ${MIGRATION_DATABASE_URL:?Set MIGRATION_DATABASE_URL in .env.beta}
+      BETA_BOOTSTRAP_EXPECTED_DATABASE: ${POSTGRES_DB:?Set POSTGRES_DB in .env.beta}
+      BETA_MASTER_ADMIN_BOOTSTRAP_ENABLED: "true"
+      MFA_REQUIRED_FOR_PRIVILEGED: "true"
+    networks:
+      - beta-data
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["node", "dist/scripts/bootstrap-beta-master-admin.js"]
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
   api:
     platform: linux/arm64
     build: .
@@ -49,6 +72,8 @@ services:
       NODE_ENV: production
       TRUST_PROXY: "1"
       CORS_ORIGIN: ${CORS_ORIGIN:?Set CORS_ORIGIN in .env.beta}
+      BETA_BOOTSTRAP_EXPECTED_DATABASE: ${POSTGRES_DB:?Set POSTGRES_DB in .env.beta}
+      BETA_MASTER_ADMIN_BOOTSTRAP_ENABLED: "false"
     expose:
       - "3000"
     networks:

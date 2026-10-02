@@ -81,6 +81,7 @@
     "oci:reconcile-fingerprints": "tsx scripts/reconcile-cloud-credential-fingerprints.ts",
     "telegram:set-webhook": "tsx scripts/telegram-set-webhook.ts",
     "users:consolidate-admin-tenants": "tsx scripts/consolidate-admin-tenants.ts",
+    "bootstrap:beta:master-admin": "node dist/scripts/bootstrap-beta-master-admin.js",
     "maintenance:cleanup-development-artifacts": "tsx scripts/maintenance/cleanup-development-artifacts.ts"
   },
   "keywords": [

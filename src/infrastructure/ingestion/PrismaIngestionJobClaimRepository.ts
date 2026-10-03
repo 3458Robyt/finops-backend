@@ -41,10 +41,10 @@ export class PrismaIngestionJobClaimRepository {
           AND status = 'PENDING'
           ${cloudConnectionId === undefined ? Prisma.empty : Prisma.sql`AND cloud_connection_id = ${cloudConnectionId}`}
           ${sourceType === undefined ? Prisma.empty : Prisma.sql`AND source_type = ${sourceType}::"IngestionSourceType"`}
-        -- Technical backfills are consumed oldest-first so a newly requeued
-        -- historical gap cannot wait behind newer jobs created earlier.
+        -- Keep recent technical coverage fresh first; older missing windows
+        -- are still backfilled after newer complete windows are covered.
         ORDER BY priority ASC,
-          CASE WHEN source_type = 'TECHNICAL_METRIC'::"IngestionSourceType" THEN target_start ELSE created_at END ASC,
+          CASE WHEN source_type = 'TECHNICAL_METRIC'::"IngestionSourceType" THEN target_start ELSE created_at END DESC,
           created_at ASC
         FOR UPDATE SKIP LOCKED
         LIMIT 1

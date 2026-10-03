@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CloudIngestionJobContext } from '../../../domain/interfaces/ICloudIngestionProvider.js';
-import { readAwsFocusLocations, readAwsFocusObjects } from './awsConfiguration.js';
+import { readAwsFocusLocations, readAwsFocusObjects, readAwsMetricDefinitions } from './awsConfiguration.js';
 
 function job(metadata: Readonly<Record<string, unknown>>): CloudIngestionJobContext {
   return {
@@ -41,5 +41,18 @@ describe('AWS FOCUS export configuration', () => {
 
     expect(readAwsFocusLocations(context)[0]?.focusVersion).toBe('1.0');
     expect(readAwsFocusObjects(context)[0]?.focusVersion).toBe('1.0');
+  });
+});
+
+describe('AWS metric definition configuration', () => {
+  it('expands native CloudWatch statistics from the saved discovery selection', () => {
+    const definitions = readAwsMetricDefinitions({
+      ...job({}), sourceType: 'TECHNICAL_METRIC',
+      connection: { ...job({}).connection, metadata: { awsMetricDefinitions: [{
+        externalResourceId: 'i-abcd', namespace: 'AWS/EC2', metricName: 'CPUUtilization',
+        dimensions: [{ Name: 'InstanceId', Value: 'i-abcd' }], statistics: ['MEAN', 'MAX'],
+      }] } },
+    });
+    expect(definitions.map((item) => item.stat)).toEqual(['Average', 'Maximum']);
   });
 });

@@ -10,7 +10,7 @@ import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { isJsonObject } from './mappers/cloudConnectionMappers.js';
 import { invalidatedValidationData } from './cloudConnectionMetadata.js';
 import { configureFocusSourceMetadata } from '../ingestion/focusSourceMetadata.js';
-import { hashOciMetricDimensions } from '../ingestion/oci/OciMetricDimensions.js';
+import { hashMetricDimensions } from '../ingestion/metricDimensions.js';
 
 /**
  * Persists the provider-specific ingestion configuration of a cloud
@@ -81,7 +81,7 @@ export class PrismaCloudConnectionConfigurationRepository {
     return this.prisma.$transaction(async (tx) => {
       const connection = await tx.cloudConnection.findFirst({
         where: { id: input.cloudConnectionId, tenantId: input.tenantId, status: 'ACTIVE' },
-        select: { id: true, providerCode: true, metadata: true, defaultRegion: true },
+        select: { id: true, providerCode: true, metadata: true, defaultRegion: true, rootExternalId: true },
       });
       if (connection === null || (connection.providerCode !== 'aws' && connection.providerCode !== 'oci')) return null;
 
@@ -98,23 +98,24 @@ export class PrismaCloudConnectionConfigurationRepository {
         data: invalidatedValidationData(metadata),
       });
 
-      if (connection.providerCode === 'oci') {
-        if (input.replace) {
-          await tx.cloudMetricDefinition.updateMany({
-            where: { tenantId: input.tenantId, cloudConnectionId: connection.id },
-            data: { enabled: false, status: 'DISCOVERED' },
-          });
-        }
-        const confirmedAt = new Date();
-        for (const definition of input.definitions) {
-          await this.upsertOciMetricDefinition(
-            tx,
-            input.tenantId,
-            connection.id,
-            connection.defaultRegion,
-            definition,
-            confirmedAt,
-          );
+      const confirmedAt = new Date();
+      if (input.replace && connection.providerCode === 'oci') {
+        await tx.cloudMetricDefinition.updateMany({
+          where: { tenantId: input.tenantId, cloudConnectionId: connection.id },
+          data: { enabled: false, status: 'DISCOVERED' },
+        });
+      }
+      if (input.replace && connection.providerCode === 'aws') {
+        await tx.cloudMetricDefinition.updateMany({
+          where: { tenantId: input.tenantId, cloudConnectionId: connection.id },
+          data: { enabled: false, status: 'DISCOVERED' },
+        });
+      }
+      for (const definition of input.definitions) {
+        if (connection.providerCode === 'oci') {
+          await this.upsertOciMetricDefinition(tx, input.tenantId, connection.id, connection.defaultRegion, definition, confirmedAt);
+        } else {
+          await this.upsertAwsMetricDefinition(tx, input.tenantId, connection.id, connection.rootExternalId, connection.defaultRegion, definition, confirmedAt);
         }
       }
 
@@ -140,9 +141,9 @@ export class PrismaCloudConnectionConfigurationRepository {
     const namespace = String(definition['namespace']);
     const metricName = String(definition['metricName']);
     const externalResourceId = String(definition['resourceId'] ?? '');
-    const regionId = typeof definition['regionId'] === 'string' ? definition['regionId'] : defaultRegion;
+    const regionId = typeof definition['regionId'] === 'string' ? definition['regionId'] : defaultRegion ?? '';
     const dimensions = readStringDimensions(definition['dimensions']);
-    const dimensionsHash = hashOciMetricDimensions(dimensions);
+    const dimensionsHash = hashMetricDimensions(dimensions);
     const shared = {
       tenantId,
       cloudConnectionId,
@@ -163,13 +164,59 @@ export class PrismaCloudConnectionConfigurationRepository {
     };
     return tx.cloudMetricDefinition.upsert({
       where: {
-        cloudConnectionId_namespace_metricName_compartmentId_externalResourceId_dimensionsHash: {
+        cloudConnectionId_regionId_namespace_metricName_compartmentId_externalResourceId_dimensionsHash: {
           cloudConnectionId,
+          regionId,
           namespace,
           metricName,
           compartmentId,
           externalResourceId,
           dimensionsHash,
+        },
+      },
+      create: shared,
+      update: shared,
+    });
+  }
+
+  private upsertAwsMetricDefinition(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    cloudConnectionId: string,
+    accountId: string,
+    defaultRegion: string | null,
+    definition: Readonly<Record<string, unknown>>,
+    confirmedAt: Date,
+  ) {
+    const namespace = String(definition['namespace']);
+    const metricName = String(definition['metricName']);
+    const externalResourceId = String(definition['externalResourceId'] ?? '');
+    const regionId = typeof definition['region'] === 'string' ? definition['region'] : defaultRegion ?? '';
+    const dimensions = readAwsStringDimensions(definition['dimensions']);
+    const statistics = Array.isArray(definition['statistics']) ? definition['statistics'] : ['MEAN'];
+    const dimensionsHash = hashMetricDimensions(dimensions);
+    const shared = {
+      tenantId,
+      cloudConnectionId,
+      regionId,
+      compartmentId: accountId,
+      namespace,
+      metricName,
+      externalResourceId,
+      dimensionsHash,
+      dimensions: dimensions === undefined ? Prisma.DbNull : dimensions as Prisma.InputJsonValue,
+      metricUnit: typeof definition['unit'] === 'string' ? definition['unit'] : null,
+      statistics: statistics as Prisma.InputJsonValue,
+      status: 'CONFIRMED',
+      enabled: true,
+      discoverySource: 'AWS_CLOUDWATCH',
+      lastSeenAt: confirmedAt,
+      confirmedAt,
+    };
+    return tx.cloudMetricDefinition.upsert({
+      where: {
+        cloudConnectionId_regionId_namespace_metricName_compartmentId_externalResourceId_dimensionsHash: {
+          cloudConnectionId, regionId, namespace, metricName, compartmentId: accountId, externalResourceId, dimensionsHash,
         },
       },
       create: shared,
@@ -191,4 +238,16 @@ function readStringDimensions(value: unknown): Readonly<Record<string, string>> 
   return entries.every(([, item]) => typeof item === 'string')
     ? Object.fromEntries(entries) as Record<string, string>
     : undefined;
+}
+
+function readAwsStringDimensions(value: unknown): Readonly<Record<string, string>> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const dimensions = Object.fromEntries(value.flatMap((item) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return [];
+    const entry = item as Record<string, unknown>;
+    return typeof entry['Name'] === 'string' && typeof entry['Value'] === 'string'
+      ? [[entry['Name'], entry['Value']]]
+      : [];
+  }));
+  return Object.keys(dimensions).length === 0 ? undefined : dimensions;
 }

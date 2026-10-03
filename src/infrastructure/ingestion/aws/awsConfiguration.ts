@@ -18,14 +18,13 @@ import type {
 import { safeErrorMessage } from '../../../application/observability/safeError.js';
 
 export function readAwsMetricDefinitions(job: CloudIngestionJobContext): readonly AwsMetricDefinition[] {
-  return readObjectArray(job.connection.metadata, 'awsMetricDefinitions').map((item) => {
+  return readObjectArray(job.connection.metadata, 'awsMetricDefinitions').flatMap((item) => {
     const unit = optionalString(item['unit']);
     const region = optionalString(item['region']);
-    return {
+    const base = {
       externalResourceId: requireString(item['externalResourceId'], 'awsMetricDefinitions.externalResourceId'),
       namespace: requireString(item['namespace'], 'awsMetricDefinitions.namespace'),
       metricName: requireString(item['metricName'], 'awsMetricDefinitions.metricName'),
-      stat: optionalString(item['stat']) ?? 'Average',
       ...(unit !== undefined ? { unit } : {}),
       ...(region !== undefined ? { region } : {}),
       dimensions: readObjectArray(item, 'dimensions').map((dimension) => ({
@@ -33,7 +32,23 @@ export function readAwsMetricDefinitions(job: CloudIngestionJobContext): readonl
         Value: requireString(dimension['Value'], 'awsMetricDefinitions.dimensions.Value'),
       })),
     };
+    const configuredStatistics = readStringArray(item['statistics']);
+    const statistics = configuredStatistics.length > 0
+      ? configuredStatistics.map(toAwsStatisticName)
+      : [optionalString(item['stat']) ?? 'Average'];
+    return statistics.map((stat) => ({ ...base, stat }));
   });
+}
+
+function toAwsStatisticName(value: string): string {
+  const statistic = value.trim().toUpperCase();
+  if (statistic === 'MEAN') return 'Average';
+  if (statistic === 'MIN') return 'Minimum';
+  if (statistic === 'MAX') return 'Maximum';
+  if (statistic === 'SUM') return 'Sum';
+  if (statistic === 'COUNT') return 'SampleCount';
+  if (/^P(?:50|90|95|99)$/.test(statistic)) return statistic.toLowerCase();
+  throw new Error(`Estadística AWS no soportada: ${value}`);
 }
 
 export interface AwsMetricDiscoveryConfig {

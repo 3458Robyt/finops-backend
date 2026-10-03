@@ -12,6 +12,7 @@ import {
 } from './ingestionResourceLinkage.js';
 import { normalizeExternalResourceId, resolveExactResourceLink } from '../../domain/models/ResourceLinkage.js';
 import { PrismaMetricStreamSummaryPersistence } from './PrismaMetricStreamSummaryPersistence.js';
+import { hashMetricDimensions } from './metricDimensions.js';
 
 const METRIC_INSERT_BATCH_SIZE = 5_000;
 const METRIC_INSERT_DEADLOCK_RETRIES = 3;
@@ -77,7 +78,8 @@ export class PrismaIngestionSamplePersistence {
           providerNamespace: sample.providerNamespace ?? '',
           regionId: sample.regionId ?? '',
           compartmentId: sample.compartmentId ?? '',
-          dimensionsHash: sample.dimensionsHash ?? '',
+          dimensionsHash: sample.dimensionsHash
+            ?? (readMetricDimensions(sample.rawMetric) === undefined ? '' : hashMetricDimensions(readMetricDimensions(sample.rawMetric))),
           metricName: sample.metricName,
           statistic: sample.statistic ?? 'MEAN',
           value: new PrismaNamespace.Decimal(sample.value),
@@ -171,6 +173,16 @@ export class PrismaIngestionSamplePersistence {
       ...(ingestionJobId !== undefined ? { ingestionJobId } : {}),
     };
   }
+}
+
+function readMetricDimensions(value: unknown): Readonly<Record<string, string>> | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const dimensions = (value as Record<string, unknown>)['dimensions'];
+  if (dimensions === null || typeof dimensions !== 'object' || Array.isArray(dimensions)) return undefined;
+  const entries = Object.entries(dimensions);
+  return entries.every(([, item]) => typeof item === 'string')
+    ? Object.fromEntries(entries) as Record<string, string>
+    : undefined;
 }
 
 /**

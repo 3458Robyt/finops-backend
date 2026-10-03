@@ -21,20 +21,21 @@ export function mergeEnabledMetricDefinitions(
     .filter((definition) => definition.externalResourceId.trim() !== '')
     .map((definition) => {
       const dimensions = readStringDimensions(definition.dimensions);
+      const regionId = definition.regionId?.trim() || null;
       const existing = legacyDefinitions.find((candidate) =>
         candidate['compartmentId'] === definition.compartmentId
         && candidate['namespace'] === definition.namespace
         && candidate['metricName'] === definition.metricName
         && (candidate['resourceId'] ?? candidate['resource_id'] ?? '') === definition.externalResourceId
-        && (candidate['regionId'] === undefined || candidate['regionId'] === null
-          || candidate['regionId'] === definition.regionId)
+        && (candidate['regionId'] === undefined || candidate['regionId'] === null || candidate['regionId'] === ''
+          || candidate['regionId'] === regionId)
         && hashOciMetricDimensions(readStringDimensions(candidate['dimensions'])) === hashOciMetricDimensions(dimensions));
       return {
         compartmentId: definition.compartmentId,
         namespace: definition.namespace,
         metricName: definition.metricName,
         resourceId: definition.externalResourceId,
-        ...(definition.regionId === null ? {} : { regionId: definition.regionId }),
+        ...(regionId === null ? {} : { regionId }),
         ...(dimensions === undefined ? {} : { dimensions }),
         ...(definition.metricUnit === null ? {} : { unit: definition.metricUnit }),
         statistics: definition.statistics,

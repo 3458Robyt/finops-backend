@@ -94,13 +94,108 @@ describe('OCI billing collector', () => {
     expect(result.apiCallCount).toBe(1);
     expect(result.focusRows).toEqual([]);
     expect(result.warnings).toEqual([
-      'No se encontraron objetos de reporte FOCUS OCI configurados o descubiertos. Configura ociFocusReportObjects u ociFocusReportLocations.',
+      'No se encontraron objetos de reporte FOCUS OCI en la ubicación consultada. Verifica que los reportes estén habilitados y que la política permita leerlos; la ausencia de archivos no significa costo cero.',
       'OCI Usage API tampoco estuvo disponible; el periodo queda pendiente de una nueva sincronizacion.',
     ]);
     expect(result.coverage).toMatchObject({
       billingSourceFallback: 'FOCUS_TO_PROVIDER_API',
       apiCallCount: 1,
     });
+  });
+
+  test('discovers OCI-managed FOCUS reports without requiring a copied bucket location', async () => {
+    let listRequest: Record<string, unknown> | undefined;
+    const collector = new OciBillingCollector({
+      createObjectStorageClient: () => ({
+        listObjects: async (request) => {
+          listRequest = request as Record<string, unknown>;
+          return { listObjects: { objects: [{ name: 'FOCUS Reports/2026/08/23/report.csv' }] } };
+        },
+        getObject: async () => ({ value: '' }),
+      }),
+      createUsageClient: () => ({ requestSummarizedUsages: async () => ({ usageAggregation: { items: [] } }) }),
+    });
+    const job = buildJob();
+
+    const result = await collector.collect({
+      ...job,
+      connection: { ...job.connection, metadata: {} },
+    });
+
+    expect(listRequest).toMatchObject({
+      namespaceName: 'bling',
+      bucketName: 'tenancy-1',
+      prefix: 'FOCUS Reports/',
+    });
+    expect(result.objectsProcessed).toBe(1);
+    expect(result.coverage).toMatchObject({ costSource: 'OCI Cost Reports FOCUS' });
+  });
+
+  test('uses a prepared home-region job for OCI-managed FOCUS requests', async () => {
+    let storageRegion: unknown;
+    const collector = new OciBillingCollector({
+      prepareFocusJob: async (job) => ({ ...job, requestContext: { regionId: 'us-phoenix-1' } }),
+      createObjectStorageClient: (job) => {
+        storageRegion = job.requestContext?.['regionId'];
+        return {
+          listObjects: async () => ({ listObjects: { objects: [] } }),
+          getObject: async () => ({ value: '' }),
+        };
+      },
+      createUsageClient: () => ({ requestSummarizedUsages: async () => ({ usageAggregation: { items: [] } }) }),
+    });
+    const job = buildJob();
+    const result = await collector.collect({
+      ...job,
+      connection: { ...job.connection, metadata: { billingSourceMode: 'FOCUS' } },
+    });
+
+    expect(storageRegion).toBe('us-phoenix-1');
+    expect(result.coverage).toMatchObject({ costSource: 'OCI Cost Reports FOCUS' });
+  });
+
+  test('AUTO falls back to Usage API if home-region discovery fails', async () => {
+    let usageApiCalled = false;
+    const collector = new OciBillingCollector({
+      prepareFocusJob: async () => { throw new Error('No se pudo determinar la región principal.'); },
+      createObjectStorageClient: () => ({
+        listObjects: async () => ({ listObjects: { objects: [] } }),
+        getObject: async () => ({ value: '' }),
+      }),
+      createUsageClient: () => ({
+        requestSummarizedUsages: async () => {
+          usageApiCalled = true;
+          return { usageAggregation: { items: [] } };
+        },
+      }),
+    });
+    const result = await collector.collect({ ...buildJob(), connection: { ...buildJob().connection, metadata: {} } });
+
+    expect(usageApiCalled).toBe(true);
+    expect(result.coverage).toMatchObject({ billingSourceFallback: 'FOCUS_TO_PROVIDER_API' });
+    expect(result.warnings[0]).toContain('región principal');
+  });
+
+  test('preserves a safe FOCUS discovery error when AUTO falls back to Usage API', async () => {
+    const collector = new OciBillingCollector({
+      createObjectStorageClient: () => ({
+        listObjects: async () => { throw new Error('NotAuthorizedOrNotFound'); },
+        getObject: async () => ({ value: '' }),
+      }),
+      createUsageClient: () => ({ requestSummarizedUsages: async () => ({ usageAggregation: { items: [] } }) }),
+    });
+
+    const result = await collector.collect({
+      ...buildJob(),
+      connection: { ...buildJob().connection, metadata: {} },
+    });
+
+    expect(result.coverage).toMatchObject({
+      billingSourceFallback: 'FOCUS_TO_PROVIDER_API',
+      focusCoverage: { discoveryError: 'NotAuthorizedOrNotFound' },
+    });
+    expect(result.warnings[0]).toContain('Cost Reports FOCUS OCI');
+    expect(result.warnings[0]).toContain('NotAuthorizedOrNotFound');
   });
 
   test('warns on missing mandatory FOCUS headers without dropping usable cost rows', async () => {

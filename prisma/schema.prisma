@@ -1145,7 +1145,7 @@ model CloudMetricDefinition {
   tenantId                String                         @map("tenant_id")
   cloudConnectionId       String                         @map("cloud_connection_id")
   cloudConnectionRegionId String?                        @map("cloud_connection_region_id")
-  regionId                String?                        @map("region_id")
+  regionId                String                         @default("") @map("region_id")
   compartmentId           String                         @map("compartment_id")
   namespace               String
   metricName              String                         @map("metric_name")
@@ -1165,7 +1165,7 @@ model CloudMetricDefinition {
   cloudConnectionRegion   CloudConnectionRegion?         @relation(fields: [cloudConnectionRegionId], references: [id], onDelete: SetNull)
   metricCoverageWindows   ResourceMetricCoverageWindow[]
 
-  @@unique([cloudConnectionId, namespace, metricName, compartmentId, externalResourceId, dimensionsHash], map: "cloud_metric_definitions_identity_key")
+  @@unique([cloudConnectionId, regionId, namespace, metricName, compartmentId, externalResourceId, dimensionsHash], map: "cloud_metric_definitions_identity_key")
   @@index([tenantId, cloudConnectionId, status, enabled], map: "cloud_metric_definitions_tenant_status_enabled_idx")
   @@index([cloudConnectionId, regionId, namespace, metricName], map: "cloud_metric_definitions_connection_region_metric_idx")
   @@index([cloudConnectionId, externalResourceId, metricName], map: "cloud_metric_definitions_connection_resource_metric_idx")

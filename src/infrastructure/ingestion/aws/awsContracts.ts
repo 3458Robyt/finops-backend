@@ -26,7 +26,7 @@ export interface AwsFocusExportLocation {
 }
 
 export interface AwsCommandClient<TResponse> {
-  send(command: unknown): Promise<TResponse>;
+  send(command: unknown, options?: { readonly abortSignal?: AbortSignal }): Promise<TResponse>;
   destroy?(): void;
 }
 

@@ -43,13 +43,15 @@ import { OciBillingCollector } from './oci/OciBillingCollector.js';
 import { collectOciInventory } from './oci/OciInventoryCollector.js';
 import { createOciResourceSearchClient } from './oci/OciResourceSearchCollector.js';
 import { discoverOciInventoryCompartments } from './oci/OciCompartmentDiscovery.js';
-import { discoverOciRegions } from './oci/OciRegionDiscovery.js';
+import { discoverOciHomeRegion, discoverOciRegions } from './oci/OciRegionDiscovery.js';
 import { discoverOciMetricDefinitions } from './oci/OciMetricDiscovery.js';
 import {
   buildOciFocusPreviewResult,
   discoverOciFocusObjects,
   readOciFocusLocations,
   readOciFocusObjects,
+  validateOciManagedFocusStorage,
+  useManagedOciFocusHomeRegion,
 } from './oci/OciFocusSource.js';
 import { withOciProviderRetry } from './oci/OciRetryPolicy.js';
 import { IngestionRateCoordinator } from '../../application/services/IngestionRateCoordinator.js';
@@ -62,6 +64,7 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
     this.billing = new OciBillingCollector({
       createObjectStorageClient: (job, signal) => this.createObjectStorageClient(job, signal),
       createUsageClient: (job, signal) => this.createUsageClient(job, signal),
+      prepareFocusJob: (job, signal) => this.prepareManagedFocusJob(job, signal),
       withRateLimit: (job, api, operation, signal) => this.rateCoordinator.run(
         `oci:${job.connection.rootExternalId}:${this.regionKey(job)}:${api}`,
         api === 'usage'
@@ -85,7 +88,7 @@ export class OciSdkIngestionProvider implements CloudIngestionProvider {
   }
 
   public async previewFocus(connection: CloudIngestionConnection, limit: number): Promise<FocusSourcePreviewResult> {
-    const job = buildOciValidationJob(connection);
+    const job = await this.prepareManagedFocusJob(buildOciValidationJob(connection));
     const configured = readOciFocusObjects(job);
     const discovery = await discoverOciFocusObjects(
       job,
@@ -247,15 +250,16 @@ const explicitPrefix = optionalString(location?.['prefix'])
 ?? undefined;
 const autoDetected = connection.providerCode === 'oci'
   && explicitNamespaceName === undefined
-  && explicitBucketName === undefined;
+  && explicitBucketName === undefined
+  && readObjectArray(connection.metadata, 'ociFocusReportLocations').length === 0
+  && readObjectArray(connection.metadata, 'ociFocusReportObjects').length === 0;
 if (autoDetected) {
-return {
-capability: 'STORAGE',
-status: 'NOT_CONFIGURED',
-message: 'No hay una ubicación FOCUS configurada; se usará OCI Usage API cuando billing esté en modo AUTO.',
+return validateOciManagedFocusStorage(
+job,
 checkedAt,
-metadata: { reasonCode: 'FOCUS_SOURCE_NOT_CONFIGURED' },
-};
+(target) => this.prepareManagedFocusJob(target, signal),
+(target) => this.createObjectStorageClient(target, signal),
+);
 }
 const bucketName = explicitBucketName;
 const prefix = explicitPrefix ?? '';
@@ -339,6 +343,21 @@ const credential = getCredential(job.connection.credentials, [
       readOciPassphrase(credential.payload['passphrase']),
       region,
     );
+  }
+
+  private prepareManagedFocusJob(
+    job: CloudIngestionJobContext,
+    signal?: AbortSignal,
+  ): Promise<CloudIngestionJobContext> {
+    return useManagedOciFocusHomeRegion(job, (target) => this.rateCoordinator.run(
+      `oci:${job.connection.rootExternalId}:identity`,
+      { requestsPerSecond: 5, maxConcurrent: 2 },
+      () => discoverOciHomeRegion(target, {
+        createIdentityClient: (context, requestSignal) => this.createIdentityClient(this.createAuthProvider(context), requestSignal),
+        withRetry: (operation, requestSignal) => withOciProviderRetry(operation, undefined, undefined, undefined, requestSignal),
+      }, signal),
+      signal,
+    ));
   }
 
   private monitoringRateKey(connection: Pick<CloudIngestionConnection, 'rootExternalId'>): string {

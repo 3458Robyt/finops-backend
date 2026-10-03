@@ -7,6 +7,7 @@ import type {
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
 import type { MetricStatistic } from '../../../domain/interfaces/ICloudIngestionProvider.js';
 import { getCredential, readStringArray } from '../providerConfig.js';
+import { hashMetricDimensions } from '../metricDimensions.js';
 import type { AwsCommandClient, AwsListMetricsResponse, AwsMetricDataResponse } from './awsContracts.js';
 import {
   chunkAwsItems,
@@ -99,6 +100,7 @@ export async function collectAwsTechnicalMetrics(
               const definition = batch[Number(result.Id?.slice(1) ?? -1)];
               if (definition === undefined) continue;
               const statistic = normalizeAwsStatistic(definition.stat);
+              const dimensions = Object.fromEntries(definition.dimensions.map(({ Name, Value }) => [Name, Value]));
               const timestamps = result.Timestamps ?? [];
               const values = result.Values ?? [];
               for (let index = 0; index < timestamps.length; index += 1) {
@@ -110,13 +112,16 @@ export async function collectAwsTechnicalMetrics(
                   cloudConnectionId: job.cloudConnectionId,
                   provider: 'AWS',
                   externalResourceId: definition.externalResourceId,
+                  providerNamespace: definition.namespace,
+                  regionId: region,
+                  dimensionsHash: hashMetricDimensions(dimensions),
                   metricName: definition.metricName,
                   statistic,
                   value,
                   sampledAt: timestamp,
                   granularitySeconds: window.periodSeconds,
                   ...(definition.unit !== undefined ? { metricUnit: definition.unit } : {}),
-                  rawMetric: { namespace: definition.namespace, stat: definition.stat, statistic, region },
+                  rawMetric: { namespace: definition.namespace, stat: definition.stat, statistic, region, dimensions },
                 });
               }
             }
@@ -268,7 +273,7 @@ async function discoverAwsMetricDefinitions(
   return { definitions, apiCallCount, warnings };
 }
 
-function resourceIdFromAwsDimensions(
+export function resourceIdFromAwsDimensions(
   dimensions: readonly { readonly Name: string; readonly Value: string }[],
 ): string | undefined {
   const preferred = dimensions.find((dimension) => /^(instanceid|volumeid)$/i.test(dimension.Name));
@@ -276,15 +281,16 @@ function resourceIdFromAwsDimensions(
   return dimensions.find((dimension) => /^(i-|vol-)/i.test(dimension.Value))?.Value;
 }
 
-function normalizeAwsStatistic(value: string): MetricStatistic {
+export function normalizeAwsStatistic(value: string): MetricStatistic {
   const normalized = value.trim().toLowerCase();
+  if (normalized === 'average' || normalized === 'mean') return 'MEAN';
   if (normalized === 'minimum' || normalized === 'min') return 'MIN';
   if (normalized === 'maximum' || normalized === 'max') return 'MAX';
   if (normalized === 'sum') return 'SUM';
   if (normalized === 'samplecount' || normalized === 'count') return 'COUNT';
   const percentile = /^p(50|90|95|99)(?:\.\d+)?$/.exec(normalized);
   if (percentile !== null) return `P${percentile[1]}` as MetricStatistic;
-  return 'MEAN';
+  throw new Error('CloudWatch devolvió una estadística no soportada; se omitió para evitar clasificarla como promedio.');
 }
 
 function emptyMetricResult(

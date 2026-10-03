@@ -21,7 +21,7 @@ export function resolveTechnicalMetricFloor(
   return new Date(Math.max(requestedFloorMs, providerFloorMs));
 }
 
-/** Builds bounded, oldest-first technical backfill jobs for uncovered windows. */
+/** Builds bounded, newest-first jobs; older uncovered windows follow as capacity frees. */
 export function buildMissingTechnicalMetricJobs(
   connection: ScheduleableIngestionConnection,
   providerCode: 'aws' | 'oci',
@@ -58,11 +58,19 @@ export function buildMissingTechnicalMetricJobs(
     job.sourceType === 'TECHNICAL_METRIC' && job.status === 'FAILED'
   ));
   const maxJobs = options.maxMetricBackfillJobsPerConnection ?? 48;
+  // Keep the backlog bounded per connection; a scheduler tick must not queue
+  // the entire historical range while a slow provider is still processing it.
+  const availableSlots = Math.max(0, maxJobs - activeJobs.length);
   const jobs: PlannedIngestionJob[] = [];
 
-  for (let cursorMs = floor.getTime(); cursorMs < now.getTime(); cursorMs += windowMs) {
+  if (availableSlots === 0) return jobs;
+
+  // Never enqueue a moving, incomplete current window: five-minute scheduler
+  // ticks would otherwise create overlapping jobs for the same day.
+  const closedThroughMs = alignToWindow(now, windowMs).getTime();
+  for (let cursorMs = closedThroughMs - windowMs; cursorMs >= floor.getTime(); cursorMs -= windowMs) {
     const targetStart = new Date(cursorMs);
-    const targetEnd = new Date(Math.min(cursorMs + windowMs, now.getTime()));
+    const targetEnd = new Date(cursorMs + windowMs);
     const hasSamples = covered.has(cursorMs) || coverageWindows.get(cursorMs) === 'COVERED';
     const hasNoDataEvidence = coverageWindows.get(cursorMs) === 'NO_DATA';
     // A PARTIAL segment is evidence of a gap, not evidence that the window is
@@ -72,7 +80,13 @@ export function buildMissingTechnicalMetricJobs(
       && segment.targetStart.getTime() <= targetStart.getTime()
       && segment.targetEnd.getTime() >= targetEnd.getTime());
     const hasActiveJob = activeJobs.some((job) => job.targetStart !== undefined && overlaps(job.targetStart, job.targetEnd, targetStart, targetEnd));
-    const hasSuccessfulJob = !usingCoverageWindows && successfulJobs.some((job) => job.targetStart !== undefined && overlaps(job.targetStart, job.targetEnd, targetStart, targetEnd));
+    // A successful partial read is evidence of the provider's actual response.
+    // Replaying the same immutable window every scheduler tick cannot fill a
+    // provider-side gap and conflicts with the active+successful idempotency index.
+    const hasSuccessfulJob = successfulJobs.some((job) => job.targetStart !== undefined
+      && (job.configurationHash === configurationHash || job.configurationHash == null)
+      && job.targetStart.getTime() <= targetStart.getTime()
+      && job.targetEnd.getTime() >= targetEnd.getTime());
     const hasExplicitNoDataJob = successfulJobs.some((job) => (
       job.dataOutcome === 'NO_DATA'
       && job.targetStart !== undefined
@@ -96,7 +110,7 @@ export function buildMissingTechnicalMetricJobs(
         ...(requestContext === undefined ? {} : { requestContext }),
         reason: `Se reintenta una ventana técnica fallida con configuración anterior entre ${targetStart.toISOString()} y ${targetEnd.toISOString()}.`,
       });
-      if (jobs.length >= maxJobs) break;
+      if (jobs.length >= availableSlots) break;
       continue;
     }
     if (hasSamples || hasNoDataEvidence || hasSegment || hasActiveJob || hasSuccessfulJob || hasExplicitNoDataJob) continue;
@@ -112,7 +126,7 @@ export function buildMissingTechnicalMetricJobs(
       ...(requestContext === undefined ? {} : { requestContext }),
       reason: `Se recupera ventana técnica sin evidencia entre ${targetStart.toISOString()} y ${targetEnd.toISOString()}.`,
     });
-    if (jobs.length >= maxJobs) break;
+    if (jobs.length >= availableSlots) break;
   }
   return jobs;
 }

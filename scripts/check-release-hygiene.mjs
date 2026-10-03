@@ -6,7 +6,7 @@ const tracked = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' })
 
 const forbidden = tracked.filter((file) => {
   const normalized = file.replaceAll('\\', '/');
-  if (normalized === '.env.example') return false;
+  if (['.env.example', '.env.beta.example', '.env.beta.runtime.example'].includes(normalized)) return false;
   return /(^|\/)\.env(?:\.|$)/i.test(normalized)
     || /\.(?:pem|key|p12|pfx|jks|sqlite|sqlite3|db)$/i.test(normalized)
     || /(^|\/)(?:node_modules|dist|\.test-artifacts|test-results|playwright-report)(\/|$)/i.test(normalized)

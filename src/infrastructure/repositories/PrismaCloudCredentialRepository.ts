@@ -383,7 +383,7 @@ function mergeEnabledMetricDefinitions(
       namespace: definition.namespace,
       metricName: definition.metricName,
       resourceId: definition.externalResourceId,
-      ...(definition.regionId === null ? {} : { regionId: definition.regionId }),
+      ...(definition.regionId === '' ? {} : { regionId: definition.regionId }),
       ...(isPlainObject(definition.dimensions) ? { dimensions: definition.dimensions } : {}),
       ...(definition.metricUnit === null ? {} : { unit: definition.metricUnit }),
       statistics: definition.statistics,

@@ -207,13 +207,14 @@ describe('buildIngestionSchedulePlan', () => {
     }));
   });
 
-  it('repairs internal technical gaps oldest-first instead of advancing from the latest sample', () => {
+  it('prioritizes the latest closed technical windows, then backfills older gaps', () => {
     const plan = buildIngestionSchedulePlan([
       buildOciConnection({
         metricCoverageWindowStarts: [new Date('2026-06-05T00:00:00.000Z')],
       }),
     ], {
       ...defaultOptions,
+      now: new Date('2026-06-05T13:00:00.000Z'),
       metricCatchupDays: 1,
       metricCatchupWindowMinutes: 360,
       maxMetricBackfillJobsPerConnection: 2,
@@ -221,20 +222,51 @@ describe('buildIngestionSchedulePlan', () => {
 
     expect(plan.jobs.filter((job) => job.sourceType === 'TECHNICAL_METRIC')).toEqual([
       expect.objectContaining({
-        targetStart: new Date('2026-06-04T12:00:00.000Z'),
-        targetEnd: new Date('2026-06-04T18:00:00.000Z'),
+        targetStart: new Date('2026-06-05T06:00:00.000Z'),
+        targetEnd: new Date('2026-06-05T12:00:00.000Z'),
       }),
       expect.objectContaining({
         targetStart: new Date('2026-06-04T18:00:00.000Z'),
         targetEnd: new Date('2026-06-05T00:00:00.000Z'),
       }),
     ]);
+    expect(plan.jobs.filter((job) => job.sourceType === 'TECHNICAL_METRIC')
+      .every((job) => job.targetEnd.getTime() <= Date.parse('2026-06-05T12:00:00.000Z'))).toBe(true);
+  });
+
+  it('bounds the outstanding technical backfill jobs per connection', () => {
+    const options = {
+      ...defaultOptions,
+      metricCatchupDays: 1,
+      metricCatchupWindowMinutes: 360,
+      maxMetricBackfillJobsPerConnection: 2,
+    };
+    const oneActiveJob = buildIngestionSchedulePlan([buildOciConnection({
+      metricCoverageWindowStarts: [],
+      ingestionJobs: [
+        { sourceType: 'TECHNICAL_METRIC', status: 'PENDING', targetStart: new Date('2026-06-04T12:00:00.000Z'), targetEnd: new Date('2026-06-04T18:00:00.000Z') },
+      ],
+    })], options);
+    const atCapacity = buildIngestionSchedulePlan([buildOciConnection({
+      metricCoverageWindowStarts: [],
+      ingestionJobs: [
+        { sourceType: 'TECHNICAL_METRIC', status: 'PENDING', targetStart: new Date('2026-06-04T12:00:00.000Z'), targetEnd: new Date('2026-06-04T18:00:00.000Z') },
+        { sourceType: 'TECHNICAL_METRIC', status: 'RUNNING', targetStart: new Date('2026-06-04T18:00:00.000Z'), targetEnd: new Date('2026-06-05T00:00:00.000Z') },
+      ],
+    })], options);
+
+    expect(oneActiveJob.jobs.filter((job) => job.sourceType === 'TECHNICAL_METRIC')).toHaveLength(1);
+    expect(atCapacity.jobs.filter((job) => job.sourceType === 'TECHNICAL_METRIC')).toHaveLength(0);
   });
 
   it('does not treat a successful job without sample evidence as covered', () => {
     const plan = buildIngestionSchedulePlan([
       buildOciConnection({
-        metricCoverageWindowStarts: [],
+        metricCoverageWindowStarts: [
+          new Date('2026-06-05T06:00:00.000Z'),
+          new Date('2026-06-05T00:00:00.000Z'),
+          new Date('2026-06-04T18:00:00.000Z'),
+        ],
         ingestionJobs: [{
           sourceType: 'TECHNICAL_METRIC',
           status: 'SUCCESS',
@@ -294,7 +326,7 @@ describe('buildIngestionSchedulePlan', () => {
         }],
       }),
       'oci',
-      { ...defaultOptions, metricCatchupDays: 1, metricCatchupWindowMinutes: 360, maxMetricBackfillJobsPerConnection: 1 },
+      { ...defaultOptions, now: new Date('2026-06-04T18:00:00.000Z'), metricCatchupDays: 1, metricCatchupWindowMinutes: 360, maxMetricBackfillJobsPerConnection: 1 },
       technicalConfigurationHash(),
       undefined,
     );
@@ -343,9 +375,41 @@ describe('buildIngestionSchedulePlan', () => {
     }));
   });
 
+  it('does not recreate a successfully ingested partial window on every periodic tick', () => {
+    const start = new Date('2026-06-04T12:00:00.000Z');
+    const end = new Date('2026-06-04T18:00:00.000Z');
+    const connection = buildOciConnection({
+      metricCoverageWindowStarts: [],
+      metricCoverageWindows: [{ windowStart: start, status: 'PARTIAL' }],
+      ingestionJobs: [{
+        sourceType: 'TECHNICAL_METRIC',
+        status: 'SUCCESS',
+        dataOutcome: 'DATA_WRITTEN',
+        targetStart: start,
+        targetEnd: end,
+        configurationHash: technicalConfigurationHash(),
+        resultSummary: { coverage: { samples: 12 } },
+      }],
+    });
+    const jobs = buildMissingTechnicalMetricJobs(
+      connection,
+      'oci',
+      { ...defaultOptions, metricCatchupDays: 1, metricCatchupWindowMinutes: 360, maxMetricBackfillJobsPerConnection: 1 },
+      technicalConfigurationHash(),
+      undefined,
+    );
+
+    expect(jobs).not.toContainEqual(expect.objectContaining({ targetStart: start, targetEnd: end }));
+  });
+
   it('retries a failed technical window with a stale configuration even when partial samples exist', () => {
     const plan = buildIngestionSchedulePlan([buildOciConnection({
-      metricCoverageWindowStarts: [new Date('2026-06-04T12:00:00.000Z')],
+      metricCoverageWindowStarts: [
+        new Date('2026-06-05T06:00:00.000Z'),
+        new Date('2026-06-05T00:00:00.000Z'),
+        new Date('2026-06-04T18:00:00.000Z'),
+        new Date('2026-06-04T12:00:00.000Z'),
+      ],
       ingestionJobs: [{
         sourceType: 'TECHNICAL_METRIC',
         status: 'FAILED',

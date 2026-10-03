@@ -632,10 +632,28 @@ describe('CloudConnectionService', () => {
 
     expect(result.updatedKey).toBe('awsMetricDefinitions');
     expect(repository.configuredMetricInput?.definitions[0]).toEqual({
-      externalResourceId: 'i-123', namespace: 'AWS/EC2', metricName: 'CPUUtilization', stat: 'Average',
+      externalResourceId: 'i-123', namespace: 'AWS/EC2', metricName: 'CPUUtilization', statistics: ['MEAN'],
       dimensions: [{ Name: 'InstanceId', Value: 'i-123' }],
     });
     expect(repository.auditEvents[0]).toMatchObject({ action: 'CLOUD_METRIC_DEFINITIONS_CONFIGURED' });
+  });
+
+  test('normalizes AWS discovered definitions with native statistics and region', async () => {
+    const repository = new FakeCloudConnectionRepository();
+    const service = new CloudConnectionService(repository);
+    await service.configureMetricDefinitions({
+      tenantId: 'tenant-1', userId: 'user-1', cloudConnectionId: 'conn-1', replace: false,
+      definitions: [{
+        externalResourceId: 'i-123', namespace: 'AWS/EC2', metricName: 'CPUUtilization',
+        regionId: 'us-east-1', statistics: ['MEAN', 'MAX'],
+        dimensions: [{ Name: 'InstanceId', Value: 'i-123' }],
+      }],
+    });
+    expect(repository.configuredMetricInput?.definitions[0]).toEqual({
+      externalResourceId: 'i-123', namespace: 'AWS/EC2', metricName: 'CPUUtilization',
+      region: 'us-east-1', statistics: ['MEAN', 'MAX'],
+      dimensions: [{ Name: 'InstanceId', Value: 'i-123' }],
+    });
   });
 
   test('queues technical metric backfill in historical windows', async () => {

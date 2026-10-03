@@ -149,13 +149,14 @@ export function normalizeMetricDefinition(
     if (!Array.isArray(dimensions) || dimensions.length === 0 || dimensions.length > 20) {
       throw new FinOpsBaseError(`definitions[${index}].dimensions debe contener entre 1 y 20 dimensiones.`, 'VALIDATION_ERROR');
     }
-    const region = optional('region');
+    const region = optional('region') ?? optional('regionId');
     const unit = optional('unit');
+    const statistics = normalizeAwsStatistics(value['statistics'] ?? text('stat'), index);
     return {
       externalResourceId: text('externalResourceId'),
       namespace: text('namespace'),
       metricName: text('metricName'),
-      stat: text('stat'),
+      statistics,
       dimensions: dimensions.map((dimension, dimensionIndex) => {
         if (!isRecord(dimension)) {
           throw new FinOpsBaseError(`definitions[${index}].dimensions[${dimensionIndex}] no es válida.`, 'VALIDATION_ERROR');
@@ -170,6 +171,24 @@ export function normalizeMetricDefinition(
     };
   }
   throw new FinOpsBaseError('El proveedor no soporta configuración de métricas.', 'VALIDATION_ERROR');
+}
+
+function normalizeAwsStatistics(value: unknown, index: number): readonly string[] {
+  const values = Array.isArray(value) ? value : [value];
+  const allowed = new Set(['MEAN', 'MIN', 'MAX', 'SUM', 'COUNT', 'P50', 'P90', 'P95', 'P99']);
+  const normalized = [...new Set(values.map((item) => {
+    if (typeof item !== 'string') throw new FinOpsBaseError(`definitions[${index}].statistics contiene un valor inválido.`, 'VALIDATION_ERROR');
+    const raw = item.trim().toUpperCase();
+    const statistic = ({
+      AVERAGE: 'MEAN', MINIMUM: 'MIN', MAXIMUM: 'MAX', SAMPLECOUNT: 'COUNT',
+    } as Readonly<Record<string, string>>)[raw] ?? raw;
+    if (!allowed.has(statistic)) throw new FinOpsBaseError(`definitions[${index}].statistics contiene una estadística AWS no soportada.`, 'VALIDATION_ERROR');
+    return statistic;
+  }))];
+  if (normalized.length === 0 || normalized.length > 6) {
+    throw new FinOpsBaseError(`definitions[${index}].statistics debe contener entre 1 y 6 valores.`, 'VALIDATION_ERROR');
+  }
+  return normalized;
 }
 
 function normalizeOciMetricDimensions(

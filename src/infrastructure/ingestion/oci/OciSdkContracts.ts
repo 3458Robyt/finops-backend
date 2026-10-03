@@ -105,6 +105,7 @@ export interface OciIdentityClient {
       readonly regionName?: string;
       readonly regionKey?: string;
       readonly status?: string;
+      readonly isHomeRegion?: boolean;
     }[];
   }>;
   listCompartments(request: unknown): Promise<{

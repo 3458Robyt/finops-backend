@@ -1,5 +1,6 @@
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { Prisma } from '../../generated/prisma/client.js';
+import { randomUUID } from 'node:crypto';
 import {
   buildIngestionSchedulePlan,
   type IngestionScheduleOptions,
@@ -169,7 +170,6 @@ export async function runPrismaIngestionJobScheduler(
             WHERE tenant_id = ${connection.tenantId}
               AND cloud_connection_id = ${connection.id}
               AND configuration_hash = ${configurationHash}
-              AND granularity_seconds = ${metricResolutionSeconds}
               AND window_start >= ${metricFloorDay}
               AND window_start < ${options.schedule.now}
             GROUP BY window_start
@@ -217,46 +217,33 @@ export async function runPrismaIngestionJobScheduler(
   const plan = buildIngestionSchedulePlan(enrichedConnections, options.schedule);
   const createdJobs: PrismaIngestionJobSchedulerRunResult['createdJobs'][number][] = [];
   if (options.apply) {
-    for (const job of plan.jobs) {
-      try {
-        createdJobs.push(await tx.ingestionJob.create({
-          data: {
-            tenantId: job.tenantId,
-            cloudConnectionId: job.cloudConnectionId,
-            sourceType: job.sourceType,
-            targetStart: job.targetStart,
-            targetEnd: job.targetEnd,
-            maxAttempts: job.maxAttempts,
-            ...(job.configurationHash !== undefined ? { configurationHash: job.configurationHash } : {}),
-            ...(job.requestContext !== undefined ? { requestContext: job.requestContext as Prisma.InputJsonValue } : {}),
-          },
-          select: {
-            id: true,
-            cloudConnectionId: true,
-            sourceType: true,
-            status: true,
-            targetStart: true,
-            targetEnd: true,
-          },
-        }));
-      } catch (error) {
-        if (!isUniqueConstraintError(error)) throw error;
-        // Another scheduler can win the unique active-window race. Treat that
-        // as an idempotent outcome instead of failing the whole cycle.
-        const existing = await tx.ingestionJob.findFirst({
-          where: {
-            cloudConnectionId: job.cloudConnectionId,
-            sourceType: job.sourceType,
-            targetStart: job.targetStart,
-            targetEnd: job.targetEnd,
-            configurationHash: job.configurationHash,
-            archivedAt: null,
-            status: { in: ['PENDING', 'RUNNING'] },
-          },
-          select: { id: true },
-        });
-        if (existing === null) throw error;
-      }
+    const attemptedIds = plan.jobs.map(() => randomUUID());
+    if (plan.jobs.length > 0) {
+      await tx.ingestionJob.createMany({
+        data: plan.jobs.map((job, index) => ({
+          id: attemptedIds[index]!,
+          tenantId: job.tenantId,
+          cloudConnectionId: job.cloudConnectionId,
+          sourceType: job.sourceType,
+          targetStart: job.targetStart,
+          targetEnd: job.targetEnd,
+          maxAttempts: job.maxAttempts,
+          ...(job.configurationHash !== undefined ? { configurationHash: job.configurationHash } : {}),
+          ...(job.requestContext !== undefined ? { requestContext: job.requestContext as Prisma.InputJsonValue } : {}),
+        })),
+        skipDuplicates: true,
+      });
+      createdJobs.push(...await tx.ingestionJob.findMany({
+        where: { id: { in: attemptedIds } },
+        select: {
+          id: true,
+          cloudConnectionId: true,
+          sourceType: true,
+          status: true,
+          targetStart: true,
+          targetEnd: true,
+        },
+      }));
     }
   }
 
@@ -279,8 +266,4 @@ export async function runPrismaIngestionJobScheduler(
     maxWait: 10_000,
     timeout: 60_000,
   });
-}
-
-function isUniqueConstraintError(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
 }

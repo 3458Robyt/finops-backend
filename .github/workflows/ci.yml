@@ -2,9 +2,13 @@ name: Backend CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - release/finops-beta-public-2026-10-01
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - release/finops-beta-public-2026-10-01
 
 permissions:
   contents: read

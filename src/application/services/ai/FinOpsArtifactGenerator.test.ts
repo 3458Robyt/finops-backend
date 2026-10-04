@@ -3,7 +3,7 @@ import type { AiGatewayRequest, IAiGateway } from '../../../domain/interfaces/IA
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
 import { ProviderTimeoutError } from '../../../domain/errors/errors.js';
-import { FinOpsArtifactGenerator } from './FinOpsArtifactGenerator.js';
+import { FinOpsArtifactGenerator } from './finOpsArtifactGenerator.js';
 import type { RecommendationReadinessReport } from './RecommendationReadinessGate.js';
 
 const snapshot: CostAnalyticsSnapshot = {

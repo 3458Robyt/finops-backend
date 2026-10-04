@@ -16,6 +16,7 @@ permissions:
 env:
   DATABASE_URL: postgresql://finops:finops@127.0.0.1:55432/finops_test
   JWT_SECRET: ci-finops-jwt-secret-with-at-least-thirty-two-chars
+  CREDENTIAL_ENCRYPTION_KEY: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8='
   AI_API_KEY: ci-placeholder-key
   AI_BASE_URL: http://127.0.0.1:9999/v1
   INGESTION_WORKER_ENABLED: 'false'
@@ -64,6 +65,7 @@ jobs:
         env:
           DATABASE_URL: postgresql://finops:finops@localhost:55432/finops_test
           JWT_SECRET: ci-finops-jwt-secret-with-at-least-thirty-two-chars
+          CREDENTIAL_ENCRYPTION_KEY: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8='
           AI_API_KEY: ci-placeholder-key
           AI_BASE_URL: http://127.0.0.1:9999/v1
           INGESTION_WORKER_ENABLED: 'false'

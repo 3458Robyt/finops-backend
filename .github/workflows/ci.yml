@@ -82,10 +82,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 3458Robyt/finops---front
-          # Backend and frontend use independent branches. Test the stable
-          # frontend here; the frontend workflow validates its own branch and
-          # the combined flow is run explicitly when both branches are ready.
-          ref: main
+          # Validate the frontend candidate paired with this backend release PR.
+          ref: feat/private-beta-activation
           path: finops-app
       - name: Install frontend E2E dependencies
         working-directory: finops-app

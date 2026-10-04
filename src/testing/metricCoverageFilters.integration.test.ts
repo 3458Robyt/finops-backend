@@ -22,7 +22,7 @@ describe('selective metric coverage PostgreSQL integration', () => {
           where: { tenantId: tenant!.id, providerCode: 'oci' },
           select: { id: true },
         });
-        const resourceId = `ocid1.vnic.oc1..exampleid0033.${runId}`;
+        const resourceId = `ocid1.vnic.oc1.iad.${runId}`;
         const definitions = buildDefinitions(tenant!.id, connection.id, runId, resourceId);
         await prisma.cloudMetricDefinition.createMany({ data: definitions });
 

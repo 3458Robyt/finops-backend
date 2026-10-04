@@ -11,7 +11,7 @@ describe('OciSdkIngestionProvider', () => {
 it('reports every capability as not configured without exposing credentials', async () => {
 const result = await new OciSdkIngestionProvider().validate({
 id: 'connection_1', tenantId: 'tenant_1', providerCode: 'oci',
-rootExternalId: 'ocid1.tenancy.oc1..exampleid0027', defaultRegion: 'sa-bogota-1', credentials: [],
+rootExternalId: 'ocid1.tenancy.oc1.test', defaultRegion: 'sa-bogota-1', credentials: [],
 });
 
 expect(result.capabilities).toHaveLength(5);
@@ -63,7 +63,7 @@ expect(result.status).toBe('AVAILABLE');
 expect(storageRegion).toBe('us-phoenix-1');
 expect(storageRequest).toMatchObject({
 namespaceName: 'bling',
-      bucketName: job.connection.rootExternalId,
+bucketName: 'ocid1.tenancy.oc1.test',
 prefix: 'FOCUS Reports/',
 limit: 1,
 });
@@ -111,7 +111,7 @@ createComputeClient: () => ({
 listInstances: async () => ({
 items: [
 {
-id: 'ocid1.instance.oc1..exampleid0017',
+id: 'ocid1.instance.oc1.test',
 displayName: 'api-prod',
 lifecycleState: 'RUNNING',
 shape: 'VM.Standard.E4.Flex',
@@ -130,7 +130,7 @@ sourceType: 'INVENTORY',
 expect(result.resources).toEqual([
 expect.objectContaining({
 provider: 'OCI',
-externalResourceId: 'ocid1.instance.oc1..exampleid0017',
+externalResourceId: 'ocid1.instance.oc1.test',
 name: 'api-prod',
 resourceType: 'COMPUTE_INSTANCE',
 serviceName: 'Oracle Compute',
@@ -181,7 +181,7 @@ credentials: [{ purpose: 'INVENTORY_READ', payload: {} }],
 });
 
 expect(listedCompartments).toEqual(['root', 'page-2']);
-expect(listedInstances).toEqual(['ocid1.tenancy.oc1..exampleid0027', 'compartment-a', 'compartment-b']);
+expect(listedInstances).toEqual(['ocid1.tenancy.oc1.test', 'compartment-a', 'compartment-b']);
 expect(result.resources).toHaveLength(3);
 expect(result.coverage).toMatchObject({
 inventoryCompartmentDiscovery: 'COMPLETE',
@@ -207,7 +207,7 @@ compartmentCount: 3,
               {
                 namespace: 'oci_computeagent',
                 name: 'CpuUtilization',
-                dimensions: { resourceId: 'ocid1.instance.oc1..exampleid0017' },
+                dimensions: { resourceId: 'ocid1.instance.oc1.test' },
                 aggregatedDatapoints: [
                   { timestamp: new Date('2026-06-04T01:30:00Z'), value: 4.2 },
                 ],
@@ -228,7 +228,7 @@ compartmentCount: 3,
     expect(samples).toEqual([
       expect.objectContaining({
         provider: 'OCI',
-        externalResourceId: 'ocid1.instance.oc1..exampleid0017',
+        externalResourceId: 'ocid1.instance.oc1.test',
         metricName: 'CpuUtilization',
         value: 4.2,
         granularitySeconds: 1800,
@@ -276,7 +276,7 @@ compartmentCount: 3,
     expect(focusRows[0]).toMatchObject({
       provider: 'OCI',
       serviceName: 'Compute',
-      resourceId: 'ocid1.instance.oc1..exampleid0017',
+      resourceId: 'ocid1.instance.oc1.test',
       billedCost: 8.75,
       consumedQuantity: 2,
       consumedUnit: 'Hours',
@@ -330,7 +330,7 @@ compartmentCount: 3,
     expect(getObjectCalls).toBe(1);
     expect(result.objectsProcessed).toBe(1);
     expect(focusRows).toHaveLength(1);
-    expect(focusRows[0]?.resourceId).toBe('ocid1.instance.oc1..exampleid0017');
+    expect(focusRows[0]?.resourceId).toBe('ocid1.instance.oc1.test');
   });
 
   it('reads OCI FOCUS object metadata written with OCI CLI field names', async () => {
@@ -480,7 +480,7 @@ compartmentCount: 3,
                 computedAmount: 12.5,
                 computedQuantity: 4,
                 currency: 'USD',
-                resourceId: 'ocid1.instance.oc1..exampleid0017',
+                resourceId: 'ocid1.instance.oc1.test',
                 region: 'sa-bogota-1',
               }],
             },
@@ -513,7 +513,7 @@ compartmentCount: 3,
         billedCost: 12.5,
         consumedQuantity: 4,
         billingCurrency: 'USD',
-        resourceId: 'ocid1.instance.oc1..exampleid0017',
+        resourceId: 'ocid1.instance.oc1.test',
         chargePeriodStart: new Date('2026-06-04T00:00:00.000Z'),
         chargePeriodEnd: new Date('2026-06-05T00:00:00.000Z'),
       }),
@@ -595,15 +595,15 @@ function buildMetricJob(): CloudIngestionJobContext {
       id: 'connection_1',
       tenantId: 'tenant_1',
       providerCode: 'oci',
-      rootExternalId: 'ocid1.tenancy.oc1..exampleid0027',
+      rootExternalId: 'ocid1.tenancy.oc1.test',
       credentials: [],
       metadata: {
         ociMetricDefinitions: [
           {
-            compartmentId: 'ocid1.tenancy.oc1..exampleid0027',
+            compartmentId: 'ocid1.tenancy.oc1.test',
             namespace: 'oci_computeagent',
             metricName: 'CpuUtilization',
-            resourceId: 'ocid1.instance.oc1..exampleid0017',
+            resourceId: 'ocid1.instance.oc1.test',
           },
         ],
       },
@@ -623,7 +623,7 @@ function buildOciFocusJob(): CloudIngestionJobContext {
       id: 'connection_1',
       tenantId: 'tenant_1',
       providerCode: 'oci',
-      rootExternalId: 'ocid1.tenancy.oc1..exampleid0027',
+      rootExternalId: 'ocid1.tenancy.oc1.test',
       credentials: [],
       metadata: {
         ociFocusReportLocations: [
@@ -663,7 +663,7 @@ function buildFocusCsv(): string {
     ProviderName: 'Oracle Cloud Infrastructure',
     Publisher: 'Oracle',
     RegionId: 'sa-bogota-1',
-    ResourceId: 'ocid1.instance.oc1..exampleid0017',
+    ResourceId: 'ocid1.instance.oc1.test',
     ServiceCategory: 'Compute',
     ServiceName: 'Compute',
     SubAccountId: 'compartment-1',

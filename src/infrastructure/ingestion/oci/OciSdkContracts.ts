@@ -51,6 +51,7 @@ export interface OciSummarizedMetric {
   readonly namespace?: string;
   readonly name?: string;
   readonly dimensions?: Record<string, string>;
+  readonly metadata?: Readonly<Record<string, string>>;
   readonly aggregatedDatapoints?: readonly {
     readonly timestamp?: Date | string;
     readonly value?: number;

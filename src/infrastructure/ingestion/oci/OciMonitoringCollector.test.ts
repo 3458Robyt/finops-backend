@@ -54,6 +54,33 @@ describe('OCI monitoring collector', () => {
     expect(result.coverage).toMatchObject({ samples: 1, metricDefinitions: 1 });
   });
 
+  test('persists the metric unit returned in OCI metric metadata', async () => {
+    const result = await collectOciTechnicalMetrics(buildJob({
+      ociMetricDefinitions: [{
+        compartmentId: 'compartment-1',
+        namespace: 'oci_computeagent',
+        metricName: 'CpuUtilization',
+        resourceId: 'instance-1',
+      }],
+    }), {
+      createClient: () => ({
+        summarizeMetricsData: async () => ({
+          items: [{
+            name: 'CpuUtilization',
+            namespace: 'oci_computeagent',
+            dimensions: { resourceId: 'instance-1' },
+            metadata: { unit: 'percent' },
+            aggregatedDatapoints: [{ timestamp: '2026-08-10T00:30:00Z', value: 12.5 }],
+          }],
+        }),
+      }),
+      withRetry: (operation) => operation(),
+    });
+
+    const [sample] = await materializeSamples(result);
+    expect(sample?.metricUnit).toBe('percent');
+  });
+
   test('records provider retry telemetry in technical coverage', async () => {
     const result = await collectOciTechnicalMetrics(buildJob({
       ociMetricDefinitions: [metricDefinition('instance-1')],

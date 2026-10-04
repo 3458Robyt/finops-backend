@@ -233,6 +233,7 @@ async function collectOciTask(
     const externalResourceId = dimensions?.['resourceId'] ?? dimensions?.['resource_id'] ?? definition.resourceId;
     if (task.allowedResourceIds !== undefined && (externalResourceId === undefined || !task.allowedResourceIds.has(externalResourceId))) continue;
     const regionId = definition.regionId ?? dimensions?.['regionId'] ?? dimensions?.['region'];
+    const metricUnit = optionalString(metric.metadata?.['unit']) ?? definition.unit;
     for (const point of metric.aggregatedDatapoints ?? []) {
       if (point.timestamp === undefined || point.value === undefined) continue;
       batch.push({
@@ -249,7 +250,7 @@ async function collectOciTask(
         value: point.value,
         sampledAt: point.timestamp instanceof Date ? point.timestamp : new Date(point.timestamp),
         granularitySeconds: collection.granularitySeconds,
-        ...(definition.unit !== undefined ? { metricUnit: definition.unit } : {}),
+        ...(metricUnit !== undefined ? { metricUnit } : {}),
         rawMetric: {
           namespace: metric.namespace ?? definition.namespace,
           query,

@@ -105,7 +105,7 @@ describe('validateRuntimeConfig', () => {
     expect(() => validateRuntimeConfig({ ...productionEnv, APP_PROCESS_ROLE: role })).not.toThrow();
   });
 
-  it.each(['*', ',', 'https://finops.example.com/app', 'https://redacted:placeholder@example.test'])('rejects an unsafe production CORS origin: %s', (origin) => {
+  it.each(['*', ',', 'https://finops.example.com/app', 'https://user:password@finops.example.com'])('rejects an unsafe production CORS origin: %s', (origin) => {
     expect(() => validateRuntimeConfig({ ...productionEnv, CORS_ORIGIN: origin }))
       .toThrow(`Configuracion runtime invalida.`);
   });
@@ -201,7 +201,7 @@ describe('validateRuntimeConfig', () => {
       ...productionEnv,
       EMAIL_ENABLED: 'true',
       SMTP_HOST: 'smtp.example.test',
-      SMTP_USER: 'test-user-0003@example.test',
+      SMTP_USER: 'alerts@example.test',
       SMTP_PASSWORD: 'smtp-secret',
       PASSWORD_RESET_URL: 'https://finops.example.test/reset-password',
       TELEGRAM_ENABLED: 'true',
@@ -214,5 +214,21 @@ describe('validateRuntimeConfig', () => {
       BUDGET_SCHEDULER_TENANT_ID: 'tenant-1',
       BUDGET_SCHEDULER_USER_ID: 'user-1',
     })).not.toThrow();
+  });
+
+  it('accepts the simplified email and password setup for a recognized provider', () => {
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      EMAIL_ADDRESS: 'alerts@gmail.com',
+      EMAIL_PASSWORD: 'smtp-secret',
+    })).not.toThrow();
+  });
+
+  it('requires an explicit SMTP host for an unrecognized provider domain', () => {
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      EMAIL_ADDRESS: 'alerts@takcolombia.co',
+      EMAIL_PASSWORD: 'smtp-secret',
+    })).toThrow('SMTP_HOST');
   });
 });

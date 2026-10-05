@@ -1,5 +1,6 @@
 import { validateRuntimeConfig } from './runtimeConfig.js';
 import type { AiReasoningEffort, ProcessRole, RuntimeConfig, SameSitePolicy, TrustProxy } from './runtimeConfigTypes.js';
+import { inferSmtpProviderDefaults } from './smtpProviderDefaults.js';
 
 /**
  * Reads environment variables once at the composition boundary and exposes a
@@ -12,6 +13,9 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
   const nodeEnv = env['NODE_ENV'] ?? 'development';
   const processRole = readProcessRole(env['APP_PROCESS_ROLE']);
   const corsOrigins = readCsv(env['CORS_ORIGIN'], ['http://localhost:5173', 'http://127.0.0.1:5173']);
+  const emailAddress = readOptionalString(env['EMAIL_ADDRESS']) ?? readOptionalString(env['SMTP_USER']);
+  const emailPassword = readOptionalString(env['EMAIL_PASSWORD']) ?? readOptionalString(env['SMTP_PASSWORD']);
+  const smtpDefaults = inferSmtpProviderDefaults(emailAddress);
 
   return {
     environment: {
@@ -47,7 +51,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
       credentialKeyVersion: readString(env['CREDENTIAL_KEY_VERSION'], 'v1'),
       mfaRequiredForPrivileged: readBoolean(env['MFA_REQUIRED_FOR_PRIVILEGED'], false),
       metricsToken: readOptionalString(env['METRICS_TOKEN']),
-      passwordResetUrl: readString(env['PASSWORD_RESET_URL'], 'http://localhost:5173/reset-password'),
+      passwordResetUrl: readString(env['PASSWORD_RESET_URL'], `${corsOrigins[0]!.replace(/\/+$/, '')}/reset-password`),
       passwordResetTtlSeconds: readPositiveInteger(env['PASSWORD_RESET_TTL_SECONDS'], 900),
       clientPortalUrl: readString(env['CLIENT_PORTAL_URL'], 'http://localhost:5173'),
     },
@@ -66,18 +70,18 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
       requiredTagKeys: readCsv(env['FINOPS_REQUIRED_TAG_KEYS'], ['environment', 'owner', 'application', 'cost_center']),
     },
     email: {
-      enabled: readBoolean(env['EMAIL_ENABLED'], false),
+      enabled: readBoolean(env['EMAIL_ENABLED'], emailAddress !== undefined && emailPassword !== undefined),
       timeoutMs: readPositiveInteger(env['OUTBOUND_PROVIDER_TIMEOUT_MS'], 15_000),
       pool: readBoolean(env['SMTP_POOL_ENABLED'], true),
       maxConnections: Math.min(10, readPositiveInteger(env['SMTP_MAX_CONNECTIONS'], 3)),
       maxMessages: Math.min(1000, readPositiveInteger(env['SMTP_MAX_MESSAGES'], 100)),
       rateLimit: readPositiveInteger(env['SMTP_RATE_LIMIT'], 20),
-      host: readOptionalString(env['SMTP_HOST']),
-      port: readPositiveInteger(env['SMTP_PORT'], 587),
-      secure: readBoolean(env['SMTP_SECURE'], false),
-      user: readOptionalString(env['SMTP_USER']),
-      password: readOptionalString(env['SMTP_PASSWORD']),
-      from: readOptionalString(env['SMTP_FROM'] ?? env['SMTP_USER']),
+      host: readOptionalString(env['SMTP_HOST']) ?? smtpDefaults?.host,
+      port: readPositiveInteger(env['SMTP_PORT'], smtpDefaults?.port ?? 587),
+      secure: readBoolean(env['SMTP_SECURE'], smtpDefaults?.secure ?? false),
+      user: emailAddress,
+      password: emailPassword,
+      from: readOptionalString(env['SMTP_FROM']) ?? emailAddress,
       fromName: readString(env['SMTP_FROM_NAME'], 'FinOps Inteligente'),
     },
     telegram: {

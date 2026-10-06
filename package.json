@@ -1,7 +1,7 @@
 {
   "name": "finops-backend",
   "version": "1.0.0",
-  "description": "FinOps Inteligente - Backend Core para optimización de costos multicloud (FinOps Demo)",
+  "description": "FinOps Intelligent multicloud cost optimization backend",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -29,8 +29,6 @@
     "test:canary:runtime-rls": "tsx scripts/testing/runtime-rls-canary.ts",
     "test:canary:ai": "tsx scripts/testing/ai-live-canary.ts",
     "test:canary:ai:gpt56": "tsx scripts/testing/ai-gpt56-coherence.ts",
-    "test:canary:tak-chat": "tsx scripts/testing/canary privado no incluido en el repositorio p?blico",
-    "test:audit:tak-pilot": "tsx scripts/testing/canary privado no incluido en el repositorio p?blico",
     "test:canary:learning": "cross-env AI_CANARY_SCOPE=learning tsx scripts/testing/ai-live-canary.ts",
     "test:ai:offline": "vitest run src/application/services/ai/evaluation",
     "test:ai:live": "npm run build && cross-env AI_CANARY_SCOPE=finops tsx scripts/testing/ai-live-canary.ts",
@@ -94,7 +92,6 @@
     "oci",
     "timescaledb"
   ],
-  "author": "FinOps Demo",
   "license": "UNLICENSED",
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.1062.0",

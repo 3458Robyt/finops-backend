@@ -440,14 +440,14 @@ enum ManualExecutionStatus {
 }
 
 model Tenant {
-  id                            String                             @id @default(cuid())
-  operatorOrganizationId        String?                            @map("operator_organization_id")
+  id                            String                                 @id @default(cuid())
+  operatorOrganizationId        String?                                @map("operator_organization_id")
   name                          String
-  slug                          String                             @unique
-  reportingCurrency             String                             @default("USD") @map("reporting_currency") @db.VarChar(3)
-  status                        TenantStatus                       @default(ACTIVE)
-  createdAt                     DateTime                           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                     DateTime                           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  slug                          String                                 @unique
+  reportingCurrency             String                                 @default("USD") @map("reporting_currency") @db.VarChar(3)
+  status                        TenantStatus                           @default(ACTIVE)
+  createdAt                     DateTime                               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                     DateTime                               @updatedAt @map("updated_at") @db.Timestamptz(6)
   users                         User[]
   cloudAccounts                 CloudAccount[]
   ingestionRuns                 IngestionRun[]
@@ -455,7 +455,7 @@ model Tenant {
   recommendations               Recommendation[]
   recommendationCostEvidence    RecommendationCostEvidence[]
   auditEvents                   AuditEvent[]
-  operatorOrganization          OperatorOrganization?              @relation(fields: [operatorOrganizationId], references: [id], onDelete: SetNull)
+  operatorOrganization          OperatorOrganization?                  @relation(fields: [operatorOrganizationId], references: [id], onDelete: SetNull)
   accessAssignments             TenantAccessAssignment[]
   cloudConnections              CloudConnection[]
   cloudConnectionRegions        CloudConnectionRegion[]
@@ -481,8 +481,9 @@ model Tenant {
   aiContextTraces               AiContextTrace[]
   contextBuildRuns              ContextBuildRun[]
   telegramChatLinks             TelegramChatLink[]
-  telegramChatLinksActive       TelegramChatLink[]          @relation("TelegramChatLinkActiveTenant")
+  telegramChatLinksActive       TelegramChatLink[]                     @relation("TelegramChatLinkActiveTenant")
   telegramLinkCodes             TelegramLinkCode[]
+  messagingPreferences          UserMessagingPreference[]
   telegramInteractionLogs       TelegramInteractionLog[]
   costAnomalies                 CostAnomaly[]
   costForecasts                 CostForecast[]
@@ -567,7 +568,7 @@ model User {
   telegramLinkCodes                   TelegramLinkCode[]
   telegramInteractionLogs             TelegramInteractionLog[]
   outboundMessageDeliveries           OutboundMessageDelivery[]
-  messagingPreference                 UserMessagingPreference?
+  messagingPreferences                UserMessagingPreference[]
   createdBudgets                      Budget[]                           @relation("BudgetCreatedBy")
   createdCostAllocationRules          CostAllocationRule[]               @relation("CostAllocationRuleCreatedBy")
   closedCostAllocationClosures        CostAllocationClosure[]            @relation("CostAllocationClosureClosedBy")
@@ -1145,7 +1146,7 @@ model CloudMetricDefinition {
   tenantId                String                         @map("tenant_id")
   cloudConnectionId       String                         @map("cloud_connection_id")
   cloudConnectionRegionId String?                        @map("cloud_connection_region_id")
-  regionId                String?                        @map("region_id")
+  regionId                String                         @default("") @map("region_id")
   compartmentId           String                         @map("compartment_id")
   namespace               String
   metricName              String                         @map("metric_name")
@@ -1165,7 +1166,7 @@ model CloudMetricDefinition {
   cloudConnectionRegion   CloudConnectionRegion?         @relation(fields: [cloudConnectionRegionId], references: [id], onDelete: SetNull)
   metricCoverageWindows   ResourceMetricCoverageWindow[]
 
-  @@unique([cloudConnectionId, namespace, metricName, compartmentId, externalResourceId, dimensionsHash], map: "cloud_metric_definitions_identity_key")
+  @@unique([cloudConnectionId, regionId, namespace, metricName, compartmentId, externalResourceId, dimensionsHash], map: "cloud_metric_definitions_identity_key")
   @@index([tenantId, cloudConnectionId, status, enabled], map: "cloud_metric_definitions_tenant_status_enabled_idx")
   @@index([cloudConnectionId, regionId, namespace, metricName], map: "cloud_metric_definitions_connection_region_metric_idx")
   @@index([cloudConnectionId, externalResourceId, metricName], map: "cloud_metric_definitions_connection_resource_metric_idx")
@@ -1462,7 +1463,7 @@ model Recommendation {
   inAppNotifications        InAppNotification[]
   outboundMessageDeliveries OutboundMessageDelivery[]
   analysisRunLinks          RecommendationAnalysisRunRecommendation[]
-  candidateAudits           RecommendationAnalysisCandidateAudit[]      @relation("RecommendationCandidateAudits")
+  candidateAudits           RecommendationAnalysisCandidateAudit[]    @relation("RecommendationCandidateAudits")
   costEvidenceLines         RecommendationCostEvidence[]
 
   @@unique([tenantId, deduplicationKey])
@@ -1533,7 +1534,7 @@ model RecommendationAnalysisRun {
   promptTokenEstimate      Int                                       @default(0) @map("prompt_token_estimate")
   responseTokenEstimate    Int                                       @default(0) @map("response_token_estimate")
   latencyMs                Int?                                      @map("latency_ms")
-  stageTimings              Json?                                     @map("stage_timings")
+  stageTimings             Json?                                     @map("stage_timings")
   workerId                 String?                                   @map("worker_id")
   lockedAt                 DateTime?                                 @map("locked_at") @db.Timestamptz(6)
   nextAttemptAt            DateTime?                                 @map("next_attempt_at") @db.Timestamptz(6)
@@ -1577,30 +1578,30 @@ model RecommendationAnalysisRunRecommendation {
 }
 
 model RecommendationAnalysisCandidateAudit {
-  id                    String                                      @id @default(cuid())
-  tenantId              String                                      @map("tenant_id")
-  runId                 String                                      @map("run_id")
-  candidateId           String                                      @map("candidate_id")
-  draftIndex            Int                                         @map("draft_index")
-  recommendationId      String?                                     @map("recommendation_id")
-  deterministicEvidence Json?                                       @map("deterministic_evidence")
+  id                    String                                          @id @default(cuid())
+  tenantId              String                                          @map("tenant_id")
+  runId                 String                                          @map("run_id")
+  candidateId           String                                          @map("candidate_id")
+  draftIndex            Int                                             @map("draft_index")
+  recommendationId      String?                                         @map("recommendation_id")
+  deterministicEvidence Json?                                           @map("deterministic_evidence")
   draft                 Json?
-  auditVerdict          AiAuditVerdict                              @map("audit_verdict")
-  auditScore            Int                                         @map("audit_score")
-  auditChecks           Json                                        @map("audit_checks")
-  blockingIssues        Json                                        @map("blocking_issues")
-  requiredChanges       Json                                        @map("required_changes")
-  repairAttempt         Int                                         @default(0) @map("repair_attempt")
+  auditVerdict          AiAuditVerdict                                  @map("audit_verdict")
+  auditScore            Int                                             @map("audit_score")
+  auditChecks           Json                                            @map("audit_checks")
+  blockingIssues        Json                                            @map("blocking_issues")
+  requiredChanges       Json                                            @map("required_changes")
+  repairAttempt         Int                                             @default(0) @map("repair_attempt")
   finalDisposition      RecommendationAnalysisCandidateFinalDisposition @map("final_disposition")
   model                 String?
-  auditorModel          String?                                     @map("auditor_model")
-  promptHash            String?                                     @map("prompt_hash")
-  evidenceHash          String?                                     @map("evidence_hash")
-  createdAt             DateTime                                    @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt             DateTime                                    @updatedAt @map("updated_at") @db.Timestamptz(6)
-  tenant                Tenant                                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  run                   RecommendationAnalysisRun                   @relation(fields: [runId], references: [id], onDelete: Cascade)
-  recommendation        Recommendation?                             @relation("RecommendationCandidateAudits", fields: [recommendationId], references: [id], onDelete: SetNull)
+  auditorModel          String?                                         @map("auditor_model")
+  promptHash            String?                                         @map("prompt_hash")
+  evidenceHash          String?                                         @map("evidence_hash")
+  createdAt             DateTime                                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant                Tenant                                          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  run                   RecommendationAnalysisRun                       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  recommendation        Recommendation?                                 @relation("RecommendationCandidateAudits", fields: [recommendationId], references: [id], onDelete: SetNull)
 
   @@unique([runId, draftIndex])
   @@index([tenantId, createdAt])
@@ -2292,38 +2293,41 @@ model TelegramInteractionLog {
 }
 
 model TelegramInboundUpdate {
-  id            String                     @id @default(cuid())
-  updateId      String                     @unique @map("update_id")
+  id            String                      @id @default(cuid())
+  updateId      String                      @unique @map("update_id")
   payload       Json
   status        TelegramInboundUpdateStatus @default(PENDING)
-  attemptCount  Int                        @default(0) @map("attempt_count")
-  maxAttempts   Int                        @default(3) @map("max_attempts")
-  nextAttemptAt DateTime                   @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
-  lockedAt      DateTime?                  @map("locked_at") @db.Timestamptz(6)
-  lockedBy      String?                    @map("locked_by")
-  errorMessage  String?                    @map("error_message") @db.Text
-  processedAt   DateTime?                  @map("processed_at") @db.Timestamptz(6)
-  createdAt     DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt     DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  attemptCount  Int                         @default(0) @map("attempt_count")
+  maxAttempts   Int                         @default(3) @map("max_attempts")
+  nextAttemptAt DateTime                    @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lockedAt      DateTime?                   @map("locked_at") @db.Timestamptz(6)
+  lockedBy      String?                     @map("locked_by")
+  errorMessage  String?                     @map("error_message") @db.Text
+  processedAt   DateTime?                   @map("processed_at") @db.Timestamptz(6)
+  createdAt     DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([status, nextAttemptAt, lockedAt, createdAt])
   @@map("telegram_inbound_updates")
 }
 
 model UserMessagingPreference {
-  id                    String   @id @default(cuid())
-  userId                String   @unique @map("user_id")
-  emailEnabled          Boolean  @default(true) @map("email_enabled")
-  telegramEnabled       Boolean  @default(false) @map("telegram_enabled")
-  operationalAlerts     Boolean  @default(true) @map("operational_alerts")
-  recommendationAlerts  Boolean  @default(true) @map("recommendation_alerts")
-  financialAlerts       Boolean  @default(true) @map("financial_alerts")
-  executiveSummaries    Boolean  @default(true) @map("executive_summaries")
-  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                   String   @id @default(cuid())
+  tenantId             String   @map("tenant_id")
+  userId               String   @map("user_id")
+  emailEnabled         Boolean  @default(true) @map("email_enabled")
+  telegramEnabled      Boolean  @default(false) @map("telegram_enabled")
+  operationalAlerts    Boolean  @default(true) @map("operational_alerts")
+  recommendationAlerts Boolean  @default(true) @map("recommendation_alerts")
+  financialAlerts      Boolean  @default(true) @map("financial_alerts")
+  executiveSummaries   Boolean  @default(true) @map("executive_summaries")
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([tenantId, userId], map: "user_messaging_preferences_tenant_user_key")
   @@map("user_messaging_preferences")
 }
 

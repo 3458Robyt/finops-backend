@@ -25,7 +25,7 @@ import {
 } from './telegram/telegramMessageFormatters.js';
 import { safeErrorMessage } from '../observability/safeError.js';
 import { changeTenant, formatTenants } from './telegram/telegramTenantCommands.js';
-import { effectiveTelegramTenantId, retryTelegramUpdateDelay } from './telegram/telegramRuntime.js';
+import { effectiveTelegramTenantId, retryTelegramUpdateDelay, runTelegramTenantContext } from './telegram/telegramRuntime.js';
 // Reexporta el tipo público del update para preservar la API del módulo.
 export type { TelegramUpdate } from './telegram/telegramUpdateParser.js';
 
@@ -146,7 +146,7 @@ export class TelegramBotService {
       await this.sendChunks(message.chatId, reply);
       await this.logMessage(message, link, parsed.command, 'PROCESSED');
     } catch (error: unknown) {
-      if (options.sendFailureReply !== false) await this.sendChunks(message.chatId, 'No pude procesar la solicitud en este momento. Intenta de nuevo mas tarde.').catch(() => undefined);
+      if (options.sendFailureReply !== false) await this.sendChunks(message.chatId, 'No pude responderte por un problema temporal del asistente. Vuelve a intentarlo más tarde; si necesitas ayuda, escribe /ayuda.').catch(() => undefined);
       await this.logMessage(
         message,
         undefined,
@@ -167,7 +167,7 @@ export class TelegramBotService {
     if (claimed === null) return { processed: false };
 
     try {
-      await this.handleUpdate(claimed.payload as TelegramUpdate, { rethrowFailures: true, sendFailureReply: false });
+      await this.handleUpdate(claimed.payload as TelegramUpdate, { rethrowFailures: true, sendFailureReply: claimed.attemptCount >= claimed.maxAttempts });
       await this.repository.completeInboundUpdate({ id: claimed.id, workerId: input.workerId, status: 'PROCESSED' });
       return { processed: true, status: 'PROCESSED' };
     } catch (error: unknown) {
@@ -271,18 +271,16 @@ export class TelegramBotService {
    */
   private async answerChat(link: TelegramChatLink, question: string): Promise<string> {
     const trimmed = question.trim();
+    if (trimmed === '') return 'Escribe tu pregunta después de /chat. Ejemplo: /chat ¿Qué servicios tienen mayor ahorro potencial?';
 
-    if (trimmed === '') {
-      return 'Escribe tu pregunta despues de /chat. Ejemplo: /chat Que servicios tienen mayor ahorro potencial?';
-    }
-
-    const response = await this.aiService.answerChat({
-      tenantId: effectiveTelegramTenantId(link),
+    const tenantId = effectiveTelegramTenantId(link);
+    const response = await runTelegramTenantContext(link, () => this.aiService.answerChat({
+      tenantId,
       userId: link.userId,
       traceSource: 'TELEGRAM',
       message: trimmed,
       outputFormat: 'PLAIN_TEXT',
-    });
+    }));
 
     return response.answer;
   }

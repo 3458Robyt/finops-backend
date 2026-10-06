@@ -1,4 +1,5 @@
 import type {
+  CloudCapabilityValidation,
   CloudIngestionJobContext,
   FocusSourcePreviewResult,
 } from '../../../domain/interfaces/ICloudIngestionProvider.js';
@@ -8,7 +9,7 @@ import {
   readObjectArray,
   requireString,
 } from '../providerConfig.js';
-import { safeOciProviderError } from './OciCapabilityValidator.js';
+import { safeOciProviderError, validateOciCall, withOciClient } from './OciCapabilityValidator.js';
 import type {
   OciFocusReportLocation,
   OciFocusReportObject,
@@ -55,7 +56,71 @@ export function readOciFocusLocations(
   }
 
   const validated = readValidatedFocusLocation(job);
-  return validated === undefined ? [] : [validated];
+  if (validated !== undefined) return [validated];
+
+  // OCI stores Cost Reports in Oracle's managed "bling" namespace, with the
+  // tenancy OCID as bucket and FOCUS Reports as the prefix. This avoids
+  // requiring customers to copy a location already defined by OCI.
+  if (job.connection.providerCode === 'oci' && job.connection.rootExternalId.trim().length > 0) {
+    return [{
+      namespaceName: 'bling',
+      bucketName: job.connection.rootExternalId,
+      prefix: 'FOCUS Reports/',
+      focusVersion: '1.0',
+      maxObjects: OCI_FOCUS_DEFAULT_MAX_OBJECTS,
+    }];
+  }
+
+  return [];
+}
+
+export function usesManagedOciFocusLocation(job: CloudIngestionJobContext): boolean {
+  if (job.connection.providerCode !== 'oci') return false;
+  const isManaged = (namespaceName: string, bucketName: string, prefix: string) => (
+    namespaceName === 'bling'
+    && bucketName === job.connection.rootExternalId
+    && prefix.replace(/\/+$/, '') === 'FOCUS Reports'
+  );
+  return readOciFocusLocations(job).some((location) => (
+    isManaged(location.namespaceName, location.bucketName, location.prefix)
+  )) || readOciFocusObjects(job).some((object) => (
+    isManaged(object.namespaceName, object.bucketName, object.objectName.slice(0, object.objectName.indexOf('/') + 1))
+  ));
+}
+
+export async function useManagedOciFocusHomeRegion(
+  job: CloudIngestionJobContext,
+  resolveHomeRegion: (job: CloudIngestionJobContext) => Promise<string>,
+): Promise<CloudIngestionJobContext> {
+  if (!usesManagedOciFocusLocation(job)) return job;
+  return {
+    ...job,
+    requestContext: { ...job.requestContext, regionId: await resolveHomeRegion(job) },
+  };
+}
+
+export function validateOciManagedFocusStorage(
+  job: CloudIngestionJobContext,
+  checkedAt: Date,
+  prepareJob: (job: CloudIngestionJobContext) => Promise<CloudIngestionJobContext>,
+  createClient: (job: CloudIngestionJobContext) => OciObjectStorageClient,
+): Promise<CloudCapabilityValidation> {
+  return validateOciCall('STORAGE', checkedAt, async () => {
+    const focusJob = await prepareJob(job);
+    const namespaceName = 'bling';
+    const prefix = 'FOCUS Reports/';
+    await withOciClient(createClient(focusJob), async (client) => client.listObjects({
+      namespaceName,
+      bucketName: job.connection.rootExternalId,
+      prefix,
+      limit: 1,
+    }));
+    const regionId = optionalString(focusJob.requestContext?.['regionId']);
+    return {
+      message: 'Lectura de los reportes FOCUS administrados por OCI disponible en la región principal de la tenancy.',
+      metadata: { namespaceName, prefix, autoDetected: true, ...(regionId === undefined ? {} : { regionId }) },
+    };
+  });
 }
 
 export async function discoverOciFocusObjects(
@@ -144,6 +209,13 @@ export function isOciFocusObjectInWindow(
   if (objectDate === undefined) return true;
   const objectEnd = new Date(objectDate.getTime() + 24 * 60 * 60 * 1000);
   return objectEnd > job.targetStart && objectDate < job.targetEnd;
+}
+
+export function emptyFocusReportWarning(job: CloudIngestionJobContext, foundObjectsOutsideRange: boolean): string {
+  if (foundObjectsOutsideRange) return 'No se encontraron objetos de reporte FOCUS OCI para el periodo solicitado.';
+  return readOciFocusLocations(job).length > 0
+    ? 'No se encontraron objetos de reporte FOCUS OCI en la ubicación consultada. Verifica que los reportes estén habilitados y que la política permita leerlos; la ausencia de archivos no significa costo cero.'
+    : 'No hay una ubicación de reportes FOCUS disponible. Configura el origen de facturación OCI o selecciona OCI Usage API.';
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

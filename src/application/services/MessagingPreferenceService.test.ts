@@ -10,6 +10,8 @@ describe('MessagingPreferenceService', () => {
     const preferences = await new MessagingPreferenceService(repository).get(actor());
 
     expect(preferences).toMatchObject({
+      tenantId: 'tenant-1',
+      userId: 'user-1',
       emailEnabled: true,
       telegramEnabled: false,
       operationalAlerts: true,
@@ -25,45 +27,54 @@ describe('MessagingPreferenceService', () => {
     const service = new MessagingPreferenceService(repository);
 
     await service.update(actor(), { telegramEnabled: true, financialAlerts: false });
+    await service.update(actor('tenant-2'), { telegramEnabled: true, financialAlerts: true });
 
-    await expect(service.allows('user-1', 'TELEGRAM', 'financial')).resolves.toBe(false);
-    await expect(service.allows('user-1', 'TELEGRAM', 'recommendations')).resolves.toBe(true);
-    expect(repository.upsertCalls).toEqual([{ userId: 'user-1', input: { telegramEnabled: true, financialAlerts: false } }]);
+    await expect(service.allows('tenant-1', 'user-1', 'TELEGRAM', 'financial')).resolves.toBe(false);
+    await expect(service.allows('tenant-1', 'user-1', 'TELEGRAM', 'recommendations')).resolves.toBe(true);
+    await expect(service.allows('tenant-2', 'user-1', 'TELEGRAM', 'financial')).resolves.toBe(true);
+    expect(repository.upsertCalls).toEqual([
+      { tenantId: 'tenant-1', userId: 'user-1', input: { telegramEnabled: true, financialAlerts: false } },
+      { tenantId: 'tenant-2', userId: 'user-1', input: { telegramEnabled: true, financialAlerts: true } },
+    ]);
   });
 });
 
 class PreferenceRepositoryFake implements IMessagingPreferenceRepository {
-  private current: MessagingPreference | null = null;
-  public readonly upsertCalls: { readonly userId: string; readonly input: MessagingPreferenceUpdate }[] = [];
+  private readonly current = new Map<string, MessagingPreference>();
+  public readonly upsertCalls: { readonly tenantId: string; readonly userId: string; readonly input: MessagingPreferenceUpdate }[] = [];
 
-  public async findByUserId(_userId: string): Promise<MessagingPreference | null> {
-    return this.current;
+  public async findByTenantAndUser(tenantId: string, userId: string): Promise<MessagingPreference | null> {
+    return this.current.get(`${tenantId}:${userId}`) ?? null;
   }
 
-  public async upsert(userId: string, input: MessagingPreferenceUpdate): Promise<MessagingPreference> {
-    this.upsertCalls.push({ userId, input });
+  public async upsert(tenantId: string, userId: string, input: MessagingPreferenceUpdate): Promise<MessagingPreference> {
+    this.upsertCalls.push({ tenantId, userId, input });
     const now = new Date('2026-08-31T00:00:00.000Z');
-    this.current = {
+    const key = `${tenantId}:${userId}`;
+    const previous = this.current.get(key);
+    const saved = {
       id: 'preference-1',
+      tenantId,
       userId,
-      emailEnabled: this.current?.emailEnabled ?? true,
-      telegramEnabled: this.current?.telegramEnabled ?? false,
-      operationalAlerts: this.current?.operationalAlerts ?? true,
-      recommendationAlerts: this.current?.recommendationAlerts ?? true,
-      financialAlerts: this.current?.financialAlerts ?? true,
-      executiveSummaries: this.current?.executiveSummaries ?? true,
+      emailEnabled: previous?.emailEnabled ?? true,
+      telegramEnabled: previous?.telegramEnabled ?? false,
+      operationalAlerts: previous?.operationalAlerts ?? true,
+      recommendationAlerts: previous?.recommendationAlerts ?? true,
+      financialAlerts: previous?.financialAlerts ?? true,
+      executiveSummaries: previous?.executiveSummaries ?? true,
       ...input,
-      createdAt: this.current?.createdAt ?? now,
+      createdAt: previous?.createdAt ?? now,
       updatedAt: now,
     };
-    return this.current;
+    this.current.set(key, saved);
+    return saved;
   }
 }
 
-function actor(): AuthContext {
+function actor(tenantId = 'tenant-1'): AuthContext {
   return {
     userId: 'user-1',
-    tenantId: 'tenant-1',
+    tenantId,
     email: 'user@example.test',
     role: 'FINOPS_TECHNICIAN',
     jwtId: 'jwt-1',

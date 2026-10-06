@@ -424,6 +424,7 @@ function parseArgs(args: readonly string[]): ImportOptions {
 
   const rootExternalId = options.get('root-external-id') ?? positional[0] ?? defaultRootExternalId;
   const password = options.get('password') ?? process.env['OCI_FOCUS_IMPORT_PASSWORD'];
+  const userEmail = options.get('user-email') ?? process.env['OCI_FOCUS_IMPORT_USER_EMAIL'] ?? '';
 
   if (rootExternalId.trim() === '') {
     throw new Error(
@@ -435,16 +436,20 @@ function parseArgs(args: readonly string[]): ImportOptions {
     throw new Error('Missing --password or OCI_FOCUS_IMPORT_PASSWORD for the import user');
   }
 
+  if (userEmail.trim() === '') {
+    throw new Error('Missing --user-email or OCI_FOCUS_IMPORT_USER_EMAIL for the import user');
+  }
+
   return {
-    connectionName: options.get('connection-name') ?? 'OCI Personal - FOCUS Reports',
+    connectionName: options.get('connection-name') ?? 'OCI FOCUS Import',
     defaultRegion: options.get('default-region') ?? 'sa-bogota-1',
     focusVersion: options.get('focus-version') ?? '1.0',
     password,
     reportsDir: options.get('reports-dir') ?? positional[1] ?? defaultReportsDir,
     rootExternalId,
-    tenantName: options.get('tenant-name') ?? 'OCI Personal Demo',
-    tenantSlug: options.get('tenant-slug') ?? 'oci-personal-demo',
-    userEmail: options.get('user-email') ?? '[correo omitido]',
+    tenantName: options.get('tenant-name') ?? 'FinOps Demo',
+    tenantSlug: options.get('tenant-slug') ?? 'finops-demo',
+    userEmail,
     userName: options.get('user-name') ?? 'FinOps Operator',
   };
 }

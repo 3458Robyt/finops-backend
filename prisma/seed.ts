@@ -22,11 +22,11 @@ type SeedEnvironment = 'prod' | 'dev';
 
 async function main(): Promise<void> {
   const tenant = await prisma.tenant.upsert({
-    where: { slug: 'demo-org' },
+    where: { slug: 'finops-demo' },
     update: {},
     create: {
       name: 'FinOps Demo',
-      slug: 'demo-org',
+      slug: 'finops-demo',
     },
   });
 
@@ -39,7 +39,7 @@ async function main(): Promise<void> {
   const passwordHash = await passwordHasher.hash(defaultPassword);
 
   await prisma.user.upsert({
-    where: { email: '[correo omitido]' },
+    where: { email: 'admin@example.invalid' },
     update: {
       passwordHash,
       role: UserRole.MASTER_ADMIN,
@@ -48,15 +48,15 @@ async function main(): Promise<void> {
     },
     create: {
       tenantId: tenant.id,
-      email: '[correo omitido]',
-      name: 'FinOps Operator',
+      email: 'admin@example.invalid',
+      name: 'Demo Administrator',
       passwordHash,
       role: UserRole.MASTER_ADMIN,
     },
   });
 
   await prisma.user.upsert({
-    where: { email: 'ejecutivo@cliente.com' },
+    where: { email: 'client@example.invalid' },
     update: {
       passwordHash,
       role: UserRole.CLIENT_VIEWER,
@@ -65,8 +65,8 @@ async function main(): Promise<void> {
     },
     create: {
       tenantId: tenant.id,
-      email: 'ejecutivo@cliente.com',
-      name: 'Ejecutivo Cliente',
+      email: 'client@example.invalid',
+      name: 'Demo Client',
       passwordHash,
       role: UserRole.CLIENT_VIEWER,
     },
@@ -92,28 +92,28 @@ async function seedCloudAccounts(
       provider: CloudProvider.AWS,
       environment: 'prod' as const,
       externalAccountId: 'focus-sample-aws-prod',
-      name: 'TAK - Prod Principal (FOCUS AWS)',
+      name: 'FinOps Demo - Production (FOCUS AWS)',
       defaultRegion: 'us-east-1',
     },
     {
       provider: CloudProvider.AWS,
       environment: 'dev' as const,
       externalAccountId: 'focus-sample-aws-dev',
-      name: 'TAK - Dev/Staging (FOCUS AWS)',
+      name: 'FinOps Demo - Development (FOCUS AWS)',
       defaultRegion: 'us-west-2',
     },
     {
       provider: CloudProvider.OCI,
       environment: 'prod' as const,
       externalAccountId: 'focus-sample-oci-prod',
-      name: 'TAK - Prod Principal (FOCUS OCI)',
+      name: 'FinOps Demo - Production (FOCUS OCI)',
       defaultRegion: 'us-ashburn-1',
     },
     {
       provider: CloudProvider.OCI,
       environment: 'dev' as const,
       externalAccountId: 'focus-sample-oci-dev',
-      name: 'TAK - Dev/Staging (FOCUS OCI)',
+      name: 'FinOps Demo - Development (FOCUS OCI)',
       defaultRegion: 'us-ashburn-1',
     },
   ];

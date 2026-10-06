@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { PrismaResourceMetricRepository } from '../infrastructure/repositories/PrismaResourceMetricRepository.js';
 import { PrismaResourceMetricRollupPersistence } from '../infrastructure/repositories/PrismaResourceMetricRollupPersistence.js';
+import { PrismaMetricStreamSummaryPersistence } from '../infrastructure/ingestion/PrismaMetricStreamSummaryPersistence.js';
 import {
   cleanupE2eFixtures,
   createE2eFixtures,
@@ -101,6 +102,36 @@ describe('technical metrics PostgreSQL integration', () => {
           rawMetric: { fixture: true, nativeGranularity: 3600 },
         },
       });
+      const streamSummaries = new PrismaMetricStreamSummaryPersistence();
+      await streamSummaries.refreshMetricStreamSummariesForJob(prisma, boundaryJob.id);
+      await streamSummaries.refreshMetricStreamSummariesForJob(prisma, boundaryJob.id);
+      const hourlyRawCount = await prisma.resourceMetricSample.count({
+        where: {
+          cloudConnectionId: nativeHalfHourlySample.cloudConnectionId,
+          externalResourceId: nativeHalfHourlySample.externalResourceId,
+          providerNamespace: '',
+          regionId: '',
+          dimensionsHash: '',
+          metricName: 'CPUUtilization',
+          statistic: 'MEAN',
+          granularitySeconds: 3600,
+        },
+      });
+      const hourlySummary = await prisma.resourceMetricStreamSummary.findUniqueOrThrow({
+        where: {
+          cloudConnectionId_providerNamespace_regionId_externalResourceId_metricName_statistic_granularitySeconds_dimensionsHash: {
+            cloudConnectionId: nativeHalfHourlySample.cloudConnectionId,
+            providerNamespace: '',
+            regionId: '',
+            externalResourceId: nativeHalfHourlySample.externalResourceId,
+            metricName: 'CPUUtilization',
+            statistic: 'MEAN',
+            granularitySeconds: 3600,
+            dimensionsHash: '',
+          },
+        },
+      });
+      expect(hourlySummary.sampleCount).toBe(hourlyRawCount);
       await new PrismaResourceMetricRollupPersistence().refreshForJob(prisma, boundaryJob.id);
       const mixedNativeResolution = await repository.listMetricSeriesForTenant(tenantA!.id, {
         ...filters,

@@ -109,6 +109,70 @@ services:
       disable: true
     restart: unless-stopped
 
+  notification-scheduler:
+    platform: linux/arm64
+    build: .
+    env_file: .env.beta.runtime
+    environment:
+      APP_PROCESS_ROLE: notification-scheduler
+      NODE_ENV: production
+      TRUST_PROXY: "1"
+      CORS_ORIGIN: ${CORS_ORIGIN:?Set CORS_ORIGIN in .env.beta}
+      TELEGRAM_ENABLED: "true"
+      TELEGRAM_INBOUND_WORKER_ENABLED: "true"
+      TELEGRAM_INBOUND_WORKER_ID: telegram-beta-finops
+      TELEGRAM_INBOUND_WORKER_INTERVAL_MS: "1000"
+      MESSAGE_SCHEDULER_ENABLED: "true"
+      MESSAGE_SCHEDULER_INTERVAL_MINUTES: "5"
+    networks:
+      - beta-app
+      - beta-data
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 512m
+    cpus: 0.25
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
+  ingestion-scheduler:
+    platform: linux/arm64
+    build: .
+    env_file: .env.beta.runtime
+    environment:
+      APP_PROCESS_ROLE: ingestion-scheduler
+      NODE_ENV: production
+      TRUST_PROXY: "1"
+      CORS_ORIGIN: ${CORS_ORIGIN:?Set CORS_ORIGIN in .env.beta}
+      INGESTION_SCHEDULER_ENABLED: "true"
+      INGESTION_SCHEDULER_INTERVAL_MS: "300000"
+      INGESTION_SCHEDULER_METRIC_CATCHUP_DAYS: "90"
+      INGESTION_SCHEDULER_METRIC_CATCHUP_WINDOW_MINUTES: "1440"
+      INGESTION_SCHEDULER_MAX_METRIC_BACKFILL_JOBS_PER_CONNECTION: "2"
+      # AWS stays out of periodic scheduling until a server-side AssumeRole identity is provisioned.
+      INGESTION_SCHEDULER_PROVIDER: oci
+    networks:
+      - beta-data
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 768m
+    cpus: 0.5
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
   frontend:
     platform: linux/arm64
     build:

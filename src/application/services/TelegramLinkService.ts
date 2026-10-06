@@ -56,6 +56,9 @@ export class TelegramLinkService {
    */
   public async createSelfLinkCode(actor: AuthContext): Promise<TelegramSelfLinkCodeResult> {
     requirePermission(actor.role, 'FINOPS_READ');
+    if (!this.telegramEnabled) {
+      throw new FinOpsBaseError('Telegram está deshabilitado para esta instalación', 'TELEGRAM_DISABLED');
+    }
 
     const token = createOpaqueToken(10 * 60);
     await this.repository.createSelfLinkCode({
@@ -95,13 +98,14 @@ export class TelegramLinkService {
     });
 
     if (link !== null) {
+      const activeTenantId = link.activeTenantId ?? link.tenantId;
       await this.repository.createAuditEvent({
-        tenantId: link.tenantId,
+        tenantId: activeTenantId,
         actorUserId: link.userId,
         action: 'TELEGRAM_SELF_LINK_CONSUMED',
         entityType: 'TelegramChatLink',
         entityId: link.id,
-        metadata: { chatId: link.chatId, userId: link.userId },
+        metadata: { chatId: link.chatId, userId: link.userId, activeTenantId },
       });
     }
 

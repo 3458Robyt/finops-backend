@@ -3,14 +3,15 @@ import { z } from 'zod';
 import type { FinOpsAiService } from '../../application/services/FinOpsAiService.js';
 import type { IAgentLearningService } from '../../domain/interfaces/IAgentLearningService.js';
 import { requirePermission } from '../../domain/security/AuthorizationPolicy.js';
+import { MAX_CHAT_MESSAGE_CHARS } from '../../application/services/ai/finOpsAiTypes.js';
 import { respondWithFinOpsError } from '../http/finOpsErrorResponse.js';
 
 const chatSchema = z.object({
-  message: z.string().min(1),
+  message: z.string().min(1).max(MAX_CHAT_MESSAGE_CHARS),
   history: z.array(z.object({
     role: z.enum(['user', 'assistant']),
-    content: z.string().min(1),
-  })).optional(),
+    content: z.string().min(1).max(12_000),
+  })).max(100).optional(),
 });
 
 const generateRecommendationsSchema = z.object({

@@ -101,4 +101,27 @@ describe('AiController chat tenant scope', () => {
     expect(answerChat).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
   });
+
+  test.each([
+    { message: 'oversized user message', body: { message: 'x'.repeat(4_001) } },
+    { message: 'oversized history array', body: { message: 'Hola', history: Array.from({ length: 101 }, () => ({ role: 'user' as const, content: 'Turno' })) } },
+    { message: 'oversized history entry', body: { message: 'Hola', history: [{ role: 'user' as const, content: 'x'.repeat(12_001) }] } },
+  ])('rejects $message before calling the AI service', async ({ body }) => {
+    const answerChat = vi.fn();
+    const controller = new AiController({ answerChat } as unknown as FinOpsAiService);
+    const req = {
+      auth: { userId: 'viewer-1', tenantId: 'tenant-1', email: 'viewer@example.test', role: 'CLIENT_VIEWER', jwtId: 'jwt-4' },
+      body,
+      path: '/chat',
+    } as unknown as Request;
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    } as unknown as Response;
+
+    await controller.chat(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(answerChat).not.toHaveBeenCalled();
+  });
 });

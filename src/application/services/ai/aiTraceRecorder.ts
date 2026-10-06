@@ -57,24 +57,34 @@ export class AiTraceRecorder {
 
     const { builtContext, error } = input;
 
-    await this.observability.recordTrace({
-      tenantId: input.tenantId,
-      ...(input.userId !== undefined ? { userId: input.userId } : {}),
-      operation: input.operation,
-      ...(input.source !== undefined ? { source: input.source } : {}),
-      model: input.model,
-      status: error === undefined ? 'SUCCESS' : 'ERROR',
-      ...(builtContext?.profileVersion !== undefined ? { profileVersion: builtContext.profileVersion } : {}),
-      promptTokenEstimate: builtContext?.promptTokenEstimate ?? 0,
-      ...(input.responseText !== undefined ? { responseText: input.responseText } : {}),
-      latencyMs: Date.now() - input.startedAt,
-      ...(builtContext !== undefined ? { artifactIds: builtContext.artifactIds } : {}),
-      ...(builtContext !== undefined ? { memoryIds: builtContext.memoryIds } : {}),
-      ...(builtContext !== undefined ? { tenantRuleIds: builtContext.tenantRuleIds } : {}),
-      ...(builtContext !== undefined ? { conflicts: builtContext.conflicts } : {}),
-      ...(error !== undefined
-        ? { errorMessage: safeErrorMessage(error) }
-        : {}),
-    });
+    try {
+      await this.observability.recordTrace({
+        tenantId: input.tenantId,
+        ...(input.userId !== undefined ? { userId: input.userId } : {}),
+        operation: input.operation,
+        ...(input.source !== undefined ? { source: input.source } : {}),
+        model: input.model,
+        status: error === undefined ? 'SUCCESS' : 'ERROR',
+        ...(builtContext?.profileVersion !== undefined ? { profileVersion: builtContext.profileVersion } : {}),
+        promptTokenEstimate: builtContext?.promptTokenEstimate ?? 0,
+        ...(input.responseText !== undefined ? { responseText: input.responseText } : {}),
+        latencyMs: Date.now() - input.startedAt,
+        ...(builtContext !== undefined ? { artifactIds: builtContext.artifactIds } : {}),
+        ...(builtContext !== undefined ? { memoryIds: builtContext.memoryIds } : {}),
+        ...(builtContext !== undefined ? { tenantRuleIds: builtContext.tenantRuleIds } : {}),
+        ...(builtContext !== undefined ? { conflicts: builtContext.conflicts } : {}),
+        ...(error !== undefined
+          ? { errorMessage: safeErrorMessage(error) }
+          : {}),
+      });
+    } catch (traceError: unknown) {
+      console.warn(JSON.stringify({
+        level: 'warn',
+        event: 'ai_trace_persistence_failed',
+        operation: input.operation,
+        source: input.source ?? 'UNKNOWN',
+        error: safeErrorMessage(traceError),
+      }));
+    }
   }
 }

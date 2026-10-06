@@ -29,7 +29,7 @@ const manifest = JSON.parse(await readFile(resolve(process.env['E2E_FIXTURE_FILE
 let token = await login(manifest.admin.email, manifest.password);
 const auditStartedAt = Date.now();
 const checks: AuditCheck[] = [];
-const expectedModel = process.env['AI_EXPECTED_MODEL'] ?? 'gpt-5.6-luna';
+const expectedModel = process.env['AI_EXPECTED_MODEL'] ?? 'gpt-6-luna';
 const persistedRecommendationsBefore = countRecommendations(await get('/recommendations'));
 
 const chatResult = await postMaybe('/ai/chat', {

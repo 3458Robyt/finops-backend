@@ -25,14 +25,7 @@ export async function discoverOciRegions(
   try {
     throwIfAborted(signal);
     apiCallCount += 1;
-    const response = await dependencies.withRetry(async (attemptSignal) => {
-      const client = dependencies.createIdentityClient(job, attemptSignal);
-      try {
-        return await client.listRegionSubscriptions({ tenancyId: job.connection.rootExternalId });
-      } finally {
-        client.close?.();
-      }
-    }, signal);
+    const response = await listRegionSubscriptions(job, dependencies, signal);
     const discovered = (response.items ?? []).flatMap((item) => {
       const id = item.regionName ?? item.regionKey;
       return typeof id === 'string' && id.trim() !== '' && item.status?.toUpperCase() !== 'INACTIVE'
@@ -55,6 +48,42 @@ export async function discoverOciRegions(
       warnings: [`No fue posible descubrir regiones OCI; se usará la región predeterminada. ${safeMessage(error)}`],
     };
   }
+}
+
+/** Cost Reports live in the tenancy's home region; never substitute a user's default region. */
+export async function discoverOciHomeRegion(
+  job: CloudIngestionJobContext,
+  dependencies: OciRegionDiscoveryDependencies,
+  signal?: AbortSignal,
+): Promise<string> {
+  const response = await listRegionSubscriptions(job, dependencies, signal);
+  const homeRegions = (response.items ?? []).filter((item) => (
+    item.isHomeRegion === true && item.status?.toUpperCase() !== 'INACTIVE'
+  ));
+  if (homeRegions.length !== 1) {
+    throw new Error('OCI no devolvió una única región principal de la tenancy; no se consultará FOCUS en una región supuesta.');
+  }
+  const homeRegionId = homeRegions[0]?.regionName?.trim();
+  if (homeRegionId === undefined || homeRegionId === '') {
+    throw new Error('OCI no devolvió el identificador de la región principal de la tenancy.');
+  }
+  return homeRegionId;
+}
+
+async function listRegionSubscriptions(
+  job: CloudIngestionJobContext,
+  dependencies: OciRegionDiscoveryDependencies,
+  signal?: AbortSignal,
+) {
+  throwIfAborted(signal);
+  return dependencies.withRetry(async (attemptSignal) => {
+    const client = dependencies.createIdentityClient(job, attemptSignal);
+    try {
+      return await client.listRegionSubscriptions({ tenancyId: job.connection.rootExternalId });
+    } finally {
+      client.close?.();
+    }
+  }, signal);
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

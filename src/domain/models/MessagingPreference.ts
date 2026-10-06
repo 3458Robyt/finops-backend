@@ -1,5 +1,6 @@
 export interface MessagingPreference {
   readonly id: string;
+  readonly tenantId: string;
   readonly userId: string;
   readonly emailEnabled: boolean;
   readonly telegramEnabled: boolean;

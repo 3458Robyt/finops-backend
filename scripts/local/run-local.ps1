@@ -1,5 +1,5 @@
 param(
-  [ValidateSet('dev','worker','analysis-worker','scheduler')]
+  [ValidateSet('dev','worker','analysis-worker','scheduler','notifications')]
   [string]$Mode = 'dev'
 )
 
@@ -28,6 +28,7 @@ $isApi = $Mode -eq 'dev'
 $isWorker = $Mode -eq 'worker'
 $isAnalysisWorker = $Mode -eq 'analysis-worker'
 $isScheduler = $Mode -eq 'scheduler'
+$isNotifications = $Mode -eq 'notifications'
 
 # Fail before spawning the hidden recommendation worker when the API port is
 # already occupied. Otherwise a failed API start can leave an orphan worker
@@ -43,7 +44,7 @@ if ($isApi) {
   }
 }
 
-$env:APP_PROCESS_ROLE = if ($isApi) { 'api' } elseif ($isWorker) { 'worker' } elseif ($isAnalysisWorker) { 'recommendation-analysis-worker' } else { 'scheduler' }
+$env:APP_PROCESS_ROLE = if ($isApi) { 'api' } elseif ($isWorker) { 'worker' } elseif ($isAnalysisWorker) { 'recommendation-analysis-worker' } elseif ($isNotifications) { 'notification-scheduler' } else { 'scheduler' }
 $env:INGESTION_WORKER_ENABLED = if ($isWorker) { 'true' } else { 'false' }
 $env:INGESTION_SCHEDULER_ENABLED = if ($Mode -eq 'scheduler') { 'true' } else { 'false' }
 # Keep the HTTP API free of background work. The default dev mode starts the
@@ -52,6 +53,10 @@ $env:INGESTION_SCHEDULER_ENABLED = if ($Mode -eq 'scheduler') { 'true' } else { 
 $env:METRIC_PROJECTION_WORKER_ENABLED = if ($isWorker) { 'true' } else { 'false' }
 $env:AGENT_LEARNING_WORKER_ENABLED = if ($isWorker) { 'true' } else { 'false' }
 $env:RECOMMENDATION_ANALYSIS_WORKER_ENABLED = if ($isWorker -or $isAnalysisWorker) { 'true' } else { 'false' }
+$env:TELEGRAM_INBOUND_WORKER_ENABLED = if ($isNotifications) { 'true' } else { 'false' }
+$env:TELEGRAM_INBOUND_WORKER_ID = if ($isNotifications) { 'telegram-local' } else { $env:TELEGRAM_INBOUND_WORKER_ID }
+$env:MESSAGE_SCHEDULER_ENABLED = if ($isNotifications) { 'true' } else { 'false' }
+$env:MESSAGE_SCHEDULER_INTERVAL_MINUTES = if ($isNotifications) { '5' } else { $env:MESSAGE_SCHEDULER_INTERVAL_MINUTES }
 $env:INGESTION_WORKER_CONCURRENCY = if ($env:INGESTION_WORKER_CONCURRENCY) { $env:INGESTION_WORKER_CONCURRENCY } else { '4' }
 $env:INGESTION_JOB_LEASE_MS = if ($env:INGESTION_JOB_LEASE_MS) { $env:INGESTION_JOB_LEASE_MS } else { '120000' }
 $env:INGESTION_SCHEDULER_MAX_ATTEMPTS = '3'
@@ -63,7 +68,7 @@ $env:INGESTION_WORKER_INTERVAL_MS = if ($env:INGESTION_WORKER_INTERVAL_MS) { $en
 
 Write-Output "Backend local: PostgreSQL 17 en 127.0.0.1:5433/finops_local; proceso '$Mode' activo mientras esta ventana permanezca abierta."
 Set-Location $repoRoot
- $recommendationWorkerProcess = $null
+ $backgroundProcesses = @()
  $exitCode = 0
  try {
   if ($Mode -eq 'dev') {
@@ -75,7 +80,17 @@ Set-Location $repoRoot
       -WorkingDirectory $repoRoot `
       -WindowStyle Hidden `
       -PassThru
+    $backgroundProcesses += $recommendationWorkerProcess
     Write-Output "Worker de recomendaciones activo por defecto (PID $($recommendationWorkerProcess.Id))."
+    $notificationArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$workerScript`" -Mode notifications"
+    $notificationWorkerProcess = Start-Process `
+      -FilePath 'powershell.exe' `
+      -ArgumentList $notificationArguments `
+      -WorkingDirectory $repoRoot `
+      -WindowStyle Hidden `
+      -PassThru
+    $backgroundProcesses += $notificationWorkerProcess
+    Write-Output "Worker de Telegram y notificaciones activo por defecto (PID $($notificationWorkerProcess.Id))."
     # `dev` is the local API entrypoint; the worker runs separately so the
     # analysis provider cannot block or crash the HTTP API.
     npm run dev:api
@@ -84,16 +99,16 @@ Set-Location $repoRoot
   }
   $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
  } finally {
-  if ($null -ne $recommendationWorkerProcess) {
+  foreach ($backgroundProcess in $backgroundProcesses) {
     # The launcher can exit before its child worker when the API port is already
     # occupied. Kill the recorded worker subtree even if the PowerShell parent
     # has already disappeared, otherwise orphan workers keep polling the queue.
-    $workerRootPid = $recommendationWorkerProcess.Id
+    $workerRootPid = $backgroundProcess.Id
     $workerPids = @($workerRootPid) + @(
       Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {
           $_.ParentProcessId -eq $workerRootPid -and
-          $_.CommandLine -match 'run-local\.ps1.*-Mode\s+analysis-worker'
+          $_.CommandLine -match 'run-local\.ps1.*-Mode\s+(analysis-worker|notifications)'
         } |
         Select-Object -ExpandProperty ProcessId
     )

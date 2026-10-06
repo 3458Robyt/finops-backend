@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type {
   CloudIngestionConnection,
   CloudIngestionCredential,
@@ -65,6 +65,25 @@ describe('validateAwsConnection', () => {
     ]);
     expect(destroyedClients).toEqual(['identity', 'ec2', 'cost-explorer', 'cloudwatch', 's3']);
     expect(JSON.stringify(result)).not.toMatch(/temporary-secret|sessionToken/i);
+  });
+
+  it('does not misdiagnose a missing platform credential chain as a tenant role error', async () => {
+    const dependencies = {
+      assumeRole: async () => { throw Object.assign(new Error('No AWS credentials found'), { name: 'CredentialsProviderError' }); },
+      createIdentityClient: vi.fn(),
+      createEc2Client: vi.fn(),
+      createCostExplorerClient: vi.fn(),
+      createCloudWatchClient: vi.fn(),
+      createS3Client: vi.fn(),
+    } as unknown as AwsConnectionValidationDependencies;
+    const result = await validateAwsConnection(buildConnection(), dependencies);
+
+    expect(result.authentication).toMatchObject({
+      status: 'RETRYABLE_ERROR',
+      message: expect.stringContaining('credenciales AWS de plataforma'),
+    });
+    expect(result.authentication?.message).not.toContain('STS rechazó');
+    expect(dependencies.createIdentityClient).not.toHaveBeenCalled();
   });
 });
 

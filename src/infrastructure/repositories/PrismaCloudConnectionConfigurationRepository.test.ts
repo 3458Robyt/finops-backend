@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { hashOciMetricDimensions } from '../ingestion/oci/OciMetricDimensions.js';
+import { hashMetricDimensions } from '../ingestion/metricDimensions.js';
 import { mergeEnabledMetricDefinitions } from '../ingestion/ingestionMetricDefinitionMetadata.js';
 import { PrismaCloudConnectionConfigurationRepository } from './PrismaCloudConnectionConfigurationRepository.js';
 
@@ -12,7 +13,7 @@ test('OCI dimensions hashing preserves the empty-dimensions hash used by metric 
 describe('PrismaCloudConnectionConfigurationRepository OCI metric definitions', () => {
   test('persists selected series to normalized catalog with dimensions and matching sample hash', async () => {
     const { repository, transaction } = buildRepository();
-    const dimensions = { availabilityDomain: 'AD-1', resourceId: 'ocid1.instance.oc1..instance-1' };
+    const dimensions = { availabilityDomain: 'AD-1', resourceId: 'test-instance-1' };
     await repository.configureMetricDefinitionsForConnection({
       tenantId: 'tenant-1', cloudConnectionId: 'connection-1', replace: false,
       definitions: [{
@@ -24,8 +25,9 @@ describe('PrismaCloudConnectionConfigurationRepository OCI metric definitions', 
     expect(transaction.cloudConnection.update).toHaveBeenCalled();
     expect(transaction.cloudMetricDefinition.updateMany).not.toHaveBeenCalled();
     expect(transaction.cloudMetricDefinition.upsert).toHaveBeenCalledWith(expect.objectContaining({
-      where: { cloudConnectionId_namespace_metricName_compartmentId_externalResourceId_dimensionsHash: {
+      where: { cloudConnectionId_regionId_namespace_metricName_compartmentId_externalResourceId_dimensionsHash: {
         cloudConnectionId: 'connection-1', namespace: 'oci_computeagent', metricName: 'CpuUtilization',
+        regionId: 'us-phoenix-1',
         compartmentId: 'compartment-1', externalResourceId: dimensions.resourceId,
         dimensionsHash: hashOciMetricDimensions(dimensions),
       } },
@@ -52,6 +54,38 @@ describe('PrismaCloudConnectionConfigurationRepository OCI metric definitions', 
   });
 });
 
+test('persists AWS metric definitions in the shared catalog used by coverage and series linking', async () => {
+  const { repository, transaction } = buildRepository({ providerCode: 'aws', rootExternalId: '123456789012' });
+  const dimensions = { InstanceId: 'i-abcd' };
+  await repository.configureMetricDefinitionsForConnection({
+    tenantId: 'tenant-1', cloudConnectionId: 'connection-1', replace: false,
+    definitions: ['us-east-1', 'us-west-2'].map((region) => ({
+      externalResourceId: 'i-abcd', namespace: 'AWS/EC2', metricName: 'CPUUtilization',
+      region, dimensions: [{ Name: 'InstanceId', Value: 'i-abcd' }],
+      statistics: ['MEAN', 'MAX'], unit: 'Percent',
+    })),
+  });
+  expect(transaction.cloudMetricDefinition.upsert).toHaveBeenNthCalledWith(1, expect.objectContaining({
+    where: { cloudConnectionId_regionId_namespace_metricName_compartmentId_externalResourceId_dimensionsHash: {
+      cloudConnectionId: 'connection-1', namespace: 'AWS/EC2', metricName: 'CPUUtilization',
+      regionId: 'us-east-1', compartmentId: '123456789012', externalResourceId: 'i-abcd',
+      dimensionsHash: hashMetricDimensions(dimensions),
+    } },
+    create: expect.objectContaining({
+      regionId: 'us-east-1', statistics: ['MEAN', 'MAX'], enabled: true,
+      discoverySource: 'AWS_CLOUDWATCH',
+    }),
+  }));
+  expect(transaction.cloudMetricDefinition.upsert).toHaveBeenNthCalledWith(2, expect.objectContaining({
+    where: { cloudConnectionId_regionId_namespace_metricName_compartmentId_externalResourceId_dimensionsHash: {
+      cloudConnectionId: 'connection-1', namespace: 'AWS/EC2', metricName: 'CPUUtilization',
+      regionId: 'us-west-2', compartmentId: '123456789012', externalResourceId: 'i-abcd',
+      dimensionsHash: hashMetricDimensions(dimensions),
+    } },
+  }));
+  expect(transaction.cloudMetricDefinition.upsert).toHaveBeenCalledTimes(2);
+});
+
 test('normalized OCI definitions retain custom MQL queries from legacy metadata', () => {
   const query = 'CpuUtilization[30m]{resourceId = "instance-1"}.mean()';
   const result = mergeEnabledMetricDefinitions({ ociMetricDefinitions: [{
@@ -65,11 +99,23 @@ test('normalized OCI definitions retain custom MQL queries from legacy metadata'
   expect(result?.['ociMetricDefinitions']).toEqual([expect.objectContaining({ query })]);
 });
 
-function buildRepository() {
+test('normalizes empty catalog region to unknown and omits it from legacy metadata', () => {
+  const result = mergeEnabledMetricDefinitions({}, [{
+    compartmentId: 'compartment-1', namespace: 'oci_computeagent', metricName: 'CpuUtilization',
+    externalResourceId: 'instance-1', regionId: '', dimensions: null, metricUnit: null, statistics: ['MEAN'],
+  }]);
+  expect(result?.['ociMetricDefinitions']).toEqual([expect.objectContaining({
+    compartmentId: 'compartment-1', namespace: 'oci_computeagent', metricName: 'CpuUtilization', resourceId: 'instance-1',
+  })]);
+  expect((result?.['ociMetricDefinitions'] as Record<string, unknown>[])[0]).not.toHaveProperty('regionId');
+});
+
+function buildRepository(connectionOverrides: Record<string, unknown> = {}) {
   const transaction = {
     cloudConnection: {
       findFirst: vi.fn(async () => ({
-        id: 'connection-1', providerCode: 'oci', metadata: {}, defaultRegion: 'us-phoenix-1',
+        id: 'connection-1', providerCode: 'oci', metadata: {}, defaultRegion: 'us-phoenix-1', rootExternalId: '',
+        ...connectionOverrides,
       })),
       update: vi.fn(async () => ({})),
     },

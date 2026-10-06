@@ -109,7 +109,7 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): voi
     validatePositiveBound(env, 'BUDGET_SCHEDULER_INTERVAL_MS', 60_000, 7 * 24 * 60 * 60 * 1000, issues);
     validatePositiveBound(env, 'PROCESS_HEARTBEAT_INTERVAL_MS', 5_000, 24 * 60 * 60 * 1000, issues);
     validatePositiveBound(env, 'PROCESS_HEARTBEAT_STALE_AFTER_MS', 10_000, 7 * 24 * 60 * 60 * 1000, issues);
-    if (isEnabled(env['EMAIL_ENABLED']) && !isHttpUrl(env['PASSWORD_RESET_URL'])) {
+    if (isEmailEnabled(env) && !isHttpUrl(resolvePasswordResetUrl(env))) {
       issues.push({ key: 'PASSWORD_RESET_URL', message: 'Debe ser una URL HTTP(S) válida cuando el correo está habilitado.' });
     }
     validatePositiveBound(env, 'INGESTION_SCHEDULER_VALIDATION_MAX_AGE_MINUTES', 5, 7 * 24 * 60, issues);
@@ -233,7 +233,7 @@ function validateAiReasoningEffort(
     issues.push({ key: 'AI_REASONING_EFFORT', message: 'Debe ser none, minimal, low, medium, high o xhigh.' });
     return;
   }
-  const mainModel = env['AI_MODEL']?.trim().toLowerCase() || 'gpt-5.6-luna';
+  const mainModel = env['AI_MODEL']?.trim().toLowerCase() || 'gpt-6-luna';
   const auditorModel = env['AI_AUDITOR_MODEL']?.trim().toLowerCase() || mainModel;
   if (normalized === 'minimal' && [mainModel, auditorModel].includes('gpt-5.6-luna')) {
     issues.push({
@@ -244,10 +244,11 @@ function validateAiReasoningEffort(
 }
 
 function validateEnabledIntegrations(env: NodeJS.ProcessEnv, issues: RuntimeValidationIssue[]): void {
-  if (isEnabled(env['EMAIL_ENABLED'])) {
-    for (const key of ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD']) {
-      if (isBlank(env[key])) issues.push({ key, message: 'Es obligatoria cuando EMAIL_ENABLED=true.' });
-    }
+  if (isEmailEnabled(env)) {
+    const emailAddress = isBlank(env['EMAIL_ADDRESS']) ? env['SMTP_USER'] : env['EMAIL_ADDRESS'];
+    const emailPassword = isBlank(env['EMAIL_PASSWORD']) ? env['SMTP_PASSWORD'] : env['EMAIL_PASSWORD'];
+    if (isBlank(emailAddress)) issues.push({ key: 'EMAIL_ADDRESS', message: 'Indica EMAIL_ADDRESS o SMTP_USER cuando EMAIL_ENABLED=true.' });
+    if (isBlank(emailPassword)) issues.push({ key: 'EMAIL_PASSWORD', message: 'Indica EMAIL_PASSWORD o SMTP_PASSWORD cuando EMAIL_ENABLED=true.' });
   }
 
   if (isEnabled(env['TELEGRAM_ENABLED'])) {
@@ -269,6 +270,19 @@ function validateEnabledIntegrations(env: NodeJS.ProcessEnv, issues: RuntimeVali
       if (isBlank(env[key])) issues.push({ key, message: 'Es obligatoria cuando BUDGET_SCHEDULER_ENABLED=true.' });
     }
   }
+}
+
+function isEmailEnabled(env: NodeJS.ProcessEnv): boolean {
+  if (env['EMAIL_ENABLED'] !== undefined) return isEnabled(env['EMAIL_ENABLED']);
+  const emailAddress = isBlank(env['EMAIL_ADDRESS']) ? env['SMTP_USER'] : env['EMAIL_ADDRESS'];
+  const emailPassword = isBlank(env['EMAIL_PASSWORD']) ? env['SMTP_PASSWORD'] : env['EMAIL_PASSWORD'];
+  return !isBlank(emailAddress) && !isBlank(emailPassword);
+}
+
+function resolvePasswordResetUrl(env: NodeJS.ProcessEnv): string {
+  if (!isBlank(env['PASSWORD_RESET_URL'])) return env['PASSWORD_RESET_URL']!;
+  const origin = env['CORS_ORIGIN']?.split(',').map((item) => item.trim()).find(Boolean) ?? 'http://localhost:5173';
+  return `${origin.replace(/\/+$/, '')}/reset-password`;
 }
 
 function validateBooleanVariables(env: NodeJS.ProcessEnv, issues: RuntimeValidationIssue[]): void {

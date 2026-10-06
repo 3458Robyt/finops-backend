@@ -93,6 +93,15 @@ describe('TelegramLinkService', () => {
     }));
   });
 
+  it('does not generate a Telegram link when the installation channel is disabled', async () => {
+    const repository = { createSelfLinkCode: vi.fn(async () => undefined) } as unknown as ITelegramRepository;
+    const service = new TelegramLinkService(repository, new ClientFake(), undefined, undefined, false);
+
+    await expect(service.createSelfLinkCode(clientActor()))
+      .rejects.toMatchObject<Partial<FinOpsBaseError>>({ code: 'TELEGRAM_DISABLED' });
+    expect(repository.createSelfLinkCode).not.toHaveBeenCalled();
+  });
+
   it('audits a successful self-link code consumption', async () => {
     const repository = {
       consumeSelfLinkCode: vi.fn(async () => buildLink({ chatId: 'telegram-chat' })),

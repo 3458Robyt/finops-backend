@@ -197,7 +197,7 @@ export class OutboundMessageService {
 
       const link = activeLinksByUserId.get(user.id);
       if (link !== undefined) {
-        if (await this.allows(user.id, 'TELEGRAM', 'financial')) deliveries.push(await this.channelDelivery.sendTelegram({
+        if (await this.allows(actor.tenantId, user.id, 'TELEGRAM', 'financial')) deliveries.push(await this.channelDelivery.sendTelegram({
           tenantId: actor.tenantId,
           userId: user.id,
           chatId: link.chatId,
@@ -206,7 +206,7 @@ export class OutboundMessageService {
         }));
       }
 
-      if (await this.allows(user.id, 'EMAIL', 'financial')) deliveries.push(await this.channelDelivery.sendEmail({
+      if (await this.allows(actor.tenantId, user.id, 'EMAIL', 'financial')) deliveries.push(await this.channelDelivery.sendEmail({
         tenantId: actor.tenantId,
         userId: user.id,
         to: user.email,
@@ -228,8 +228,8 @@ export class OutboundMessageService {
       : `La medición posterior a la ejecución fue actualizada. Recomendación: ${input.recommendationId}. Estado: ${input.status.toLowerCase()}. Moneda: ${input.currency}.`;
     for (const user of users.filter((item) => item.status === 'ACTIVE')) {
       const link = activeLinksByUserId.get(user.id);
-      if (link !== undefined && await this.allows(user.id, 'TELEGRAM', 'financial')) await this.channelDelivery.sendTelegram({ tenantId, userId: user.id, chatId: link.chatId, text, messageType: 'SAVINGS_REMINDER' });
-      if (await this.allows(user.id, 'EMAIL', 'financial')) await this.channelDelivery.sendEmail({ tenantId, userId: user.id, to: user.email, subject: 'Actualización de valor realizado FinOps', text, messageType: 'SAVINGS_REMINDER' });
+      if (link !== undefined && await this.allows(tenantId, user.id, 'TELEGRAM', 'financial')) await this.channelDelivery.sendTelegram({ tenantId, userId: user.id, chatId: link.chatId, text, messageType: 'SAVINGS_REMINDER' });
+      if (await this.allows(tenantId, user.id, 'EMAIL', 'financial')) await this.channelDelivery.sendEmail({ tenantId, userId: user.id, to: user.email, subject: 'Actualización de valor realizado FinOps', text, messageType: 'SAVINGS_REMINDER' });
     }
   }
 
@@ -248,7 +248,7 @@ export class OutboundMessageService {
     const link = links.find((item) => item.userId === input.userId && item.status === 'ACTIVE');
     const deliveries: OutboundMessageDelivery[] = [];
 
-    if (input.channels.includes('EMAIL') && await this.allows(input.userId, 'EMAIL', 'operational')) {
+    if (input.channels.includes('EMAIL') && await this.allows(input.tenantId, input.userId, 'EMAIL', 'operational')) {
       deliveries.push(await this.channelDelivery.sendEmail({
         tenantId: input.tenantId,
         userId: input.userId,
@@ -259,7 +259,7 @@ export class OutboundMessageService {
       }));
     }
 
-    if (input.channels.includes('TELEGRAM') && link !== undefined && await this.allows(input.userId, 'TELEGRAM', 'operational')) {
+    if (input.channels.includes('TELEGRAM') && link !== undefined && await this.allows(input.tenantId, input.userId, 'TELEGRAM', 'operational')) {
       deliveries.push(await this.channelDelivery.sendTelegram({
         tenantId: input.tenantId,
         userId: input.userId,
@@ -282,7 +282,7 @@ export class OutboundMessageService {
 
     for (const user of users.filter((item) => item.status === 'ACTIVE')) {
       const link = links.find((item) => item.userId === user.id && item.status === 'ACTIVE');
-      if (link !== undefined && await this.allows(user.id, 'TELEGRAM', 'recommendations')) {
+      if (link !== undefined && await this.allows(actor.tenantId, user.id, 'TELEGRAM', 'recommendations')) {
         deliveries.push(await this.channelDelivery.sendTelegram({
           tenantId: actor.tenantId,
           userId: user.id,
@@ -291,7 +291,7 @@ export class OutboundMessageService {
           messageType: 'RECOMMENDATION_SUMMARY',
         }));
       }
-      if (await this.allows(user.id, 'EMAIL', 'recommendations')) deliveries.push(await this.channelDelivery.sendEmail({
+      if (await this.allows(actor.tenantId, user.id, 'EMAIL', 'recommendations')) deliveries.push(await this.channelDelivery.sendEmail({
         tenantId: actor.tenantId,
         userId: user.id,
         to: user.email,
@@ -328,10 +328,10 @@ export class OutboundMessageService {
     }
   }
 
-  private async allows(userId: string, channel: 'EMAIL' | 'TELEGRAM', category: 'operational' | 'recommendations' | 'financial' | 'executive'): Promise<boolean> {
+  private async allows(tenantId: string, userId: string, channel: 'EMAIL' | 'TELEGRAM', category: 'operational' | 'recommendations' | 'financial' | 'executive'): Promise<boolean> {
     return this.messagingPreferenceService === undefined
       ? true
-      : this.messagingPreferenceService.allows(userId, channel, category);
+      : this.messagingPreferenceService.allows(tenantId, userId, channel, category);
   }
 
 }

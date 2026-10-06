@@ -7,6 +7,8 @@ import type { AwsCredentialIdentity } from '@smithy/types';
 import type {
   CloudIngestionJobContext,
   CloudIngestionConnection,
+  CloudMetricDiscoveryScope,
+  CloudMetricDiscoveryResult,
   CloudConnectionValidationResult,
   CloudIngestionProvider,
   CloudIngestionResult,
@@ -35,6 +37,7 @@ import { collectAwsInventory } from './aws/AwsInventoryCollector.js';
 import { collectAwsTechnicalMetrics } from './aws/AwsMetricCollector.js';
 import { collectAwsBilling, previewAwsFocus } from './aws/AwsBillingCollector.js';
 import { validateAwsConnection } from './aws/awsConnectionValidator.js';
+import { discoverAwsMetricDefinitions } from './aws/AwsMetricDiscovery.js';
 
 export class AwsSdkIngestionProvider implements CloudIngestionProvider {
   public readonly providerCode = 'aws';
@@ -56,6 +59,17 @@ export class AwsSdkIngestionProvider implements CloudIngestionProvider {
       createS3Client: (region, credentials) => this.createS3Client(region, credentials),
       createCostExplorerClient: (credentials) => this.createCostExplorerClient(credentials),
     });
+  }
+
+  public discoverMetricDefinitions(
+    connection: CloudIngestionConnection,
+    scope: CloudMetricDiscoveryScope,
+    signal?: AbortSignal,
+  ): Promise<CloudMetricDiscoveryResult> {
+    return discoverAwsMetricDefinitions(connection, scope, {
+      assumeRole: (credential, region) => this.assumeRole(credential, region),
+      createClient: (region, credentials) => this.createCloudWatchClient(region, credentials),
+    }, signal);
   }
 
   public async collect(job: CloudIngestionJobContext): Promise<CloudIngestionResult> {

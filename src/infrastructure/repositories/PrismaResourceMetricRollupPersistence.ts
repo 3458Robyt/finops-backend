@@ -33,7 +33,7 @@ export class PrismaResourceMetricRollupPersistence {
       ), samples_range AS MATERIALIZED (
         -- Scan the connection/time window once, then join the affected streams.
         -- A per-stream index loop read millions of rows and discarded most of
-        -- them after the date predicate on large Demo Client connections.
+        -- them after the date predicate on large tenant connections.
         SELECT samples.id, samples.tenant_id, samples.cloud_connection_id,
           samples.cloud_resource_id, samples.provider, samples.external_resource_id,
           samples.provider_namespace, samples.region_id, samples.compartment_id,

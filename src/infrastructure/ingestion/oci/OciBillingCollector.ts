@@ -22,6 +22,7 @@ import type {
 } from './OciSdkContracts.js';
 import {
   discoverOciFocusObjects,
+  emptyFocusReportWarning,
   isOciFocusObjectInWindow,
   readOciFocusLocations,
   readOciFocusObjects,
@@ -33,6 +34,7 @@ import { normalizeOciDailyUsageRange } from './OciUsageDateRange.js';
 export interface OciBillingCollectorDependencies {
   createObjectStorageClient(job: CloudIngestionJobContext, signal?: AbortSignal): OciObjectStorageClient;
   createUsageClient(job: CloudIngestionJobContext, signal?: AbortSignal): OciUsageClient;
+  prepareFocusJob?(job: CloudIngestionJobContext, signal?: AbortSignal): Promise<CloudIngestionJobContext>;
   withRateLimit?<T>(
     job: CloudIngestionJobContext,
     api: 'objectstorage' | 'usage',
@@ -55,7 +57,8 @@ export class OciBillingCollector {
     }
 
     try {
-      const focus = await this.collectFocusExport(job, options);
+      const focusJob = await this.dependencies.prepareFocusJob?.(job, options.signal) ?? job;
+      const focus = await this.collectFocusExport(focusJob, options);
       const objectsConfigured = readCoverageNumber(focus.coverage, 'objectsConfigured')
         ?? readCoverageNumber(focus.coverage, 'objectsProcessed')
         ?? 0;
@@ -71,7 +74,13 @@ export class OciBillingCollector {
     } catch (error) {
       if (options.signal?.aborted === true) throw error;
       if (configuredMode === 'FOCUS') throw error;
-      return this.collectProviderApiWithFallback(job, 'FOCUS no estuvo disponible; se usó OCI Usage API como fallback.', undefined, options);
+      const focusDiscoveryError = safeOciProviderError(error);
+      return this.collectProviderApiWithFallback(
+        job,
+        `No se pudo consultar Cost Reports FOCUS OCI (${focusDiscoveryError}); se usó OCI Usage API como respaldo.`,
+        { discoveryError: focusDiscoveryError },
+        options,
+      );
     }
   }
 
@@ -93,11 +102,7 @@ export class OciBillingCollector {
     const discoveredObjects = uniqueFocusObjects([...readOciFocusObjects(job), ...discovery.objects]);
     const objects = discoveredObjects.filter((object) => isOciFocusObjectInWindow(object.objectName, job));
     if (objects.length === 0) {
-      return this.emptyResult(discovery.apiCallCount, [
-        discoveredObjects.length === 0
-          ? 'No se encontraron objetos de reporte FOCUS OCI configurados o descubiertos. Configura ociFocusReportObjects u ociFocusReportLocations.'
-          : 'No se encontraron objetos de reporte FOCUS OCI para el periodo solicitado.',
-      ], {
+      return this.emptyResult(discovery.apiCallCount, [emptyFocusReportWarning(job, discoveredObjects.length > 0)], {
         costSource: 'OCI Cost Reports FOCUS',
         expectedRefreshHours: 6,
         apiCallCount: discovery.apiCallCount,

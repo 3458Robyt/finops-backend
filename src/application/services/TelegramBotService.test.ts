@@ -17,6 +17,7 @@ import type {
 } from '../../domain/interfaces/ITelegramRepository.js';
 import type { TelegramChatLink, TelegramInteractionLog, TelegramLinkedUser } from '../../domain/models/Telegram.js';
 import type { FinOpsRecommendation } from '../../domain/models/FinOpsRecommendation.js';
+import { getDatabaseContext } from '../../infrastructure/database/tenantContext.js';
 
 describe('TelegramBotService', () => {
   it('responds to /start in an unlinked chat without exposing FinOps data', async () => {
@@ -73,9 +74,34 @@ describe('TelegramBotService', () => {
       message: 'Que servicio tiene mayor ahorro?',
       outputFormat: 'PLAIN_TEXT',
     }]);
+    expect(fixture.aiDatabaseContexts[0]).toMatchObject({
+      tenantId: 'tenant-1',
+      userId: 'user-1',
+      role: 'CLIENT_VIEWER',
+      workerId: 'telegram-inbound',
+    });
     expect(fixture.client.messages[0]?.text).toBe('Respuesta IA en espanol');
     expect(fixture.repository.logs[0]?.status).toBe('PROCESSED');
     expect(fixture.repository.logs[0]?.tenantId).toBe('tenant-1');
+  });
+
+  it('uses the selected master tenant as the AI trace RLS context', async () => {
+    const fixture = createFixture();
+    fixture.repository.activeLink = buildLink({
+      activeTenantId: 'tak-2-0',
+      user: { ...buildLink().user!, role: 'MASTER_ADMIN' },
+    });
+
+    await fixture.service.handleUpdate({
+      message: { chat: { id: 'chat-1' }, text: '/chat Resume los costos de este tenant' },
+    });
+
+    expect(fixture.aiCalls[0]?.tenantId).toBe('tak-2-0');
+    expect(fixture.aiDatabaseContexts[0]).toMatchObject({
+      tenantId: 'tak-2-0',
+      userId: 'user-1',
+      role: 'MASTER_ADMIN',
+    });
   });
 
   it('uses savings reminders for /recordatorios', async () => {
@@ -157,6 +183,28 @@ describe('TelegramBotService', () => {
     expect(fixture.repository.completedUpdate).toMatchObject({ id: 'inbound-2', workerId: 'telegram-inbound-1', status: 'PENDING' });
     expect(fixture.client.messages).toHaveLength(0);
     expect(fixture.repository.logs[0]?.status).toBe('ERROR');
+  });
+
+  it('notifies the user when the final queued attempt fails', async () => {
+    const fixture = createFixture();
+    fixture.aiFailure.value = new Error('provider unavailable');
+    fixture.repository.activeLink = buildLink();
+    fixture.repository.queuedUpdate = {
+      id: 'inbound-final',
+      updateId: '12',
+      payload: { message: { chat: { id: 'chat-1', type: 'private' }, text: '¿Cómo van los costos?' } },
+      status: 'PROCESSING',
+      attemptCount: 3,
+      maxAttempts: 3,
+      nextAttemptAt: new Date('2026-08-31T00:00:00.000Z'),
+    };
+
+    const result = await fixture.service.processNextQueuedUpdate({ workerId: 'telegram-inbound-1', leaseMs: 30_000, retryBackoffMs: 1_000 });
+
+    expect(result).toEqual({ processed: true, status: 'FAILED' });
+    expect(fixture.repository.completedUpdate).toMatchObject({ id: 'inbound-final', status: 'FAILED' });
+    expect(fixture.client.messages).toHaveLength(1);
+    expect(fixture.client.messages[0]?.text).toContain('problema temporal del asistente');
   });
 });
 
@@ -274,11 +322,13 @@ function createFixture(): {
   readonly service: TelegramBotService;
   readonly aiFailure: { value: Error | undefined };
   readonly aiCalls: { readonly tenantId: string; readonly userId?: string; readonly traceSource?: string; readonly message: string; readonly outputFormat?: string }[];
+  readonly aiDatabaseContexts: (ReturnType<typeof getDatabaseContext>)[];
   readonly reminderCalls: { readonly tenantId: string; readonly userId: string }[];
 } {
   const repository = new FakeTelegramRepository();
   const client = new FakeTelegramClient();
   const aiCalls: { readonly tenantId: string; readonly userId?: string; readonly traceSource?: string; readonly message: string; readonly outputFormat?: string }[] = [];
+  const aiDatabaseContexts: (ReturnType<typeof getDatabaseContext>)[] = [];
   const reminderCalls: { readonly tenantId: string; readonly userId: string }[] = [];
   const aiFailure: { value: Error | undefined } = { value: undefined };
 
@@ -286,6 +336,7 @@ function createFixture(): {
     answerChat: async (input: { readonly tenantId: string; readonly userId?: string; readonly traceSource?: string; readonly message: string; readonly outputFormat?: string }) => {
       if (aiFailure.value !== undefined) throw aiFailure.value;
       aiCalls.push(input);
+      aiDatabaseContexts.push(getDatabaseContext());
       return {
         answer: 'Respuesta IA en espanol',
         snapshot: emptySnapshot(input.tenantId),
@@ -337,6 +388,7 @@ function createFixture(): {
     aiCalls,
     reminderCalls,
     aiFailure,
+    aiDatabaseContexts,
     service: new TelegramBotService(
       repository,
       client,

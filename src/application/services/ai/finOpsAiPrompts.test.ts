@@ -7,6 +7,7 @@ import {
   buildExecutionPlanSystemPrompt,
   buildRecommendationSystemPrompt,
   compactExecutionPlanArtifact,
+  normalizeHistory,
 } from './finOpsAiPrompts.js';
 
 const snapshot: CostAnalyticsSnapshot = {
@@ -59,6 +60,19 @@ const recommendation = {
 } as FinOpsRecommendation;
 
 describe('FinOps AI prompt boundaries', () => {
+  test('keeps only a bounded tail of chat history and clips oversized entries', () => {
+    const history = Array.from({ length: 10 }, (_, index) => ({
+      role: 'user' as const,
+      content: `${index}:${'x'.repeat(7_000)}`,
+    }));
+
+    const normalized = normalizeHistory(history);
+
+    expect(normalized).toHaveLength(8);
+    expect(normalized[0]?.content.startsWith('2:')).toBe(true);
+    expect(normalized[0]?.content).toHaveLength(6_000);
+  });
+
   test('makes safe recommendation abstention explicit', () => {
     const prompt = buildRecommendationSystemPrompt(snapshot, { memoryIds: [], caseIds: [], summary: '' });
 

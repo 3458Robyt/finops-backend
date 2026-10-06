@@ -2,7 +2,7 @@ import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/ICostAnal
 import type { AgentLearningContext } from '../../../domain/interfaces/IAgentLearningService.js';
 import type { BuiltAiContext } from '../../../domain/interfaces/IContextEngineService.js';
 import type { FinOpsRecommendation } from '../../../domain/models/FinOpsRecommendation.js';
-import type { AiChatMessage, AiChatOutputFormat } from './finOpsAiTypes.js';
+import { MAX_CHAT_HISTORY_CONTENT_CHARS, MAX_CHAT_HISTORY_MESSAGES, type AiChatMessage, type AiChatOutputFormat } from './finOpsAiTypes.js';
 import { compactExecutionPlanContext } from './executionPlanPromptContext.js';
 export { compactExecutionPlanArtifact } from './executionPlanPromptContext.js';
 
@@ -61,7 +61,7 @@ export function buildChatSystemPrompt(
   persistedRecommendations?: string,
 ): string {
   return [
-    'Eres el asistente IA FinOps de FinOps Demo.',
+    'Eres el asistente IA FinOps de la organización del tenant activo.',
     'Responde siempre en español claro y con estilo adaptativo: empieza por la conclusión útil, susténtala con la evidencia disponible y amplía solo si la pregunta lo necesita.',
     'Usa los datos del snapshot y del contexto ensamblado como evidencia factual del tenant actual. Las explicaciones generales de FinOps deben identificarse como orientación, no como hechos de este tenant.',
     'Si preguntan por un proveedor que no aparece en el snapshot, di que no hay datos verificables de ese proveedor; no respondas con importes de otro proveedor, no infieras costo cero ni presentes un total agregado como si fuera específico.',
@@ -183,7 +183,7 @@ export function buildExecutionPlanSystemPrompt(
   if (externalResourceId !== undefined) scope['externalResourceId'] = externalResourceId;
 
   return [
-    'Eres un arquitecto FinOps senior para FinOps Demo.',
+    'Eres un arquitecto FinOps senior para la organización del tenant activo.',
     'Debes generar un plan de ejecucion manual, gobernado y en español.',
     'El plan es una propuesta/checklist y nunca es una autorizacion ni una ejecucion.',
     'No afirmes que el sistema ejecutara cambios automaticamente en AWS, OCI u otro proveedor.',
@@ -259,7 +259,7 @@ export function buildAuditSystemPrompt(
     : '{"verdict":"APPROVED|REJECTED|NEEDS_REVISION","score":0,"checks":[{"name":"...","passed":true,"notes":"..."}],"blockingIssues":[],"requiredChanges":[],"repairInstructions":[]}';
 
   return [
-    'Eres un agente auditor FinOps independiente para FinOps Demo.',
+    'Eres un agente auditor FinOps independiente para la organización del tenant activo.',
     'Tu tarea es auditar contenido generado por otro agente IA antes de que sea persistido o aprobado.',
     'Debes comprobar que el contenido este en español, sea consistente con los datos, no invente recursos, sea realista, viable y tenga validaciones suficientes.',
     untrustedContextInstruction,
@@ -311,7 +311,7 @@ export function buildSnapshotQueryText(
 
 /**
  * Normaliza el historial de chat para el prompt: conserva solo los últimos
- * 8 turnos, recorta el contenido y descarta mensajes vacíos. Limitar la
+ * 8 mensajes, recorta el contenido y descarta mensajes vacíos. Limitar la
  * ventana controla el tamaño del contexto y su coste en tokens.
  */
 export function normalizeHistory(history: readonly AiChatMessage[] | undefined): AiChatMessage[] {
@@ -320,10 +320,10 @@ export function normalizeHistory(history: readonly AiChatMessage[] | undefined):
   }
 
   return history
-    .slice(-8)
+    .slice(-MAX_CHAT_HISTORY_MESSAGES)
     .map((item) => ({
       role: item.role,
-      content: item.content.trim(),
+      content: item.content.trim().slice(0, MAX_CHAT_HISTORY_CONTENT_CHARS),
     }))
     .filter((item) => item.content !== '');
 }

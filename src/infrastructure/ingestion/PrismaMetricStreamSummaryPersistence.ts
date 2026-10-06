@@ -106,14 +106,26 @@ export class PrismaMetricStreamSummaryPersistence {
     `);
   }
 
-  /** Adds rows written by one raw job to the summary projection. */
+  /** Rebuilds touched streams from raw facts so retrying projection is idempotent. */
   public async refreshMetricStreamSummariesForJob(
     tx: PrismaIngestionPersistenceClient,
     ingestionJobId: string,
     now = new Date(),
   ): Promise<void> {
     await tx.$executeRaw(PrismaNamespace.sql`
-      WITH aggregated AS (
+      WITH affected AS (
+        SELECT DISTINCT
+          cloud_connection_id,
+          external_resource_id,
+          provider_namespace,
+          region_id,
+          dimensions_hash,
+          metric_name,
+          statistic,
+          granularity_seconds
+        FROM resource_metric_samples
+        WHERE ingestion_job_id = ${ingestionJobId}
+      ), aggregated AS (
         SELECT
           max(rms.tenant_id) AS tenant_id,
           rms.cloud_connection_id,
@@ -134,7 +146,15 @@ export class PrismaMetricStreamSummaryPersistence {
           max(rms.sampled_at) AS last_sampled_at,
           (array_agg(rms.value ORDER BY rms.sampled_at DESC, rms.id DESC))[1] AS latest_value
         FROM resource_metric_samples rms
-        WHERE rms.ingestion_job_id = ${ingestionJobId}
+        INNER JOIN affected
+          ON affected.cloud_connection_id = rms.cloud_connection_id
+         AND affected.external_resource_id = rms.external_resource_id
+         AND affected.provider_namespace = rms.provider_namespace
+         AND affected.region_id = rms.region_id
+         AND affected.dimensions_hash = rms.dimensions_hash
+         AND affected.metric_name = rms.metric_name
+         AND affected.statistic = rms.statistic
+         AND affected.granularity_seconds = rms.granularity_seconds
         GROUP BY rms.cloud_connection_id, rms.external_resource_id, rms.provider_namespace,
           rms.region_id, rms.dimensions_hash, rms.metric_name, rms.statistic, rms.granularity_seconds
       )
@@ -151,7 +171,11 @@ export class PrismaMetricStreamSummaryPersistence {
         provider_namespace, region_id, compartment_id, dimensions_hash, metric_name, metric_unit,
         statistic, granularity_seconds, sample_count, non_zero_sample_count, first_sampled_at,
         last_sampled_at, latest_value,
-        CASE WHEN non_zero_sample_count = 0 THEN 'ZERO_ONLY' ELSE 'ACTIVE' END,
+        CASE
+          WHEN non_zero_sample_count = 0 THEN 'ZERO_ONLY'
+          WHEN last_sampled_at < (${now}::timestamptz - interval '48 hours') THEN 'STALE'
+          ELSE 'ACTIVE'
+        END,
         ${now}, ${now}
       FROM aggregated
       ON CONFLICT (
@@ -163,27 +187,12 @@ export class PrismaMetricStreamSummaryPersistence {
         provider = EXCLUDED.provider,
         compartment_id = EXCLUDED.compartment_id,
         metric_unit = COALESCE(EXCLUDED.metric_unit, resource_metric_stream_summaries.metric_unit),
-        sample_count = resource_metric_stream_summaries.sample_count + EXCLUDED.sample_count,
-        non_zero_sample_count = resource_metric_stream_summaries.non_zero_sample_count + EXCLUDED.non_zero_sample_count,
-        first_sampled_at = LEAST(
-          COALESCE(resource_metric_stream_summaries.first_sampled_at, EXCLUDED.first_sampled_at),
-          EXCLUDED.first_sampled_at
-        ),
-        last_sampled_at = GREATEST(
-          COALESCE(resource_metric_stream_summaries.last_sampled_at, EXCLUDED.last_sampled_at),
-          EXCLUDED.last_sampled_at
-        ),
-        latest_value = CASE
-          WHEN resource_metric_stream_summaries.last_sampled_at IS NULL
-            OR EXCLUDED.last_sampled_at >= resource_metric_stream_summaries.last_sampled_at
-          THEN EXCLUDED.latest_value
-          ELSE resource_metric_stream_summaries.latest_value
-        END,
-        state = CASE
-          WHEN resource_metric_stream_summaries.non_zero_sample_count + EXCLUDED.non_zero_sample_count = 0
-          THEN 'ZERO_ONLY'
-          ELSE 'ACTIVE'
-        END,
+        sample_count = EXCLUDED.sample_count,
+        non_zero_sample_count = EXCLUDED.non_zero_sample_count,
+        first_sampled_at = EXCLUDED.first_sampled_at,
+        last_sampled_at = EXCLUDED.last_sampled_at,
+        latest_value = EXCLUDED.latest_value,
+        state = EXCLUDED.state,
         last_ingested_at = ${now},
         updated_at = ${now}
     `);

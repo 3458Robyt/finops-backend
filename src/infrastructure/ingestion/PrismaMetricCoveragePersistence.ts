@@ -1,5 +1,6 @@
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { Prisma } from '../../generated/prisma/client.js';
+import { metricCoverageExpectedSamplesSql } from './metricCoverageExpectedSamples.js';
 import type { PrismaIngestionPersistenceClient } from './ingestionPersistenceTypes.js';
 
 export interface MetricCoverageRefreshTarget {
@@ -10,6 +11,7 @@ export interface MetricCoverageRefreshTarget {
   readonly configurationHash?: string;
   readonly defaultGranularitySeconds?: number;
   readonly ingestionJobId?: string;
+  readonly providerCode?: string;
 }
 
 /**
@@ -58,6 +60,7 @@ export class PrismaMetricCoveragePersistence {
             ${target.targetEnd}::timestamptz AS "target_end",
             ${target.configurationHash ?? ''}::varchar(64) AS "configuration_hash",
             ${target.defaultGranularitySeconds ?? 1800}::int AS "default_granularity",
+            ${target.providerCode ?? ''}::text AS "provider_code",
             '{}'::jsonb AS "request_context"
         `
       : Prisma.sql`
@@ -69,8 +72,10 @@ export class PrismaMetricCoveragePersistence {
             j."target_end",
             COALESCE(NULLIF(j."configuration_hash", ''), '') AS "configuration_hash",
             COALESCE(NULLIF(j."request_context"->>'resolutionSeconds', '')::int, 1800) AS "default_granularity",
+            connection."provider_code" AS "provider_code",
             COALESCE(j."request_context", '{}'::jsonb) AS "request_context"
           FROM "ingestion_jobs" j
+          INNER JOIN "cloud_connections" connection ON connection."id" = j."cloud_connection_id"
           WHERE j."id" = CAST(${target.ingestionJobId} AS text)
         `;
     const jobIdSql = !hasJob
@@ -142,12 +147,13 @@ export class PrismaMetricCoveragePersistence {
           max(definition."id") AS cloud_metric_definition_id,
           days."tenant_id",
           days."cloud_connection_id",
+          days."provider_code",
           COALESCE(definition."namespace", '') AS provider_namespace,
           COALESCE(definition."region_id", '') AS region_id,
           COALESCE(definition."external_resource_id", '') AS external_resource_id,
           definition."metric_name",
           upper(statistic.value) AS statistic,
-          days.default_granularity AS granularity_seconds,
+          resolution.granularity_seconds,
           COALESCE(definition."dimensions_hash", '') AS dimensions_hash,
           days.window_start,
           days.window_start + interval '1 day' AS window_end,
@@ -163,6 +169,22 @@ export class PrismaMetricCoveragePersistence {
             ELSE '[]'::jsonb
           END
         ) AS statistic(value)
+        CROSS JOIN LATERAL (
+          SELECT days.default_granularity AS granularity_seconds
+          WHERE lower(days."provider_code") <> 'aws'
+          UNION ALL
+          SELECT 60 WHERE lower(days."provider_code") = 'aws'
+            AND days.window_start < LEAST(days.window_start + interval '1 day', (SELECT MAX("target_end") FROM days))
+            AND days.window_start + interval '1 day' > CAST(${now.toISOString()} AS timestamptz) - interval '15 days'
+          UNION ALL
+          SELECT 300 WHERE lower(days."provider_code") = 'aws'
+            AND days.window_start < LEAST(days.window_start + interval '1 day', (SELECT MAX("target_end") FROM days))
+            AND days.window_start + interval '1 day' > CAST(${now.toISOString()} AS timestamptz) - interval '63 days'
+            AND days.window_start < CAST(${now.toISOString()} AS timestamptz) - interval '15 days'
+          UNION ALL
+          SELECT 3600 WHERE lower(days."provider_code") = 'aws'
+            AND days.window_start < CAST(${now.toISOString()} AS timestamptz) - interval '63 days'
+        ) AS resolution
         WHERE upper(statistic.value) IN ('MEAN', 'MIN', 'MAX', 'P50', 'P90', 'P95', 'P99', 'SUM', 'COUNT', 'RATE', 'LATEST')
           AND (
             NOT days.metric_filter_requested
@@ -184,13 +206,14 @@ export class PrismaMetricCoveragePersistence {
             )
           )
         GROUP BY days."tenant_id", days."cloud_connection_id", provider_namespace,
-          region_id, external_resource_id, definition."metric_name", upper(statistic.value),
-          days.default_granularity, dimensions_hash, days.window_start,
+          days."provider_code", region_id, external_resource_id, definition."metric_name", upper(statistic.value),
+          resolution.granularity_seconds, dimensions_hash, days.window_start,
           days.window_start + interval '1 day', days.configuration_hash
       ), observed_streams AS MATERIALIZED (
         SELECT
           max(samples."tenant_id") AS "tenant_id",
           samples."cloud_connection_id",
+          days."provider_code",
           samples."provider_namespace",
           samples."region_id",
           samples."external_resource_id",
@@ -234,12 +257,13 @@ export class PrismaMetricCoveragePersistence {
         GROUP BY samples."cloud_connection_id", samples."provider_namespace",
           samples."region_id", samples."external_resource_id", samples."metric_name",
           samples."statistic", samples."granularity_seconds", samples."dimensions_hash",
-          days.window_start, days.configuration_hash
+          days."provider_code", days.window_start, days.configuration_hash
       ), streams AS (
         SELECT
           expected.cloud_metric_definition_id,
           expected."tenant_id",
           expected."cloud_connection_id",
+          expected."provider_code",
           expected.provider_namespace,
           expected.region_id,
           expected.external_resource_id,
@@ -269,6 +293,7 @@ export class PrismaMetricCoveragePersistence {
           NULL::text AS cloud_metric_definition_id,
           observed."tenant_id",
           observed."cloud_connection_id",
+          observed."provider_code",
           observed.provider_namespace,
           observed.region_id,
           observed.external_resource_id,
@@ -299,12 +324,7 @@ export class PrismaMetricCoveragePersistence {
       ), calculated AS (
         SELECT
           streams.*,
-          GREATEST(
-            0,
-            CEIL(EXTRACT(EPOCH FROM (
-              LEAST(streams.window_end, CAST(${now.toISOString()} AS timestamptz)) - streams.window_start
-            )) / NULLIF(streams.granularity_seconds, 0))
-          )::int AS expected_samples
+          ${metricCoverageExpectedSamplesSql(now)} AS expected_samples
         FROM streams
       )
       INSERT INTO "resource_metric_coverage_windows" (

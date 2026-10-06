@@ -5,15 +5,15 @@ import type { MessagingPreference, MessagingPreferenceUpdate } from '../../domai
 export class PrismaMessagingPreferenceRepository implements IMessagingPreferenceRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
-  public async findByUserId(userId: string): Promise<MessagingPreference | null> {
-    const row = await this.prisma.userMessagingPreference.findUnique({ where: { userId } });
+  public async findByTenantAndUser(tenantId: string, userId: string): Promise<MessagingPreference | null> {
+    const row = await this.prisma.userMessagingPreference.findUnique({ where: { tenantId_userId: { tenantId, userId } } });
     return row === null ? null : toMessagingPreference(row);
   }
 
-  public async upsert(userId: string, input: MessagingPreferenceUpdate): Promise<MessagingPreference> {
+  public async upsert(tenantId: string, userId: string, input: MessagingPreferenceUpdate): Promise<MessagingPreference> {
     const row = await this.prisma.userMessagingPreference.upsert({
-      where: { userId },
-      create: { userId, ...input },
+      where: { tenantId_userId: { tenantId, userId } },
+      create: { tenantId, userId, ...input },
       update: input,
     });
     return toMessagingPreference(row);
@@ -22,6 +22,7 @@ export class PrismaMessagingPreferenceRepository implements IMessagingPreference
 
 function toMessagingPreference(row: {
   readonly id: string;
+  readonly tenantId: string;
   readonly userId: string;
   readonly emailEnabled: boolean;
   readonly telegramEnabled: boolean;

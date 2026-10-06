@@ -81,11 +81,14 @@ export async function validateAwsConnection(
     assumed = await dependencies.assumeRole(credential, region);
   } catch (error) {
     const failure = failedCapability('IDENTITY', error, checkedAt);
+    const bootstrapUnavailable = isPlatformCredentialProviderError(error);
     return {
       providerCode: 'aws',
       authentication: {
-        status: 'REJECTED',
-        message: 'AWS STS rechazó la autenticación del Role ARN o del External ID.',
+        status: bootstrapUnavailable ? 'RETRYABLE_ERROR' : 'REJECTED',
+        message: bootstrapUnavailable
+          ? 'El backend no tiene credenciales AWS de plataforma disponibles para llamar AssumeRole. Configura su identidad IAM técnica; no cambies el Role ARN ni el ExternalId del tenant todavía.'
+          : 'No se pudo asumir el rol del tenant. Verifica el permiso sts:AssumeRole del principal de plataforma y la relación de confianza/ExternalId del rol AWS configurado.',
         checkedAt,
       },
       capabilities: [
@@ -167,6 +170,10 @@ export async function validateAwsConnection(
     },
     capabilities: [identity, inventory, costs, metrics, storage],
   };
+}
+
+function isPlatformCredentialProviderError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'CredentialsProviderError';
 }
 
 async function validateStorageCapability(

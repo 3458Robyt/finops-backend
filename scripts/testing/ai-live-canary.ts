@@ -88,7 +88,7 @@ try {
     }
     const deepAudit = await runCommand(nodeCommand, [tsxCli, 'scripts/testing/ai-live-deep-audit.ts'], {
       AI_LIVE_TESTS: 'true',
-      AI_EXPECTED_MODEL: process.env['AI_EXPECTED_MODEL'] ?? 'gpt-5.6-luna',
+      AI_EXPECTED_MODEL: process.env['AI_EXPECTED_MODEL'] ?? 'gpt-6-luna',
       E2E_API_BASE_URL: apiBaseUrl,
       E2E_FIXTURE_FILE: fixtureFile,
     });

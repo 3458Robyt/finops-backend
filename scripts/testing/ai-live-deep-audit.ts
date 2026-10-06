@@ -264,7 +264,7 @@ const output = {
     && summarizeLatencies(planRuns.map((run) => run.latencyMs)).p95 <= 90_000
     && planTraceCheck.passed,
   generatedAt: new Date().toISOString(),
-  providerModel: process.env['AI_EXPECTED_MODEL'] ?? 'gpt-5.6-luna',
+  providerModel: process.env['AI_EXPECTED_MODEL'] ?? 'gpt-6-luna',
   isolatedFixtureRunId: manifest.runId,
   economicImpactCoverage: recommendationRuns.some((run) => run.verifiedSavingsCount > 0)
     ? 'VERIFIED_SAVINGS_CANDIDATE_EXERCISED'

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { Prisma, PrismaClient } from '../generated/prisma/client.js';
 import { PrismaMetricCoveragePersistence } from '../infrastructure/ingestion/PrismaMetricCoveragePersistence.js';
+import { hashMetricDimensions } from '../infrastructure/ingestion/metricDimensions.js';
 import {
   cleanupE2eFixtures,
   createE2eFixtures,
@@ -138,6 +139,168 @@ describe('selective metric coverage PostgreSQL integration', () => {
         expect(broadWindows.length).toBeGreaterThanOrEqual(7);
         expect(broadWindows.some((window) => window.metricName === 'VnicFromNetworkPackets')).toBe(true);
         expect(broadWindows.some((window) => window.regionId === 'us-phoenix-1')).toBe(true);
+      } finally {
+        await cleanupE2eFixtures(prisma, runId);
+        await prisma.$disconnect();
+      }
+    },
+    30_000,
+  );
+
+  test.skipIf(process.env['RUN_DB_INTEGRATION_TESTS'] !== 'true')(
+    'expects native CloudWatch periods for recent, midrange, and historical AWS coverage',
+    async () => {
+      const prisma = createTestingPrismaClient();
+      const runId = `aws-native-coverage-${Date.now()}`;
+      const now = new Date('2026-10-02T12:00:00.000Z');
+      const periods = [
+        { ageDays: 2, granularitySeconds: 60 },
+        { ageDays: 30, granularitySeconds: 300 },
+        { ageDays: 70, granularitySeconds: 3600 },
+      ] as const;
+      try {
+        const fixtures = await createE2eFixtures(prisma, runId);
+        const tenantId = fixtures.tenants[0]!.id;
+        const connection = await prisma.cloudConnection.findFirstOrThrow({
+          where: { tenantId, providerCode: 'aws' },
+          select: { id: true, rootExternalId: true },
+        });
+        const coverage = new PrismaMetricCoveragePersistence();
+        const jobIds: string[] = [];
+        const resourceIds: string[] = [];
+
+        for (const period of periods) {
+          const resourceId = `i-${runId.slice(0, 8)}-${period.ageDays}`;
+          resourceIds.push(resourceId);
+          const dimensions = { InstanceId: resourceId };
+          await prisma.cloudMetricDefinition.create({
+            data: {
+              tenantId,
+              cloudConnectionId: connection.id,
+              compartmentId: connection.rootExternalId,
+              namespace: 'AWS/EC2',
+              metricName: 'CPUUtilization',
+              externalResourceId: resourceId,
+              regionId: 'us-east-1',
+              dimensions,
+              dimensionsHash: hashMetricDimensions(dimensions),
+              statistics: ['MEAN'],
+              status: 'CONFIRMED',
+              enabled: true,
+              discoverySource: 'AWS_CLOUDWATCH',
+            },
+          });
+
+          const targetStart = new Date(now.getTime() - period.ageDays * 86_400_000);
+          targetStart.setUTCHours(0, 0, 0, 0);
+          const targetEnd = new Date(targetStart.getTime() + 86_400_000);
+          const job = await createMetricJob(prisma, {
+            tenantId,
+            connectionId: connection.id,
+            runId,
+            targetStart,
+            targetEnd,
+            requestContext: { resolutionSeconds: 1800 },
+            configurationSuffix: `aws-${period.granularitySeconds}`,
+          });
+          jobIds.push(job.id);
+          await prisma.resourceMetricSample.create({
+            data: {
+              tenantId,
+              cloudConnectionId: connection.id,
+              provider: 'AWS',
+              externalResourceId: resourceId,
+              providerNamespace: 'AWS/EC2',
+              regionId: 'us-east-1',
+              dimensionsHash: hashMetricDimensions(dimensions),
+              metricName: 'CPUUtilization',
+              statistic: 'MEAN',
+              value: new Prisma.Decimal(12),
+              sampledAt: new Date(targetStart.getTime() + period.granularitySeconds * 1000),
+              granularitySeconds: period.granularitySeconds,
+              sourceType: 'TECHNICAL_METRIC',
+              ingestionJobId: job.id,
+            },
+          });
+          await prisma.$transaction((tx) => coverage.refreshForJob(tx, job.id, now));
+        }
+
+        for (const [index, period] of periods.entries()) {
+          const window = await prisma.resourceMetricCoverageWindow.findFirstOrThrow({
+            where: {
+              ingestionJobId: jobIds[index],
+              externalResourceId: resourceIds[index],
+              metricName: 'CPUUtilization',
+            },
+          });
+          expect(window.granularitySeconds).toBe(period.granularitySeconds);
+          expect(window.observedSamples).toBe(1);
+        }
+      } finally {
+        await cleanupE2eFixtures(prisma, runId);
+        await prisma.$disconnect();
+      }
+    },
+    30_000,
+  );
+
+  test.skipIf(process.env['RUN_DB_INTEGRATION_TESTS'] !== 'true')(
+    'calculates expected samples only inside each AWS retention band on cutoff days',
+    async () => {
+      const prisma = createTestingPrismaClient();
+      const runId = `aws-retention-boundary-${Date.now()}`;
+      const now = new Date('2026-10-02T12:00:00.000Z');
+      const dayMs = 24 * 60 * 60 * 1000;
+      const cases = [
+        { cutoffDays: 15, bands: [{ seconds: 60, samples: 720, offsetMs: 12 * 60 * 60 * 1000 + 60_000 }, { seconds: 300, samples: 144, offsetMs: 300_000 }] },
+        { cutoffDays: 63, bands: [{ seconds: 300, samples: 144, offsetMs: 12 * 60 * 60 * 1000 + 300_000 }, { seconds: 3600, samples: 12, offsetMs: 3600_000 }] },
+      ] as const;
+      try {
+        const fixtures = await createE2eFixtures(prisma, runId);
+        const tenantId = fixtures.tenants[0]!.id;
+        const connection = await prisma.cloudConnection.findFirstOrThrow({
+          where: { tenantId, providerCode: 'aws' },
+          select: { id: true, rootExternalId: true },
+        });
+        const coverage = new PrismaMetricCoveragePersistence();
+
+        for (const boundary of cases) {
+          const cutoff = new Date(now.getTime() - boundary.cutoffDays * dayMs);
+          const targetStart = new Date(Date.UTC(cutoff.getUTCFullYear(), cutoff.getUTCMonth(), cutoff.getUTCDate()));
+          const targetEnd = new Date(targetStart.getTime() + dayMs);
+          const resourceId = `i-${runId.slice(0, 8)}-${boundary.cutoffDays}`;
+          const dimensions = { InstanceId: resourceId };
+          await prisma.cloudMetricDefinition.create({
+            data: {
+              tenantId, cloudConnectionId: connection.id, compartmentId: connection.rootExternalId,
+              namespace: 'AWS/EC2', metricName: 'CPUUtilization', externalResourceId: resourceId,
+              regionId: 'us-east-1', dimensions, dimensionsHash: hashMetricDimensions(dimensions),
+              statistics: ['MEAN'], status: 'CONFIRMED', enabled: true, discoverySource: 'AWS_CLOUDWATCH',
+            },
+          });
+          const job = await createMetricJob(prisma, {
+            tenantId, connectionId: connection.id, runId, targetStart, targetEnd,
+            requestContext: { resolutionSeconds: 1800 }, configurationSuffix: `aws-boundary-${boundary.cutoffDays}`,
+          });
+          for (const band of boundary.bands) {
+            await prisma.resourceMetricSample.create({
+              data: {
+                tenantId, cloudConnectionId: connection.id, provider: 'AWS', externalResourceId: resourceId,
+                providerNamespace: 'AWS/EC2', regionId: 'us-east-1', dimensionsHash: hashMetricDimensions(dimensions),
+                metricName: 'CPUUtilization', statistic: 'MEAN', value: new Prisma.Decimal(12),
+                sampledAt: new Date(targetStart.getTime() + band.offsetMs), granularitySeconds: band.seconds,
+                sourceType: 'TECHNICAL_METRIC', ingestionJobId: job.id,
+              },
+            });
+          }
+          await prisma.$transaction((tx) => coverage.refreshForJob(tx, job.id, now));
+          const windows = await prisma.resourceMetricCoverageWindow.findMany({
+            where: { ingestionJobId: job.id, externalResourceId: resourceId, metricName: 'CPUUtilization' },
+            select: { granularitySeconds: true, expectedSamples: true },
+          });
+          expect(windows.map((window) => [window.granularitySeconds, window.expectedSamples]).sort((a, b) => a[0]! - b[0]!))
+            .toEqual(boundary.bands.map((band) => [band.seconds, band.samples]).sort((a, b) => a[0] - b[0]));
+        }
       } finally {
         await cleanupE2eFixtures(prisma, runId);
         await prisma.$disconnect();

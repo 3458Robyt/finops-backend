@@ -27,11 +27,11 @@ export class ExecutiveSummaryDeliveryService {
 
     for (const user of users.filter((item) => item.status === 'ACTIVE')) {
       const emailKey = `EXECUTIVE_SUMMARY:${summaryDate}:${user.id}:EMAIL`;
-      if (await this.allows(user.id, 'EMAIL') && !(await this.hasDedupe(tenantId, user.id, 'EMAIL', emailKey))) {
+      if (await this.allows(tenantId, user.id, 'EMAIL') && !(await this.hasDedupe(tenantId, user.id, 'EMAIL', emailKey))) {
         deliveries.push(await this.enqueueEmail(tenantId, user.id, user.email, text, emailKey, summaryDate));
       }
       const link = links.find((item) => item.userId === user.id && item.status === 'ACTIVE');
-      if (link === undefined || !(await this.allows(user.id, 'TELEGRAM'))) continue;
+      if (link === undefined || !(await this.allows(tenantId, user.id, 'TELEGRAM'))) continue;
       const telegramKey = `EXECUTIVE_SUMMARY:${summaryDate}:${user.id}:TELEGRAM`;
       if (!(await this.hasDedupe(tenantId, user.id, 'TELEGRAM', telegramKey))) {
         deliveries.push(await this.enqueueTelegram(tenantId, user.id, link.chatId, text, telegramKey, summaryDate));
@@ -62,10 +62,10 @@ export class ExecutiveSummaryDeliveryService {
     return (await this.outboundRepository.findByDedupeKey({ tenantId, userId, channel, messageType: 'EXECUTIVE_SUMMARY', dedupeKey })) !== null;
   }
 
-  private async allows(userId: string, channel: 'EMAIL' | 'TELEGRAM'): Promise<boolean> {
+  private async allows(tenantId: string, userId: string, channel: 'EMAIL' | 'TELEGRAM'): Promise<boolean> {
     return this.preferences === undefined
       ? true
-      : this.preferences.allows(userId, channel, 'executive');
+      : this.preferences.allows(tenantId, userId, channel, 'executive');
   }
 }
 

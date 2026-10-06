@@ -151,9 +151,9 @@ export class PrismaTelegramRepository implements ITelegramRepository {
   }
 
   /**
-   * Consume de forma atómica un código de un solo uso y vincula el chat. El
-   * hash se expone temporalmente mediante un GUC dentro de la transacción para
-   * que el webhook pueda pasar RLS sin abrir acceso global a los códigos.
+   * Consume un código de un solo uso. Si el chat ya pertenece al mismo usuario,
+   * conserva su tenant principal y cambia el tenant activo al seleccionado en
+   * el portal; los chats de otra cuenta siguen rechazándose.
    */
   public async consumeSelfLinkCode(
     input: ConsumeTelegramSelfLinkCodeInput,
@@ -181,7 +181,7 @@ export class PrismaTelegramRepository implements ITelegramRepository {
       if (
         existing !== null
         && existing.status === 'ACTIVE'
-        && (existing.tenantId !== code.tenantId || existing.userId !== code.userId)
+        && existing.userId !== code.userId
       ) {
         throw new FinOpsBaseError('El chat de Telegram ya está vinculado a otra cuenta', 'CONFLICT');
       }
@@ -197,12 +197,13 @@ export class PrismaTelegramRepository implements ITelegramRepository {
       const link = await tx.telegramChatLink.upsert({
         where: { chatId: input.chatId },
         update: {
-          tenantId: code.tenantId,
-          userId: code.userId,
+          ...(existing?.userId === code.userId ? {} : { tenantId: code.tenantId, userId: code.userId }),
           ...(input.telegramUserId === undefined ? {} : { telegramUserId: input.telegramUserId }),
           ...(input.telegramUsername === undefined ? {} : { telegramUsername: input.telegramUsername }),
           linkedByUserId: code.userId,
-          activeTenantId: null,
+          activeTenantId: existing?.userId === code.userId && existing.tenantId !== code.tenantId
+            ? code.tenantId
+            : null,
           status: 'ACTIVE',
           disabledAt: null,
         },

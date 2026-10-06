@@ -62,17 +62,28 @@ export class PrismaTelegramLinkQueryRepository {
       select: {
         tenantId: true,
         role: true,
-        tenant: { select: { id: true, name: true, slug: true } },
+        tenant: { select: { id: true, name: true, slug: true, status: true } },
         tenantAccessAssignments: {
-          where: { disabledAt: null },
+          where: { disabledAt: null, tenant: { status: 'ACTIVE' } },
           select: { tenant: { select: { id: true, name: true, slug: true } } },
         },
       },
     });
     if (user === null) return [];
 
+    if (user.role === 'MASTER_ADMIN') {
+      const activeTenants = await this.prisma.tenant.findMany({
+        where: { status: 'ACTIVE' },
+        orderBy: { name: 'asc' },
+        select: { id: true, name: true, slug: true },
+      });
+      return activeTenants.map((tenant) => ({ ...tenant, isActive: tenant.id === activeTenantId }));
+    }
+
     const tenants = new Map<string, { readonly id: string; readonly name: string; readonly slug: string }>();
-    tenants.set(user.tenant.id, user.tenant);
+    if (user.tenant.status === 'ACTIVE') {
+      tenants.set(user.tenant.id, { id: user.tenant.id, name: user.tenant.name, slug: user.tenant.slug });
+    }
     if (user.role !== 'CLIENT_APPROVER' && user.role !== 'CLIENT_VIEWER') {
       for (const assignment of user.tenantAccessAssignments) tenants.set(assignment.tenant.id, assignment.tenant);
     }

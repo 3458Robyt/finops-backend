@@ -3,7 +3,7 @@ import type { IAiGateway } from '../../../domain/interfaces/IAiGateway.js';
 import type { ICostAnalyticsRepository } from '../../../domain/interfaces/ICostAnalyticsRepository.js';
 import type { CostAnalyticsSnapshot } from '../../../domain/interfaces/costAnalytics/costAnalyticsModels.js';
 import { normalizeHistory } from './finOpsAiPrompts.js';
-import type { AiChatInput, AiChatResponse } from './finOpsAiTypes.js';
+import { MAX_CHAT_MESSAGE_CHARS, type AiChatInput, type AiChatResponse } from './finOpsAiTypes.js';
 import type { FinOpsContextAssembler } from './finOpsContextAssembler.js';
 import { AiTraceRecorder } from './aiTraceRecorder.js';
 import { looksLikeSpanish } from './aiLanguageGuard.js';
@@ -25,6 +25,9 @@ export class FinOpsAiChatRunner {
     const outputFormat = input.outputFormat ?? 'MARKDOWN';
     if (message === '') {
       throw new FinOpsBaseError('Chat message is required', 'VALIDATION_ERROR');
+    }
+    if (message.length > MAX_CHAT_MESSAGE_CHARS) {
+      throw new FinOpsBaseError('Chat message exceeds the maximum length', 'VALIDATION_ERROR');
     }
 
     const snapshot = await selectChatSnapshot(this.analyticsRepository, input.tenantId, message);
@@ -97,6 +100,41 @@ async function selectChatSnapshot(
   tenantId: string,
   message: string,
 ): Promise<NonNullable<Awaited<ReturnType<ICostAnalyticsRepository['getLatestTenantSnapshot']>>>> {
+  const requestedMonth = requestedCalendarMonth(message);
+  if (requestedMonth !== undefined && repository.getTenantSnapshotForPeriod !== undefined) {
+    let latest: CostAnalyticsSnapshot | undefined;
+    let observedThrough = repository.getLatestObservedThrough === undefined
+      ? undefined
+      : await repository.getLatestObservedThrough(tenantId);
+    if (observedThrough !== undefined && Number.isNaN(observedThrough.getTime())) {
+      observedThrough = undefined;
+    }
+    if (observedThrough === undefined) {
+      latest = await repository.getLatestTenantSnapshot(tenantId);
+      const snapshotObservedThrough = latest.observedThrough === undefined
+        ? undefined
+        : new Date(latest.observedThrough);
+      if (snapshotObservedThrough !== undefined && !Number.isNaN(snapshotObservedThrough.getTime())) {
+        observedThrough = snapshotObservedThrough;
+      }
+    }
+
+    const latestPeriodStart = latest === undefined ? undefined : new Date(latest.periodStart);
+    const referenceDate = observedThrough
+      ?? (latestPeriodStart !== undefined && !Number.isNaN(latestPeriodStart.getTime()) ? latestPeriodStart : new Date());
+    let year = requestedMonth.year ?? referenceDate.getUTCFullYear();
+    if (requestedMonth.year === undefined && requestedMonth.month > referenceDate.getUTCMonth()) year -= 1;
+
+    const periodStart = new Date(Date.UTC(year, requestedMonth.month, 1));
+    const monthEnd = new Date(Date.UTC(year, requestedMonth.month + 1, 1));
+    const periodEnd = observedThrough !== undefined
+      && observedThrough > periodStart
+      && observedThrough < monthEnd
+      ? observedThrough
+      : monthEnd;
+    return repository.getTenantSnapshotForPeriod(tenantId, periodStart, periodEnd);
+  }
+
   const requestedDays = requestedRelativeDays(message);
   if (requestedDays === undefined || repository.getTenantSnapshotForPeriod === undefined) {
     return repository.getLatestTenantSnapshot(tenantId);
@@ -120,6 +158,47 @@ async function selectChatSnapshot(
   if (periodStart >= periodEnd) return latest ?? repository.getLatestTenantSnapshot(tenantId);
 
   return repository.getTenantSnapshotForPeriod(tenantId, periodStart, periodEnd);
+}
+
+interface RequestedCalendarMonth {
+  readonly month: number;
+  readonly year?: number;
+}
+
+const CALENDAR_MONTHS: readonly { readonly month: number; readonly aliases: readonly string[] }[] = [
+  { month: 0, aliases: ['enero', 'ene'] },
+  { month: 1, aliases: ['febrero', 'feb'] },
+  { month: 2, aliases: ['marzo', 'mar'] },
+  { month: 3, aliases: ['abril', 'abr'] },
+  { month: 4, aliases: ['mayo', 'may'] },
+  { month: 5, aliases: ['junio', 'jun'] },
+  { month: 6, aliases: ['julio', 'jul'] },
+  { month: 7, aliases: ['agosto', 'ago'] },
+  { month: 8, aliases: ['septiembre', 'setiembre', 'sept', 'sep'] },
+  { month: 9, aliases: ['octubre', 'oct'] },
+  { month: 10, aliases: ['noviembre', 'nov'] },
+  { month: 11, aliases: ['diciembre', 'dic'] },
+];
+
+function requestedCalendarMonth(message: string): RequestedCalendarMonth | undefined {
+  const normalized = message.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+  for (const entry of CALENDAR_MONTHS) {
+    const aliases = [...entry.aliases].sort((left, right) => right.length - left.length);
+    const match = new RegExp(`\\b(?:${aliases.join('|')})\\b`).exec(normalized);
+    if (match === null) continue;
+
+    const afterMonth = normalized.slice(match.index + match[0].length);
+    const yearAfter = /^\s+(?:(?:de|del)\s+)?((?:19|20|21)\d{2})\b/.exec(afterMonth);
+    const beforeMonth = normalized.slice(0, match.index);
+    const yearBefore = /\b((?:19|20|21)\d{2})\s+(?:(?:de|del)\s+)?$/.exec(beforeMonth);
+    const yearValue = yearAfter?.[1] ?? yearBefore?.[1];
+    const year = yearValue === undefined ? undefined : Number(yearValue);
+    return {
+      month: entry.month,
+      ...(year !== undefined && Number.isInteger(year) ? { year } : {}),
+    };
+  }
+  return undefined;
 }
 
 function requestedRelativeDays(message: string): number | undefined {

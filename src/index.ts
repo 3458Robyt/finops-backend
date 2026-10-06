@@ -37,7 +37,7 @@ async function bootstrap(): Promise<void> {
   const processRole = config.environment.processRole;
   const capabilities = resolveProcessRoleCapabilities(processRole);
 
-  console.log('\nFinOps Inteligente — Optimizador de Costos en la Nube\nFinOps Demo © 2026\nProviders: AWS + Oracle Cloud (OCI)\n');
+  console.log('\nFinOps Inteligente — Cloud Cost Optimization\nProviders: AWS + Oracle Cloud (OCI)\n');
 
   const composition = createApplicationComposition(capabilities.runsIngestionWorker, config);
   const { prisma, serverDependencies } = composition;

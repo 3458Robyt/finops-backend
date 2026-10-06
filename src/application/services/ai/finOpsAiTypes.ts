@@ -7,6 +7,10 @@ import type { RecommendationEvidenceSnapshot } from './RecommendationEvidenceSna
 import type { RecommendationReadinessReport } from './RecommendationReadinessGate.js';
 import type { DeterministicTrendAnalysis } from './DeterministicTrendAnalysis.js';
 
+export const MAX_CHAT_MESSAGE_CHARS = 4_000;
+export const MAX_CHAT_HISTORY_MESSAGES = 8;
+export const MAX_CHAT_HISTORY_CONTENT_CHARS = 6_000;
+
 /**
  * ═══════════════════════════════════════════════════════════════
  * Tipos de entrada/salida del servicio de IA FinOps

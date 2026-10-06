@@ -58,7 +58,7 @@ export interface IngestionScheduleOptions {
   readonly metricCatchupDays?: number;
   /** Ventana de backfill para reparar huecos sin crear un job por muestra. */
   readonly metricCatchupWindowMinutes?: number;
-  /** Límite por conexión y ciclo para que el backfill sea progresivo. */
+  /** Máximo de jobs técnicos PENDING/RUNNING por conexión durante el backfill. */
   readonly maxMetricBackfillJobsPerConnection?: number;
   /** Edad máxima de una validación de capacidades antes de exigir otra. */
   readonly validationMaxAgeMinutes?: number;

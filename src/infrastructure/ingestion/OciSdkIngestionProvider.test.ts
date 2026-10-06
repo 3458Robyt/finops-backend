@@ -19,16 +19,34 @@ expect(result.capabilities.every((item) => item.status === 'NOT_CONFIGURED')).to
 expect(JSON.stringify(result)).not.toMatch(/privateKey|passphrase|fingerprint/i);
 });
 
-it('does not guess an Object Storage bucket when FOCUS is not configured', async () => {
+it('validates the OCI-managed FOCUS location in the tenancy home region', async () => {
 const provider = new OciSdkIngestionProvider();
-let storageClientCreated = false;
+let storageRegion: unknown;
+let storageRequest: unknown;
 Object.assign(provider as unknown as Record<string, unknown>, {
-createObjectStorageClient: () => {
-storageClientCreated = true;
-throw new Error('storage client should not be created');
+createAuthProvider: () => ({}),
+createIdentityClient: () => ({
+listRegionSubscriptions: async () => ({ items: [
+{ regionName: 'sa-bogota-1', status: 'READY', isHomeRegion: false },
+{ regionName: 'us-phoenix-1', status: 'READY', isHomeRegion: true },
+] }),
+close: vi.fn(),
+}),
+createObjectStorageClient: (job: CloudIngestionJobContext) => {
+storageRegion = job.requestContext?.['regionId'];
+return {
+listObjects: async (request: unknown) => { storageRequest = request; return { listObjects: { objects: [] } }; },
+close: vi.fn(),
+};
 },
 });
 
+const baseJob = buildOciFocusJob();
+const job = {
+...baseJob,
+requestContext: { regionId: 'sa-bogota-1' },
+connection: { ...baseJob.connection, defaultRegion: 'sa-bogota-1', metadata: {} },
+};
 const result = await (provider as unknown as {
 validateStorageCapability: (
 connection: CloudIngestionJobContext['connection'],
@@ -36,15 +54,49 @@ job: CloudIngestionJobContext,
 checkedAt: Date,
   ) => Promise<{ status: string; message: string; metadata?: Record<string, unknown> }>;
 }).validateStorageCapability(
-buildMetricJob().connection,
-{ ...buildMetricJob(), sourceType: 'INVENTORY' },
+job.connection,
+job,
 new Date(),
 );
 
-expect(result.status).toBe('NOT_CONFIGURED');
-expect(result.message).toContain('OCI Usage API');
-expect(result.metadata).toMatchObject({ reasonCode: 'FOCUS_SOURCE_NOT_CONFIGURED' });
-expect(storageClientCreated).toBe(false);
+expect(result.status).toBe('AVAILABLE');
+expect(storageRegion).toBe('us-phoenix-1');
+expect(storageRequest).toMatchObject({
+namespaceName: 'bling',
+bucketName: 'ocid1.tenancy.oc1.test',
+prefix: 'FOCUS Reports/',
+limit: 1,
+});
+expect(result.metadata).toMatchObject({ autoDetected: true, regionId: 'us-phoenix-1' });
+});
+
+it('does not fall back to the configured region when OCI omits the home-region marker', async () => {
+const provider = new OciSdkIngestionProvider();
+const createStorageClient = vi.fn();
+Object.assign(provider as unknown as Record<string, unknown>, {
+createAuthProvider: () => ({}),
+createIdentityClient: () => ({
+listRegionSubscriptions: async () => ({ items: [{ regionName: 'sa-bogota-1', status: 'READY', isHomeRegion: false }] }),
+close: vi.fn(),
+}),
+createObjectStorageClient: createStorageClient,
+});
+const job = {
+...buildOciFocusJob(),
+requestContext: { regionId: 'sa-bogota-1' },
+connection: { ...buildOciFocusJob().connection, defaultRegion: 'sa-bogota-1', metadata: {} },
+};
+const result = await (provider as unknown as {
+validateStorageCapability: (
+connection: CloudIngestionJobContext['connection'],
+job: CloudIngestionJobContext,
+checkedAt: Date,
+) => Promise<{ status: string; message: string }>;
+}).validateStorageCapability(job.connection, job, new Date());
+
+expect(result.status).toBe('ERROR');
+expect(result.message).toContain('región principal');
+expect(createStorageClient).not.toHaveBeenCalled();
 });
 
 it('collects compute inventory resources through the OCI SDK', async () => {
@@ -480,6 +532,13 @@ compartmentCount: 3,
   it('falls back to OCI Usage API when AUTO cannot find a managed FOCUS object', async () => {
     const provider = new OciSdkIngestionProvider();
     Object.assign(provider as unknown as Record<string, unknown>, {
+      createAuthProvider: () => ({}),
+      createIdentityClient: () => ({
+        listRegionSubscriptions: async () => ({ items: [{
+          regionName: 'us-phoenix-1', status: 'READY', isHomeRegion: true,
+        }] }),
+        close: () => undefined,
+      }),
       createObjectStorageClient: () => ({
         listObjects: async () => ({ listObjects: { objects: [] } }),
         close: () => undefined,

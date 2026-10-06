@@ -57,7 +57,6 @@ describe('validateRuntimeConfig', () => {
   it('rejects minimal reasoning for GPT-5.6 Luna before provider requests fail', () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     for (const env of [
-      { NODE_ENV: 'development', AI_REASONING_EFFORT: 'minimal' },
       { NODE_ENV: 'development', AI_MODEL: 'gpt-5.6-luna', AI_REASONING_EFFORT: 'minimal' },
       {
         NODE_ENV: 'development',
@@ -213,6 +212,22 @@ describe('validateRuntimeConfig', () => {
       BUDGET_SCHEDULER_ENABLED: 'true',
       BUDGET_SCHEDULER_TENANT_ID: 'tenant-1',
       BUDGET_SCHEDULER_USER_ID: 'user-1',
+    })).not.toThrow();
+  });
+
+  it('accepts the simplified email and password setup for a recognized provider', () => {
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      EMAIL_ADDRESS: 'alerts@gmail.com',
+      EMAIL_PASSWORD: 'smtp-secret',
+    })).not.toThrow();
+  });
+
+  it('accepts a Workspace custom-domain address and password without an SMTP host', () => {
+    expect(() => validateRuntimeConfig({
+      ...productionEnv,
+      EMAIL_ADDRESS: 'alerts@workspace.example',
+      EMAIL_PASSWORD: 'smtp-secret',
     })).not.toThrow();
   });
 });

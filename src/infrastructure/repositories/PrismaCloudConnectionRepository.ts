@@ -217,7 +217,7 @@ export class PrismaCloudConnectionRepository implements ICloudConnectionReposito
       namespace: definition.namespace,
       metricName: definition.metricName,
       externalResourceId: definition.externalResourceId,
-      ...(definition.regionId === null ? {} : { regionId: definition.regionId }),
+      ...(definition.regionId === '' ? {} : { regionId: definition.regionId }),
       ...(isJsonObject(definition.dimensions) ? { dimensions: definition.dimensions as Record<string, unknown> } : {}),
       ...(definition.metricUnit === null ? {} : { metricUnit: definition.metricUnit }),
       statistics: definition.statistics,

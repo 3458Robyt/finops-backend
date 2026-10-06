@@ -62,15 +62,9 @@ npm run build
 
 `npm run test:all` ejecuta esas verificaciones juntas. Las pruebas PostgreSQL se ejecutan con una base desechable y `TEST_DATABASE_URL`, usando schemas `finops_e2e_*`; no se debe apuntar ese runner a una base compartida. Canaries de IA/cloud/mensajería son opt-in y requieren autorización, configuración local y servicios disponibles. No se envían mensajes reales durante las pruebas offline.
 
-## Operación y referencias
+## Documentación y operación
 
-- [Conexiones cloud](docs/ONBOARDING_CLOUD.md)
-- [Operación de ingesta](docs/INGESTION_OPERATIONS.md)
-- [Autorización por rol](docs/MATRIZ_AUTORIZACION.md)
-- [Seguridad de autenticación](docs/MATRIZ_SEGURIDAD_AUTENTICACION.md)
-- [Análisis FinOps](docs/PIPELINE_ANALISIS_FINOPS.md)
-- [Mensajería](docs/MENSAJERIA_CANAL_OPERACION.md)
-- [Medición de ahorros](docs/VERIFIED_SAVINGS_MEASUREMENT.md)
+Consulte el [índice de guías técnicas y operativas](docs/README.md) para elegir la guía según la tarea: conexión cloud, ingesta, análisis FinOps, mensajería, autorización, seguridad, recuperación o medición de ahorros. Las guías registran procedimientos y límites conocidos; no sustituyen pruebas del despliegue ni certificaciones de seguridad.
 
 Para una instancia nueva, cree credenciales propias y siga el principio de mínimo privilegio. AWS requiere una identidad de carga de trabajo autorizada; no publique credenciales bootstrap.
 

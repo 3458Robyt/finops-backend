@@ -48,17 +48,11 @@ Los canales de correo SMTP y Telegram se reutilizan de `OutboundMessageService` 
 - La exportación está limitada a 10.000 filas.
 - El portafolio presenta la última ejecución por recomendación; el histórico completo sigue en el detalle y timeline.
 - La conciliación considera todas las ejecuciones manuales `EXECUTED`/`PARTIAL` sin medición `VERIFIED`; que el portafolio muestre la última ejecución no oculta ejecuciones históricas pendientes.
-- El aislamiento usa JWT, guards, filtros tenant-scoped y, en la rama beta, contexto runtime con RLS
-  aplicado en Supabase principal; la activación operativa del enforcement y su canary siguen
-  pendientes.
+- El aislamiento de la API usa sesión, guards y filtros tenant-scoped. Cuando el entorno exige RLS,
+  el proceso debe usar el rol `finops_runtime` y superar el canary de aislamiento; esta guía no
+  certifica la configuración de un despliegue particular.
 - No hay conversión de monedas ni estimación de ahorro mediante LLM.
 
 ## Conciliación automática durante desarrollo
 
 El flujo automático está desactivado por defecto. Para probarlo de forma controlada se debe configurar `SAVINGS_RECONCILIATION_ENABLED=true` junto con `SAVINGS_RECONCILIATION_TENANT_ID`. `SAVINGS_RECONCILIATION_RUN_ON_START=true` ejecuta una única corrida al iniciar y `SAVINGS_RECONCILIATION_SCHEDULER_ENABLED=true` habilita un loop no solapable con `SAVINGS_RECONCILIATION_INTERVAL_MS`. El lote está acotado por `SAVINGS_RECONCILIATION_BATCH_SIZE`; las fallas se registran y no convierten una ingesta exitosa en fallida.
-
-## Verificación realizada
-
-Se validaron typecheck backend, 227 pruebas unitarias, integración PostgreSQL tenant-scoped en un esquema Supabase aislado, smoke HTTP autenticado contra un backend levantado con ese esquema, lint y build frontend. La migración `202607260001_value_realization_notification_dedupe` y sus índices se aplicaron también en Supabase principal; `prisma migrate status` quedó al día.
-
-El benchmark aislado con 5 tenants, 10.000 recomendaciones y 20.000 mediciones registró `summary=459 ms`, `items page=447 ms`, `export=994 ms` para 10.000 filas y `EXPLAIN ANALYZE=131.263 ms`. El script `npm run test:fixtures:value-realization-benchmark` crea únicamente fixtures en un `finops_e2e_*` aislado y `npm run test:perf:value-realization` genera la evidencia en `.test-artifacts/perf/`; los fixtures se eliminan al cerrar el esquema.

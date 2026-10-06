@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: finops
       POSTGRES_DB: finops
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - finops-postgres-data:/var/lib/postgresql/data
     healthcheck:

@@ -119,18 +119,3 @@ Un `PASSED` valida conectividad del proveedor, pero la cola durable debe verific
 los registros de entregas. Las respuestas IA del worker deben ejecutarse con contexto de tenant/usuario para
 cumplir RLS en las trazas de `ai_context_traces`; los fallos persistentes deben terminar con un aviso genérico,
 no con silencio ni errores internos expuestos.
-
-## Incidente multi-tenant y chat IA — 2026-10-05
-
-El repositorio de opciones de tenant aplica la misma autorización que el portal: `MASTER_ADMIN` ve todos los
-tenants activos, mientras los demás roles quedan limitados al tenant principal y sus asignaciones activas.
-El worker establece el contexto del vínculo y del tenant seleccionado antes de llamar al asistente, de modo que
-las trazas respeten RLS. Tras agotar reintentos, el usuario recibe un mensaje genérico en español. En beta, el
-hotfix está desplegado en `api` y `notification-scheduler`; la validación conversacional final debe hacerse con
-un chat autorizado usando `/tenants`, `/tenant tak-2-0` y luego `/chat <pregunta>`.
-
-El asistente también reconoce meses calendario en español (por ejemplo, “septiembre” o “septiembre de 2026”) y pide al repositorio el snapshot exacto de ese mes. Si se omite el año, lo infiere desde el último período observado. No debe usar el snapshot más reciente como sustituto de un mes solicitado sin datos.
-
-### Nota operativa de beta
-
-El frontend Nginx usa resolución DNS dinámica para el upstream Docker `api:3000` (beta image `finops-beta-frontend:proxy-dns-35e8126`). Si se recrea la API, Nginx actualiza su dirección sin reiniciar el frontend. Tras un 502, revisar primero `/health`, `getWebhookInfo` (`pending_update_count` y fecha del último error) y los logs del frontend/API; el último error de Telegram puede seguir visible como histórico aunque el webhook ya esté recuperado.

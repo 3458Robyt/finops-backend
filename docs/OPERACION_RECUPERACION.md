@@ -3,9 +3,10 @@
 Fecha de revisión: 2026-08-12.
 
 Este runbook define la operación mínima para proteger y recuperar la base de
-datos de FinOps. No sustituye la política de backups administrados de Supabase
-ni autoriza operaciones destructivas contra la base principal. Los comandos de
-restauración siempre deben apuntar primero a una base o proyecto aislado.
+datos de FinOps. No sustituye la política de backups administrados que aplique
+al proveedor de base de datos ni autoriza operaciones destructivas contra la
+base principal. Los comandos de restauración siempre deben apuntar primero a
+una base o proyecto aislado.
 
 ## 1. Backup
 
@@ -92,10 +93,9 @@ El rollback normal es de aplicación, no de permisos. Ante una incidencia:
 5. No ejecutar `DISABLE ROW LEVEL SECURITY`, no conceder tablas a roles API y
    no usar `postgres` como runtime de la aplicación para acelerar la recuperación.
 
-## 6. Rehearsal pendiente
+## 6. Simulacro de recuperación
 
-La documentación y los comandos están preparados. La prueba formal de backup,
-restore aislado y medición RTO/RPO debe ejecutarse cuando exista el destino de
-despliegue y el canal de backup autorizado. Hasta entonces `OPS-006` permanece
-abierto/diferido; no se presenta este runbook como evidencia de una restauración
-productiva ya realizada.
+Antes de operar sobre datos de clientes, ejecute y registre un simulacro de
+backup y restore aislado, incluyendo tiempos RTO/RPO y diferencias encontradas.
+Este runbook describe el procedimiento; por sí solo no demuestra que una
+restauración haya sido probada en el entorno destino.

@@ -87,28 +87,10 @@ El scheduler no debe activarse durante desarrollo salvo una prueba deliberada.
 
 La migración es `prisma/migrations/202607230001_recommendation_analysis_runs/migration.sql`.
 
-Se validó desde cero en PostgreSQL 16 y después se aplicó en Supabase. Las tablas nuevas revocan
-acceso directo a `anon` y `authenticated`.
+La migración define las tablas y permisos del flujo. Aplíquela primero en una base o esquema aislado y
+verifique migraciones y grants antes de promoverla al entorno destino.
 
 En producción se prefiere **forward-fix**. Un rollback destructivo solo es viable si las tablas están
 vacías: primero se elimina la tabla de enlaces, luego la tabla de corridas y finalmente sus enums.
 El valor agregado a `InAppNotificationType` no debe intentar eliminarse con SQL improvisado porque
 PostgreSQL no soporta quitar valores enum de forma segura sin reconstruir el tipo.
-
-## Evidencia de validación
-
-Corte local vigente: 2026-08-12. Las cifras menores en documentos fechados son históricas.
-
-| Capa | Resultado |
-|---|---|
-| Backend unitario | 99 archivos, 386 pruebas y 10 omitidas |
-| IA offline | 2 archivos, 24 escenarios |
-| PostgreSQL aislado | Claim, tenant, estados, cancelación, reintento y enlaces aprobados |
-| Frontend | ESLint y build aprobados |
-| E2E dedicado | Admin, rol de lectura y cambio de tenant aprobados |
-| E2E integral | Login, tenants, análisis, inventario, recomendación y ejecución aprobados |
-| Smoke HTTP real | `POST /analysis-runs` respondió `202` en 48 ms contra PostgreSQL aislado |
-| Supabase | Migración aplicada; tablas, índices y grants verificados |
-| OCI real | No ejecutado para esta fase |
-| AWS real | Bloqueado por ausencia de cuenta/rol |
-| LLM real | Canary opcional no ejecutado |

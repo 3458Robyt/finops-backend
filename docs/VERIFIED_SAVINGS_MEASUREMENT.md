@@ -50,11 +50,11 @@ Las consultas están aisladas por tenant. El cálculo requiere rol operativo; ve
 
 La tabla `recommendation_savings_measurements` se crea mediante la migración
 `202607250001_verified_savings_measurements`. Primero debe aplicarse en un
-entorno local o esquema aislado validado y después en Supabase. La migración
-de normalización de unidades es `202607250002_savings_unit_normalization`.
-Ambas ya están aplicadas en la base principal y en el esquema aislado de
-integración `finops_e2e_verified_savings`. No contienen fixtures ni borran
-datos existentes.
+entorno local o esquema aislado validado y después en el entorno destino. La
+migración de normalización de unidades es
+`202607250002_savings_unit_normalization`. Antes de desplegarlas, verifique el
+estado de Prisma en una base aislada. No insertan fixtures ni borran datos
+existentes.
 
 La integración se ejecuta con `TEST_DATABASE_URL` apuntando a un esquema
 `finops_e2e_*`; nunca debe apuntar a la base principal. El cálculo se puede

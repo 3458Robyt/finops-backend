@@ -38,6 +38,17 @@ El código está organizado en `src/domain`, `src/application`, `src/infrastruct
 
 `npm run db:local:start` usa la instalación local configurada por el equipo; no crea una base automáticamente. `npm run db:seed` inserta datos demostrativos y requiere `SEED_DEFAULT_PASSWORD`; no se debe ejecutar sobre datos empresariales.
 
+## Configuración y Docker Compose
+
+- `.env.example`: variables de la API para desarrollo local; cópielo a `.env` y use secretos propios.
+- `.env.beta.example` y `.env.beta.runtime.example`: plantillas separadas para interpolación de Compose y variables de los contenedores beta. Nunca llevan credenciales reales.
+- `docker-compose.yml`: PostgreSQL local de desarrollo.
+- `docker-compose.test.yml`: PostgreSQL aislado para `npm run test:integration:docker`.
+- `docker-compose.beta.yml`: stack beta completo, con base de datos, API, workers y frontend.
+- `docker-compose.runtime.yml`: API, worker y scheduler conectados a una base de datos externa; no incluye frontend ni PostgreSQL.
+
+Los archivos `.env` reales están ignorados por Git. Los `*.example` son plantillas con valores locales o marcadores; nunca reutilice esos valores en producción.
+
 ## Pruebas
 
 ```powershell

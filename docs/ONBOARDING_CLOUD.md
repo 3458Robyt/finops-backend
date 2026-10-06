@@ -212,49 +212,6 @@ requiere atención.
 | `POST /api/v1/cloud-connections/:id/ingestion-jobs/cancel-pending` | Cancelar pendientes |
 | `GET /api/v1/ingestion/readiness` | Readiness consolidado del tenant |
 
-## Verificación actual
-
-### OCI real de referencia
-
-El último canary read-only histórico del 2026-07-16 registró:
-
-- identidad: disponible;
-- inventario: disponible;
-- métricas: disponible;
-- Object Storage/FOCUS: disponible;
-- Usage API: denegada por policy;
-- preview: 20 objetos descubiertos, sin errores de ubicación;
-- estado: parcialmente operativo;
-- llamadas reales: ~3.5 s; readiness: ~1 s;
-- arranque en frío local del módulo OCI específico: mediana aproximada de 2,3 s
-  en cinco mediciones, con peor tiempo de proceso de 4,2 s; ya no se importa el
-  paquete paraguas `oci-sdk`.
-
-La denegación de Usage API no bloquea FOCUS ni las demás capacidades.
-
-La prueba live de la conexión empresarial `Tak 2` se ejecutó el 2026-08-16 mediante la ruta de
-validación de candidata. El PEM fue leído, normalizado, cifrado y su fingerprint derivado sin
-errores de parsing; la solicitud firmada de OCI fue rechazada por autenticación. La candidata pasó
-de `PENDING` a `INVALID/REJECTED`, no desplazó ninguna credencial activa y no se ejecutaron ingestas
-ni mutaciones sobre recursos cloud. El siguiente intento debe comparar, en OCI, el User OCID, el
-Tenancy OCID, el API key asociado al fingerprint derivado y el contenido de la clave privada; no se
-debe copiar una clave privada en el repositorio, en `.env.example` ni en logs.
-
-### AWS
-
-El contrato STS, inventario EC2, CloudWatch y FOCUS S3 está cubierto con fixtures y pruebas. No hay
-cuenta/rol AWS real disponible en este entorno; no se considera validación productiva.
-
-### Seguridad e integración
-
-- El smoke API comprueba 13 mutaciones denegadas a `VIEWER`.
-- Una lectura cross-tenant no descubre la conexión ajena.
-- El alta no acepta metadata arbitraria. Los resúmenes públicos proyectan únicamente configuración
-  operativa conocida y eliminan campos sensibles anidados; la conexión interna de ingesta conserva
-  la configuración completa sin exponer credenciales.
-- El payload completo de onboarding se revisa para no contener secretos.
-- Supabase revoca acceso PostgREST `anon`/`authenticated` a las tablas operativas del onboarding.
-
 ## Solución de problemas
 
 | Síntoma | Causa probable | Acción |

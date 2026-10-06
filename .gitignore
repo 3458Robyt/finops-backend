@@ -29,6 +29,9 @@ snapshots/
 .oci/
 .idea/dataSources.xml
 .claude/
+.codex/
+.engram/
+.hallmark/
 analisis-proyecto-grado/
 .test-artifacts/
 test-results/

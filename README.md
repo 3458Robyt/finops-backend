@@ -2,7 +2,7 @@
 
 API y procesos de fondo de la plataforma de gestión FinOps. Este repositorio contiene la capa de dominio, casos de uso, adaptadores de nube, persistencia PostgreSQL, API HTTP y workers.
 
-> **Estado de entrega:** software en desarrollo y candidato de evaluación. Que el repositorio sea público no significa que el sistema esté certificado para producción ni que TAK haya firmado su aceptación. La UAT autenticada por rol y la validación operativa de la empresa se registran por separado.
+> Antes de desplegar, revise la configuración del entorno, aplique las migraciones y valide permisos, secretos y servicios externos en una instalación controlada.
 
 ## Arquitectura y tecnología
 
@@ -53,14 +53,15 @@ npm run build
 
 ## Operación y referencias
 
-- [Estado actual](docs/ESTADO_ACTUAL_FINOPS.md)
-- [Roadmap de producto](docs/ROADMAP_PRODUCTO.md)
-- [Deuda técnica](docs/DEUDA_TECNICA.md)
 - [Conexiones cloud](docs/ONBOARDING_CLOUD.md)
 - [Operación de ingesta](docs/INGESTION_OPERATIONS.md)
-- [Prácticas de seguridad](docs/MODELO_AMENAZAS_STRIDE.md)
+- [Autorización por rol](docs/MATRIZ_AUTORIZACION.md)
+- [Seguridad de autenticación](docs/MATRIZ_SEGURIDAD_AUTENTICACION.md)
+- [Análisis FinOps](docs/PIPELINE_ANALISIS_FINOPS.md)
+- [Mensajería](docs/MENSAJERIA_CANAL_OPERACION.md)
+- [Medición de ahorros](docs/VERIFIED_SAVINGS_MEASUREMENT.md)
 
-Los informes que contienen telemetría, identificadores o resultados de una cuenta empresarial se conservan en el paquete privado de entrega y no forman parte del repositorio público. Para una instancia nueva, cree credenciales propias y siga el principio de mínimo privilegio. AWS real requiere una identidad de carga de trabajo autorizada; no se deben publicar credenciales bootstrap.
+Para una instancia nueva, cree credenciales propias y siga el principio de mínimo privilegio. AWS requiere una identidad de carga de trabajo autorizada; no publique credenciales bootstrap.
 
 ## Uso y licencia
 

@@ -1,10 +1,8 @@
 # Centro de Realización de Valor FinOps
 
-> **Referencia funcional con evidencia histórica:** las reglas y contratos del
-> módulo siguen vigentes, pero los conteos, migraciones y benchmarks de la
-> sección de verificación corresponden a su fecha de ejecución. El estado actual
-> de la beta está en `docs/ESTADO_ACTUAL_FINOPS.md` y la deuda vigente en
-> `docs/DEUDA_TECNICA.md`.
+> Esta guía describe el flujo funcional. Los resultados económicos solo deben
+> presentarse como verificados cuando exista una medición posterior comparable y
+> aprobada por una persona autorizada.
 
 ## Propósito
 
